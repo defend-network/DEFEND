@@ -25,6 +25,7 @@ import {
   isOwner,
   loadAdminSession,
 } from "@/lib/adminAuth";
+import { UsersRolesPanel } from "./admin/identity/UsersRolesPanel";
 
 type View =
   | "overview"
@@ -318,7 +319,7 @@ export function AdminWorkstation() {
             />
           )}
           {view === "users" && (
-            <Placeholder title="Users & Roles" body="Single-operator mode. Multi-user roles later." />
+            <UsersRolesPanel session={session} />
           )}
           {view === "audit" && (
             <Placeholder
