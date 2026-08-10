@@ -301,6 +301,70 @@ def test_visitor_search_detail_and_failed_lookup_are_audited(admin_api):
     assert event["outcome"] == "failure"
 
 
+def test_legacy_usage_metadata_is_recursively_sanitized_on_both_detail_paths(
+    admin_api,
+):
+    visitor_id = admin_api.visitors.ensure_visitor(
+        None,
+        fingerprint="fp_legacy_metadata",
+        client_meta={"browser": "firefox"},
+    )
+    account = admin_api.identity.create_account(
+        email="legacy-metadata@example.com",
+        display_name="Legacy Metadata",
+        role="user",
+        created_by=admin_api.admin.account_id,
+    )
+    admin_api.identity.link_visitor(account_id=account.account_id, visitor_id=visitor_id)
+    leaked_values = {
+        "password": "legacy-password-value",
+        "token": "legacy-token-value",
+        "cookie": "legacy-cookie-value",
+        "authorization": "legacy-authorization-value",
+        "secret": "legacy-secret-value",
+    }
+    admin_api.visitors.record_event(
+        event_type="legacy_import",
+        visitor_id=visitor_id,
+        metadata={
+            "safe": {
+                "Password": leaked_values["password"],
+                "nested": [
+                    {"AUTHORIZATION": leaked_values["authorization"]},
+                    {"safe_note": "preserved"},
+                ],
+            },
+            "access_TOKEN": leaked_values["token"],
+            "raw_Cookie_value": leaked_values["cookie"],
+            "clientSecret": leaked_values["secret"],
+            "research_mode": "fast",
+        },
+    )
+
+    visitor_response = admin_api.client.get(
+        f"/api/admin/visitors/{visitor_id}", headers=admin_api.admin_headers
+    )
+    account_response = admin_api.client.get(
+        f"/api/admin/accounts/{account.account_id}", headers=admin_api.admin_headers
+    )
+
+    assert visitor_response.status_code == account_response.status_code == 200
+    for response in (visitor_response, account_response):
+        serialized = response.text
+        assert all(value not in serialized for value in leaked_values.values())
+        metadata = (
+            response.json()["usage_events"][0]["metadata"]
+            if response is visitor_response
+            else response.json()["linked_visitors"][0]["usage_events"][0]["metadata"]
+        )
+        assert metadata["research_mode"] == "fast"
+        assert metadata["safe"]["nested"] == [{}, {"safe_note": "preserved"}]
+    stored = admin_api.visitors.conn.execute(
+        "SELECT metadata_json FROM usage_events WHERE visitor_id=?", (visitor_id,)
+    ).fetchone()["metadata_json"]
+    assert all(value in stored for value in leaked_values.values())
+
+
 def test_conversation_view_is_capped_and_audited(admin_api):
     visitor_id = admin_api.visitors.ensure_visitor(
         None, fingerprint="fp_conversation", client_meta={"browser": "other"}

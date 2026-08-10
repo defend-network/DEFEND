@@ -15,6 +15,44 @@ from .config import DataPaths
 from .sqlite_utils import connect_sqlite, json_dumps, json_loads, transaction
 
 
+_SENSITIVE_METADATA_KEY_FRAGMENTS = (
+    "password",
+    "token",
+    "cookie",
+    "authorization",
+    "secret",
+)
+_MAX_METADATA_DEPTH = 6
+_MAX_METADATA_ITEMS = 50
+_MAX_METADATA_KEY_CHARS = 120
+_MAX_METADATA_STRING_CHARS = 2_000
+
+
+def _safe_usage_metadata(value: Any, *, depth: int = 0) -> Any:
+    """Return a bounded copy safe for admin responses without altering storage."""
+    if depth > _MAX_METADATA_DEPTH:
+        return None
+    if isinstance(value, dict):
+        safe: dict[str, Any] = {}
+        for raw_key, nested in list(value.items())[:_MAX_METADATA_ITEMS]:
+            key = str(raw_key)[:_MAX_METADATA_KEY_CHARS]
+            normalized = key.casefold()
+            if any(fragment in normalized for fragment in _SENSITIVE_METADATA_KEY_FRAGMENTS):
+                continue
+            safe[key] = _safe_usage_metadata(nested, depth=depth + 1)
+        return safe
+    if isinstance(value, list):
+        return [
+            _safe_usage_metadata(nested, depth=depth + 1)
+            for nested in value[:_MAX_METADATA_ITEMS]
+        ]
+    if isinstance(value, str):
+        return value[:_MAX_METADATA_STRING_CHARS]
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return None
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -705,7 +743,9 @@ class VisitorStore:
         usage = []
         for event in usage_rows:
             item = dict(event)
-            item["metadata"] = json_loads(item.pop("metadata_json"), {})
+            stored_metadata = json_loads(item.pop("metadata_json"), {})
+            safe_metadata = _safe_usage_metadata(stored_metadata)
+            item["metadata"] = safe_metadata if isinstance(safe_metadata, dict) else {}
             usage.append(item)
         return {
             "visitor": visitor,
