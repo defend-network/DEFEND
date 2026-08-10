@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  anonymizeAccount,
   type AccountDetail,
   createAccount,
+  deleteAccount,
   getAccount,
   getVisitor,
   getVisitorConversation,
@@ -114,6 +116,8 @@ describe("identity admin API client", () => {
 
     await getAccount("admin-token", unsafeId);
     await updateAccount("admin-token", unsafeId, { display_name: "Jane" });
+    await anonymizeAccount("admin-token", unsafeId);
+    await deleteAccount("admin-token", unsafeId);
     await getVisitor("admin-token", unsafeId);
     await getVisitorConversation("admin-token", unsafeId, unsafeId);
     await resendInvitation("admin-token", unsafeId);
@@ -124,12 +128,20 @@ describe("identity admin API client", () => {
     expect(paths).toEqual([
       "/api/admin/accounts/id%2Fwith%20spaces%3F%23",
       "/api/admin/accounts/id%2Fwith%20spaces%3F%23",
+      "/api/admin/accounts/id%2Fwith%20spaces%3F%23/anonymize",
+      "/api/admin/accounts/id%2Fwith%20spaces%3F%23",
       "/api/admin/visitors/id%2Fwith%20spaces%3F%23",
       "/api/admin/visitors/id%2Fwith%20spaces%3F%23/conversations/id%2Fwith%20spaces%3F%23",
       "/api/admin/invitations/id%2Fwith%20spaces%3F%23/resend",
       "/api/admin/invitations/id%2Fwith%20spaces%3F%23/revoke",
       "/api/admin/invitations/id%2Fwith%20spaces%3F%23/resend",
     ]);
+    expect(fetchMock.mock.calls[2]?.[1]).toEqual(
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(fetchMock.mock.calls[3]?.[1]).toEqual(
+      expect.objectContaining({ method: "DELETE" }),
+    );
   });
 
   it("serializes list queries and account mutation bodies", async () => {

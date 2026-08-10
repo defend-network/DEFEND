@@ -354,6 +354,23 @@ export function updateAccount(
   });
 }
 
+export function anonymizeAccount(
+  token: string,
+  accountId: string,
+): Promise<AccountMutationResponse> {
+  return identityJson(
+    `/api/admin/accounts/${encodePath(accountId)}/anonymize`,
+    token,
+    { method: "POST" },
+  );
+}
+
+export function deleteAccount(token: string, accountId: string): Promise<void> {
+  return identityJson(`/api/admin/accounts/${encodePath(accountId)}`, token, {
+    method: "DELETE",
+  });
+}
+
 export function listVisitors(
   token: string,
   query: IdentityQuery,

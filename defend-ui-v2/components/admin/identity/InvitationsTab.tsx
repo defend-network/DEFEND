@@ -1,8 +1,20 @@
-import type { InvitationSummary } from "@/lib/identityApi";
+"use client";
+
+import { useState } from "react";
+
+import type { AdminSession } from "@/lib/adminAuth";
+import {
+  regenerateInvitation,
+  resendInvitation,
+  revokeInvitation,
+  type InvitationSummary,
+} from "@/lib/identityApi";
 
 type InvitationsTabProps = {
   invitations: InvitationSummary[];
+  session: AdminSession;
   onSelect?: (invitation: InvitationSummary) => void;
+  onChanged?: () => void;
 };
 
 function displayDate(value: string): string {
@@ -12,11 +24,88 @@ function displayDate(value: string): string {
 
 export function InvitationsTab({
   invitations,
+  session,
   onSelect,
+  onChanged,
 }: InvitationsTabProps) {
+  const [pendingAction, setPendingAction] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [sensitiveLink, setSensitiveLink] = useState<{
+    email: string;
+    url: string;
+  } | null>(null);
+  const [revokeTarget, setRevokeTarget] = useState<InvitationSummary | null>(null);
+  const [confirmationText, setConfirmationText] = useState("");
+
+  async function resend(invitation: InvitationSummary) {
+    setPendingAction(`resend:${invitation.invitation_id}`);
+    setFeedback(null);
+    setError(null);
+    try {
+      await resendInvitation(session.token, invitation.invitation_id);
+      setFeedback(`Invitation resent to ${invitation.email}`);
+      onChanged?.();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Unable to resend invitation");
+    } finally {
+      setPendingAction(null);
+    }
+  }
+
+  async function regenerate(invitation: InvitationSummary) {
+    setPendingAction(`regenerate:${invitation.invitation_id}`);
+    setFeedback(null);
+    setError(null);
+    setSensitiveLink(null);
+    try {
+      const result = await regenerateInvitation(session.token, invitation.invitation_id);
+      const url = result.invitation.activation_url;
+      if (url) {
+        setSensitiveLink({ email: invitation.email, url });
+      } else {
+        setFeedback("Invitation regenerated, but no manual activation link was returned");
+        onChanged?.();
+      }
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Unable to regenerate invitation");
+    } finally {
+      setPendingAction(null);
+    }
+  }
+
+  async function copyLink() {
+    if (!sensitiveLink) return;
+    try {
+      await navigator.clipboard.writeText(sensitiveLink.url);
+      setFeedback("Activation link copied");
+    } catch {
+      setError("Unable to copy the activation link");
+    }
+  }
+
+  async function revoke() {
+    if (!revokeTarget || confirmationText !== "REVOKE") return;
+    setPendingAction(`revoke:${revokeTarget.invitation_id}`);
+    setFeedback(null);
+    setError(null);
+    try {
+      await revokeInvitation(session.token, revokeTarget.invitation_id);
+      setFeedback(`Invitation revoked for ${revokeTarget.email}`);
+      setRevokeTarget(null);
+      setConfirmationText("");
+      onChanged?.();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Unable to revoke invitation");
+    } finally {
+      setPendingAction(null);
+    }
+  }
+
   return (
-    <div className="identity-table-scroll">
-      <table aria-label="Invitations" className="identity-table">
+    <div>
+      <div className="identity-table-scroll">
+        <table aria-label="Invitations" className="identity-table">
         <thead>
           <tr>
             <th scope="col">Recipient</th>
@@ -39,6 +128,51 @@ export function InvitationsTab({
                 >
                   {invitation.email}
                 </button>
+                <div className="identity-row-actions">
+                  <button
+                    type="button"
+                    className="ghost-btn"
+                    aria-label={`Resend invitation to ${invitation.email}`}
+                    disabled={
+                      pendingAction !== null ||
+                      sensitiveLink !== null ||
+                      invitation.status !== "pending"
+                    }
+                    onClick={() => resend(invitation)}
+                  >
+                    Resend
+                  </button>
+                  <button
+                    type="button"
+                    className="ghost-btn"
+                    aria-label={`Regenerate link for ${invitation.email}`}
+                    disabled={
+                      pendingAction !== null ||
+                      sensitiveLink !== null ||
+                      invitation.status !== "pending"
+                    }
+                    onClick={() => regenerate(invitation)}
+                  >
+                    Regenerate link
+                  </button>
+                  <button
+                    type="button"
+                    className="ghost-btn"
+                    aria-label={`Revoke invitation for ${invitation.email}`}
+                    disabled={
+                      pendingAction !== null ||
+                      sensitiveLink !== null ||
+                      invitation.status !== "pending"
+                    }
+                    onClick={() => {
+                      setRevokeTarget(invitation);
+                      setConfirmationText("");
+                      setError(null);
+                    }}
+                  >
+                    Revoke
+                  </button>
+                </div>
               </td>
               <td>{invitation.intended_role}</td>
               <td>
@@ -56,7 +190,61 @@ export function InvitationsTab({
             </tr>
           ))}
         </tbody>
-      </table>
+        </table>
+      </div>
+
+      {sensitiveLink && (
+        <section className="identity-sensitive-disclosure" aria-live="polite">
+          <h3>Sensitive one-time activation link</h3>
+          <p>
+            Share only with {sensitiveLink.email}. This link is held only in the
+            current screen state.
+          </p>
+          <code>{sensitiveLink.url}</code>
+          <button type="button" onClick={copyLink}>
+            Copy activation link
+          </button>
+          <button
+            type="button"
+            className="ghost-btn"
+            onClick={() => {
+              setSensitiveLink(null);
+              onChanged?.();
+            }}
+          >
+            Hide activation link
+          </button>
+        </section>
+      )}
+
+      {revokeTarget && (
+        <section role="alertdialog" aria-labelledby="revoke-invitation-title">
+          <h3 id="revoke-invitation-title">Confirm invitation revocation</h3>
+          <p>Type REVOKE to revoke the invitation for {revokeTarget.email}.</p>
+          <label>
+            Type REVOKE to confirm
+            <input
+              aria-label="Type REVOKE to confirm"
+              value={confirmationText}
+              autoComplete="off"
+              onChange={(event) => setConfirmationText(event.target.value)}
+            />
+          </label>
+          <button
+            type="button"
+            disabled={confirmationText !== "REVOKE" || pendingAction !== null}
+            onClick={revoke}
+          >
+            Confirm revoke
+          </button>
+          <button type="button" className="ghost-btn" onClick={() => setRevokeTarget(null)}>
+            Cancel
+          </button>
+        </section>
+      )}
+
+      {feedback && <p role="status">{feedback}</p>}
+      {error && <p role="alert">{error}</p>}
     </div>
   );
 }

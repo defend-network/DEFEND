@@ -13,7 +13,9 @@ import {
   type VisitorSummary,
 } from "@/lib/identityApi";
 import { AccountsTab } from "./AccountsTab";
+import { IdentityDetailDrawer } from "./IdentityDetailDrawer";
 import { InvitationsTab } from "./InvitationsTab";
+import { InviteAccountModal } from "./InviteAccountModal";
 import { VisitorsTab } from "./VisitorsTab";
 
 const PAGE_SIZE = 50;
@@ -69,6 +71,9 @@ export function UsersRolesPanel({
     invitations: { q: "", offset: 0 },
   });
   const [refreshVersion, setRefreshVersion] = useState(0);
+  const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
+  const [selectedVisitorId, setSelectedVisitorId] = useState<string | null>(null);
+  const [showInviteModal, setShowInviteModal] = useState(false);
   const [page, setPage] = useState<PageState>({
     tab: "accounts",
     items: [],
@@ -206,6 +211,22 @@ export function UsersRolesPanel({
     });
   }
 
+  function refresh() {
+    setRefreshVersion((value) => value + 1);
+  }
+
+  function selectAccount(account: AccountSummary) {
+    setSelectedVisitorId(null);
+    setSelectedAccountId(account.account_id);
+    onSelectAccount?.(account);
+  }
+
+  function selectVisitor(visitor: VisitorSummary) {
+    setSelectedAccountId(null);
+    setSelectedVisitorId(visitor.visitor_id);
+    onSelectVisitor?.(visitor);
+  }
+
   const isCurrentPage = page.tab === activeTab;
   const loading = !isCurrentPage || page.loading;
   const error = isCurrentPage ? page.error : null;
@@ -260,10 +281,15 @@ export function UsersRolesPanel({
             type="button"
             className="ghost-btn"
             aria-label={`Refresh ${label.toLowerCase()}`}
-            onClick={() => setRefreshVersion((value) => value + 1)}
+            onClick={refresh}
           >
             Refresh
           </button>
+          {(activeTab === "accounts" || activeTab === "invitations") && (
+            <button type="button" onClick={() => setShowInviteModal(true)}>
+              Create account
+            </button>
+          )}
         </div>
 
         {TAB_ORDER.map((tab) => (
@@ -285,19 +311,21 @@ export function UsersRolesPanel({
                 {!loading && !error && items.length > 0 && tab === "accounts" && (
                   <AccountsTab
                     accounts={items as AccountSummary[]}
-                    onSelect={onSelectAccount}
+                    onSelect={selectAccount}
                   />
                 )}
                 {!loading && !error && items.length > 0 && tab === "visitors" && (
                   <VisitorsTab
                     visitors={items as VisitorSummary[]}
-                    onSelect={onSelectVisitor}
+                    onSelect={selectVisitor}
                   />
                 )}
                 {!loading && !error && items.length > 0 && tab === "invitations" && (
                   <InvitationsTab
                     invitations={items as InvitationSummary[]}
+                    session={session}
                     onSelect={onSelectInvitation}
+                    onChanged={refresh}
                   />
                 )}
               </>
@@ -331,6 +359,29 @@ export function UsersRolesPanel({
           </nav>
         )}
       </div>
+
+      {showInviteModal && (
+        <InviteAccountModal
+          session={session}
+          onClose={() => setShowInviteModal(false)}
+          onCreated={refresh}
+        />
+      )}
+      {selectedAccountId && (
+        <IdentityDetailDrawer
+          session={session}
+          accountId={selectedAccountId}
+          onClose={() => setSelectedAccountId(null)}
+          onChanged={refresh}
+        />
+      )}
+      {selectedVisitorId && (
+        <IdentityDetailDrawer
+          session={session}
+          visitorId={selectedVisitorId}
+          onClose={() => setSelectedVisitorId(null)}
+        />
+      )}
     </section>
   );
 }
