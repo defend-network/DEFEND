@@ -12,3 +12,7 @@ Gmail invitation delivery:
 - DEFEND_GMAIL_APP_PASSWORD
 - DEFEND_GMAIL_SENDER
 - DEFEND_GMAIL_SMTP_TIMEOUT
+
+Connection telemetry:
+- Retention policy: fixed at 90 days
+- DEFEND_TRUST_CLOUDFLARE

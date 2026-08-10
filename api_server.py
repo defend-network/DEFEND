@@ -7,8 +7,10 @@ from __future__ import annotations
 import asyncio
 import traceback
 import os
+import threading
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -228,9 +230,43 @@ class AppState:
     model: Any = None
     cp: ControlPlane | None = None
     data: DataCore | None = None
+    last_connection_cleanup_at: datetime | None = None
 
 
 state = AppState()
+_CONNECTION_RETENTION = timedelta(days=90)
+_CONNECTION_CLEANUP_INTERVAL = timedelta(days=1)
+_connection_cleanup_lock = threading.Lock()
+
+
+def _connection_retention_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _run_connection_retention_cleanup(
+    data: DataCore,
+    *,
+    now: datetime | None = None,
+) -> int:
+    current = now if now is not None else _connection_retention_now()
+    if current.tzinfo is None or current.utcoffset() is None:
+        raise ValueError("connection retention cleanup requires a timezone-aware time")
+    current = current.astimezone(timezone.utc)
+
+    with _connection_cleanup_lock:
+        previous = state.last_connection_cleanup_at
+        if previous is not None and current < previous + _CONNECTION_CLEANUP_INTERVAL:
+            return 0
+
+        cutoff = current - _CONNECTION_RETENTION
+        deleted = data.visitors.purge_connection_history(before=cutoff.isoformat())
+        state.last_connection_cleanup_at = current
+
+    print(
+        "[DEFEND API] connection retention cleanup "
+        f"deleted={deleted} cutoff={cutoff.isoformat()}"
+    )
+    return deleted
 
 
 def _auth(authorization: str | None) -> None:
@@ -245,6 +281,8 @@ def _auth(authorization: str | None) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     data = DataCore(DATA_ROOT)
+    state.last_connection_cleanup_at = None
+    _run_connection_retention_cleanup(data)
     try:
         configure_identity_store(data.identity)
     except Exception:
@@ -284,6 +322,14 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="DEFEND AI API", version="0.4.0", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def connection_retention_cleanup_middleware(request: Request, call_next):
+    data = getattr(request.app.state, "defend_data", None)
+    if data is not None:
+        _run_connection_retention_cleanup(data)
+    return await call_next(request)
 
 app.add_middleware(
     CORSMiddleware,
