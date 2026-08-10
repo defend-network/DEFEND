@@ -23,6 +23,7 @@ from admin_auth import AdminPrincipal, configure_identity_store, require_admin
 from api_admin_tt_routes import router as admin_tt_router
 from api_batch3_routes import router as batch3_router, ensure_visitor_session
 from api_identity_routes import SensitivePathRedactionMiddleware, router as identity_router
+from api_identity_admin_routes import router as identity_admin_router
 from defend_data import DataCore
 from defend_data.ingest_policy import AIIngestExcluded, assert_ai_ingest_allowed
 
@@ -305,6 +306,7 @@ app.add_middleware(SensitivePathRedactionMiddleware)
 app.include_router(admin_tt_router)
 app.include_router(batch3_router)
 app.include_router(identity_router)
+app.include_router(identity_admin_router)
 
 
 async def _health_payload() -> dict[str, Any]:

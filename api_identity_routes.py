@@ -139,7 +139,33 @@ def _client_ip(request: Request) -> str:
     return client_ip(
         headers,
         observed,
-        trust_cloudflare=trust_cloudflare in {"1", "true", "yes", "on"},
+        trust_cloudflare=trust_cloudflare == "true",
+    )
+
+
+def _admin_audit(
+    store: IdentityStore,
+    request: Request,
+    principal: AdminPrincipal,
+    *,
+    action: str,
+    target_type: str,
+    target_id: str | None,
+    outcome: Literal["success", "failure"],
+    metadata: dict | None = None,
+) -> None:
+    store.record_audit(
+        actor_account_id=principal.account_id,
+        action=action,
+        target_type=target_type,
+        target_id=target_id,
+        outcome=outcome,
+        request_id=(request.headers.get("x-request-id") or "")[:200] or None,
+        client_context={
+            "ip_address": _client_ip(request),
+            "user_agent": request.headers.get("user-agent", "")[:512],
+        },
+        metadata=metadata or {},
     )
 
 
@@ -280,11 +306,41 @@ def create_account(
             created_by=principal.account_id,
         )
     except RoleViolation as exc:
+        _admin_audit(
+            store,
+            request,
+            principal,
+            action="account.create",
+            target_type="account",
+            target_id=None,
+            outcome="failure",
+            metadata={"reason": "forbidden", "intended_role": body.role},
+        )
         raise HTTPException(status_code=403, detail="Account role is not permitted") from exc
     except ValueError as exc:
+        _admin_audit(
+            store,
+            request,
+            principal,
+            action="account.create",
+            target_type="account",
+            target_id=None,
+            outcome="failure",
+            metadata={"reason": "duplicate" if str(exc) == "email already exists" else "invalid", "intended_role": body.role},
+        )
         status_code = 409 if str(exc) == "email already exists" else 400
         detail = "Email already exists" if status_code == 409 else "Invalid account request"
         raise HTTPException(status_code=status_code, detail=detail) from exc
+    _admin_audit(
+        store,
+        request,
+        principal,
+        action="account.create",
+        target_type="account",
+        target_id=account.account_id,
+        outcome="success",
+        metadata={"intended_role": body.role, "invitation_id": invitation.invitation_id},
+    )
     invitation, delivery = _deliver_invitation(store, invitation, token)
     return {
         "account": _account_payload(account),
@@ -305,6 +361,16 @@ def resend_invitation(
     store = _identity_store(request)
     existing = store.get_invitation(invitation_id)
     if existing is None:
+        _admin_audit(
+            store,
+            request,
+            principal,
+            action="invitation.resend",
+            target_type="invitation",
+            target_id=invitation_id,
+            outcome="failure",
+            metadata={"reason": "not_found"},
+        )
         raise HTTPException(status_code=404, detail="Invitation not found")
     try:
         invitation, token = store.create_invitation(
@@ -312,9 +378,39 @@ def resend_invitation(
             created_by=principal.account_id,
         )
     except RoleViolation as exc:
+        _admin_audit(
+            store,
+            request,
+            principal,
+            action="invitation.resend",
+            target_type="invitation",
+            target_id=invitation_id,
+            outcome="failure",
+            metadata={"reason": "forbidden"},
+        )
         raise HTTPException(status_code=403, detail="Invitation action is not permitted") from exc
     except InvitationInvalid as exc:
+        _admin_audit(
+            store,
+            request,
+            principal,
+            action="invitation.resend",
+            target_type="invitation",
+            target_id=invitation_id,
+            outcome="failure",
+            metadata={"reason": "invalid_state"},
+        )
         raise HTTPException(status_code=409, detail="Invitation cannot be resent") from exc
+    _admin_audit(
+        store,
+        request,
+        principal,
+        action="invitation.resend",
+        target_type="invitation",
+        target_id=invitation_id,
+        outcome="success",
+        metadata={"replacement_invitation_id": invitation.invitation_id, "account_id": invitation.account_id},
+    )
     invitation, delivery = _deliver_invitation(store, invitation, token)
     return {
         "invitation": _invitation_payload(
@@ -338,11 +434,51 @@ def revoke_invitation(
             revoked_by=principal.account_id,
         )
     except KeyError as exc:
+        _admin_audit(
+            store,
+            request,
+            principal,
+            action="invitation.revoke",
+            target_type="invitation",
+            target_id=invitation_id,
+            outcome="failure",
+            metadata={"reason": "not_found"},
+        )
         raise HTTPException(status_code=404, detail="Invitation not found") from exc
     except RoleViolation as exc:
+        _admin_audit(
+            store,
+            request,
+            principal,
+            action="invitation.revoke",
+            target_type="invitation",
+            target_id=invitation_id,
+            outcome="failure",
+            metadata={"reason": "forbidden"},
+        )
         raise HTTPException(status_code=403, detail="Invitation action is not permitted") from exc
     except InvitationInvalid as exc:
+        _admin_audit(
+            store,
+            request,
+            principal,
+            action="invitation.revoke",
+            target_type="invitation",
+            target_id=invitation_id,
+            outcome="failure",
+            metadata={"reason": "invalid_state"},
+        )
         raise HTTPException(status_code=409, detail="Invitation cannot be revoked") from exc
+    _admin_audit(
+        store,
+        request,
+        principal,
+        action="invitation.revoke",
+        target_type="invitation",
+        target_id=invitation_id,
+        outcome="success",
+        metadata={"account_id": invitation.account_id},
+    )
     return {"invitation": _invitation_payload(invitation)}
 
 

@@ -367,3 +367,70 @@ def test_admin_cannot_invite_an_admin_account(client, identity, owner):
     )
 
     assert response.status_code == 403
+
+
+def test_account_and_invitation_admin_mutations_are_audited_without_secrets(
+    client, admin_headers, identity
+):
+    created = _create_invitation(
+        client,
+        admin_headers,
+        email="audited-user@example.com",
+        display_name="Audited User",
+    )
+    original = created["invitation"]
+    resent = client.post(
+        f"/api/admin/invitations/{original['invitation_id']}/resend",
+        headers=admin_headers,
+    )
+    assert resent.status_code == 200
+    replacement = resent.json()["invitation"]
+    revoked = client.post(
+        f"/api/admin/invitations/{replacement['invitation_id']}/revoke",
+        headers=admin_headers,
+    )
+    assert revoked.status_code == 200
+
+    events = identity.list_audit_events(limit=100)
+    by_action = {event["action"]: event for event in events}
+    assert by_action["account.create"]["target_id"] == created["account"]["account_id"]
+    assert by_action["invitation.resend"]["target_id"] == original["invitation_id"]
+    assert by_action["invitation.revoke"]["target_id"] == replacement["invitation_id"]
+    assert all(by_action[action]["outcome"] == "success" for action in by_action)
+    serialized = repr(events)
+    assert original["token"] not in serialized
+    assert replacement["token"] not in serialized
+    assert "activation_url" not in serialized
+
+
+def test_known_admin_mutation_failures_are_audited(client, admin_headers, identity):
+    _create_invitation(
+        client,
+        admin_headers,
+        email="duplicate-audit@example.com",
+        display_name="Duplicate Audit",
+    )
+    duplicate = client.post(
+        "/api/admin/accounts",
+        headers=admin_headers,
+        json={
+            "email": "duplicate-audit@example.com",
+            "display_name": "Duplicate Audit Again",
+            "role": "user",
+        },
+    )
+    missing = client.post(
+        "/api/admin/invitations/inv_missing/resend", headers=admin_headers
+    )
+
+    assert duplicate.status_code == 409
+    assert missing.status_code == 404
+    failures = [
+        event
+        for event in identity.list_audit_events(limit=100)
+        if event["outcome"] == "failure"
+    ]
+    assert {(event["action"], event["target_id"]) for event in failures} >= {
+        ("account.create", None),
+        ("invitation.resend", "inv_missing"),
+    }

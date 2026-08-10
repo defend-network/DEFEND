@@ -546,6 +546,301 @@ class IdentityStore:
         return disabled
 
     @_serialized
+    def list_accounts(
+        self, *, query: str = "", limit: int = 50, offset: int = 0
+    ) -> dict[str, object]:
+        if not 1 <= int(limit) <= 100:
+            raise ValueError("limit must be between 1 and 100")
+        if not 0 <= int(offset) <= 1_000_000:
+            raise ValueError("offset must be between 0 and 1000000")
+        cleaned = (query or "").strip()[:200]
+        like = f"%{cleaned}%"
+        where = """WHERE ?='' OR account_id LIKE ? OR email LIKE ? OR
+                           COALESCE(username,'') LIKE ? OR display_name LIKE ? OR
+                           role LIKE ? OR status LIKE ?"""
+        params = (cleaned, like, like, like, like, like, like)
+        total = int(
+            self.conn.execute(
+                f"SELECT COUNT(*) FROM accounts {where}", params
+            ).fetchone()[0]
+        )
+        rows = self.conn.execute(
+            f"""
+            SELECT a.account_id,a.email,a.display_name,a.role,a.status,
+                   a.created_at,a.last_access_at,
+                   COUNT(DISTINCT l.visitor_id) AS visitor_count,
+                   COUNT(DISTINCT CASE
+                       WHEN s.revoked_at IS NULL AND s.expires_at > ? THEN s.session_id
+                   END) AS active_session_count
+            FROM accounts a
+            LEFT JOIN account_visitor_links l ON l.account_id=a.account_id
+            LEFT JOIN account_sessions s ON s.account_id=a.account_id
+            {where.replace('account_id', 'a.account_id').replace('email', 'a.email').replace('username', 'a.username').replace('display_name', 'a.display_name').replace('role', 'a.role').replace('status', 'a.status')}
+            GROUP BY a.account_id
+            ORDER BY a.created_at DESC,a.account_id ASC
+            LIMIT ? OFFSET ?
+            """,
+            (utc_now(), *params, int(limit), int(offset)),
+        ).fetchall()
+        return {"items": [dict(row) for row in rows], "total": total}
+
+    @_serialized
+    def account_admin_detail(self, account_id: str, *, nested_limit: int = 200) -> dict[str, object] | None:
+        cap = max(1, min(int(nested_limit), 200))
+        row = self.conn.execute(
+            """
+            SELECT account_id,email,display_name,role,status,created_at,updated_at,last_access_at
+            FROM accounts WHERE account_id=?
+            """,
+            ((account_id or "").strip(),),
+        ).fetchone()
+        if row is None:
+            return None
+        sessions = self.conn.execute(
+            """
+            SELECT session_id,created_at,last_seen_at,expires_at,revoked_at
+            FROM account_sessions WHERE account_id=?
+            ORDER BY last_seen_at DESC LIMIT ?
+            """,
+            (account_id, cap),
+        ).fetchall()
+        logins = self.conn.execute(
+            """
+            SELECT event_id,outcome,created_at
+            FROM login_events WHERE account_id=?
+            ORDER BY created_at DESC LIMIT ?
+            """,
+            (account_id, cap),
+        ).fetchall()
+        invitations = self.conn.execute(
+            """
+            SELECT invitation_id,account_id,email,intended_role,created_by,created_at,
+                   expires_at,consumed_at,revoked_at,delivery_status,delivery_error
+            FROM invitations WHERE account_id=?
+            ORDER BY created_at DESC LIMIT ?
+            """,
+            (account_id, cap),
+        ).fetchall()
+        links = self.conn.execute(
+            """
+            SELECT visitor_id,linked_at,last_seen_at FROM account_visitor_links
+            WHERE account_id=? ORDER BY last_seen_at DESC LIMIT ?
+            """,
+            (account_id, cap),
+        ).fetchall()
+        return {
+            "account": dict(row),
+            "sessions": [dict(item) for item in sessions],
+            "login_events": [dict(item) for item in logins],
+            "invitations": [dict(item) for item in invitations],
+            "visitor_links": [dict(item) for item in links],
+        }
+
+    def _administrative_actor_and_target(self, actor_id: str, target_id: str):
+        actor = self.conn.execute(
+            "SELECT * FROM accounts WHERE account_id=?", (actor_id,)
+        ).fetchone()
+        target = self.conn.execute(
+            "SELECT * FROM accounts WHERE account_id=?", (target_id,)
+        ).fetchone()
+        if actor is None or actor["status"] != "active" or actor["role"] not in {"owner", "admin"}:
+            raise RoleViolation("active owner or admin account required")
+        if target is None:
+            raise KeyError(target_id)
+        return actor, target
+
+    @_serialized
+    def update_account_admin(
+        self,
+        *,
+        actor_id: str,
+        target_id: str,
+        display_name: str | None = None,
+        role: AccountRole | None = None,
+        status: str | None = None,
+    ) -> AccountRecord:
+        if role is not None and role not in {"admin", "user"}:
+            raise ValueError("invalid account role")
+        if status is not None and status not in {"active", "disabled"}:
+            raise ValueError("invalid account status")
+        with transaction(self.conn, immediate=True):
+            actor, target = self._administrative_actor_and_target(actor_id, target_id)
+            if target["role"] == "owner":
+                raise RoleViolation("the owner account cannot be managed")
+            if target["role"] == "admin" and actor["role"] != "owner":
+                raise RoleViolation("only the owner may manage administrators")
+            if role == "admin" and actor["role"] != "owner":
+                raise RoleViolation("only the owner may promote administrators")
+            if actor_id == target_id and (role is not None or status is not None):
+                raise RoleViolation("accounts cannot change their own role or status")
+            if status == "active" and target["password_hash"] is None:
+                raise RoleViolation("pending accounts must activate by invitation")
+            next_name = (
+                self._clean_display_name(display_name)
+                if display_name is not None
+                else target["display_name"]
+            )
+            self.conn.execute(
+                """
+                UPDATE accounts SET display_name=?,role=?,status=?,updated_at=?
+                WHERE account_id=?
+                """,
+                (
+                    next_name,
+                    role or target["role"],
+                    status or target["status"],
+                    utc_now(),
+                    target_id,
+                ),
+            )
+            if status == "disabled":
+                self.conn.execute(
+                    "UPDATE account_sessions SET revoked_at=COALESCE(revoked_at,?) WHERE account_id=?",
+                    (utc_now(), target_id),
+                )
+        refreshed = self.get_account(target_id)
+        assert refreshed is not None
+        return refreshed
+
+    @_serialized
+    def anonymize_account(self, *, actor_id: str, target_id: str) -> AccountRecord:
+        with transaction(self.conn, immediate=True):
+            actor, target = self._administrative_actor_and_target(actor_id, target_id)
+            if actor["role"] != "owner":
+                raise RoleViolation("only the owner may anonymize accounts")
+            if target["role"] == "owner" or actor_id == target_id:
+                raise RoleViolation("the owner account cannot be anonymized")
+            now = utc_now()
+            anonymous_email = f"anonymized+{target_id}@invalid.local"
+            self.conn.execute(
+                """
+                UPDATE accounts SET email=?,username=NULL,display_name='Anonymized account',
+                    role='user',status='anonymized',password_hash=NULL,updated_at=?,last_access_at=NULL
+                WHERE account_id=?
+                """,
+                (anonymous_email, now, target_id),
+            )
+            self.conn.execute(
+                "UPDATE account_sessions SET revoked_at=COALESCE(revoked_at,?) WHERE account_id=?",
+                (now, target_id),
+            )
+            self.conn.execute("DELETE FROM account_visitor_links WHERE account_id=?", (target_id,))
+            self.conn.execute("DELETE FROM invitations WHERE account_id=?", (target_id,))
+            self.conn.execute("UPDATE login_events SET account_id=NULL WHERE account_id=?", (target_id,))
+        refreshed = self.get_account(target_id)
+        assert refreshed is not None
+        return refreshed
+
+    @_serialized
+    def delete_account_admin(self, *, actor_id: str, target_id: str) -> None:
+        with transaction(self.conn, immediate=True):
+            actor, target = self._administrative_actor_and_target(actor_id, target_id)
+            if actor["role"] != "owner":
+                raise RoleViolation("only the owner may delete accounts")
+            if target["role"] == "owner" or actor_id == target_id:
+                raise RoleViolation("the owner account cannot be deleted")
+            self.conn.execute(
+                "UPDATE accounts SET created_by=? WHERE created_by=?", (actor_id, target_id)
+            )
+            self.conn.execute(
+                "UPDATE invitations SET created_by=? WHERE created_by=?", (actor_id, target_id)
+            )
+            self.conn.execute("DELETE FROM accounts WHERE account_id=?", (target_id,))
+
+    @_serialized
+    def linked_accounts_for_visitors(self, visitor_ids: list[str]) -> dict[str, dict[str, object]]:
+        clean_ids = list(dict.fromkeys(value for value in visitor_ids if value))[:1000]
+        if not clean_ids:
+            return {}
+        placeholders = ",".join("?" for _ in clean_ids)
+        rows = self.conn.execute(
+            f"""
+            SELECT l.visitor_id,a.account_id,a.email,a.display_name,a.role,a.status
+            FROM account_visitor_links l JOIN accounts a ON a.account_id=l.account_id
+            WHERE l.visitor_id IN ({placeholders})
+            ORDER BY l.last_seen_at DESC
+            """,
+            tuple(clean_ids),
+        ).fetchall()
+        return {row["visitor_id"]: {key: row[key] for key in row.keys() if key != "visitor_id"} for row in rows}
+
+    @_serialized
+    def visitor_ids_matching_account(self, query: str, *, limit: int = 1000) -> list[str]:
+        cleaned = (query or "").strip()
+        if not cleaned:
+            return []
+        like = f"%{cleaned[:200]}%"
+        rows = self.conn.execute(
+            """
+            SELECT DISTINCT l.visitor_id
+            FROM account_visitor_links l JOIN accounts a ON a.account_id=l.account_id
+            WHERE a.account_id LIKE ? OR a.email LIKE ? OR a.display_name LIKE ?
+            ORDER BY l.visitor_id LIMIT ?
+            """,
+            (like, like, like, max(1, min(int(limit), 1000))),
+        ).fetchall()
+        return [str(row["visitor_id"]) for row in rows]
+
+    @_serialized
+    def list_invitations_admin(
+        self, *, query: str = "", limit: int = 50, offset: int = 0
+    ) -> dict[str, object]:
+        if not 1 <= int(limit) <= 100 or not 0 <= int(offset) <= 1_000_000:
+            raise ValueError("invalid pagination")
+        cleaned = (query or "").strip()[:200]
+        like = f"%{cleaned}%"
+        status_expr = """CASE WHEN i.consumed_at IS NOT NULL THEN 'consumed'
+                            WHEN i.revoked_at IS NOT NULL THEN 'revoked'
+                            WHEN i.expires_at <= ? THEN 'expired' ELSE 'pending' END"""
+        where = f"""WHERE ?='' OR i.invitation_id LIKE ? OR i.email LIKE ? OR
+                    i.intended_role LIKE ? OR i.delivery_status LIKE ? OR
+                    c.account_id LIKE ? OR c.email LIKE ? OR c.display_name LIKE ? OR
+                    ({status_expr}) LIKE ?"""
+        now = utc_now()
+        params = (cleaned, like, like, like, like, like, like, like, now, like)
+        total = int(self.conn.execute(
+            f"SELECT COUNT(*) FROM invitations i JOIN accounts c ON c.account_id=i.created_by {where}",
+            params,
+        ).fetchone()[0])
+        rows = self.conn.execute(
+            f"""
+            SELECT i.invitation_id,i.account_id,i.email,i.intended_role,i.created_at,
+                   i.expires_at,i.consumed_at,i.revoked_at,i.delivery_status,i.delivery_error,
+                   {status_expr} AS status,
+                   c.account_id AS creator_account_id,c.email AS creator_email,
+                   c.display_name AS creator_display_name
+            FROM invitations i JOIN accounts c ON c.account_id=i.created_by
+            {where}
+            ORDER BY i.created_at DESC,i.invitation_id ASC LIMIT ? OFFSET ?
+            """,
+            (now, *params, int(limit), int(offset)),
+        ).fetchall()
+        items = []
+        for row in rows:
+            item = dict(row)
+            item["creator"] = {
+                "account_id": item.pop("creator_account_id"),
+                "email": item.pop("creator_email"),
+                "display_name": item.pop("creator_display_name"),
+            }
+            items.append(item)
+        return {"items": items, "total": total}
+
+    @_serialized
+    def count_audit_events(self, *, query: str = "") -> int:
+        cleaned = (query or "").strip()[:200]
+        like = f"%{cleaned}%"
+        return int(self.conn.execute(
+            """
+            SELECT COUNT(*) FROM audit_events
+            WHERE ?='' OR event_id LIKE ? OR COALESCE(actor_account_id,'') LIKE ?
+                OR action LIKE ? OR target_type LIKE ? OR COALESCE(target_id,'') LIKE ?
+                OR outcome LIKE ? OR COALESCE(request_id,'') LIKE ?
+            """,
+            (cleaned, like, like, like, like, like, like, like),
+        ).fetchone()[0])
+
+    @_serialized
     def link_visitor(
         self,
         *,
