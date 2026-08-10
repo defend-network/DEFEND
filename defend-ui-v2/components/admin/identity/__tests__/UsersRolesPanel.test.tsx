@@ -1,4 +1,11 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -135,6 +142,22 @@ describe("UsersRolesPanel", () => {
       "Invitations",
     ]);
     expect(tabs[0]).toHaveAttribute("aria-selected", "true");
+    for (const tab of tabs) {
+      const panelId = tab.getAttribute("aria-controls");
+      expect(panelId).toBeTruthy();
+      const panel = document.getElementById(panelId!);
+      expect(panel).toBeInTheDocument();
+      expect(panel).toHaveAttribute("aria-labelledby", tab.id);
+    }
+
+    tabs[0].focus();
+    await user.keyboard("{ArrowRight}");
+    expect(tabs[1]).toHaveFocus();
+    expect(tabs[1]).toHaveAttribute("aria-selected", "true");
+    await user.keyboard("{End}");
+    expect(tabs[2]).toHaveFocus();
+    await user.keyboard("{Home}");
+    expect(tabs[0]).toHaveFocus();
 
     const accountsTable = await screen.findByRole("table", {
       name: "Accounts",
@@ -247,7 +270,7 @@ describe("UsersRolesPanel", () => {
       .mockResolvedValueOnce(page([{ ...account, account_id: "account-51", display_name: "Last Account" }], 51, 50));
 
     render(<UsersRolesPanel session={ownerSession} />);
-    expect(await screen.findByText("1-50 of 51")).toBeVisible();
+    expect(await screen.findByText("1-1 of 51")).toBeVisible();
     expect(screen.getByRole("button", { name: "Previous page" })).toBeDisabled();
 
     await user.click(screen.getByRole("button", { name: "Next page" }));
@@ -261,6 +284,107 @@ describe("UsersRolesPanel", () => {
     expect(await screen.findByText("Last Account")).toBeVisible();
     expect(screen.getByText("51-51 of 51")).toBeVisible();
     expect(screen.getByRole("button", { name: "Next page" })).toBeDisabled();
+  });
+
+  it("waits for the debounced query before resetting a page-two search to offset zero", async () => {
+    const user = userEvent.setup();
+    listAccounts
+      .mockResolvedValueOnce(page([account], 51, 0))
+      .mockResolvedValueOnce(
+        page(
+          [{ ...account, account_id: "account-51", display_name: "Last Account" }],
+          51,
+          50,
+        ),
+      );
+
+    render(<UsersRolesPanel session={ownerSession} />);
+    await screen.findByText("Jane Operator");
+    await user.click(screen.getByRole("button", { name: "Next page" }));
+    await screen.findByText("Last Account");
+
+    listAccounts.mockClear();
+    vi.useFakeTimers();
+    try {
+      fireEvent.change(screen.getByRole("searchbox"), {
+        target: { value: "jane@example.com" },
+      });
+      expect(listAccounts).not.toHaveBeenCalled();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(299);
+      });
+      expect(listAccounts).not.toHaveBeenCalled();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      });
+      expect(listAccounts).toHaveBeenCalledTimes(1);
+      expect(listAccounts).toHaveBeenCalledWith(ownerSession.token, {
+        q: "jane@example.com",
+        limit: 50,
+        offset: 0,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("clamps an out-of-range offset and never renders an inverted range", async () => {
+    const user = userEvent.setup();
+    listAccounts
+      .mockResolvedValueOnce(page([account], 51, 0))
+      .mockResolvedValueOnce(page([], 1, 50))
+      .mockResolvedValueOnce(page([account], 1, 0));
+
+    render(<UsersRolesPanel session={ownerSession} />);
+    await screen.findByText("Jane Operator");
+    await user.click(screen.getByRole("button", { name: "Next page" }));
+
+    await waitFor(() =>
+      expect(listAccounts).toHaveBeenLastCalledWith(ownerSession.token, {
+        q: "",
+        limit: 50,
+        offset: 0,
+      }),
+    );
+    expect(await screen.findByText("1-1 of 1")).toBeVisible();
+    expect(screen.queryByText("51-1 of 1")).not.toBeInTheDocument();
+  });
+
+  it("advances from the offset and limit returned by the service", async () => {
+    const user = userEvent.setup();
+    listAccounts
+      .mockResolvedValueOnce(page([account], 76, 0))
+      .mockResolvedValueOnce({
+        items: [
+          { ...account, account_id: "account-51", display_name: "Server Page" },
+        ],
+        total: 76,
+        limit: 25,
+        offset: 50,
+      })
+      .mockResolvedValueOnce({
+        items: [{ ...account, account_id: "account-76", display_name: "Final Page" }],
+        total: 76,
+        limit: 25,
+        offset: 75,
+      });
+
+    render(<UsersRolesPanel session={ownerSession} />);
+    await screen.findByText("Jane Operator");
+    await user.click(screen.getByRole("button", { name: "Next page" }));
+    expect(await screen.findByText("51-51 of 76")).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "Next page" }));
+    await waitFor(() =>
+      expect(listAccounts).toHaveBeenLastCalledWith(ownerSession.token, {
+        q: "",
+        limit: 50,
+        offset: 75,
+      }),
+    );
+    expect(await screen.findByText("Final Page")).toBeVisible();
   });
 
   it("does not let a stale response replace newer refreshed results", async () => {

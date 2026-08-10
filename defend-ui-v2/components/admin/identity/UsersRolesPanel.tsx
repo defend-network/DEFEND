@@ -22,6 +22,7 @@ const TAB_ORDER = ["accounts", "visitors", "invitations"] as const;
 type IdentityTab = (typeof TAB_ORDER)[number];
 type IdentitySummary = AccountSummary | VisitorSummary | InvitationSummary;
 type TabValues<T> = Record<IdentityTab, T>;
+type RequestState = { q: string; offset: number };
 
 type UsersRolesPanelProps = {
   session: AdminSession;
@@ -34,6 +35,8 @@ type PageState = {
   tab: IdentityTab;
   items: IdentitySummary[];
   total: number;
+  limit: number;
+  offset: number;
   loading: boolean;
   error: string | null;
 };
@@ -60,38 +63,36 @@ export function UsersRolesPanel({
     visitors: "",
     invitations: "",
   });
-  const [debouncedQueries, setDebouncedQueries] = useState<TabValues<string>>({
-    accounts: "",
-    visitors: "",
-    invitations: "",
-  });
-  const [offsets, setOffsets] = useState<TabValues<number>>({
-    accounts: 0,
-    visitors: 0,
-    invitations: 0,
+  const [requests, setRequests] = useState<TabValues<RequestState>>({
+    accounts: { q: "", offset: 0 },
+    visitors: { q: "", offset: 0 },
+    invitations: { q: "", offset: 0 },
   });
   const [refreshVersion, setRefreshVersion] = useState(0);
   const [page, setPage] = useState<PageState>({
     tab: "accounts",
     items: [],
     total: 0,
+    limit: PAGE_SIZE,
+    offset: 0,
     loading: true,
     error: null,
   });
   const requestGeneration = useRef(0);
 
   const query = queries[activeTab];
-  const debouncedQuery = debouncedQueries[activeTab];
-  const offset = offsets[activeTab];
+  const request = requests[activeTab];
   const label = labels[activeTab];
 
   useEffect(() => {
     const tab = activeTab;
     const value = queries[tab];
     const timer = window.setTimeout(() => {
-      setDebouncedQueries((current) =>
-        current[tab] === value ? current : { ...current, [tab]: value },
-      );
+      setRequests((current) => {
+        const committed = current[tab];
+        if (committed.q === value) return current;
+        return { ...current, [tab]: { q: value, offset: 0 } };
+      });
     }, 300);
     return () => window.clearTimeout(timer);
   }, [activeTab, queries]);
@@ -104,27 +105,42 @@ export function UsersRolesPanel({
       tab: activeTab,
       items: [],
       total: 0,
+      limit: PAGE_SIZE,
+      offset: request.offset,
       loading: true,
       error: null,
     }));
 
-    const queryOptions = { q: debouncedQuery, limit: PAGE_SIZE, offset };
-    let request: Promise<Page<IdentitySummary>>;
+    const queryOptions = { q: request.q, limit: PAGE_SIZE, offset: request.offset };
+    let pageRequest: Promise<Page<IdentitySummary>>;
     if (activeTab === "accounts") {
-      request = listAccounts(session.token, queryOptions);
+      pageRequest = listAccounts(session.token, queryOptions);
     } else if (activeTab === "visitors") {
-      request = listVisitors(session.token, queryOptions);
+      pageRequest = listVisitors(session.token, queryOptions);
     } else {
-      request = listInvitations(session.token, queryOptions);
+      pageRequest = listInvitations(session.token, queryOptions);
     }
 
-    void request.then(
+    void pageRequest.then(
       (result) => {
         if (!current || generation !== requestGeneration.current) return;
+        const total = Math.max(0, result.total);
+        const returnedLimit = result.limit > 0 ? result.limit : PAGE_SIZE;
+        const maxOffset =
+          total === 0 ? 0 : Math.floor((total - 1) / returnedLimit) * returnedLimit;
+        if (result.items.length === 0 && request.offset > maxOffset) {
+          setRequests((existing) => ({
+            ...existing,
+            [activeTab]: { q: request.q, offset: maxOffset },
+          }));
+          return;
+        }
         setPage({
           tab: activeTab,
           items: result.items,
-          total: result.total,
+          total,
+          limit: returnedLimit,
+          offset: Math.max(0, result.offset),
           loading: false,
           error: null,
         });
@@ -135,6 +151,8 @@ export function UsersRolesPanel({
           tab: activeTab,
           items: [],
           total: 0,
+          limit: PAGE_SIZE,
+          offset: request.offset,
           loading: false,
           error: errorMessage(error),
         });
@@ -144,7 +162,7 @@ export function UsersRolesPanel({
     return () => {
       current = false;
     };
-  }, [activeTab, debouncedQuery, offset, refreshVersion, session.token]);
+  }, [activeTab, refreshVersion, request.offset, request.q, session.token]);
 
   function selectTab(tab: IdentityTab) {
     setActiveTab(tab);
@@ -163,21 +181,29 @@ export function UsersRolesPanel({
     event.preventDefault();
     const nextTab = TAB_ORDER[nextIndex];
     selectTab(nextTab);
-    window.requestAnimationFrame(() => {
-      document.getElementById(`identity-tab-${nextTab}`)?.focus();
-    });
+    document.getElementById(`identity-tab-${nextTab}`)?.focus();
   }
 
   function handleSearch(value: string) {
     setQueries((current) => ({ ...current, [activeTab]: value }));
-    setOffsets((current) => ({ ...current, [activeTab]: 0 }));
   }
 
   function movePage(delta: number) {
-    setOffsets((current) => ({
-      ...current,
-      [activeTab]: Math.max(0, current[activeTab] + delta * PAGE_SIZE),
-    }));
+    setRequests((current) => {
+      const loadedOffset =
+        page.tab === activeTab && !page.loading
+          ? page.offset
+          : current[activeTab].offset;
+      const pageStep =
+        page.tab === activeTab && !page.loading ? page.limit : PAGE_SIZE;
+      return {
+        ...current,
+        [activeTab]: {
+          ...current[activeTab],
+          offset: Math.max(0, loadedOffset + delta * pageStep),
+        },
+      };
+    });
   }
 
   const isCurrentPage = page.tab === activeTab;
@@ -185,10 +211,12 @@ export function UsersRolesPanel({
   const error = isCurrentPage ? page.error : null;
   const items = isCurrentPage ? page.items : [];
   const total = isCurrentPage ? page.total : 0;
-  const firstResult = total === 0 ? 0 : offset + 1;
-  const lastResult = Math.min(offset + PAGE_SIZE, total);
-  const canGoBack = offset > 0;
-  const canGoForward = offset + PAGE_SIZE < total;
+  const pageOffset = isCurrentPage ? page.offset : request.offset;
+  const firstResult = items.length === 0 ? 0 : pageOffset + 1;
+  const lastResult =
+    items.length === 0 ? 0 : Math.min(pageOffset + items.length, total);
+  const canGoBack = pageOffset > 0;
+  const canGoForward = items.length > 0 && pageOffset + items.length < total;
 
   return (
     <section className="identity-workspace" aria-labelledby="identity-heading">
@@ -238,36 +266,44 @@ export function UsersRolesPanel({
           </button>
         </div>
 
-        <div
-          id={`identity-panel-${activeTab}`}
-          role="tabpanel"
-          aria-labelledby={`identity-tab-${activeTab}`}
-          tabIndex={0}
-        >
-          {loading && <p role="status">Loading {label.toLowerCase()}...</p>}
-          {!loading && error && <p role="alert">{error}</p>}
-          {!loading && !error && items.length === 0 && (
-            <p>No {label.toLowerCase()} found.</p>
-          )}
-          {!loading && !error && items.length > 0 && activeTab === "accounts" && (
-            <AccountsTab
-              accounts={items as AccountSummary[]}
-              onSelect={onSelectAccount}
-            />
-          )}
-          {!loading && !error && items.length > 0 && activeTab === "visitors" && (
-            <VisitorsTab
-              visitors={items as VisitorSummary[]}
-              onSelect={onSelectVisitor}
-            />
-          )}
-          {!loading && !error && items.length > 0 && activeTab === "invitations" && (
-            <InvitationsTab
-              invitations={items as InvitationSummary[]}
-              onSelect={onSelectInvitation}
-            />
-          )}
-        </div>
+        {TAB_ORDER.map((tab) => (
+          <div
+            key={tab}
+            id={`identity-panel-${tab}`}
+            role="tabpanel"
+            aria-labelledby={`identity-tab-${tab}`}
+            tabIndex={activeTab === tab ? 0 : -1}
+            hidden={activeTab !== tab}
+          >
+            {activeTab === tab && (
+              <>
+                {loading && <p role="status">Loading {label.toLowerCase()}...</p>}
+                {!loading && error && <p role="alert">{error}</p>}
+                {!loading && !error && items.length === 0 && (
+                  <p>No {label.toLowerCase()} found.</p>
+                )}
+                {!loading && !error && items.length > 0 && tab === "accounts" && (
+                  <AccountsTab
+                    accounts={items as AccountSummary[]}
+                    onSelect={onSelectAccount}
+                  />
+                )}
+                {!loading && !error && items.length > 0 && tab === "visitors" && (
+                  <VisitorsTab
+                    visitors={items as VisitorSummary[]}
+                    onSelect={onSelectVisitor}
+                  />
+                )}
+                {!loading && !error && items.length > 0 && tab === "invitations" && (
+                  <InvitationsTab
+                    invitations={items as InvitationSummary[]}
+                    onSelect={onSelectInvitation}
+                  />
+                )}
+              </>
+            )}
+          </div>
+        ))}
 
         {!loading && !error && (
           <nav className="identity-pagination" aria-label={`${label} pagination`}>
