@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  type AccountDetail,
   createAccount,
   getAccount,
   getVisitor,
@@ -13,6 +14,49 @@ import {
   revokeInvitation,
   updateAccount,
 } from "./identityApi";
+
+const accountDetailContract = {
+  account: {
+    account_id: "acct_1",
+    email: "member@example.com",
+    display_name: "Member",
+    role: "user",
+    status: "active",
+    created_at: "2026-08-10T12:00:00+00:00",
+    updated_at: "2026-08-10T12:00:00+00:00",
+    last_access_at: null,
+  },
+  sessions: [],
+  login_events: [],
+  invitations: [
+    {
+      invitation_id: "inv_1",
+      account_id: "acct_1",
+      email: "member@example.com",
+      intended_role: "user",
+      created_by: "acct_owner",
+      created_at: "2026-08-10T12:00:00+00:00",
+      expires_at: "2026-08-12T12:00:00+00:00",
+      consumed_at: null,
+      revoked_at: null,
+      delivery_status: "sent",
+      delivery_error: null,
+    },
+  ],
+  linked_visitors: [
+    {
+      visitor_id: "vis_missing",
+      linked_at: "2026-08-10T12:00:00+00:00",
+      last_seen_at: "2026-08-10T12:00:00+00:00",
+      visitor: null,
+      sessions: [],
+      connections: [],
+      conversations: [],
+      usage_events: [],
+      telemetry: { recent_ip: null, device_count: 0 },
+    },
+  ],
+} satisfies AccountDetail;
 
 const fetchMock = vi.fn<typeof fetch>();
 
@@ -31,6 +75,16 @@ describe("identity admin API client", () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    document.body.replaceChildren();
+  });
+
+  it("loads jest-dom matchers for identity component tests", () => {
+    const marker = document.createElement("div");
+    marker.setAttribute("data-testid", "identity-test-harness");
+    document.body.append(marker);
+
+    expect(marker).toBeInTheDocument();
+    expect(accountDetailContract.linked_visitors[0]?.visitor).toBeNull();
   });
 
   it("encodes account search and sends the bearer token", async () => {

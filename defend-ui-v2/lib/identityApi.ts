@@ -90,6 +90,20 @@ export type InvitationSummary = {
   };
 };
 
+export type AccountInvitationHistory = {
+  invitation_id: string;
+  account_id: string;
+  email: string;
+  intended_role: Exclude<AccountRole, "owner">;
+  created_by: string;
+  created_at: string;
+  expires_at: string;
+  consumed_at: string | null;
+  revoked_at: string | null;
+  delivery_status: string;
+  delivery_error: string | null;
+};
+
 export type AccountSession = {
   session_id: string;
   created_at: string;
@@ -167,10 +181,15 @@ export type VisitorDetail = {
   linked_account: LinkedAccount | null;
 };
 
-export type LinkedVisitorDetail = VisitorDetail & {
+export type AccountLinkedVisitorDetail = {
   visitor_id: string;
   linked_at: string;
   last_seen_at: string;
+  visitor: VisitorRecord | null;
+  sessions: VisitorSession[];
+  connections: ConnectionEvent[];
+  conversations: ConversationSummary[];
+  usage_events: UsageEvent[];
   telemetry: {
     recent_ip: string | null;
     device_count: number;
@@ -181,8 +200,8 @@ export type AccountDetail = {
   account: AccountRecord;
   sessions: AccountSession[];
   login_events: LoginEvent[];
-  invitations: InvitationSummary[];
-  linked_visitors: LinkedVisitorDetail[];
+  invitations: AccountInvitationHistory[];
+  linked_visitors: AccountLinkedVisitorDetail[];
 };
 
 export type ConversationMessage = {
