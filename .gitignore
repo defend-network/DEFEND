@@ -18,3 +18,4 @@ artifacts/
 *.zip
 chat.json
 research.json
+.superpowers/
