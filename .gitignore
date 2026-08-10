@@ -20,3 +20,5 @@ chat.json
 research.json
 .superpowers/
 .worktrees/
+defend-ui-v2/.npm-cache/
+*.tsbuildinfo
