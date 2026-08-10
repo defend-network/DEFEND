@@ -11,6 +11,7 @@ from admin_auth import AdminPrincipal, require_owner
 from defend_data.visitor_store import (
     client_ip,
     coarse_client_meta,
+    cookie_identifiers_hmac,
     fingerprint_hmac,
 )
 
@@ -73,6 +74,14 @@ def ensure_visitor_session(request: Request, response: Response) -> tuple[str, s
         old_sid,
         visitor_id,
         client_meta=meta,
+    )
+    data.visitors.record_connection(
+        visitor_id=visitor_id,
+        session_id=session_id,
+        ip_address=ip,
+        user_agent=request.headers.get("user-agent", ""),
+        client_meta=meta,
+        cookie_hash=cookie_identifiers_hmac(visitor_id, session_id),
     )
     if old_vid != visitor_id:
         _set_cookie(response, VISITOR_COOKIE, visitor_id)

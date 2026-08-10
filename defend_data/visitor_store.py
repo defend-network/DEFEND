@@ -35,7 +35,7 @@ def _clean_ip(value: str | None) -> str:
 
 
 def client_ip(headers: dict[str, str], observed: str | None, *, trust_cloudflare: bool) -> str:
-    """Return the IP used only as HMAC input; callers must not persist it.
+    """Resolve the client IP using the explicitly configured proxy trust boundary.
 
     We intentionally do not trust X-Forwarded-For. Cloudflare's header is used
     only when explicitly enabled by DEFEND_TRUST_CLOUDFLARE.
@@ -88,7 +88,7 @@ def visitor_hmac_secret() -> bytes:
 
 
 def fingerprint_hmac(ip: str, client_meta: dict[str, str]) -> str:
-    """Pseudonymous secondary correlation value. Raw IP is never returned/stored."""
+    """Return a pseudonymous secondary correlation value for a connection."""
     payload = "|".join(
         [
             _clean_ip(ip),
@@ -100,6 +100,13 @@ def fingerprint_hmac(ip: str, client_meta: dict[str, str]) -> str:
     )
     digest = hmac.new(visitor_hmac_secret(), payload.encode("utf-8"), hashlib.sha256).hexdigest()
     return f"fp_{digest}"
+
+
+def cookie_identifiers_hmac(visitor_id: str, session_id: str) -> str:
+    """Hash server-issued visitor/session cookie identifiers for correlation."""
+    payload = f"{visitor_id}|{session_id}".encode("utf-8")
+    digest = hmac.new(visitor_hmac_secret(), payload, hashlib.sha256).hexdigest()
+    return f"cookie_{digest}"
 
 
 _VISITOR_RE = re.compile(r"^vis_[A-Za-z0-9_-]{24,96}$")
@@ -115,7 +122,7 @@ class VisitorSession:
 class VisitorStore:
     """Pseudonymous visitor/session/conversation index and owner analytics metadata.
 
-    Raw IP addresses and raw User-Agent strings are deliberately not persisted.
+    Detailed connection observations are stored separately for bounded retention.
     The HMAC fingerprint is secondary correlation only; it never becomes the
     primary visitor identity and is never used to merge visitors automatically.
     """
@@ -195,10 +202,33 @@ class VisitorStore:
                 ON usage_events(conversation_id, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_usage_events_created
                 ON usage_events(created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS connection_events (
+                connection_id TEXT PRIMARY KEY,
+                visitor_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                ip_address TEXT NOT NULL,
+                user_agent TEXT NOT NULL,
+                browser TEXT NOT NULL,
+                platform TEXT NOT NULL,
+                device TEXT NOT NULL,
+                language TEXT NOT NULL,
+                fingerprint_hmac TEXT NOT NULL,
+                cookie_hash TEXT NOT NULL,
+                observed_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_connection_events_visitor
+                ON connection_events(visitor_id, observed_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_connection_events_session
+                ON connection_events(session_id, observed_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_connection_events_ip
+                ON connection_events(ip_address, observed_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_connection_events_observed
+                ON connection_events(observed_at DESC);
             """
         )
         self.conn.execute(
-            "INSERT OR REPLACE INTO schema_meta(key,value) VALUES('schema_version','1')"
+            "INSERT OR REPLACE INTO schema_meta(key,value) VALUES('schema_version','2')"
         )
         self.conn.commit()
 
@@ -446,6 +476,59 @@ class VisitorStore:
         )
         self.conn.commit()
         return event_id
+
+    def record_connection(
+        self,
+        *,
+        visitor_id: str,
+        session_id: str,
+        ip_address: str,
+        user_agent: str,
+        client_meta: dict[str, str],
+        cookie_hash: str,
+        observed_at: str | None = None,
+    ) -> str:
+        connection_id = f"conn_{uuid.uuid4().hex}"
+        canonical_ip = _clean_ip(ip_address)
+        self.conn.execute(
+            """
+            INSERT INTO connection_events(
+                connection_id,visitor_id,session_id,ip_address,user_agent,browser,
+                platform,device,language,fingerprint_hmac,cookie_hash,observed_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                connection_id,
+                visitor_id,
+                session_id,
+                canonical_ip,
+                user_agent or "",
+                client_meta.get("browser", "other"),
+                client_meta.get("platform", "other"),
+                client_meta.get("device", "other"),
+                client_meta.get("language", "unknown"),
+                fingerprint_hmac(canonical_ip, client_meta),
+                cookie_hash,
+                observed_at or utc_now(),
+            ),
+        )
+        self.conn.commit()
+        return connection_id
+
+    def connection_detail(self, connection_id: str) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            "SELECT * FROM connection_events WHERE connection_id=?",
+            (connection_id,),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    def purge_connection_history(self, *, before: str) -> int:
+        cur = self.conn.execute(
+            "DELETE FROM connection_events WHERE observed_at < ?",
+            (before,),
+        )
+        self.conn.commit()
+        return cur.rowcount
 
     def overview(self) -> dict[str, int]:
         return {
