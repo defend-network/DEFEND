@@ -613,6 +613,99 @@ class IdentityStore:
         return self._invitation_from_row(row), token
 
     @_serialized
+    def get_invitation(self, invitation_id: str) -> InvitationRecord | None:
+        clean_id = (invitation_id or "").strip()
+        if not clean_id:
+            return None
+        row = self.conn.execute(
+            "SELECT * FROM invitations WHERE invitation_id=?", (clean_id,)
+        ).fetchone()
+        return self._invitation_from_row(row) if row is not None else None
+
+    @_serialized
+    def invitation_status(
+        self, token: str
+    ) -> tuple[str, InvitationRecord | None]:
+        try:
+            stored_hash = token_hash(token)
+        except TypeError:
+            return "invalid", None
+        row = self.conn.execute(
+            "SELECT * FROM invitations WHERE token_hash=?", (stored_hash,)
+        ).fetchone()
+        if row is None:
+            return "invalid", None
+        invitation = self._invitation_from_row(row)
+        if invitation.consumed_at is not None:
+            return "consumed", invitation
+        if invitation.revoked_at is not None:
+            return "revoked", invitation
+        if _parse_time(invitation.expires_at) <= datetime.now(timezone.utc):
+            return "expired", invitation
+        return "pending", invitation
+
+    @_serialized
+    def record_invitation_delivery(
+        self,
+        invitation_id: str,
+        *,
+        delivered: bool,
+        error: str | None = None,
+    ) -> InvitationRecord:
+        clean_error = None
+        if not delivered:
+            clean_error = " ".join((error or "Email delivery failed").split())[:240]
+        with transaction(self.conn, immediate=True):
+            changed = self.conn.execute(
+                """
+                UPDATE invitations SET delivery_status=?,delivery_error=?
+                WHERE invitation_id=?
+                """,
+                (
+                    "delivered" if delivered else "failed",
+                    clean_error,
+                    invitation_id,
+                ),
+            )
+            if changed.rowcount != 1:
+                raise KeyError(invitation_id)
+            row = self.conn.execute(
+                "SELECT * FROM invitations WHERE invitation_id=?", (invitation_id,)
+            ).fetchone()
+            assert row is not None
+            invitation = self._invitation_from_row(row)
+        return invitation
+
+    @_serialized
+    def revoke_invitation(
+        self,
+        invitation_id: str,
+        *,
+        revoked_by: str,
+    ) -> InvitationRecord:
+        with transaction(self.conn, immediate=True):
+            row = self.conn.execute(
+                "SELECT * FROM invitations WHERE invitation_id=?", (invitation_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(invitation_id)
+            invitation = self._invitation_from_row(row)
+            self._authorized_creator(revoked_by, invitation.intended_role)
+            if invitation.consumed_at is not None:
+                raise InvitationInvalid("consumed invitations cannot be revoked")
+            if invitation.revoked_at is None:
+                self.conn.execute(
+                    "UPDATE invitations SET revoked_at=? WHERE invitation_id=?",
+                    (utc_now(), invitation_id),
+                )
+            refreshed = self.conn.execute(
+                "SELECT * FROM invitations WHERE invitation_id=?", (invitation_id,)
+            ).fetchone()
+            assert refreshed is not None
+            revoked = self._invitation_from_row(refreshed)
+        return revoked
+
+    @_serialized
     def consume_invitation(self, token: str, *, password: str) -> AccountRecord:
         stored_hash = token_hash(token)
         row = self.conn.execute(
