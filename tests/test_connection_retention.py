@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta, timezone
+import logging
 import sys
 from types import ModuleType
 from types import SimpleNamespace
@@ -32,6 +33,45 @@ finally:
 FROZEN_NOW = datetime(2026, 8, 10, 12, 0, tzinfo=timezone.utc)
 
 
+class FlakyVisitorStore:
+    def __init__(self, backing_store, *, failures: int = 1):
+        self.backing_store = backing_store
+        self.failures = failures
+        self.purge_calls = 0
+
+    def purge_connection_history(self, *, before: str) -> int:
+        self.purge_calls += 1
+        if self.purge_calls <= self.failures:
+            raise RuntimeError("sensitive-storage-detail-must-not-be-logged")
+        return self.backing_store.purge_connection_history(before=before)
+
+
+class FakeDataCore:
+    def __init__(self, visitors):
+        self.visitors = visitors
+        self.identity = object()
+        self.memory = object()
+        self.conversations = object()
+        self.paths = SimpleNamespace(root="test-data-root")
+        self.close_calls = 0
+
+    def close(self) -> None:
+        self.close_calls += 1
+
+
+class FakeAsyncModel:
+    def __init__(self):
+        self.entered = False
+        self.exited = False
+
+    async def __aenter__(self):
+        self.entered = True
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        self.exited = True
+
+
 def seed_connection(store, *, observed_at: datetime) -> str:
     return store.record_connection(
         visitor_id="vis_seed",
@@ -54,6 +94,9 @@ def reset_cleanup_guard():
     api_server.state.last_connection_cleanup_at = None
     yield
     api_server.state.last_connection_cleanup_at = None
+    api_server.state.model = None
+    api_server.state.cp = None
+    api_server.state.data = None
 
 
 def test_cleanup_deletes_only_records_older_than_90_days(visitor_store):
@@ -185,3 +228,120 @@ def test_request_check_runs_cleanup_when_daily_guard_expires(
 
     assert response == "response"
     assert visitor_store.connection_detail(old) is None
+
+
+def test_lifespan_contains_failed_purge_and_allows_later_retry(
+    visitor_store,
+    monkeypatch,
+    caplog,
+):
+    old = seed_connection(
+        visitor_store,
+        observed_at=FROZEN_NOW - timedelta(days=91),
+    )
+    flaky_visitors = FlakyVisitorStore(visitor_store)
+    data = FakeDataCore(flaky_visitors)
+    app = SimpleNamespace(state=SimpleNamespace())
+
+    monkeypatch.setattr(api_server, "DataCore", lambda _root: data)
+    monkeypatch.setattr(api_server, "configure_identity_store", lambda _store: None)
+    monkeypatch.setattr(api_server, "build_default_registry", lambda **_kwargs: {})
+    monkeypatch.setattr(api_server, "build_model_client", lambda: object())
+    monkeypatch.setattr(
+        api_server,
+        "ControlPlane",
+        lambda **_kwargs: SimpleNamespace(tools={}),
+    )
+    monkeypatch.setattr(api_server, "_connection_retention_now", lambda: FROZEN_NOW)
+
+    async def exercise_lifespan():
+        async with api_server.lifespan(app):
+            assert api_server.state.last_connection_cleanup_at is None
+            assert visitor_store.connection_detail(old) is not None
+            assert api_server._run_connection_retention_cleanup(data) == 1
+            assert visitor_store.connection_detail(old) is None
+
+    with caplog.at_level(logging.WARNING, logger="api_server"):
+        asyncio.run(exercise_lifespan())
+
+    assert data.close_calls == 1
+    assert flaky_visitors.purge_calls == 2
+    assert "RuntimeError" in caplog.text
+    assert "sensitive-storage-detail-must-not-be-logged" not in caplog.text
+
+
+def test_middleware_contains_failed_purge_and_retries_on_next_request(
+    visitor_store,
+    monkeypatch,
+    caplog,
+):
+    old = seed_connection(
+        visitor_store,
+        observed_at=FROZEN_NOW - timedelta(days=91),
+    )
+    flaky_visitors = FlakyVisitorStore(visitor_store)
+    data = FakeDataCore(flaky_visitors)
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(defend_data=data)))
+    monkeypatch.setattr(api_server, "_connection_retention_now", lambda: FROZEN_NOW)
+    handled_requests = []
+
+    async def call_next(received_request):
+        handled_requests.append(received_request)
+        return "response"
+
+    with caplog.at_level(logging.WARNING, logger="api_server"):
+        first_response = asyncio.run(
+            api_server.connection_retention_cleanup_middleware(request, call_next)
+        )
+
+    assert first_response == "response"
+    assert handled_requests == [request]
+    assert api_server.state.last_connection_cleanup_at is None
+    assert visitor_store.connection_detail(old) is not None
+
+    second_response = asyncio.run(
+        api_server.connection_retention_cleanup_middleware(request, call_next)
+    )
+
+    assert second_response == "response"
+    assert handled_requests == [request, request]
+    assert flaky_visitors.purge_calls == 2
+    assert api_server.state.last_connection_cleanup_at == FROZEN_NOW
+    assert visitor_store.connection_detail(old) is None
+    assert "RuntimeError" in caplog.text
+    assert "sensitive-storage-detail-must-not-be-logged" not in caplog.text
+
+
+def test_lifespan_closes_open_resources_when_later_startup_step_fails(
+    visitor_store,
+    monkeypatch,
+):
+    data = FakeDataCore(visitor_store)
+    model = FakeAsyncModel()
+    app = SimpleNamespace(state=SimpleNamespace())
+
+    monkeypatch.setattr(api_server, "DataCore", lambda _root: data)
+    monkeypatch.setattr(api_server, "configure_identity_store", lambda _store: None)
+    monkeypatch.setattr(api_server, "build_default_registry", lambda **_kwargs: {})
+    monkeypatch.setattr(api_server, "build_model_client", lambda: model)
+    monkeypatch.setattr(
+        api_server,
+        "ControlPlane",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("startup failed")),
+    )
+    monkeypatch.setattr(api_server, "_connection_retention_now", lambda: FROZEN_NOW)
+
+    async def exercise_lifespan():
+        async with api_server.lifespan(app):
+            raise AssertionError("lifespan must not yield after startup failure")
+
+    with pytest.raises(RuntimeError, match="startup failed"):
+        asyncio.run(exercise_lifespan())
+
+    assert model.entered is True
+    assert model.exited is True
+    assert data.close_calls == 1
+    assert api_server.state.model is None
+    assert api_server.state.cp is None
+    assert api_server.state.data is None
+    assert app.state.defend_data is None

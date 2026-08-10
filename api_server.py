@@ -5,6 +5,7 @@ DEFEND API server — thin FastAPI adapter for defend-ui-v2 (Next.js).
 from __future__ import annotations
 
 import asyncio
+import logging
 import traceback
 import os
 import threading
@@ -237,10 +238,18 @@ state = AppState()
 _CONNECTION_RETENTION = timedelta(days=90)
 _CONNECTION_CLEANUP_INTERVAL = timedelta(days=1)
 _connection_cleanup_lock = threading.Lock()
+_logger = logging.getLogger(__name__)
 
 
 def _connection_retention_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _log_connection_cleanup_failure(error: Exception) -> None:
+    _logger.warning(
+        "connection retention cleanup failed error_type=%s",
+        type(error).__name__[:80],
+    )
 
 
 def _run_connection_retention_cleanup(
@@ -259,7 +268,13 @@ def _run_connection_retention_cleanup(
             return 0
 
         cutoff = current - _CONNECTION_RETENTION
-        deleted = data.visitors.purge_connection_history(before=cutoff.isoformat())
+        try:
+            deleted = data.visitors.purge_connection_history(
+                before=cutoff.isoformat()
+            )
+        except Exception as error:
+            _log_connection_cleanup_failure(error)
+            return 0
         state.last_connection_cleanup_at = current
 
     print(
@@ -280,45 +295,54 @@ def _auth(authorization: str | None) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    data = DataCore(DATA_ROOT)
-    state.last_connection_cleanup_at = None
-    _run_connection_retention_cleanup(data)
+    data: DataCore | None = None
+    model: Any = None
+    model_needs_exit = False
     try:
+        data = DataCore(DATA_ROOT)
+        state.last_connection_cleanup_at = None
+        try:
+            _run_connection_retention_cleanup(data)
+        except Exception as error:
+            _log_connection_cleanup_failure(error)
         configure_identity_store(data.identity)
-    except Exception:
-        data.close()
-        raise
-    registry = build_default_registry(memory_manager=data.memory)
-    model = build_model_client()
-    if hasattr(model, "__aenter__"):
-        await model.__aenter__()
-    state.data = data
-    app.state.defend_data = data
-    state.model = model
-    state.cp = ControlPlane(
-        tool_registry=registry,
-        model_client=model,
-        memory_manager=data.memory,
-        conversation_store=data.conversations,
-        policy_engine=ProductionPolicy(),
-        parallel_tool_limit=int(os.getenv("DEFEND_PARALLEL_TOOLS", "3")),
-    )
-    backend = os.getenv("DEFEND_MODEL_BACKEND", "ollama")
-    print(
-        f"[DEFEND API] backend={backend} model={MODEL_NAME} "
-        f"data_root={data.paths.root} tools={list(registry.keys())}"
-    )
-    try:
+        registry = build_default_registry(memory_manager=data.memory)
+        model = build_model_client()
+        if hasattr(model, "__aenter__"):
+            await model.__aenter__()
+            model_needs_exit = hasattr(model, "__aexit__")
+        elif hasattr(model, "__aexit__"):
+            model_needs_exit = True
+        state.data = data
+        app.state.defend_data = data
+        state.model = model
+        state.cp = ControlPlane(
+            tool_registry=registry,
+            model_client=model,
+            memory_manager=data.memory,
+            conversation_store=data.conversations,
+            policy_engine=ProductionPolicy(),
+            parallel_tool_limit=int(os.getenv("DEFEND_PARALLEL_TOOLS", "3")),
+        )
+        backend = os.getenv("DEFEND_MODEL_BACKEND", "ollama")
+        print(
+            f"[DEFEND API] backend={backend} model={MODEL_NAME} "
+            f"data_root={data.paths.root} tools={list(registry.keys())}"
+        )
         yield
     finally:
-        if state.model is not None and hasattr(state.model, "__aexit__"):
-            await state.model.__aexit__(None, None, None)
-        if state.data is not None:
-            state.data.close()
-        state.model = None
-        state.cp = None
-        state.data = None
-        app.state.defend_data = None
+        try:
+            if model_needs_exit:
+                await model.__aexit__(None, None, None)
+        finally:
+            try:
+                if data is not None:
+                    data.close()
+            finally:
+                state.model = None
+                state.cp = None
+                state.data = None
+                app.state.defend_data = None
 
 
 app = FastAPI(title="DEFEND AI API", version="0.4.0", lifespan=lifespan)
@@ -328,7 +352,10 @@ app = FastAPI(title="DEFEND AI API", version="0.4.0", lifespan=lifespan)
 async def connection_retention_cleanup_middleware(request: Request, call_next):
     data = getattr(request.app.state, "defend_data", None)
     if data is not None:
-        _run_connection_retention_cleanup(data)
+        try:
+            _run_connection_retention_cleanup(data)
+        except Exception as error:
+            _log_connection_cleanup_failure(error)
     return await call_next(request)
 
 app.add_middleware(
