@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import type { AdminSession } from "@/lib/adminAuth";
 import {
@@ -8,6 +8,7 @@ import {
   type CreateAccountResponse,
   type CreateAccountInput,
 } from "@/lib/identityApi";
+import { useDialogFocus } from "./useDialogFocus";
 
 type InviteAccountModalProps = {
   session: AdminSession;
@@ -33,6 +34,20 @@ export function InviteAccountModal({
   const [error, setError] = useState<string | null>(null);
   const [created, setCreated] = useState<CreateAccountResponse | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
+  const dialogRef = useRef<HTMLElement>(null);
+  const displayNameRef = useRef<HTMLInputElement>(null);
+  const copyButtonRef = useRef<HTMLButtonElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+
+  useDialogFocus({
+    containerRef: dialogRef,
+    initialFocusRef: displayNameRef,
+    onClose,
+  });
+
+  useEffect(() => {
+    if (created) (copyButtonRef.current ?? closeButtonRef.current)?.focus();
+  }, [created]);
 
   const activationUrl = created?.invitation.activation_url ?? null;
 
@@ -66,6 +81,7 @@ export function InviteAccountModal({
   return (
     <div className="identity-modal-backdrop">
       <section
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="invite-account-title"
@@ -76,7 +92,7 @@ export function InviteAccountModal({
             <span className="eyebrow">Account invitation</span>
             <h2 id="invite-account-title">Create account</h2>
           </div>
-          <button type="button" className="ghost-btn" onClick={onClose}>
+          <button ref={closeButtonRef} type="button" className="ghost-btn" onClick={onClose}>
             Close
           </button>
         </header>
@@ -86,6 +102,7 @@ export function InviteAccountModal({
             <label>
               Display name
               <input
+                ref={displayNameRef}
                 value={input.display_name}
                 maxLength={160}
                 required
@@ -143,7 +160,7 @@ export function InviteAccountModal({
             {activationUrl ? (
               <>
                 <code>{activationUrl}</code>
-                <button type="button" onClick={copyLink}>
+                <button ref={copyButtonRef} type="button" onClick={copyLink}>
                   Copy activation link
                 </button>
               </>

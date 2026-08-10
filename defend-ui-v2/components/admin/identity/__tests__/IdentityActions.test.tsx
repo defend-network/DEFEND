@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -104,6 +105,14 @@ const visitorDetail: VisitorDetail = {
 
 const activationUrl = "https://ai.defend-network.org/activate/one-time-token";
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
 describe("identity management actions", () => {
   beforeEach(() => {
     vi.mocked(identityApi.createAccount).mockReset().mockResolvedValue({
@@ -170,6 +179,7 @@ describe("identity management actions", () => {
 
     expect(await screen.findByText("Sensitive one-time activation link")).toBeVisible();
     expect(screen.getByText(activationUrl)).toBeVisible();
+    expect(screen.getByRole("button", { name: "Copy activation link" })).toHaveFocus();
     expect(screen.queryByLabelText("Password")).not.toBeInTheDocument();
   });
 
@@ -184,6 +194,43 @@ describe("identity management actions", () => {
 
     expect(screen.getByRole("option", { name: "Administrator" })).toBeInTheDocument();
     expect(screen.queryByRole("option", { name: "Owner" })).not.toBeInTheDocument();
+  });
+
+  it("traps modal focus, closes on Escape, and restores the opener", async () => {
+    const user = userEvent.setup();
+    function Harness() {
+      const [open, setOpen] = useState(false);
+      return (
+        <>
+          <button type="button" onClick={() => setOpen(true)}>Open account modal</button>
+          {open && (
+            <InviteAccountModal
+              session={adminSession}
+              onClose={() => setOpen(false)}
+              onCreated={vi.fn()}
+            />
+          )}
+        </>
+      );
+    }
+    render(<Harness />);
+    const opener = screen.getByRole("button", { name: "Open account modal" });
+    await user.click(opener);
+    const displayName = screen.getByLabelText("Display name");
+    expect(displayName).toHaveFocus();
+    await user.click(opener);
+    expect(displayName).toHaveFocus();
+
+    const close = screen.getByRole("button", { name: "Close" });
+    close.focus();
+    await user.tab({ shift: true });
+    expect(screen.getByRole("button", { name: "Create account and invitation" })).toHaveFocus();
+    await user.tab();
+    expect(close).toHaveFocus();
+
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "Create account" })).not.toBeInTheDocument();
+    expect(opener).toHaveFocus();
   });
 
   it("loads audited conversation content only after an explicit click", async () => {
@@ -211,6 +258,66 @@ describe("identity management actions", () => {
     );
   });
 
+  it("ignores stale out-of-order conversation responses", async () => {
+    const user = userEvent.setup();
+    vi.mocked(identityApi.getVisitor).mockResolvedValueOnce({
+      ...visitorDetail,
+      conversations: [
+        { conversation_id: "conv-first", title: "First conversation" },
+        { conversation_id: "conv-second", title: "Second conversation" },
+      ],
+    });
+    const first = deferred<Awaited<ReturnType<typeof identityApi.getVisitorConversation>>>();
+    const second = deferred<Awaited<ReturnType<typeof identityApi.getVisitorConversation>>>();
+    vi.mocked(identityApi.getVisitorConversation)
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise);
+    render(
+      <IdentityDetailDrawer session={adminSession} visitorId="vis-1" onClose={vi.fn()} />,
+    );
+
+    await user.click(await screen.findByRole("button", { name: "Open conversation First conversation" }));
+    await user.click(screen.getByRole("button", { name: "Open conversation Second conversation" }));
+    second.resolve({
+      visitor_id: "vis-1",
+      conversation_id: "conv-second",
+      messages: [{ message_id: "second", seq: 1, role: "user", content: "Second result", created_at: "2026-08-10T12:00:00Z" }],
+    });
+    expect(await screen.findByText("Second result")).toBeVisible();
+    first.resolve({
+      visitor_id: "vis-1",
+      conversation_id: "conv-first",
+      messages: [{ message_id: "first", seq: 1, role: "user", content: "Stale first result", created_at: "2026-08-10T12:00:00Z" }],
+    });
+    await waitFor(() => expect(screen.queryByText("Stale first result")).not.toBeInTheDocument());
+    expect(screen.getByText("Second result")).toBeVisible();
+  });
+
+  it("closing a loading conversation invalidates its response and restores focus", async () => {
+    const user = userEvent.setup();
+    const pending = deferred<Awaited<ReturnType<typeof identityApi.getVisitorConversation>>>();
+    vi.mocked(identityApi.getVisitorConversation).mockReturnValueOnce(pending.promise);
+    render(
+      <IdentityDetailDrawer session={adminSession} visitorId="vis-1" onClose={vi.fn()} />,
+    );
+    const opener = await screen.findByRole("button", {
+      name: "Open conversation Private support conversation",
+    });
+    await user.click(opener);
+    expect(screen.getByRole("button", { name: "Close conversation" })).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "Audited conversation content" })).not.toBeInTheDocument();
+    expect(opener).toHaveFocus();
+
+    pending.resolve({
+      visitor_id: "vis-1",
+      conversation_id: "conv-1",
+      messages: [{ message_id: "late", seq: 1, role: "user", content: "Late response", created_at: "2026-08-10T12:00:00Z" }],
+    });
+    await waitFor(() => expect(screen.queryByText("Late response")).not.toBeInTheDocument());
+    expect(screen.queryByText("Loading conversation...")).not.toBeInTheDocument();
+  });
+
   it("shows bounded visitor client metadata without loading conversation content", async () => {
     render(
       <IdentityDetailDrawer
@@ -223,6 +330,45 @@ describe("identity management actions", () => {
     expect(await screen.findByText("Firefox / Windows / Desktop")).toBeVisible();
     expect(screen.getByText("bounded-fingerprint-hash")).toBeVisible();
     expect(identityApi.getVisitorConversation).not.toHaveBeenCalled();
+  });
+
+  it("renders bounded visitor session and safe usage-event timelines", async () => {
+    vi.mocked(identityApi.getVisitor).mockResolvedValueOnce({
+      ...visitorDetail,
+      sessions: [
+        {
+          session_id: "visitor-session-1",
+          created_at: "2026-08-09T10:00:00Z",
+          last_seen: "2026-08-09T11:00:00Z",
+          client_meta: { browser: "Edge", platform: "Windows", device: "Desktop" },
+        },
+      ],
+      usage_events: [
+        {
+          event_id: "usage-safe-1",
+          visitor_id: "vis-1",
+          conversation_id: "conv-1",
+          request_id: "request-1",
+          event_type: "research.completed",
+          route: "/api/research",
+          model: "defend-ai",
+          research_status: "complete",
+          evidence_count: 4,
+          status: "ok",
+          created_at: "2026-08-09T11:01:00Z",
+          metadata: { feature: "research", auth_token: "must-not-render" },
+        },
+      ],
+    });
+    render(
+      <IdentityDetailDrawer session={adminSession} visitorId="vis-1" onClose={vi.fn()} />,
+    );
+
+    expect(await screen.findByText("visitor-session-1")).toBeVisible();
+    expect(screen.getByText("Edge / Windows / Desktop")).toBeVisible();
+    expect(screen.getByText("research.completed")).toBeVisible();
+    expect(screen.getByText("feature: research")).toBeVisible();
+    expect(screen.queryByText(/must-not-render/)).not.toBeInTheDocument();
   });
 
   it("shows linked visitor IP and usage history in account detail", async () => {
@@ -312,6 +458,55 @@ describe("identity management actions", () => {
     );
   });
 
+  it("focuses account confirmation, closes its layer on Escape, and restores the action", async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    render(
+      <IdentityDetailDrawer session={adminSession} accountId="acct-1" onClose={onClose} />,
+    );
+    const disable = await screen.findByRole("button", { name: "Disable account" });
+    await user.click(disable);
+    expect(screen.getByLabelText("Type DISABLE to confirm")).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("alertdialog", { name: "Confirm disable" })).not.toBeInTheDocument();
+    expect(disable).toHaveFocus();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("traps drawer focus, closes on Escape, and restores the opener", async () => {
+    const user = userEvent.setup();
+    function Harness() {
+      const [open, setOpen] = useState(false);
+      return (
+        <>
+          <button type="button" onClick={() => setOpen(true)}>Open account detail</button>
+          {open && (
+            <IdentityDetailDrawer
+              session={adminSession}
+              accountId="acct-1"
+              onClose={() => setOpen(false)}
+            />
+          )}
+        </>
+      );
+    }
+    render(<Harness />);
+    const opener = screen.getByRole("button", { name: "Open account detail" });
+    await user.click(opener);
+    const close = screen.getByRole("button", { name: "Close details" });
+    await waitFor(() => expect(close).toHaveFocus());
+    await screen.findByRole("button", { name: "Disable account" });
+    close.focus();
+    await user.tab({ shift: true });
+    expect(screen.getByRole("button", { name: "Disable account" })).toHaveFocus();
+    await user.tab();
+    expect(close).toHaveFocus();
+
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "Account detail" })).not.toBeInTheDocument();
+    expect(opener).toHaveFocus();
+  });
+
   it("shows one safe failure message when an account action is rejected", async () => {
     const user = userEvent.setup();
     vi.mocked(identityApi.updateAccount).mockRejectedValueOnce(
@@ -378,6 +573,19 @@ describe("identity management actions", () => {
     await waitFor(() =>
       expect(identityApi.revokeInvitation).toHaveBeenCalledWith(ownerSession.token, "inv-1"),
     );
+  });
+
+  it("hides administrator invitation actions from non-owner admins", () => {
+    render(
+      <InvitationsTab
+        invitations={[{ ...invitation, intended_role: "admin" }]}
+        session={adminSession}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: /Resend invitation/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Regenerate link/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Revoke invitation/ })).not.toBeInTheDocument();
   });
 
   it("keeps a regenerated one-time link visible until dismissal before refreshing", async () => {

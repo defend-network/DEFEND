@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import type { AdminSession } from "@/lib/adminAuth";
 import {
@@ -16,6 +16,7 @@ import {
   type VisitorConversation,
   type VisitorDetail,
 } from "@/lib/identityApi";
+import { useDialogFocus } from "./useDialogFocus";
 
 type IdentityDetailDrawerProps = {
   session: AdminSession;
@@ -49,6 +50,16 @@ function clientLabel(client: Record<string, unknown>): string {
     .join(" / ") || "—";
 }
 
+function safeMetadataEntries(metadata: Record<string, unknown>): string[] {
+  return Object.entries(metadata)
+    .filter(([key, value]) => {
+      if (/(auth|cookie|credential|password|secret|token)/i.test(key)) return false;
+      return value === null || ["string", "number", "boolean"].includes(typeof value);
+    })
+    .slice(0, 10)
+    .map(([key, value]) => `${key}: ${String(value).slice(0, 160)}`);
+}
+
 export function IdentityDetailDrawer({
   session,
   accountId,
@@ -67,6 +78,34 @@ export function IdentityDetailDrawer({
   const [conversation, setConversation] = useState<VisitorConversation | null>(null);
   const [conversationLoading, setConversationLoading] = useState(false);
   const [conversationError, setConversationError] = useState<string | null>(null);
+  const [conversationTarget, setConversationTarget] = useState<string | null>(null);
+  const drawerRef = useRef<HTMLElement>(null);
+  const drawerCloseRef = useRef<HTMLButtonElement>(null);
+  const confirmationRef = useRef<HTMLElement>(null);
+  const confirmationInputRef = useRef<HTMLInputElement>(null);
+  const conversationRef = useRef<HTMLElement>(null);
+  const conversationCloseRef = useRef<HTMLButtonElement>(null);
+  const conversationOpenerRef = useRef<HTMLElement | null>(null);
+  const conversationGeneration = useRef(0);
+
+  useDialogFocus({
+    containerRef: drawerRef,
+    initialFocusRef: drawerCloseRef,
+    onClose,
+  });
+  useDialogFocus({
+    active: confirmation !== null,
+    containerRef: confirmationRef,
+    initialFocusRef: confirmationInputRef,
+    onClose: closeConfirmation,
+  });
+  useDialogFocus({
+    active: conversationTarget !== null,
+    containerRef: conversationRef,
+    initialFocusRef: conversationCloseRef,
+    onClose: closeConversation,
+    returnFocusRef: conversationOpenerRef,
+  });
 
   useEffect(() => {
     let current = true;
@@ -74,6 +113,11 @@ export function IdentityDetailDrawer({
     setError(null);
     setAccountDetail(null);
     setVisitorDetail(null);
+    conversationGeneration.current += 1;
+    setConversationTarget(null);
+    setConversationLoading(false);
+    setConversation(null);
+    setConversationError(null);
     const request = accountId
       ? getAccount(session.token, accountId)
       : visitorId
@@ -94,6 +138,7 @@ export function IdentityDetailDrawer({
     );
     return () => {
       current = false;
+      conversationGeneration.current += 1;
     };
   }, [accountId, session.token, visitorId]);
 
@@ -101,6 +146,10 @@ export function IdentityDetailDrawer({
     targetVisitorId: string,
     summary: ConversationSummary,
   ) {
+    const generation = ++conversationGeneration.current;
+    conversationOpenerRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setConversationTarget(summary.conversation_id);
     setConversationLoading(true);
     setConversationError(null);
     setConversation(null);
@@ -110,12 +159,29 @@ export function IdentityDetailDrawer({
         targetVisitorId,
         summary.conversation_id,
       );
+      if (generation !== conversationGeneration.current) return;
       setConversation(result);
     } catch (caught) {
+      if (generation !== conversationGeneration.current) return;
       setConversationError(messageFrom(caught));
     } finally {
-      setConversationLoading(false);
+      if (generation === conversationGeneration.current) {
+        setConversationLoading(false);
+      }
     }
+  }
+
+  function closeConversation() {
+    conversationGeneration.current += 1;
+    setConversationTarget(null);
+    setConversationLoading(false);
+    setConversation(null);
+    setConversationError(null);
+  }
+
+  function closeConfirmation() {
+    setConfirmation(null);
+    setConfirmationText("");
   }
 
   function beginConfirmation(value: Exclude<Confirmation, null>) {
@@ -204,6 +270,7 @@ export function IdentityDetailDrawer({
   return (
     <div className="identity-drawer-backdrop">
       <aside
+        ref={drawerRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="identity-detail-title"
@@ -216,7 +283,7 @@ export function IdentityDetailDrawer({
               {accountId ? "Account detail" : "Visitor detail"}
             </h2>
           </div>
-          <button type="button" className="ghost-btn" onClick={onClose}>
+          <button ref={drawerCloseRef} type="button" className="ghost-btn" onClick={onClose}>
             Close details
           </button>
         </header>
@@ -382,7 +449,39 @@ export function IdentityDetailDrawer({
             </section>
             <section>
               <h3>Sessions and usage</h3>
-              <p>{visitorDetail.sessions.length} sessions / {visitorDetail.usage_events.length} usage events</p>
+              {visitorDetail.sessions.length === 0 ? (
+                <p>No visitor sessions recorded.</p>
+              ) : (
+                <ul className="identity-history-list">
+                  {bounded(visitorDetail.sessions).map((item) => (
+                    <li key={item.session_id}>
+                      <span>{item.session_id}</span>
+                      <span>{clientLabel(item.client_meta)}</span>
+                      <span>Created {displayDate(item.created_at)}</span>
+                      <span>Last seen {displayDate(item.last_seen)}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {visitorDetail.usage_events.length === 0 ? (
+                <p>No usage events recorded.</p>
+              ) : (
+                <ul className="identity-history-list">
+                  {bounded(visitorDetail.usage_events).map((item) => {
+                    const metadata = safeMetadataEntries(item.metadata);
+                    return (
+                      <li key={item.event_id}>
+                        <span>{item.event_type}</span>
+                        <span>{item.route ?? "—"}</span>
+                        <span>{item.model ?? "—"}</span>
+                        <span>{item.status ?? item.research_status ?? "—"}</span>
+                        <span>{displayDate(item.created_at)}</span>
+                        {metadata.map((entry) => <span key={entry}>{entry}</span>)}
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
             </section>
             <section>
               <h3>Conversations</h3>
@@ -395,12 +494,18 @@ export function IdentityDetailDrawer({
         )}
 
         {confirmation && (
-          <section role="alertdialog" aria-labelledby="identity-confirm-title">
+          <section
+            ref={confirmationRef}
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="identity-confirm-title"
+          >
             <h3 id="identity-confirm-title">Confirm {confirmation}</h3>
             <p>This administrative action is audited.</p>
             <label>
               Type {requiredConfirmation} to confirm
               <input
+                ref={confirmationInputRef}
                 aria-label={`Type ${requiredConfirmation} to confirm`}
                 value={confirmationText}
                 autoComplete="off"
@@ -414,7 +519,7 @@ export function IdentityDetailDrawer({
             >
               {actionPending ? "Working..." : `Confirm ${confirmation}`}
             </button>
-            <button type="button" className="ghost-btn" onClick={() => setConfirmation(null)}>
+            <button type="button" className="ghost-btn" onClick={closeConfirmation}>
               Cancel
             </button>
           </section>
@@ -423,8 +528,9 @@ export function IdentityDetailDrawer({
         {feedback && <p role="status">{feedback}</p>}
         {!loading && error && accountDetail && <p role="alert">{error}</p>}
 
-        {(conversationLoading || conversation || conversationError) && (
+        {conversationTarget && (
           <section
+            ref={conversationRef}
             role="dialog"
             aria-modal="true"
             aria-labelledby="conversation-content-title"
@@ -433,12 +539,10 @@ export function IdentityDetailDrawer({
             <header>
               <h3 id="conversation-content-title">Audited conversation content</h3>
               <button
+                ref={conversationCloseRef}
                 type="button"
                 className="ghost-btn"
-                onClick={() => {
-                  setConversation(null);
-                  setConversationError(null);
-                }}
+                onClick={closeConversation}
               >
                 Close conversation
               </button>

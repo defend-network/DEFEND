@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 import type { AdminSession } from "@/lib/adminAuth";
 import {
@@ -9,6 +9,7 @@ import {
   revokeInvitation,
   type InvitationSummary,
 } from "@/lib/identityApi";
+import { useDialogFocus } from "./useDialogFocus";
 
 type InvitationsTabProps = {
   invitations: InvitationSummary[];
@@ -37,6 +38,20 @@ export function InvitationsTab({
   } | null>(null);
   const [revokeTarget, setRevokeTarget] = useState<InvitationSummary | null>(null);
   const [confirmationText, setConfirmationText] = useState("");
+  const revokeDialogRef = useRef<HTMLElement>(null);
+  const revokeInputRef = useRef<HTMLInputElement>(null);
+
+  useDialogFocus({
+    active: revokeTarget !== null,
+    containerRef: revokeDialogRef,
+    initialFocusRef: revokeInputRef,
+    onClose: closeRevoke,
+  });
+
+  function closeRevoke() {
+    setRevokeTarget(null);
+    setConfirmationText("");
+  }
 
   async function resend(invitation: InvitationSummary) {
     setPendingAction(`resend:${invitation.invitation_id}`);
@@ -128,7 +143,8 @@ export function InvitationsTab({
                 >
                   {invitation.email}
                 </button>
-                <div className="identity-row-actions">
+                {(session.role === "owner" || invitation.intended_role !== "admin") && (
+                  <div className="identity-row-actions">
                   <button
                     type="button"
                     className="ghost-btn"
@@ -172,7 +188,8 @@ export function InvitationsTab({
                   >
                     Revoke
                   </button>
-                </div>
+                  </div>
+                )}
               </td>
               <td>{invitation.intended_role}</td>
               <td>
@@ -218,12 +235,18 @@ export function InvitationsTab({
       )}
 
       {revokeTarget && (
-        <section role="alertdialog" aria-labelledby="revoke-invitation-title">
+        <section
+          ref={revokeDialogRef}
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby="revoke-invitation-title"
+        >
           <h3 id="revoke-invitation-title">Confirm invitation revocation</h3>
           <p>Type REVOKE to revoke the invitation for {revokeTarget.email}.</p>
           <label>
             Type REVOKE to confirm
             <input
+              ref={revokeInputRef}
               aria-label="Type REVOKE to confirm"
               value={confirmationText}
               autoComplete="off"
@@ -237,7 +260,7 @@ export function InvitationsTab({
           >
             Confirm revoke
           </button>
-          <button type="button" className="ghost-btn" onClick={() => setRevokeTarget(null)}>
+          <button type="button" className="ghost-btn" onClick={closeRevoke}>
             Cancel
           </button>
         </section>
