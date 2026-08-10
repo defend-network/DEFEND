@@ -191,7 +191,7 @@ export function AdminWorkstation() {
           </div>
         </aside>
 
-        <main className="admin-main">
+        <main className={view === "users" ? "admin-main admin-main--identity" : "admin-main"}>
           {error && <div className="admin-banner-err">{error}</div>}
 
           {view === "overview" && (
