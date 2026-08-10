@@ -1,7 +1,9 @@
+<!-- DEFEND-AI-INGEST: EXCLUDE -->
+
 # DEFEND Admin Identity and Observability Design
 
 **Date:** 2026-08-10
-**Status:** Approved design awaiting written-spec review
+**Status:** Approved
 
 ## Objective
 
