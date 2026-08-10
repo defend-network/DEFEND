@@ -7,11 +7,11 @@ import re
 import secrets
 
 
-_SCRYPT_N = 1 << 14
-_SCRYPT_R = 8
-_SCRYPT_P = 1
-_SCRYPT_DKLEN = 64
-_SCRYPT_MAXMEM = 128 * 1024 * 1024
+_CURRENT_SCRYPT_VERSION = 2
+_SCRYPT_PROFILES = {
+    1: {"n": 1 << 14, "r": 8, "p": 1, "dklen": 64, "maxmem": 128 * 1024 * 1024},
+    2: {"n": 1 << 17, "r": 8, "p": 1, "dklen": 64, "maxmem": 256 * 1024 * 1024},
+}
 _TOKEN_PREFIX_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,31}$")
 
 
@@ -41,51 +41,81 @@ def hash_password(password: str) -> str:
         raise TypeError("password must be a string")
     if not password:
         raise ValueError("password must not be empty")
+    profile = _SCRYPT_PROFILES[_CURRENT_SCRYPT_VERSION]
     salt = secrets.token_bytes(16)
     derived = hashlib.scrypt(
         password.encode("utf-8"),
         salt=salt,
-        n=_SCRYPT_N,
-        r=_SCRYPT_R,
-        p=_SCRYPT_P,
-        maxmem=_SCRYPT_MAXMEM,
-        dklen=_SCRYPT_DKLEN,
+        n=profile["n"],
+        r=profile["r"],
+        p=profile["p"],
+        maxmem=profile["maxmem"],
+        dklen=profile["dklen"],
     )
     return (
-        f"scrypt$n={_SCRYPT_N},r={_SCRYPT_R},p={_SCRYPT_P},dklen={_SCRYPT_DKLEN}"
+        f"scrypt$v={_CURRENT_SCRYPT_VERSION}"
+        f"$n={profile['n']},r={profile['r']},p={profile['p']},dklen={profile['dklen']}"
         f"${_b64encode(salt)}${_b64encode(derived)}"
     )
+
+
+def _parse_password_hash(encoded: str) -> tuple[int, dict[str, int], bytes, bytes]:
+    parts = encoded.split("$")
+    if len(parts) == 4:
+        algorithm, parameters, salt_text, digest_text = parts
+        version = 1
+    elif len(parts) == 5:
+        algorithm, version_text, parameters, salt_text, digest_text = parts
+        if not version_text.startswith("v="):
+            raise ValueError("missing scrypt version")
+        version = int(version_text.removeprefix("v="))
+    else:
+        raise ValueError("invalid password hash fields")
+    if algorithm != "scrypt" or version not in _SCRYPT_PROFILES:
+        raise ValueError("unsupported password hash")
+    parameter_parts = parameters.split(",")
+    if len(parameter_parts) != 4:
+        raise ValueError("invalid scrypt parameters")
+    parsed = dict(part.split("=", 1) for part in parameter_parts)
+    if set(parsed) != {"n", "r", "p", "dklen"}:
+        raise ValueError("invalid scrypt parameters")
+    actual_profile = {name: int(value) for name, value in parsed.items()}
+    expected_profile = _SCRYPT_PROFILES[version]
+    for name in ("n", "r", "p", "dklen"):
+        if actual_profile[name] != expected_profile[name]:
+            raise ValueError("unexpected scrypt parameters")
+    salt = _b64decode(salt_text)
+    expected = _b64decode(digest_text)
+    if len(salt) != 16 or len(expected) != actual_profile["dklen"]:
+        raise ValueError("invalid scrypt material")
+    return version, expected_profile, salt, expected
+
+
+def password_needs_rehash(encoded: str) -> bool:
+    if not isinstance(encoded, str):
+        return True
+    try:
+        version, _, _, _ = _parse_password_hash(encoded)
+    except (KeyError, TypeError, ValueError):
+        return True
+    return version != _CURRENT_SCRYPT_VERSION
 
 
 def verify_password(password: str, encoded: str) -> bool:
     if not isinstance(password, str) or not isinstance(encoded, str):
         return False
     try:
-        algorithm, parameters, salt_text, digest_text = encoded.split("$", 3)
-        if algorithm != "scrypt":
-            return False
-        parsed = dict(part.split("=", 1) for part in parameters.split(","))
-        n = int(parsed["n"])
-        r = int(parsed["r"])
-        p = int(parsed["p"])
-        dklen = int(parsed["dklen"])
-        # Refuse attacker-controlled, unexpectedly expensive hash parameters.
-        if n != _SCRYPT_N or r != _SCRYPT_R or p != _SCRYPT_P or dklen != _SCRYPT_DKLEN:
-            return False
-        salt = _b64decode(salt_text)
-        expected = _b64decode(digest_text)
-        if len(salt) != 16 or len(expected) != dklen:
-            return False
+        _, profile, salt, expected = _parse_password_hash(encoded)
         actual = hashlib.scrypt(
             password.encode("utf-8"),
             salt=salt,
-            n=n,
-            r=r,
-            p=p,
-            maxmem=_SCRYPT_MAXMEM,
-            dklen=dklen,
+            n=profile["n"],
+            r=profile["r"],
+            p=profile["p"],
+            maxmem=profile["maxmem"],
+            dklen=profile["dklen"],
         )
-    except (KeyError, TypeError, ValueError):
+    except (KeyError, MemoryError, OverflowError, TypeError, ValueError):
         return False
     return hmac.compare_digest(actual, expected)
 

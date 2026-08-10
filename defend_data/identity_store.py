@@ -10,7 +10,14 @@ from functools import wraps
 from typing import Literal
 
 from .config import DataPaths
-from .identity_security import hash_password, new_token, normalize_email, token_hash, verify_password
+from .identity_security import (
+    hash_password,
+    new_token,
+    normalize_email,
+    password_needs_rehash,
+    token_hash,
+    verify_password,
+)
 from .sqlite_utils import connect_sqlite, transaction
 
 
@@ -121,18 +128,19 @@ class IdentityStore:
                 current_version = int(row["value"]) if row is not None else 0
             except (TypeError, ValueError) as exc:
                 raise RuntimeError("invalid identity schema version") from exc
-        if current_version > 1:
+        if current_version > 2:
             raise RuntimeError(
                 f"newer identity schema version {current_version} is not supported"
             )
         if current_version < 0:
             raise RuntimeError("invalid identity schema version")
-        if current_version == 1:
+        if current_version == 2:
             return
 
         try:
-            self.conn.executescript(
-                """
+            if current_version == 0:
+                self.conn.executescript(
+                    """
             BEGIN IMMEDIATE;
             CREATE TABLE IF NOT EXISTS schema_meta (
                 key TEXT PRIMARY KEY,
@@ -219,8 +227,51 @@ class IdentityStore:
                 ON audit_events(created_at DESC);
             INSERT OR REPLACE INTO schema_meta(key,value) VALUES('schema_version','1');
             COMMIT;
-                """
+                    """
+                )
+                current_version = 1
+
+            if current_version == 1:
+                self.conn.executescript(
+                    """
+            BEGIN IMMEDIATE;
+            CREATE TABLE audit_events_v2 (
+                event_id TEXT PRIMARY KEY,
+                actor_account_id TEXT,
+                action TEXT NOT NULL,
+                target_type TEXT NOT NULL,
+                target_id TEXT,
+                outcome TEXT NOT NULL,
+                request_id TEXT,
+                created_at TEXT NOT NULL,
+                metadata_json TEXT NOT NULL DEFAULT '{}'
+            );
+            INSERT INTO audit_events_v2(
+                event_id,actor_account_id,action,target_type,target_id,outcome,
+                request_id,created_at,metadata_json
             )
+            SELECT
+                event_id,actor_account_id,action,target_type,target_id,outcome,
+                request_id,created_at,metadata_json
+            FROM audit_events;
+            DROP TABLE audit_events;
+            ALTER TABLE audit_events_v2 RENAME TO audit_events;
+            CREATE INDEX idx_audit_events_created
+                ON audit_events(created_at DESC);
+            CREATE TRIGGER audit_events_no_update
+            BEFORE UPDATE ON audit_events
+            BEGIN
+                SELECT RAISE(ABORT, 'audit_events are append-only');
+            END;
+            CREATE TRIGGER audit_events_no_delete
+            BEFORE DELETE ON audit_events
+            BEGIN
+                SELECT RAISE(ABORT, 'audit_events are append-only');
+            END;
+            INSERT OR REPLACE INTO schema_meta(key,value) VALUES('schema_version','2');
+            COMMIT;
+                    """
+                )
         except Exception:
             if self.conn.in_transaction:
                 self.conn.rollback()
@@ -425,9 +476,16 @@ class IdentityStore:
                 )
             else:
                 now = utc_now()
+                next_password_hash = (
+                    hash_password(password) if password_needs_rehash(encoded) else encoded
+                )
                 self.conn.execute(
-                    "UPDATE accounts SET last_access_at=?,updated_at=? WHERE account_id=?",
-                    (now, now, account.account_id),
+                    """
+                    UPDATE accounts
+                    SET password_hash=?,last_access_at=?,updated_at=?
+                    WHERE account_id=?
+                    """,
+                    (next_password_hash, now, now, account.account_id),
                 )
                 self._record_login(identifier, account.account_id, "success")
                 refreshed = self.conn.execute(
@@ -445,12 +503,9 @@ class IdentityStore:
         *,
         account_id: str,
         created_by: str,
-        expires_at: str | None = None,
     ) -> tuple[InvitationRecord, str]:
         now_dt = datetime.now(timezone.utc)
-        expiry = _parse_time(expires_at) if expires_at is not None else now_dt + timedelta(hours=48)
-        if expiry <= now_dt:
-            raise ValueError("invitation expiry must be in the future")
+        expiry = now_dt + timedelta(hours=48)
         token, stored_hash = new_token("invite")
         invitation_id = f"inv_{uuid.uuid4().hex}"
         now = now_dt.isoformat()
