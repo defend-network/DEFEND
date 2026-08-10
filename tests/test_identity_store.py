@@ -18,7 +18,7 @@ from defend_data.identity_store import (
 )
 
 
-def test_schema_version_two_creates_identity_tables(identity):
+def test_schema_version_three_creates_identity_tables(identity):
     tables = {
         row["name"]
         for row in identity.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
@@ -34,7 +34,7 @@ def test_schema_version_two_creates_identity_tables(identity):
     version = identity.conn.execute(
         "SELECT value FROM schema_meta WHERE key='schema_version'"
     ).fetchone()
-    assert version["value"] == "2"
+    assert version["value"] == "3"
 
 
 def _insert_audit_event(identity, owner, event_id="audit_test"):
@@ -76,6 +76,36 @@ def test_audit_events_cannot_be_deleted(identity, owner):
         identity.conn.execute("DELETE FROM audit_events WHERE event_id='audit_test'")
 
 
+def test_audit_events_cannot_be_replaced(identity, owner):
+    _insert_audit_event(identity, owner)
+
+    with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+        identity.conn.execute(
+            """
+            INSERT OR REPLACE INTO audit_events(
+                event_id,actor_account_id,action,target_type,target_id,outcome,
+                request_id,created_at,metadata_json
+            ) VALUES(?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                "audit_test",
+                owner.account_id,
+                "view",
+                "conversation",
+                "c1",
+                "failure",
+                "req2",
+                "2026-08-10T13:00:00+00:00",
+                "{}",
+            ),
+        )
+
+    row = identity.conn.execute(
+        "SELECT outcome,request_id FROM audit_events WHERE event_id='audit_test'"
+    ).fetchone()
+    assert dict(row) == {"outcome": "success", "request_id": "req1"}
+
+
 def test_audit_event_preserves_actor_id_after_account_deletion(identity, owner):
     _insert_audit_event(identity, owner)
 
@@ -88,7 +118,7 @@ def test_audit_event_preserves_actor_id_after_account_deletion(identity, owner):
     assert row["actor_account_id"] == owner.account_id
 
 
-def test_populated_v1_audit_events_migrate_to_append_only_v2(data_paths):
+def test_populated_v1_audit_events_migrate_to_append_only_v3(data_paths):
     seed = IdentityStore(data_paths)
     owner = seed.bootstrap_owner(
         email="chairman@defend-network.org",
@@ -146,7 +176,7 @@ def test_populated_v1_audit_events_migrate_to_append_only_v2(data_paths):
         version = migrated.conn.execute(
             "SELECT value FROM schema_meta WHERE key='schema_version'"
         ).fetchone()
-        assert version["value"] == "2"
+        assert version["value"] == "3"
         migrated.conn.execute("DELETE FROM accounts WHERE account_id=?", (owner.account_id,))
         migrated.conn.commit()
         row = migrated.conn.execute(

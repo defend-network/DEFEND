@@ -128,13 +128,13 @@ class IdentityStore:
                 current_version = int(row["value"]) if row is not None else 0
             except (TypeError, ValueError) as exc:
                 raise RuntimeError("invalid identity schema version") from exc
-        if current_version > 2:
+        if current_version > 3:
             raise RuntimeError(
                 f"newer identity schema version {current_version} is not supported"
             )
         if current_version < 0:
             raise RuntimeError("invalid identity schema version")
-        if current_version == 2:
+        if current_version == 3:
             return
 
         try:
@@ -269,6 +269,24 @@ class IdentityStore:
                 SELECT RAISE(ABORT, 'audit_events are append-only');
             END;
             INSERT OR REPLACE INTO schema_meta(key,value) VALUES('schema_version','2');
+            COMMIT;
+                    """
+                )
+                current_version = 2
+
+            if current_version == 2:
+                self.conn.executescript(
+                    """
+            BEGIN IMMEDIATE;
+            CREATE TRIGGER audit_events_no_duplicate
+            BEFORE INSERT ON audit_events
+            WHEN EXISTS(
+                SELECT 1 FROM audit_events WHERE event_id=NEW.event_id
+            )
+            BEGIN
+                SELECT RAISE(ABORT, 'audit_events are append-only');
+            END;
+            INSERT OR REPLACE INTO schema_meta(key,value) VALUES('schema_version','3');
             COMMIT;
                     """
                 )
