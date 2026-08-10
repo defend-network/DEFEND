@@ -19,3 +19,4 @@ artifacts/
 chat.json
 research.json
 .superpowers/
+.worktrees/
