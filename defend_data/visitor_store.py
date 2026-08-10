@@ -35,10 +35,11 @@ def _safe_usage_metadata(value: Any, *, depth: int = 0) -> Any:
     if isinstance(value, dict):
         safe: dict[str, Any] = {}
         for raw_key, nested in list(value.items())[:_MAX_METADATA_ITEMS]:
-            key = str(raw_key)[:_MAX_METADATA_KEY_CHARS]
-            normalized = key.casefold()
+            raw_key_text = str(raw_key)
+            normalized = raw_key_text.casefold()
             if any(fragment in normalized for fragment in _SENSITIVE_METADATA_KEY_FRAGMENTS):
                 continue
+            key = raw_key_text[:_MAX_METADATA_KEY_CHARS]
             safe[key] = _safe_usage_metadata(nested, depth=depth + 1)
         return safe
     if isinstance(value, list):

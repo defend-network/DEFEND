@@ -322,6 +322,7 @@ def test_legacy_usage_metadata_is_recursively_sanitized_on_both_detail_paths(
         "cookie": "legacy-cookie-value",
         "authorization": "legacy-authorization-value",
         "secret": "legacy-secret-value",
+        "long_token": "legacy-long-key-token-value",
     }
     admin_api.visitors.record_event(
         event_type="legacy_import",
@@ -337,6 +338,7 @@ def test_legacy_usage_metadata_is_recursively_sanitized_on_both_detail_paths(
             "access_TOKEN": leaked_values["token"],
             "raw_Cookie_value": leaked_values["cookie"],
             "clientSecret": leaked_values["secret"],
+            f"{'x' * 120}ToKeN": leaked_values["long_token"],
             "research_mode": "fast",
         },
     )
