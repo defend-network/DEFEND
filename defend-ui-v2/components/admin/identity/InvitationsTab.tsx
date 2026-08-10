@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import type { AdminSession } from "@/lib/adminAuth";
 import {
@@ -23,6 +23,15 @@ function displayDate(value: string): string {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
 }
 
+function requiresManualDelivery(invitation: InvitationSummary): boolean {
+  return (
+    invitation.manual_delivery_required === true ||
+    invitation.delivery?.delivered === false ||
+    invitation.delivery_status === "failed" ||
+    Boolean(invitation.delivery_error)
+  );
+}
+
 export function InvitationsTab({
   invitations,
   session,
@@ -35,11 +44,14 @@ export function InvitationsTab({
   const [sensitiveLink, setSensitiveLink] = useState<{
     email: string;
     url: string;
+    notice?: string;
   } | null>(null);
   const [revokeTarget, setRevokeTarget] = useState<InvitationSummary | null>(null);
   const [confirmationText, setConfirmationText] = useState("");
   const revokeDialogRef = useRef<HTMLElement>(null);
   const revokeInputRef = useRef<HTMLInputElement>(null);
+  const copyLinkRef = useRef<HTMLButtonElement>(null);
+  const sensitiveLinkOpenerRef = useRef<HTMLElement | null>(null);
 
   useDialogFocus({
     active: revokeTarget !== null,
@@ -48,19 +60,46 @@ export function InvitationsTab({
     onClose: closeRevoke,
   });
 
+  useEffect(() => {
+    if (sensitiveLink) {
+      copyLinkRef.current?.focus();
+      return;
+    }
+    const opener = sensitiveLinkOpenerRef.current;
+    sensitiveLinkOpenerRef.current = null;
+    if (opener?.isConnected) opener.focus();
+  }, [sensitiveLink]);
+
   function closeRevoke() {
     setRevokeTarget(null);
     setConfirmationText("");
   }
 
   async function resend(invitation: InvitationSummary) {
+    sensitiveLinkOpenerRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setPendingAction(`resend:${invitation.invitation_id}`);
     setFeedback(null);
     setError(null);
     try {
-      await resendInvitation(session.token, invitation.invitation_id);
-      setFeedback(`Invitation resent to ${invitation.email}`);
-      onChanged?.();
+      const result = await resendInvitation(session.token, invitation.invitation_id);
+      const replacement = result.invitation;
+      if (requiresManualDelivery(replacement)) {
+        if (replacement.activation_url) {
+          setSensitiveLink({
+            email: invitation.email,
+            url: replacement.activation_url,
+            notice: "Email delivery failed. Deliver this activation link manually.",
+          });
+        } else {
+          setFeedback(
+            "Email delivery failed, and no manual activation link was returned",
+          );
+        }
+      } else {
+        setFeedback(`Invitation resent to ${invitation.email}`);
+        onChanged?.();
+      }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Unable to resend invitation");
     } finally {
@@ -69,6 +108,8 @@ export function InvitationsTab({
   }
 
   async function regenerate(invitation: InvitationSummary) {
+    sensitiveLinkOpenerRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setPendingAction(`regenerate:${invitation.invitation_id}`);
     setFeedback(null);
     setError(null);
@@ -77,7 +118,13 @@ export function InvitationsTab({
       const result = await regenerateInvitation(session.token, invitation.invitation_id);
       const url = result.invitation.activation_url;
       if (url) {
-        setSensitiveLink({ email: invitation.email, url });
+        setSensitiveLink({
+          email: invitation.email,
+          url,
+          notice: requiresManualDelivery(result.invitation)
+            ? "Email delivery failed. Deliver this activation link manually."
+            : undefined,
+        });
       } else {
         setFeedback("Invitation regenerated, but no manual activation link was returned");
         onChanged?.();
@@ -97,6 +144,11 @@ export function InvitationsTab({
     } catch {
       setError("Unable to copy the activation link");
     }
+  }
+
+  function hideSensitiveLink() {
+    setSensitiveLink(null);
+    onChanged?.();
   }
 
   async function revoke() {
@@ -217,17 +269,15 @@ export function InvitationsTab({
             Share only with {sensitiveLink.email}. This link is held only in the
             current screen state.
           </p>
+          {sensitiveLink.notice && <p>{sensitiveLink.notice}</p>}
           <code>{sensitiveLink.url}</code>
-          <button type="button" onClick={copyLink}>
+          <button ref={copyLinkRef} type="button" onClick={copyLink}>
             Copy activation link
           </button>
           <button
             type="button"
             className="ghost-btn"
-            onClick={() => {
-              setSensitiveLink(null);
-              onChanged?.();
-            }}
+            onClick={hideSensitiveLink}
           >
             Hide activation link
           </button>

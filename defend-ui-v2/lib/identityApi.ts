@@ -88,6 +88,7 @@ export type InvitationSummary = {
     provider_message_id: string | null;
     error: string | null;
   };
+  manual_delivery_required?: boolean;
 };
 
 export type AccountInvitationHistory = {

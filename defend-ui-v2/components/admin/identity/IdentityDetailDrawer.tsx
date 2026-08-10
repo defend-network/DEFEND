@@ -26,9 +26,17 @@ type IdentityDetailDrawerProps = {
   onChanged?: () => void;
 };
 
-type Confirmation = "disable" | "anonymize" | "delete" | null;
+type Confirmation =
+  | "disable"
+  | "reactivate"
+  | "promote"
+  | "demote"
+  | "anonymize"
+  | "delete"
+  | null;
 
 const HISTORY_LIMIT = 50;
+const MESSAGE_PAGE_SIZE = 50;
 
 function displayDate(value: string | null | undefined): string {
   if (!value) return "—";
@@ -72,6 +80,7 @@ export function IdentityDetailDrawer({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
+  const [displayName, setDisplayName] = useState("");
   const [confirmation, setConfirmation] = useState<Confirmation>(null);
   const [confirmationText, setConfirmationText] = useState("");
   const [actionPending, setActionPending] = useState(false);
@@ -79,6 +88,7 @@ export function IdentityDetailDrawer({
   const [conversationLoading, setConversationLoading] = useState(false);
   const [conversationError, setConversationError] = useState<string | null>(null);
   const [conversationTarget, setConversationTarget] = useState<string | null>(null);
+  const [conversationMessageOffset, setConversationMessageOffset] = useState(0);
   const drawerRef = useRef<HTMLElement>(null);
   const drawerCloseRef = useRef<HTMLButtonElement>(null);
   const confirmationRef = useRef<HTMLElement>(null);
@@ -86,6 +96,8 @@ export function IdentityDetailDrawer({
   const conversationRef = useRef<HTMLElement>(null);
   const conversationCloseRef = useRef<HTMLButtonElement>(null);
   const conversationOpenerRef = useRef<HTMLElement | null>(null);
+  const selectionGeneration = useRef(0);
+  const detailRequestGeneration = useRef(0);
   const conversationGeneration = useRef(0);
 
   useDialogFocus({
@@ -108,6 +120,8 @@ export function IdentityDetailDrawer({
   });
 
   useEffect(() => {
+    const selection = ++selectionGeneration.current;
+    const requestGeneration = ++detailRequestGeneration.current;
     let current = true;
     setLoading(true);
     setError(null);
@@ -118,6 +132,11 @@ export function IdentityDetailDrawer({
     setConversationLoading(false);
     setConversation(null);
     setConversationError(null);
+    setConversationMessageOffset(0);
+    setConfirmation(null);
+    setConfirmationText("");
+    setFeedback(null);
+    setActionPending(false);
     const request = accountId
       ? getAccount(session.token, accountId)
       : visitorId
@@ -125,19 +144,34 @@ export function IdentityDetailDrawer({
         : Promise.reject(new Error("No identity record was selected"));
     void request.then(
       (detail) => {
-        if (!current) return;
-        if (accountId) setAccountDetail(detail as AccountDetail);
-        else setVisitorDetail(detail as VisitorDetail);
+        if (
+          !current ||
+          selection !== selectionGeneration.current ||
+          requestGeneration !== detailRequestGeneration.current
+        ) return;
+        if (accountId) {
+          const accountResult = detail as AccountDetail;
+          setAccountDetail(accountResult);
+          setDisplayName(accountResult.account.display_name);
+        } else {
+          setVisitorDetail(detail as VisitorDetail);
+        }
         setLoading(false);
       },
       (caught: unknown) => {
-        if (!current) return;
+        if (
+          !current ||
+          selection !== selectionGeneration.current ||
+          requestGeneration !== detailRequestGeneration.current
+        ) return;
         setError(messageFrom(caught));
         setLoading(false);
       },
     );
     return () => {
       current = false;
+      selectionGeneration.current += 1;
+      detailRequestGeneration.current += 1;
       conversationGeneration.current += 1;
     };
   }, [accountId, session.token, visitorId]);
@@ -153,6 +187,7 @@ export function IdentityDetailDrawer({
     setConversationLoading(true);
     setConversationError(null);
     setConversation(null);
+    setConversationMessageOffset(0);
     try {
       const result = await getVisitorConversation(
         session.token,
@@ -177,6 +212,7 @@ export function IdentityDetailDrawer({
     setConversationLoading(false);
     setConversation(null);
     setConversationError(null);
+    setConversationMessageOffset(0);
   }
 
   function closeConfirmation() {
@@ -193,51 +229,168 @@ export function IdentityDetailDrawer({
 
   async function confirmAccountAction() {
     if (!accountId || !confirmation) return;
+    const targetId = accountId;
+    const selection = selectionGeneration.current;
+    const action = confirmation;
     setActionPending(true);
     setError(null);
     try {
-      if (confirmation === "disable") {
-        const result = await updateAccount(session.token, accountId, {
+      let changedAccount: AccountRecord;
+      let successFeedback: string;
+      if (action === "disable") {
+        const result = await updateAccount(session.token, targetId, {
           status: "disabled",
         });
-        updateLoadedAccount(result.account);
-        setFeedback("Account disabled");
-      } else if (confirmation === "anonymize") {
-        const result = await anonymizeAccount(session.token, accountId);
-        updateLoadedAccount(result.account);
-        setFeedback("Account anonymized");
+        changedAccount = result.account;
+        successFeedback = "Account disabled";
+      } else if (action === "reactivate") {
+        const result = await updateAccount(session.token, targetId, {
+          status: "active",
+        });
+        changedAccount = result.account;
+        successFeedback = "Account reactivated";
+      } else if (action === "promote") {
+        const result = await updateAccount(session.token, targetId, {
+          role: "admin",
+        });
+        changedAccount = result.account;
+        successFeedback = "Account promoted to administrator";
+      } else if (action === "demote") {
+        const result = await updateAccount(session.token, targetId, {
+          role: "user",
+        });
+        changedAccount = result.account;
+        successFeedback = "Administrator demoted to user";
+      } else if (action === "anonymize") {
+        const result = await anonymizeAccount(session.token, targetId);
+        changedAccount = result.account;
+        successFeedback = "Account anonymized";
       } else {
-        await deleteAccount(session.token, accountId);
+        await deleteAccount(session.token, targetId);
+        if (selection !== selectionGeneration.current) return;
         onChanged?.();
         onClose();
         return;
       }
+      if (selection !== selectionGeneration.current) return;
+      const refreshed = await refreshLoadedAccount(
+        changedAccount,
+        targetId,
+        selection,
+      );
+      if (!refreshed) return;
+      setFeedback(successFeedback);
       setConfirmation(null);
       setConfirmationText("");
       onChanged?.();
     } catch (caught) {
-      setError(messageFrom(caught));
+      if (selection === selectionGeneration.current) setError(messageFrom(caught));
     } finally {
-      setActionPending(false);
+      if (selection === selectionGeneration.current) setActionPending(false);
     }
   }
 
   function updateLoadedAccount(account: AccountRecord) {
     setAccountDetail((current) => (current ? { ...current, account } : current));
+    setDisplayName(account.display_name);
+  }
+
+  async function refreshLoadedAccount(
+    account: AccountRecord,
+    targetId: string,
+    selection: number,
+  ): Promise<boolean> {
+    if (selection !== selectionGeneration.current) return false;
+    updateLoadedAccount(account);
+    const requestGeneration = ++detailRequestGeneration.current;
+    try {
+      const detail = await getAccount(session.token, targetId);
+      if (
+        selection !== selectionGeneration.current ||
+        requestGeneration !== detailRequestGeneration.current
+      ) return false;
+      setAccountDetail(detail);
+      setDisplayName(detail.account.display_name);
+    } catch (caught) {
+      if (
+        selection !== selectionGeneration.current ||
+        requestGeneration !== detailRequestGeneration.current
+      ) return false;
+      setError(`Account changed, but details could not be refreshed: ${messageFrom(caught)}`);
+    }
+    return true;
+  }
+
+  async function saveDisplayName(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!accountId || !account) return;
+    const targetId = accountId;
+    const selection = selectionGeneration.current;
+    const nextName = displayName.trim();
+    if (!nextName || nextName === account.display_name) return;
+    setActionPending(true);
+    setError(null);
+    setFeedback(null);
+    try {
+      const result = await updateAccount(session.token, targetId, {
+        display_name: nextName,
+      });
+      if (selection !== selectionGeneration.current) return;
+      const refreshed = await refreshLoadedAccount(
+        result.account,
+        targetId,
+        selection,
+      );
+      if (!refreshed) return;
+      setFeedback("Display name updated");
+      onChanged?.();
+    } catch (caught) {
+      if (selection === selectionGeneration.current) setError(messageFrom(caught));
+    } finally {
+      if (selection === selectionGeneration.current) setActionPending(false);
+    }
   }
 
   const account = accountDetail?.account;
-  const canDisable = Boolean(
+  const isSelf = Boolean(
+    account && account.email.trim().toLowerCase() === session.username.trim().toLowerCase(),
+  );
+  const canManageAccount = Boolean(
     account &&
       account.role !== "owner" &&
-      account.status !== "disabled" &&
-      account.status !== "anonymized" &&
       (account.role === "user" || session.role === "owner"),
   );
+  const canEditName = canManageAccount;
+  const canDisable = Boolean(
+    canManageAccount &&
+      !isSelf &&
+      account &&
+      account.status !== "disabled" &&
+      account.status !== "anonymized",
+  );
+  const canReactivate = Boolean(
+    canManageAccount && !isSelf && account?.status === "disabled",
+  );
+  const canChangeRole = Boolean(
+    canManageAccount && !isSelf && account && session.role === "owner",
+  );
   const canDestroy = Boolean(
-    account && session.role === "owner" && account.role !== "owner",
+    account && session.role === "owner" && account.role !== "owner" && !isSelf,
   );
   const requiredConfirmation = confirmation?.toUpperCase() ?? "";
+  const conversationMessages = conversation?.messages ?? [];
+  const messagePageStart = Math.min(
+    conversationMessageOffset,
+    Math.max(0, conversationMessages.length - 1),
+  );
+  const messagePageEnd = Math.min(
+    messagePageStart + MESSAGE_PAGE_SIZE,
+    conversationMessages.length,
+  );
+  const visibleConversationMessages = conversationMessages.slice(
+    messagePageStart,
+    messagePageEnd,
+  );
 
   function conversationButtons(
     targetVisitorId: string,
@@ -304,6 +457,28 @@ export function IdentityDetailDrawer({
                 <dt>Created</dt><dd>{displayDate(account.created_at)}</dd>
                 <dt>Last access</dt><dd>{displayDate(account.last_access_at)}</dd>
               </dl>
+              {canEditName && (
+                <form className="identity-action-form" onSubmit={saveDisplayName}>
+                  <label>
+                    Display name
+                    <input
+                      value={displayName}
+                      maxLength={160}
+                      onChange={(event) => setDisplayName(event.target.value)}
+                    />
+                  </label>
+                  <button
+                    type="submit"
+                    disabled={
+                      actionPending ||
+                      displayName.trim().length === 0 ||
+                      displayName.trim() === account.display_name
+                    }
+                  >
+                    {actionPending ? "Saving..." : "Save display name"}
+                  </button>
+                </form>
+              )}
             </section>
 
             <section>
@@ -392,12 +567,27 @@ export function IdentityDetailDrawer({
               )}
             </section>
 
-            {(canDisable || canDestroy) && (
+            {(canDisable || canReactivate || canChangeRole || canDestroy) && (
               <section aria-label="Account actions" className="identity-danger-zone">
                 <h3>Account actions</h3>
                 {canDisable && (
                   <button type="button" onClick={() => beginConfirmation("disable")}>
                     Disable account
+                  </button>
+                )}
+                {canReactivate && (
+                  <button type="button" onClick={() => beginConfirmation("reactivate")}>
+                    Reactivate account
+                  </button>
+                )}
+                {canChangeRole && account.role === "user" && (
+                  <button type="button" onClick={() => beginConfirmation("promote")}>
+                    Promote to administrator
+                  </button>
+                )}
+                {canChangeRole && account.role === "admin" && (
+                  <button type="button" onClick={() => beginConfirmation("demote")}>
+                    Demote to user
                   </button>
                 )}
                 {canDestroy && (
@@ -550,15 +740,54 @@ export function IdentityDetailDrawer({
             {conversationLoading && <p role="status">Loading conversation...</p>}
             {conversationError && <p role="alert">{conversationError}</p>}
             {conversation && (
-              <ol className="identity-message-list">
-                {bounded(conversation.messages).map((message) => (
-                  <li key={message.message_id}>
-                    <strong>{message.role}</strong>
-                    <p>{message.content}</p>
-                    <time>{displayDate(message.created_at)}</time>
-                  </li>
-                ))}
-              </ol>
+              <>
+                {conversationMessages.length > 0 && (
+                  <nav
+                    className="identity-pagination"
+                    aria-label="Conversation message pagination"
+                  >
+                    {messagePageStart > 0 && (
+                      <button
+                        type="button"
+                        className="ghost-btn"
+                        onClick={() =>
+                          setConversationMessageOffset((offset) =>
+                            Math.max(0, offset - MESSAGE_PAGE_SIZE),
+                          )
+                        }
+                      >
+                        Show previous messages
+                      </button>
+                    )}
+                    <span aria-live="polite">
+                      Showing messages {messagePageStart + 1}-{messagePageEnd} of{" "}
+                      {conversationMessages.length}
+                    </span>
+                    {messagePageEnd < conversationMessages.length && (
+                      <button
+                        type="button"
+                        className="ghost-btn"
+                        onClick={() =>
+                          setConversationMessageOffset((offset) =>
+                            offset + MESSAGE_PAGE_SIZE
+                          )
+                        }
+                      >
+                        Show next messages
+                      </button>
+                    )}
+                  </nav>
+                )}
+                <ol className="identity-message-list">
+                  {visibleConversationMessages.map((message) => (
+                    <li key={message.message_id}>
+                      <strong>{message.role}</strong>
+                      <p>{message.content}</p>
+                      <time>{displayDate(message.created_at)}</time>
+                    </li>
+                  ))}
+                </ol>
+              </>
             )}
           </section>
         )}

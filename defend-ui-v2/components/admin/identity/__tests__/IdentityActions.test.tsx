@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -107,10 +107,12 @@ const activationUrl = "https://ai.defend-network.org/activate/one-time-token";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((resolvePromise) => {
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
     resolve = resolvePromise;
+    reject = rejectPromise;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 describe("identity management actions", () => {
@@ -256,6 +258,47 @@ describe("identity management actions", () => {
       "vis-1",
       "conv-1",
     );
+  });
+
+  it("paginates every returned conversation message in bounded 50-message windows", async () => {
+    const user = userEvent.setup();
+    vi.mocked(identityApi.getVisitorConversation).mockResolvedValueOnce({
+      visitor_id: "vis-1",
+      conversation_id: "conv-1",
+      messages: Array.from({ length: 120 }, (_, index) => ({
+        message_id: `msg-${index + 1}`,
+        seq: index + 1,
+        role: index % 2 === 0 ? "user" : "assistant",
+        content: `Audited message ${index + 1}`,
+        created_at: "2026-08-10T10:00:00.000Z",
+      })),
+    });
+    render(
+      <IdentityDetailDrawer
+        session={adminSession}
+        visitorId="vis-1"
+        onClose={vi.fn()}
+      />,
+    );
+
+    await user.click(await screen.findByRole("button", {
+      name: "Open conversation Private support conversation",
+    }));
+    expect(await screen.findByText("Audited message 1")).toBeVisible();
+    expect(screen.getByText("Showing messages 1-50 of 120")).toBeVisible();
+    expect(screen.queryByText("Audited message 51")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Show next messages" }));
+    expect(screen.getByText("Showing messages 51-100 of 120")).toBeVisible();
+    expect(screen.getByText("Audited message 51")).toBeVisible();
+    expect(screen.queryByText("Audited message 1")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Show next messages" }));
+    expect(screen.getByText("Showing messages 101-120 of 120")).toBeVisible();
+    expect(screen.getByText("Audited message 120")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Show next messages" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Show previous messages" }));
+    expect(screen.getByText("Showing messages 51-100 of 120")).toBeVisible();
   });
 
   it("ignores stale out-of-order conversation responses", async () => {
@@ -458,6 +501,275 @@ describe("identity management actions", () => {
     );
   });
 
+  it("edits an end-user display name and refreshes the account list", async () => {
+    const user = userEvent.setup();
+    const onChanged = vi.fn();
+    vi.mocked(identityApi.getAccount)
+      .mockResolvedValueOnce(accountDetail)
+      .mockResolvedValueOnce({
+        ...accountDetail,
+        account: { ...accountDetail.account, display_name: "Renamed member" },
+      });
+    vi.mocked(identityApi.updateAccount).mockResolvedValueOnce({
+      account: { ...accountDetail.account, display_name: "Renamed member" },
+    });
+    render(
+      <IdentityDetailDrawer
+        session={adminSession}
+        accountId="acct-1"
+        onClose={vi.fn()}
+        onChanged={onChanged}
+      />,
+    );
+
+    const displayName = await screen.findByLabelText("Display name");
+    await user.clear(displayName);
+    await user.type(displayName, "Renamed member");
+    await user.click(screen.getByRole("button", { name: "Save display name" }));
+
+    expect(identityApi.updateAccount).toHaveBeenCalledWith(
+      adminSession.token,
+      "acct-1",
+      { display_name: "Renamed member" },
+    );
+    expect(await screen.findByRole("status")).toHaveTextContent("Display name updated");
+    expect(screen.getByRole("heading", { name: "Renamed member" })).toBeVisible();
+    expect(identityApi.getAccount).toHaveBeenCalledTimes(2);
+    expect(onChanged).toHaveBeenCalledTimes(1);
+  });
+
+  it("requires explicit confirmation to reactivate a disabled end user", async () => {
+    const user = userEvent.setup();
+    const onChanged = vi.fn();
+    vi.mocked(identityApi.getAccount).mockResolvedValueOnce({
+      ...accountDetail,
+      account: { ...accountDetail.account, status: "disabled" },
+    });
+    vi.mocked(identityApi.updateAccount).mockResolvedValueOnce({
+      account: { ...accountDetail.account, status: "active" },
+    });
+    render(
+      <IdentityDetailDrawer
+        session={adminSession}
+        accountId="acct-1"
+        onClose={vi.fn()}
+        onChanged={onChanged}
+      />,
+    );
+
+    await user.click(await screen.findByRole("button", { name: "Reactivate account" }));
+    expect(screen.getByRole("button", { name: "Confirm reactivate" })).toBeDisabled();
+    await user.type(screen.getByLabelText("Type REACTIVATE to confirm"), "REACTIVATE");
+    await user.click(screen.getByRole("button", { name: "Confirm reactivate" }));
+
+    expect(identityApi.updateAccount).toHaveBeenCalledWith(
+      adminSession.token,
+      "acct-1",
+      { status: "active" },
+    );
+    expect(await screen.findByRole("status")).toHaveTextContent("Account reactivated");
+    expect(onChanged).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps pending end-user accounts available for disabling", async () => {
+    vi.mocked(identityApi.getAccount).mockResolvedValueOnce({
+      ...accountDetail,
+      account: { ...accountDetail.account, status: "pending_activation" },
+    });
+    render(
+      <IdentityDetailDrawer
+        session={adminSession}
+        accountId="acct-1"
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByRole("button", { name: "Disable account" })).toBeVisible();
+  });
+
+  it("lets the owner promote a user with confirmation and refreshes the result", async () => {
+    const user = userEvent.setup();
+    const onChanged = vi.fn();
+    vi.mocked(identityApi.getAccount)
+      .mockResolvedValueOnce(accountDetail)
+      .mockResolvedValueOnce({
+        ...accountDetail,
+        account: { ...accountDetail.account, role: "admin" },
+      });
+    vi.mocked(identityApi.updateAccount).mockResolvedValueOnce({
+      account: { ...accountDetail.account, role: "admin" },
+    });
+    render(
+      <IdentityDetailDrawer
+        session={ownerSession}
+        accountId="acct-1"
+        onClose={vi.fn()}
+        onChanged={onChanged}
+      />,
+    );
+
+    await user.click(await screen.findByRole("button", { name: "Promote to administrator" }));
+    await user.type(screen.getByLabelText("Type PROMOTE to confirm"), "PROMOTE");
+    await user.click(screen.getByRole("button", { name: "Confirm promote" }));
+    expect(identityApi.updateAccount).toHaveBeenLastCalledWith(
+      ownerSession.token,
+      "acct-1",
+      { role: "admin" },
+    );
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "Account promoted to administrator",
+    );
+    expect(screen.getByRole("button", { name: "Demote to user" })).toBeVisible();
+    expect(onChanged).toHaveBeenCalledTimes(1);
+  });
+
+  it("lets the owner demote an administrator with confirmation and refreshes the result", async () => {
+    const user = userEvent.setup();
+    const onChanged = vi.fn();
+    vi.mocked(identityApi.getAccount)
+      .mockResolvedValueOnce({
+        ...accountDetail,
+        account: { ...accountDetail.account, role: "admin" },
+      })
+      .mockResolvedValueOnce(accountDetail);
+    vi.mocked(identityApi.updateAccount).mockResolvedValueOnce({
+      account: { ...accountDetail.account, role: "user" },
+    });
+    render(
+      <IdentityDetailDrawer
+        session={ownerSession}
+        accountId="acct-admin"
+        onClose={vi.fn()}
+        onChanged={onChanged}
+      />,
+    );
+    await user.click(await screen.findByRole("button", { name: "Demote to user" }));
+    await user.type(screen.getByLabelText("Type DEMOTE to confirm"), "DEMOTE");
+    await user.click(screen.getByRole("button", { name: "Confirm demote" }));
+    expect(identityApi.updateAccount).toHaveBeenLastCalledWith(
+      ownerSession.token,
+      "acct-admin",
+      { role: "user" },
+    );
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "Administrator demoted to user",
+    );
+    expect(screen.getByRole("button", { name: "Promote to administrator" })).toBeVisible();
+    expect(onChanged).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not expose administrator management controls to an admin", async () => {
+    vi.mocked(identityApi.getAccount).mockResolvedValueOnce({
+      ...accountDetail,
+      account: {
+        ...accountDetail.account,
+        account_id: "acct-admin",
+        email: adminSession.username,
+        role: "admin",
+      },
+    });
+    render(
+      <IdentityDetailDrawer
+        session={adminSession}
+        accountId="acct-admin"
+        onClose={vi.fn()}
+      />,
+    );
+
+    await screen.findByText(adminSession.username);
+    expect(screen.queryByLabelText("Display name")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Disable account" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Promote|Demote|Reactivate/ })).not.toBeInTheDocument();
+  });
+
+  it("does not let a completed mutation overwrite a newly selected account", async () => {
+    const user = userEvent.setup();
+    const onChanged = vi.fn();
+    const mutation = deferred<Awaited<ReturnType<typeof identityApi.updateAccount>>>();
+    const accountB: AccountDetail = {
+      ...accountDetail,
+      account: {
+        ...accountDetail.account,
+        account_id: "acct-2",
+        email: "second@example.com",
+        display_name: "Second member",
+      },
+    };
+    vi.mocked(identityApi.getAccount)
+      .mockResolvedValueOnce(accountDetail)
+      .mockResolvedValueOnce(accountB);
+    vi.mocked(identityApi.updateAccount).mockReturnValueOnce(mutation.promise);
+    const { rerender } = render(
+      <IdentityDetailDrawer
+        session={adminSession}
+        accountId="acct-1"
+        onClose={vi.fn()}
+        onChanged={onChanged}
+      />,
+    );
+
+    const displayName = await screen.findByLabelText("Display name");
+    await user.clear(displayName);
+    await user.type(displayName, "Stale renamed member");
+    await user.click(screen.getByRole("button", { name: "Save display name" }));
+    rerender(
+      <IdentityDetailDrawer
+        session={adminSession}
+        accountId="acct-2"
+        onClose={vi.fn()}
+        onChanged={onChanged}
+      />,
+    );
+    expect(await screen.findByRole("heading", { name: "Second member" })).toBeVisible();
+
+    mutation.resolve({
+      account: { ...accountDetail.account, display_name: "Stale renamed member" },
+    });
+    await waitFor(() => expect(identityApi.updateAccount).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole("heading", { name: "Second member" })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "Stale renamed member" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Display name updated")).not.toBeInTheDocument();
+    expect(identityApi.getAccount).toHaveBeenCalledTimes(2);
+    expect(onChanged).not.toHaveBeenCalled();
+  });
+
+  it("does not show a stale mutation failure on a newly selected account", async () => {
+    const user = userEvent.setup();
+    const mutation = deferred<Awaited<ReturnType<typeof identityApi.updateAccount>>>();
+    const accountB: AccountDetail = {
+      ...accountDetail,
+      account: {
+        ...accountDetail.account,
+        account_id: "acct-2",
+        email: "second@example.com",
+        display_name: "Second member",
+      },
+    };
+    vi.mocked(identityApi.getAccount)
+      .mockResolvedValueOnce(accountDetail)
+      .mockResolvedValueOnce(accountB);
+    vi.mocked(identityApi.updateAccount).mockReturnValueOnce(mutation.promise);
+    const { rerender } = render(
+      <IdentityDetailDrawer session={adminSession} accountId="acct-1" onClose={vi.fn()} />,
+    );
+
+    const displayName = await screen.findByLabelText("Display name");
+    await user.clear(displayName);
+    await user.type(displayName, "Rejected stale name");
+    await user.click(screen.getByRole("button", { name: "Save display name" }));
+    rerender(
+      <IdentityDetailDrawer session={adminSession} accountId="acct-2" onClose={vi.fn()} />,
+    );
+    expect(await screen.findByRole("heading", { name: "Second member" })).toBeVisible();
+
+    await act(async () => {
+      mutation.reject(new Error("Stale account action failed"));
+      await mutation.promise.catch(() => undefined);
+    });
+    expect(screen.queryByText("Stale account action failed")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Second member" })).toBeVisible();
+  });
+
   it("focuses account confirmation, closes its layer on Escape, and restores the action", async () => {
     const user = userEvent.setup();
     const onClose = vi.fn();
@@ -555,6 +867,56 @@ describe("identity management actions", () => {
     expect(
       screen.getByRole("button", { name: "Revoke invitation for member@example.com" }),
     ).toBeDisabled();
+  });
+
+  it("keeps a failed-resend activation fallback transient until explicitly hidden", async () => {
+    const user = userEvent.setup();
+    const onChanged = vi.fn();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    vi.mocked(identityApi.resendInvitation).mockResolvedValueOnce({
+      invitation: {
+        ...invitation,
+        invitation_id: "inv-resend-failed",
+        delivery_status: "failed",
+        delivery_error: "Delivery failed",
+        activation_url: activationUrl,
+        delivery: {
+          delivered: false,
+          provider_message_id: null,
+          error: "Delivery failed",
+        },
+      },
+    });
+    render(
+      <InvitationsTab
+        invitations={[invitation]}
+        session={ownerSession}
+        onChanged={onChanged}
+      />,
+    );
+
+    const resendButton = screen.getByRole("button", {
+      name: "Resend invitation to member@example.com",
+    });
+    await user.click(resendButton);
+
+    expect(await screen.findByText("Sensitive one-time activation link")).toBeVisible();
+    expect(screen.getByText(activationUrl)).toBeVisible();
+    expect(screen.getByText(/Email delivery failed/i)).toBeVisible();
+    expect(screen.getByRole("button", { name: "Copy activation link" })).toHaveFocus();
+    expect(writeText).not.toHaveBeenCalled();
+    expect(onChanged).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Copy activation link" }));
+    expect(writeText).toHaveBeenCalledWith(activationUrl);
+    await user.click(screen.getByRole("button", { name: "Hide activation link" }));
+    expect(onChanged).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText(activationUrl)).not.toBeInTheDocument();
+    expect(resendButton).toHaveFocus();
   });
 
   it("requires typed confirmation before revoking an invitation", async () => {
