@@ -411,6 +411,53 @@ class IdentityStore:
         return account
 
     @_serialized
+    def disable_account(self, *, actor: object, target_id: str) -> AccountRecord:
+        """Disable a user/admin while enforcing authority from persisted roles."""
+        actor_id = (
+            actor if isinstance(actor, str) else getattr(actor, "account_id", None)
+        )
+        if not isinstance(actor_id, str) or not actor_id:
+            raise RoleViolation("active owner or admin account required")
+        clean_target_id = (target_id or "").strip()
+        if not clean_target_id:
+            raise KeyError(target_id)
+
+        with transaction(self.conn, immediate=True):
+            actor_row = self.conn.execute(
+                "SELECT * FROM accounts WHERE account_id=?", (actor_id,)
+            ).fetchone()
+            target_row = self.conn.execute(
+                "SELECT * FROM accounts WHERE account_id=?", (clean_target_id,)
+            ).fetchone()
+            if (
+                actor_row is None
+                or actor_row["status"] != "active"
+                or actor_row["role"] not in {"owner", "admin"}
+            ):
+                raise RoleViolation("active owner or admin account required")
+            if target_row is None:
+                raise KeyError(clean_target_id)
+            if target_row["role"] == "owner":
+                raise RoleViolation("the owner account cannot be disabled")
+            if actor_id == clean_target_id:
+                raise RoleViolation("accounts cannot disable themselves")
+            if target_row["role"] == "admin" and actor_row["role"] != "owner":
+                raise RoleViolation("only the owner may disable administrators")
+            if target_row["status"] == "anonymized":
+                raise RoleViolation("anonymized accounts cannot be disabled")
+            if target_row["status"] != "disabled":
+                self.conn.execute(
+                    "UPDATE accounts SET status='disabled',updated_at=? WHERE account_id=?",
+                    (utc_now(), clean_target_id),
+                )
+            refreshed = self.conn.execute(
+                "SELECT * FROM accounts WHERE account_id=?", (clean_target_id,)
+            ).fetchone()
+            assert refreshed is not None
+            disabled = self._account_from_row(refreshed)
+        return disabled
+
+    @_serialized
     def bootstrap_owner(
         self,
         *,

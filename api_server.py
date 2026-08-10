@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 from control_plane import AgentRequest, ControlPlane
 from registry import build_default_registry
 from model_factory import build_model_client
-from admin_auth import AdminPrincipal, require_admin
+from admin_auth import AdminPrincipal, configure_identity_store, require_admin
 from api_admin_tt_routes import router as admin_tt_router
 from api_batch3_routes import router as batch3_router, ensure_visitor_session
 from defend_data import DataCore
@@ -243,6 +243,11 @@ def _auth(authorization: str | None) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     data = DataCore(DATA_ROOT)
+    try:
+        configure_identity_store(data.identity)
+    except Exception:
+        data.close()
+        raise
     registry = build_default_registry(memory_manager=data.memory)
     model = build_model_client()
     if hasattr(model, "__aenter__"):
