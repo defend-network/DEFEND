@@ -15,7 +15,7 @@ from tool_sdk import (
     DataClassification,
 )
 from bootstrap_models import RagIngestInput, RagIngestOutput
-from defend_data.ingest_policy import assert_ai_ingest_allowed
+from defend_data.ingest_policy import AIIngestExcluded, assert_ai_ingest_allowed
 from tools.documents_store import load_raw, load_meta
 from rag_store import ChunkRow, get_or_create_table, delete_document_chunks, VECTOR_DIM
 from ollama_embedding_client import OllamaEmbeddingClient
@@ -90,7 +90,13 @@ class RagIngestTool(DefendTool[RagIngestInput, RagIngestOutput]):
             meta = load_meta(args.document_id)
             raw = load_raw(args.document_id)
             assert_ai_ingest_allowed(
-                filename=str(meta.get("title") or args.document_id),
+                filename=str(
+                    meta.get("source_path")
+                    or meta.get("source_filename")
+                    or meta.get("final_url")
+                    or meta.get("requested_url")
+                    or args.document_id
+                ),
                 content_prefix=raw[:4096],
             )
             source_id = meta.get("source_id")
@@ -255,6 +261,15 @@ class RagIngestTool(DefendTool[RagIngestInput, RagIngestOutput]):
                 ),
             )
 
+        except AIIngestExcluded as e:
+            return ToolResult(
+                ok=False,
+                error=ToolError(
+                    code=ToolErrorCode.PERMISSION_DENIED,
+                    message=str(e),
+                    retryable=False,
+                ),
+            )
         except FileNotFoundError as e:
             return ToolResult(
                 ok=False,

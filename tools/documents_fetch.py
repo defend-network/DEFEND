@@ -233,6 +233,7 @@ class DocumentsFetchTool(DefendTool[DocumentsFetchInput, DocumentsFetchOutput]):
                 "source_id": source_id,
                 "requested_url": args.url,
                 "final_url": final_url,
+                "source_path": urlparse(final_url).path,
                 "media_type": media_type.value,
                 "content_type": content_type,
                 "page_count": page_count,

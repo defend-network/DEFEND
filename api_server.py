@@ -532,6 +532,7 @@ async def upload_files(
             "source_id": f"session:{doc_id}",
             "requested_url": None,
             "final_url": None,
+            "source_path": filename,
             "media_type": media,
             "content_type": f.content_type,
             "page_count": None,
