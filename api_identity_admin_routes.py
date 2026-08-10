@@ -91,6 +91,16 @@ def _audit(
     )
 
 
+def _mutation_audit_context(
+    request: Request, *, metadata: dict[str, object] | None = None
+) -> dict[str, object]:
+    return {
+        "request_id": (request.headers.get("x-request-id") or "")[:200] or None,
+        "client_context": _client_context(request),
+        "metadata": metadata or {},
+    }
+
+
 def _page_payload(result: dict[str, object], page: PageParams) -> dict[str, object]:
     return {
         "items": result["items"],
@@ -127,24 +137,44 @@ def list_accounts(
 def get_account(
     account_id: str,
     request: Request,
+    linked_limit: int = Query(default=25, ge=1, le=50),
+    linked_offset: int = Query(default=0, ge=0, le=1_000_000),
+    history_limit: int = Query(default=200, ge=1, le=200),
     principal: AdminPrincipal = Depends(require_admin),
 ) -> dict[str, object]:
     identity, visitors, _ = _stores(request)
-    detail = identity.account_admin_detail(account_id, nested_limit=200)
+    detail = identity.account_admin_detail(
+        account_id,
+        nested_limit=200,
+        linked_visitor_limit=linked_limit,
+        linked_visitor_offset=linked_offset,
+    )
     if detail is None:
         _audit(identity, request, principal, action="account.view", target_type="account", target_id=account_id, outcome="failure", metadata={"reason": "not_found"})
         raise HTTPException(status_code=404, detail="Account not found")
+    visitor_links = detail.pop("visitor_links")
+    link_page = detail.pop("visitor_links_page")
+    visitor_details = visitors.visitor_admin_details(
+        [link["visitor_id"] for link in visitor_links], history_limit=history_limit
+    )
     linked_visitors = []
-    for link in detail.pop("visitor_links"):
-        visitor = visitors.visitor_admin_detail(link["visitor_id"], nested_limit=200)
+    for link in visitor_links:
+        visitor = visitor_details["items"].get(link["visitor_id"])
         linked_visitors.append(
             {
                 **link,
                 **(visitor or {"visitor": None, "sessions": [], "connections": [], "conversations": [], "usage_events": []}),
-                "telemetry": visitors.telemetry_summary([link["visitor_id"]]),
             }
         )
     detail["linked_visitors"] = linked_visitors
+    history_budget = visitor_details["history_budget"]
+    detail["linked_visitors_page"] = {
+        **link_page,
+        "history_row_limit": history_budget["max_rows"],
+        "history_rows_returned": history_budget["returned_rows"],
+        "history_row_allocations": history_budget["allocations"],
+        "history_rows_by_category": history_budget["returned_by_category"],
+    }
     detail["invitations"] = [_safe_invitation(item) for item in detail["invitations"]]
     _audit(identity, request, principal, action="account.view", target_type="account", target_id=account_id, outcome="success")
     return detail
@@ -163,7 +193,12 @@ def update_account(
         raise HTTPException(status_code=422, detail="At least one account change is required")
     try:
         account = identity.update_account_admin(
-            actor_id=principal.account_id, target_id=account_id, **changes
+            actor_id=principal.account_id,
+            target_id=account_id,
+            audit_context=_mutation_audit_context(
+                request, metadata={"fields": sorted(changes)}
+            ),
+            **changes,
         )
     except KeyError as exc:
         _audit(identity, request, principal, action="account.update", target_type="account", target_id=account_id, outcome="failure", metadata={"reason": "not_found"})
@@ -174,7 +209,6 @@ def update_account(
     except ValueError as exc:
         _audit(identity, request, principal, action="account.update", target_type="account", target_id=account_id, outcome="failure", metadata={"reason": "invalid"})
         raise HTTPException(status_code=400, detail="Invalid account update") from exc
-    _audit(identity, request, principal, action="account.update", target_type="account", target_id=account_id, outcome="success", metadata={"fields": sorted(changes)})
     return {"account": _account_payload(account)}
 
 
@@ -186,14 +220,17 @@ def anonymize_account(
 ) -> dict[str, object]:
     identity, _, _ = _stores(request)
     try:
-        account = identity.anonymize_account(actor_id=principal.account_id, target_id=account_id)
+        account = identity.anonymize_account(
+            actor_id=principal.account_id,
+            target_id=account_id,
+            audit_context=_mutation_audit_context(request),
+        )
     except KeyError as exc:
         _audit(identity, request, principal, action="account.anonymize", target_type="account", target_id=account_id, outcome="failure", metadata={"reason": "not_found"})
         raise HTTPException(status_code=404, detail="Account not found") from exc
     except RoleViolation as exc:
         _audit(identity, request, principal, action="account.anonymize", target_type="account", target_id=account_id, outcome="failure", metadata={"reason": "forbidden"})
         raise HTTPException(status_code=403, detail="Account action is not permitted") from exc
-    _audit(identity, request, principal, action="account.anonymize", target_type="account", target_id=account_id, outcome="success")
     return {"account": _account_payload(account)}
 
 
@@ -205,14 +242,17 @@ def delete_account(
 ) -> Response:
     identity, _, _ = _stores(request)
     try:
-        identity.delete_account_admin(actor_id=principal.account_id, target_id=account_id)
+        identity.delete_account_admin(
+            actor_id=principal.account_id,
+            target_id=account_id,
+            audit_context=_mutation_audit_context(request),
+        )
     except KeyError as exc:
         _audit(identity, request, principal, action="account.delete", target_type="account", target_id=account_id, outcome="failure", metadata={"reason": "not_found"})
         raise HTTPException(status_code=404, detail="Account not found") from exc
     except RoleViolation as exc:
         _audit(identity, request, principal, action="account.delete", target_type="account", target_id=account_id, outcome="failure", metadata={"reason": "forbidden"})
         raise HTTPException(status_code=403, detail="Account action is not permitted") from exc
-    _audit(identity, request, principal, action="account.delete", target_type="account", target_id=account_id, outcome="success")
     return Response(status_code=204)
 
 

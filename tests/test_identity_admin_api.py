@@ -60,7 +60,7 @@ def admin_api(data_paths, monkeypatch):
         conversations=conversations,
     )
     app.include_router(router)
-    with TestClient(app) as client:
+    with TestClient(app, raise_server_exceptions=False) as client:
         yield SimpleNamespace(
             client=client,
             identity=identity,
@@ -176,6 +176,108 @@ def test_account_detail_includes_bounded_linked_telemetry_without_secrets(admin_
     assert admin_api.identity.list_audit_events(query="acct_missing")[0]["outcome"] == "failure"
 
 
+def test_account_detail_paginates_linked_visitors_with_one_aggregate_history_budget(
+    admin_api,
+):
+    user = _activate(
+        admin_api.identity,
+        admin_api.owner,
+        email="bounded-detail@example.com",
+        role="user",
+    )
+    for index in range(55):
+        meta = {
+            "browser": "other",
+            "platform": "linux",
+            "device": "desktop",
+            "language": "en-us",
+        }
+        visitor_id = admin_api.visitors.ensure_visitor(
+            None,
+            fingerprint=f"fp_bounded_{index}",
+            client_meta=meta,
+        )
+        session_id = admin_api.visitors.ensure_session(
+            None, visitor_id, client_meta=meta
+        )
+        admin_api.visitors.record_connection(
+            visitor_id=visitor_id,
+            session_id=session_id,
+            ip_address=f"203.0.113.{index + 1}",
+            user_agent=f"BoundedBrowser/{index}",
+            client_meta=meta,
+            cookie_hash=f"cookie_bounded_{index}",
+        )
+        admin_api.visitors.claim_or_verify_conversation(
+            conversation_id=f"bounded_conversation_{index}",
+            visitor_id=visitor_id,
+            session_id=session_id,
+        )
+        admin_api.visitors.record_event(
+            event_type="bounded_usage",
+            visitor_id=visitor_id,
+            metadata={"index": index},
+        )
+        admin_api.identity.link_visitor(
+            account_id=user.account_id,
+            visitor_id=visitor_id,
+            linked_at=f"2026-08-10T00:00:{index:02d}+00:00",
+        )
+
+    visitor_selects = []
+
+    def trace(statement: str) -> None:
+        if statement.lstrip().upper().startswith("SELECT"):
+            visitor_selects.append(statement)
+
+    admin_api.visitors.conn.set_trace_callback(trace)
+    try:
+        response = admin_api.client.get(
+            f"/api/admin/accounts/{user.account_id}",
+            params={"linked_limit": 50, "linked_offset": 0, "history_limit": 20},
+            headers=admin_api.admin_headers,
+        )
+    finally:
+        admin_api.visitors.conn.set_trace_callback(None)
+
+    assert response.status_code == 200
+    payload = response.json()
+    linked = payload["linked_visitors"]
+    page = payload["linked_visitors_page"]
+    assert len(linked) == 50
+    assert page["total"] == 55
+    assert page["limit"] == 50
+    assert page["offset"] == 0
+    assert page["history_row_limit"] == 20
+    returned_history_rows = sum(
+        len(item[history_key])
+        for item in linked
+        for history_key in ("sessions", "connections", "conversations", "usage_events")
+    )
+    assert returned_history_rows <= 20
+    assert page["history_rows_returned"] == returned_history_rows
+    assert len(visitor_selects) <= 8
+
+    second_page = admin_api.client.get(
+        f"/api/admin/accounts/{user.account_id}",
+        params={"linked_limit": 10, "linked_offset": 50, "history_limit": 20},
+        headers=admin_api.admin_headers,
+    )
+    assert second_page.status_code == 200
+    assert len(second_page.json()["linked_visitors"]) == 5
+    assert second_page.json()["linked_visitors_page"]["offset"] == 50
+    assert admin_api.client.get(
+        f"/api/admin/accounts/{user.account_id}",
+        params={"linked_limit": 51},
+        headers=admin_api.admin_headers,
+    ).status_code == 422
+    assert admin_api.client.get(
+        f"/api/admin/accounts/{user.account_id}",
+        params={"history_limit": 201},
+        headers=admin_api.admin_headers,
+    ).status_code == 422
+
+
 def test_account_update_and_owner_only_destructive_actions_are_audited(admin_api):
     user = _activate(
         admin_api.identity,
@@ -221,6 +323,83 @@ def test_account_update_and_owner_only_destructive_actions_are_audited(admin_api
     assert deleted.status_code == 204
     assert admin_api.identity.get_account(removable.account_id) is None
     assert admin_api.identity.list_audit_events(query=removable.account_id)[0]["outcome"] == "success"
+
+
+def _reject_audit_inserts(identity: IdentityStore) -> None:
+    identity.conn.executescript(
+        """
+        CREATE TRIGGER inject_audit_insert_failure
+        BEFORE INSERT ON audit_events
+        BEGIN SELECT RAISE(ABORT, 'injected audit failure'); END;
+        """
+    )
+
+
+def test_account_update_rolls_back_when_required_audit_insert_fails(admin_api):
+    user = _activate(
+        admin_api.identity,
+        admin_api.owner,
+        email="update-rollback@example.com",
+        role="user",
+    )
+    expires = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+    account_token = admin_api.identity.create_session(user.account_id, expires_at=expires)
+    _reject_audit_inserts(admin_api.identity)
+
+    response = admin_api.client.patch(
+        f"/api/admin/accounts/{user.account_id}",
+        json={"display_name": "Must Roll Back", "status": "disabled"},
+        headers=admin_api.admin_headers,
+    )
+
+    assert response.status_code == 500
+    preserved = admin_api.identity.get_account(user.account_id)
+    assert preserved is not None
+    assert preserved.display_name == user.display_name
+    assert preserved.status == "active"
+    assert admin_api.identity.resolve_session(account_token) is not None
+
+
+def test_account_anonymize_rolls_back_when_required_audit_insert_fails(admin_api):
+    user = _activate(
+        admin_api.identity,
+        admin_api.owner,
+        email="anonymize-rollback@example.com",
+        role="user",
+    )
+    admin_api.identity.link_visitor(account_id=user.account_id, visitor_id="vis_rollback")
+    _reject_audit_inserts(admin_api.identity)
+
+    response = admin_api.client.post(
+        f"/api/admin/accounts/{user.account_id}/anonymize",
+        headers=admin_api.owner_headers,
+    )
+
+    assert response.status_code == 500
+    preserved = admin_api.identity.get_account(user.account_id)
+    assert preserved is not None
+    assert preserved.email == user.email
+    assert preserved.display_name == user.display_name
+    assert preserved.status == "active"
+    assert admin_api.identity.list_linked_visitors(user.account_id) == ["vis_rollback"]
+
+
+def test_account_delete_rolls_back_when_required_audit_insert_fails(admin_api):
+    user = admin_api.identity.create_account(
+        email="delete-rollback@example.com",
+        display_name="Delete Rollback",
+        role="user",
+        created_by=admin_api.admin.account_id,
+    )
+    _reject_audit_inserts(admin_api.identity)
+
+    response = admin_api.client.delete(
+        f"/api/admin/accounts/{user.account_id}",
+        headers=admin_api.owner_headers,
+    )
+
+    assert response.status_code == 500
+    assert admin_api.identity.get_account(user.account_id) == user
 
 
 def test_owner_role_and_self_boundaries_are_enforced(admin_api):

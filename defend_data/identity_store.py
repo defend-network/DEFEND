@@ -585,8 +585,17 @@ class IdentityStore:
         return {"items": [dict(row) for row in rows], "total": total}
 
     @_serialized
-    def account_admin_detail(self, account_id: str, *, nested_limit: int = 200) -> dict[str, object] | None:
+    def account_admin_detail(
+        self,
+        account_id: str,
+        *,
+        nested_limit: int = 200,
+        linked_visitor_limit: int = 25,
+        linked_visitor_offset: int = 0,
+    ) -> dict[str, object] | None:
         cap = max(1, min(int(nested_limit), 200))
+        link_limit = max(1, min(int(linked_visitor_limit), 50))
+        link_offset = max(0, min(int(linked_visitor_offset), 1_000_000))
         row = self.conn.execute(
             """
             SELECT account_id,email,display_name,role,status,created_at,updated_at,last_access_at
@@ -621,12 +630,18 @@ class IdentityStore:
             """,
             (account_id, cap),
         ).fetchall()
+        link_total = int(
+            self.conn.execute(
+                "SELECT COUNT(*) FROM account_visitor_links WHERE account_id=?",
+                (account_id,),
+            ).fetchone()[0]
+        )
         links = self.conn.execute(
             """
             SELECT visitor_id,linked_at,last_seen_at FROM account_visitor_links
-            WHERE account_id=? ORDER BY last_seen_at DESC LIMIT ?
+            WHERE account_id=? ORDER BY last_seen_at DESC,visitor_id ASC LIMIT ? OFFSET ?
             """,
-            (account_id, cap),
+            (account_id, link_limit, link_offset),
         ).fetchall()
         return {
             "account": dict(row),
@@ -634,6 +649,11 @@ class IdentityStore:
             "login_events": [dict(item) for item in logins],
             "invitations": [dict(item) for item in invitations],
             "visitor_links": [dict(item) for item in links],
+            "visitor_links_page": {
+                "total": link_total,
+                "limit": link_limit,
+                "offset": link_offset,
+            },
         }
 
     def _administrative_actor_and_target(self, actor_id: str, target_id: str):
@@ -658,6 +678,7 @@ class IdentityStore:
         display_name: str | None = None,
         role: AccountRole | None = None,
         status: str | None = None,
+        audit_context: dict[str, object] | None = None,
     ) -> AccountRecord:
         if role is not None and role not in {"admin", "user"}:
             raise ValueError("invalid account role")
@@ -698,12 +719,25 @@ class IdentityStore:
                     "UPDATE account_sessions SET revoked_at=COALESCE(revoked_at,?) WHERE account_id=?",
                     (utc_now(), target_id),
                 )
+            if audit_context is not None:
+                self._insert_account_mutation_audit(
+                    actor_id=actor_id,
+                    action="account.update",
+                    target_id=target_id,
+                    audit_context=audit_context,
+                )
         refreshed = self.get_account(target_id)
         assert refreshed is not None
         return refreshed
 
     @_serialized
-    def anonymize_account(self, *, actor_id: str, target_id: str) -> AccountRecord:
+    def anonymize_account(
+        self,
+        *,
+        actor_id: str,
+        target_id: str,
+        audit_context: dict[str, object] | None = None,
+    ) -> AccountRecord:
         with transaction(self.conn, immediate=True):
             actor, target = self._administrative_actor_and_target(actor_id, target_id)
             if actor["role"] != "owner":
@@ -727,12 +761,25 @@ class IdentityStore:
             self.conn.execute("DELETE FROM account_visitor_links WHERE account_id=?", (target_id,))
             self.conn.execute("DELETE FROM invitations WHERE account_id=?", (target_id,))
             self.conn.execute("UPDATE login_events SET account_id=NULL WHERE account_id=?", (target_id,))
+            if audit_context is not None:
+                self._insert_account_mutation_audit(
+                    actor_id=actor_id,
+                    action="account.anonymize",
+                    target_id=target_id,
+                    audit_context=audit_context,
+                )
         refreshed = self.get_account(target_id)
         assert refreshed is not None
         return refreshed
 
     @_serialized
-    def delete_account_admin(self, *, actor_id: str, target_id: str) -> None:
+    def delete_account_admin(
+        self,
+        *,
+        actor_id: str,
+        target_id: str,
+        audit_context: dict[str, object] | None = None,
+    ) -> None:
         with transaction(self.conn, immediate=True):
             actor, target = self._administrative_actor_and_target(actor_id, target_id)
             if actor["role"] != "owner":
@@ -746,6 +793,13 @@ class IdentityStore:
                 "UPDATE invitations SET created_by=? WHERE created_by=?", (actor_id, target_id)
             )
             self.conn.execute("DELETE FROM accounts WHERE account_id=?", (target_id,))
+            if audit_context is not None:
+                self._insert_account_mutation_audit(
+                    actor_id=actor_id,
+                    action="account.delete",
+                    target_id=target_id,
+                    audit_context=audit_context,
+                )
 
     @_serialized
     def linked_accounts_for_visitors(self, visitor_ids: list[str]) -> dict[str, dict[str, object]]:
@@ -902,8 +956,29 @@ class IdentityStore:
             raise ValueError(f"{name} must not be empty")
         return cleaned
 
-    @_serialized
-    def record_audit(
+    def _insert_account_mutation_audit(
+        self,
+        *,
+        actor_id: str,
+        action: str,
+        target_id: str,
+        audit_context: dict[str, object],
+    ) -> str:
+        unexpected = set(audit_context) - {"request_id", "client_context", "metadata"}
+        if unexpected:
+            raise ValueError("invalid account mutation audit context")
+        return self._insert_audit(
+            actor_account_id=actor_id,
+            action=action,
+            target_type="account",
+            target_id=target_id,
+            outcome="success",
+            request_id=audit_context.get("request_id"),
+            client_context=audit_context.get("client_context"),
+            metadata=audit_context.get("metadata"),
+        )
+
+    def _insert_audit(
         self,
         *,
         actor_account_id: str | None,
@@ -911,9 +986,9 @@ class IdentityStore:
         target_type: str,
         target_id: str | None,
         outcome: str,
-        request_id: str | None = None,
-        client_context: dict | None = None,
-        metadata: dict | None = None,
+        request_id: object = None,
+        client_context: object = None,
+        metadata: object = None,
     ) -> str:
         if client_context is not None and not isinstance(client_context, dict):
             raise ValueError("client_context must be an object")
@@ -962,8 +1037,32 @@ class IdentityStore:
                 encoded_payload,
             ),
         )
-        self.conn.commit()
         return event_id
+
+    @_serialized
+    def record_audit(
+        self,
+        *,
+        actor_account_id: str | None,
+        action: str,
+        target_type: str,
+        target_id: str | None,
+        outcome: str,
+        request_id: str | None = None,
+        client_context: dict | None = None,
+        metadata: dict | None = None,
+    ) -> str:
+        with transaction(self.conn, immediate=True):
+            return self._insert_audit(
+                actor_account_id=actor_account_id,
+                action=action,
+                target_type=target_type,
+                target_id=target_id,
+                outcome=outcome,
+                request_id=request_id,
+                client_context=client_context,
+                metadata=metadata,
+            )
 
     @_serialized
     def list_audit_events(

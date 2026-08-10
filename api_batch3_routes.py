@@ -233,13 +233,8 @@ async def analytics_conversation(
 ) -> dict[str, Any]:
     data = _data(request)
     messages = data.conversations.get_messages(conversation_id, limit=1000)
-    if not messages:
-        row = data.visitors.conn.execute(
-            "SELECT 1 FROM conversation_index WHERE conversation_id=?",
-            (conversation_id,),
-        ).fetchone()
-        if row is None:
-            raise HTTPException(status_code=404, detail="Unknown conversation")
+    if not messages and not data.visitors.conversation_exists(conversation_id):
+        raise HTTPException(status_code=404, detail="Unknown conversation")
     return {
         "conversation_id": conversation_id,
         "messages": [

@@ -6,9 +6,11 @@ import ipaddress
 import os
 import re
 import secrets
+import threading
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import wraps
 from typing import Any
 
 from .config import DataPaths
@@ -56,6 +58,15 @@ def _safe_usage_metadata(value: Any, *, depth: int = 0) -> Any:
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _serialized(method):
+    @wraps(method)
+    def wrapped(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    return wrapped
 
 
 def _clean_ip(value: str | None) -> str:
@@ -166,18 +177,54 @@ class VisitorStore:
     primary visitor identity and is never used to merge visitors automatically.
     """
 
+    SCHEMA_VERSION = 2
+
     def __init__(self, paths: DataPaths):
+        self._lock = threading.RLock()
         self.paths = paths.ensure()
         self.db_path = self.paths.db / "visitors.db"
         self.conn = connect_sqlite(self.db_path)
-        self._migrate()
+        try:
+            self._migrate()
+        except Exception:
+            self.conn.close()
+            raise
 
+    @_serialized
     def close(self) -> None:
         self.conn.close()
 
+    @_serialized
     def _migrate(self) -> None:
-        self.conn.executescript(
-            """
+        has_schema_meta = self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_meta'"
+        ).fetchone()
+        if has_schema_meta is None:
+            current_version = 0
+        else:
+            row = self.conn.execute(
+                "SELECT value FROM schema_meta WHERE key='schema_version'"
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("invalid visitor schema version")
+            try:
+                current_version = int(row["value"])
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError("invalid visitor schema version") from exc
+        if current_version < 0:
+            raise RuntimeError("invalid visitor schema version")
+        if current_version > self.SCHEMA_VERSION:
+            raise RuntimeError(
+                f"newer visitor schema version {current_version} is not supported"
+            )
+        if current_version == self.SCHEMA_VERSION:
+            return
+
+        try:
+            if current_version == 0:
+                self.conn.executescript(
+                    """
+            BEGIN IMMEDIATE;
             CREATE TABLE IF NOT EXISTS schema_meta (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
@@ -264,12 +311,46 @@ class VisitorStore:
                 ON connection_events(ip_address, observed_at DESC);
             CREATE INDEX IF NOT EXISTS idx_connection_events_observed
                 ON connection_events(observed_at DESC);
+            INSERT INTO schema_meta(key,value) VALUES('schema_version','2');
+            COMMIT;
             """
-        )
-        self.conn.execute(
-            "INSERT OR REPLACE INTO schema_meta(key,value) VALUES('schema_version','2')"
-        )
-        self.conn.commit()
+                )
+                return
+
+            if current_version == 1:
+                self.conn.executescript(
+                    """
+            BEGIN IMMEDIATE;
+            CREATE TABLE connection_events (
+                connection_id TEXT PRIMARY KEY,
+                visitor_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                ip_address TEXT NOT NULL,
+                user_agent TEXT NOT NULL,
+                browser TEXT NOT NULL,
+                platform TEXT NOT NULL,
+                device TEXT NOT NULL,
+                language TEXT NOT NULL,
+                fingerprint_hmac TEXT NOT NULL,
+                cookie_hash TEXT NOT NULL,
+                observed_at TEXT NOT NULL
+            );
+            CREATE INDEX idx_connection_events_visitor
+                ON connection_events(visitor_id, observed_at DESC);
+            CREATE INDEX idx_connection_events_session
+                ON connection_events(session_id, observed_at DESC);
+            CREATE INDEX idx_connection_events_ip
+                ON connection_events(ip_address, observed_at DESC);
+            CREATE INDEX idx_connection_events_observed
+                ON connection_events(observed_at DESC);
+            UPDATE schema_meta SET value='2' WHERE key='schema_version';
+            COMMIT;
+                    """
+                )
+        except Exception:
+            if self.conn.in_transaction:
+                self.conn.rollback()
+            raise
 
     @staticmethod
     def _new_visitor_id() -> str:
@@ -279,6 +360,7 @@ class VisitorStore:
     def _new_session_id() -> str:
         return f"vsess_{uuid.uuid4().hex}"
 
+    @_serialized
     def ensure_visitor(
         self,
         cookie_visitor_id: str | None,
@@ -323,6 +405,7 @@ class VisitorStore:
                 )
         return visitor_id
 
+    @_serialized
     def ensure_session(
         self,
         cookie_session_id: str | None,
@@ -368,6 +451,7 @@ class VisitorStore:
                 )
         return session_id
 
+    @_serialized
     def claim_or_verify_conversation(
         self,
         *,
@@ -401,6 +485,7 @@ class VisitorStore:
             )
         return True
 
+    @_serialized
     def owns_conversation(self, visitor_id: str, conversation_id: str) -> bool:
         row = self.conn.execute(
             "SELECT visitor_id FROM conversation_index WHERE conversation_id=?",
@@ -408,6 +493,15 @@ class VisitorStore:
         ).fetchone()
         return row is not None and row["visitor_id"] == visitor_id
 
+    @_serialized
+    def conversation_exists(self, conversation_id: str) -> bool:
+        row = self.conn.execute(
+            "SELECT 1 FROM conversation_index WHERE conversation_id=?",
+            ((conversation_id or "").strip(),),
+        ).fetchone()
+        return row is not None
+
+    @_serialized
     def touch_conversation(
         self,
         *,
@@ -454,6 +548,7 @@ class VisitorStore:
         self.conn.commit()
         return True
 
+    @_serialized
     def list_conversations_for_visitor(self, visitor_id: str, *, limit: int = 5) -> list[dict[str, Any]]:
         rows = self.conn.execute(
             """
@@ -468,6 +563,7 @@ class VisitorStore:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    @_serialized
     def delete_conversation_index(self, visitor_id: str, conversation_id: str) -> bool:
         cur = self.conn.execute(
             "DELETE FROM conversation_index WHERE conversation_id=? AND visitor_id=?",
@@ -476,6 +572,7 @@ class VisitorStore:
         self.conn.commit()
         return cur.rowcount == 1
 
+    @_serialized
     def record_event(
         self,
         *,
@@ -516,6 +613,7 @@ class VisitorStore:
         self.conn.commit()
         return event_id
 
+    @_serialized
     def record_connection(
         self,
         *,
@@ -554,6 +652,7 @@ class VisitorStore:
         self.conn.commit()
         return connection_id
 
+    @_serialized
     def connection_detail(self, connection_id: str) -> dict[str, Any] | None:
         row = self.conn.execute(
             "SELECT * FROM connection_events WHERE connection_id=?",
@@ -561,6 +660,7 @@ class VisitorStore:
         ).fetchone()
         return dict(row) if row is not None else None
 
+    @_serialized
     def purge_connection_history(self, *, before: str) -> int:
         cur = self.conn.execute(
             "DELETE FROM connection_events WHERE observed_at < ?",
@@ -569,6 +669,7 @@ class VisitorStore:
         self.conn.commit()
         return cur.rowcount
 
+    @_serialized
     def overview(self) -> dict[str, int]:
         return {
             "visitors": int(self.conn.execute("SELECT COUNT(*) FROM visitors").fetchone()[0]),
@@ -577,6 +678,7 @@ class VisitorStore:
             "usage_events": int(self.conn.execute("SELECT COUNT(*) FROM usage_events").fetchone()[0]),
         }
 
+    @_serialized
     def list_visitors(self, *, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
         rows = self.conn.execute(
             """
@@ -599,6 +701,7 @@ class VisitorStore:
             out.append(item)
         return out
 
+    @_serialized
     def search_visitors(
         self,
         *,
@@ -668,6 +771,7 @@ class VisitorStore:
             items.append(item)
         return {"items": items, "total": total}
 
+    @_serialized
     def telemetry_summary(self, visitor_ids: list[str]) -> dict[str, Any]:
         clean_ids = list(dict.fromkeys(value for value in visitor_ids if value))[:200]
         if not clean_ids:
@@ -695,6 +799,147 @@ class VisitorStore:
             "device_count": devices,
         }
 
+    @_serialized
+    def visitor_admin_details(
+        self, visitor_ids: list[str], *, history_limit: int = 200
+    ) -> dict[str, Any]:
+        """Load one linked-visitor page with a single aggregate history budget."""
+        clean_ids = list(dict.fromkeys(value for value in visitor_ids if value))[:50]
+        cap = max(1, min(int(history_limit), 200))
+        categories = ("sessions", "connections", "conversations", "usage_events")
+        category_base, category_remainder = divmod(cap, len(categories))
+        allocations = {
+            category: category_base + (1 if index < category_remainder else 0)
+            for index, category in enumerate(categories)
+        }
+        details = {
+            visitor_id: {
+                "visitor": None,
+                "sessions": [],
+                "connections": [],
+                "conversations": [],
+                "usage_events": [],
+                "telemetry": {"recent_ip": None, "device_count": 0},
+            }
+            for visitor_id in clean_ids
+        }
+        if not clean_ids:
+            return {
+                "items": details,
+                "history_budget": {
+                    "max_rows": cap,
+                    "returned_rows": 0,
+                    "allocations": allocations,
+                    "returned_by_category": {category: 0 for category in categories},
+                },
+            }
+
+        placeholders = ",".join("?" for _ in clean_ids)
+        visitor_rows = self.conn.execute(
+            f"""
+            SELECT v.*,
+                   (SELECT ce.ip_address FROM connection_events ce
+                    WHERE ce.visitor_id=v.visitor_id
+                    ORDER BY ce.observed_at DESC LIMIT 1) AS recent_ip,
+                   (SELECT COUNT(DISTINCT ce.fingerprint_hmac) FROM connection_events ce
+                    WHERE ce.visitor_id=v.visitor_id) AS device_count
+            FROM visitors v WHERE v.visitor_id IN ({placeholders})
+            """,
+            tuple(clean_ids),
+        ).fetchall()
+        for row in visitor_rows:
+            item = dict(row)
+            visitor_id = item["visitor_id"]
+            recent_ip = item.pop("recent_ip")
+            device_count = int(item.pop("device_count"))
+            item["client_meta"] = json_loads(item.pop("client_meta_json"), {})
+            details[visitor_id]["visitor"] = item
+            details[visitor_id]["telemetry"] = {
+                "recent_ip": recent_ip,
+                "device_count": device_count,
+            }
+
+        returned_by_category = {category: 0 for category in categories}
+        session_budget = allocations["sessions"]
+        if session_budget:
+            rows = self.conn.execute(
+                f"""
+                SELECT visitor_id,session_id,created_at,last_seen,client_meta_json
+                FROM visitor_sessions WHERE visitor_id IN ({placeholders})
+                ORDER BY last_seen DESC,session_id ASC LIMIT ?
+                """,
+                (*clean_ids, session_budget),
+            ).fetchall()
+            returned_by_category["sessions"] = len(rows)
+            for row in rows:
+                item = dict(row)
+                visitor_id = item.pop("visitor_id")
+                item["client_meta"] = json_loads(item.pop("client_meta_json"), {})
+                details[visitor_id]["sessions"].append(item)
+
+        connection_budget = allocations["connections"]
+        if connection_budget:
+            rows = self.conn.execute(
+                f"""
+                SELECT connection_id,visitor_id,session_id,ip_address,user_agent,browser,
+                       platform,device,language,fingerprint_hmac,observed_at
+                FROM connection_events WHERE visitor_id IN ({placeholders})
+                ORDER BY observed_at DESC,connection_id ASC LIMIT ?
+                """,
+                (*clean_ids, connection_budget),
+            ).fetchall()
+            returned_by_category["connections"] = len(rows)
+            for row in rows:
+                item = dict(row)
+                details[item["visitor_id"]]["connections"].append(item)
+
+        conversation_budget = allocations["conversations"]
+        if conversation_budget:
+            rows = self.conn.execute(
+                f"""
+                SELECT visitor_id,conversation_id,title,created_at,updated_at,last_route,
+                       last_model,research_status,message_count
+                FROM conversation_index WHERE visitor_id IN ({placeholders})
+                ORDER BY updated_at DESC,conversation_id ASC LIMIT ?
+                """,
+                (*clean_ids, conversation_budget),
+            ).fetchall()
+            returned_by_category["conversations"] = len(rows)
+            for row in rows:
+                item = dict(row)
+                visitor_id = item.pop("visitor_id")
+                details[visitor_id]["conversations"].append(item)
+
+        usage_budget = allocations["usage_events"]
+        if usage_budget:
+            rows = self.conn.execute(
+                f"""
+                SELECT event_id,visitor_id,conversation_id,request_id,event_type,route,model,
+                       research_status,evidence_count,status,created_at,metadata_json
+                FROM usage_events WHERE visitor_id IN ({placeholders})
+                ORDER BY created_at DESC,event_id ASC LIMIT ?
+                """,
+                (*clean_ids, usage_budget),
+            ).fetchall()
+            returned_by_category["usage_events"] = len(rows)
+            for row in rows:
+                item = dict(row)
+                stored_metadata = json_loads(item.pop("metadata_json"), {})
+                safe_metadata = _safe_usage_metadata(stored_metadata)
+                item["metadata"] = safe_metadata if isinstance(safe_metadata, dict) else {}
+                details[item["visitor_id"]]["usage_events"].append(item)
+
+        return {
+            "items": details,
+            "history_budget": {
+                "max_rows": cap,
+                "returned_rows": sum(returned_by_category.values()),
+                "allocations": allocations,
+                "returned_by_category": returned_by_category,
+            },
+        }
+
+    @_serialized
     def visitor_admin_detail(
         self, visitor_id: str, *, nested_limit: int = 200
     ) -> dict[str, Any] | None:
@@ -756,6 +1001,7 @@ class VisitorStore:
             "usage_events": usage,
         }
 
+    @_serialized
     def visitor_detail(self, visitor_id: str, *, conv_limit: int = 50) -> dict[str, Any] | None:
         row = self.conn.execute(
             "SELECT * FROM visitors WHERE visitor_id=?",
@@ -770,6 +1016,7 @@ class VisitorStore:
         )
         return data
 
+    @_serialized
     def list_recent_conversations(self, *, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
         rows = self.conn.execute(
             """

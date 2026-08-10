@@ -2,13 +2,160 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import sqlite3
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 import pytest
 from fastapi import Request, Response
 
 from api_batch3_routes import ensure_visitor_session
-from defend_data.visitor_store import client_ip
+from defend_data.visitor_store import VisitorStore, client_ip
+
+
+def test_shared_visitor_store_serializes_parallel_observation_writes(visitor_store):
+    worker_count = 16
+    start = threading.Barrier(worker_count)
+
+    def observe(index: int) -> None:
+        meta = {
+            "browser": "other",
+            "platform": "linux",
+            "device": "desktop",
+            "language": "en-us",
+        }
+        start.wait()
+        visitor_id = visitor_store.ensure_visitor(
+            None,
+            fingerprint=f"fp_parallel_{index}",
+            client_meta=meta,
+        )
+        session_id = visitor_store.ensure_session(
+            None,
+            visitor_id,
+            client_meta=meta,
+        )
+        visitor_store.record_connection(
+            visitor_id=visitor_id,
+            session_id=session_id,
+            ip_address=f"203.0.113.{index + 1}",
+            user_agent=f"ParallelBrowser/{index}",
+            client_meta=meta,
+            cookie_hash=f"cookie_parallel_{index}",
+        )
+        visitor_store.record_event(
+            event_type="parallel_observation",
+            visitor_id=visitor_id,
+            metadata={"worker": index},
+        )
+
+    with ThreadPoolExecutor(max_workers=worker_count) as pool:
+        futures = [pool.submit(observe, index) for index in range(worker_count)]
+        for future in futures:
+            future.result()
+
+    overview = visitor_store.overview()
+    assert overview["visitors"] == worker_count
+    assert overview["sessions"] == worker_count
+    assert overview["usage_events"] == worker_count
+    assert visitor_store.conn.execute(
+        "SELECT COUNT(*) FROM connection_events"
+    ).fetchone()[0] == worker_count
+
+
+def test_conversation_existence_is_checked_through_the_serialized_store(visitor_store):
+    visitor_id = visitor_store.ensure_visitor(
+        None,
+        fingerprint="fp_conversation_exists",
+        client_meta={"browser": "other"},
+    )
+    session_id = visitor_store.ensure_session(
+        None, visitor_id, client_meta={"browser": "other"}
+    )
+    assert visitor_store.claim_or_verify_conversation(
+        conversation_id="conversation_exists",
+        visitor_id=visitor_id,
+        session_id=session_id,
+    )
+
+    assert visitor_store.conversation_exists("conversation_exists")
+    assert not visitor_store.conversation_exists("conversation_missing")
+
+
+def test_newer_visitor_schema_is_rejected(data_paths):
+    with sqlite3.connect(data_paths.db / "visitors.db") as conn:
+        conn.executescript(
+            """
+            CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            INSERT INTO schema_meta(key,value) VALUES('schema_version','99');
+            """
+        )
+
+    with pytest.raises(RuntimeError, match="newer visitor schema version 99"):
+        VisitorStore(data_paths)
+
+
+def test_current_visitor_schema_is_not_rewritten(data_paths, monkeypatch):
+    monkeypatch.setenv(
+        "DEFEND_VISITOR_HMAC_KEY",
+        "test-key-with-at-least-thirty-two-characters",
+    )
+    VisitorStore(data_paths).close()
+    with sqlite3.connect(data_paths.db / "visitors.db") as conn:
+        conn.executescript(
+            """
+            CREATE TRIGGER schema_meta_no_insert
+            BEFORE INSERT ON schema_meta
+            BEGIN SELECT RAISE(ABORT, 'schema version is immutable'); END;
+            CREATE TRIGGER schema_meta_no_update
+            BEFORE UPDATE ON schema_meta
+            BEGIN SELECT RAISE(ABORT, 'schema version is immutable'); END;
+            CREATE TRIGGER schema_meta_no_delete
+            BEFORE DELETE ON schema_meta
+            BEGIN SELECT RAISE(ABORT, 'schema version is immutable'); END;
+            """
+        )
+
+    VisitorStore(data_paths).close()
+
+
+def test_failed_visitor_v1_migration_rolls_back_schema_changes(data_paths, monkeypatch):
+    monkeypatch.setenv(
+        "DEFEND_VISITOR_HMAC_KEY",
+        "test-key-with-at-least-thirty-two-characters",
+    )
+    VisitorStore(data_paths).close()
+    with sqlite3.connect(data_paths.db / "visitors.db") as conn:
+        conn.executescript(
+            """
+            DROP INDEX idx_connection_events_visitor;
+            DROP INDEX idx_connection_events_session;
+            DROP INDEX idx_connection_events_ip;
+            DROP INDEX idx_connection_events_observed;
+            DROP TABLE connection_events;
+            UPDATE schema_meta SET value='1' WHERE key='schema_version';
+            CREATE TRIGGER schema_meta_block_insert
+            BEFORE INSERT ON schema_meta
+            BEGIN SELECT RAISE(ABORT, 'migration failure'); END;
+            CREATE TRIGGER schema_meta_block_update
+            BEFORE UPDATE ON schema_meta
+            BEGIN SELECT RAISE(ABORT, 'migration failure'); END;
+            """
+        )
+
+    with pytest.raises(sqlite3.IntegrityError, match="migration failure"):
+        VisitorStore(data_paths)
+
+    with sqlite3.connect(data_paths.db / "visitors.db") as conn:
+        version = conn.execute(
+            "SELECT value FROM schema_meta WHERE key='schema_version'"
+        ).fetchone()[0]
+        connection_table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='connection_events'"
+        ).fetchone()
+    assert version == "1"
+    assert connection_table is None
 
 
 def test_connection_persists_full_observation_without_raw_cookie(visitor_store):
