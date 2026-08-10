@@ -22,7 +22,7 @@ from model_factory import build_model_client
 from admin_auth import AdminPrincipal, configure_identity_store, require_admin
 from api_admin_tt_routes import router as admin_tt_router
 from api_batch3_routes import router as batch3_router, ensure_visitor_session
-from api_identity_routes import router as identity_router
+from api_identity_routes import SensitivePathRedactionMiddleware, router as identity_router
 from defend_data import DataCore
 from defend_data.ingest_policy import AIIngestExcluded, assert_ai_ingest_allowed
 
@@ -298,6 +298,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(SensitivePathRedactionMiddleware)
 
 
 # Additive server-side admin login + owner-only TableTennis routes.

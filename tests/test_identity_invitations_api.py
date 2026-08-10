@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -8,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import admin_auth
+import api_identity_routes
 import defend_data.identity_store as identity_store_module
 from admin_auth import AdminPrincipal
 from api_identity_routes import router
@@ -94,6 +96,34 @@ def test_invitation_is_single_use_and_expires_in_exactly_48_hours(
     )
     assert reused.status_code == 410
     assert reused.json() == {"detail": "Invitation is unavailable"}
+
+
+def test_initial_account_and_invitation_are_created_atomically(
+    client, admin_headers, identity
+):
+    identity.conn.executescript(
+        """
+        CREATE TRIGGER fail_test_initial_invitation
+        BEFORE INSERT ON invitations
+        WHEN NEW.email='atomic-failure@example.com'
+        BEGIN
+            SELECT RAISE(ABORT, 'simulated invitation insert failure');
+        END;
+        """
+    )
+
+    with pytest.raises(sqlite3.IntegrityError, match="simulated invitation"):
+        client.post(
+            "/api/admin/accounts",
+            headers=admin_headers,
+            json={
+                "email": "atomic-failure@example.com",
+                "display_name": "Atomic Failure",
+                "role": "user",
+            },
+        )
+
+    assert identity.get_account("atomic-failure@example.com") is None
 
 
 def test_resend_revokes_the_old_token_and_revoke_blocks_the_new_token(
@@ -245,6 +275,66 @@ def test_activation_failures_are_generic_and_rate_limited(client):
     )
     assert limited.status_code == 429
     assert limited.json() == {"detail": "Too many authentication attempts"}
+
+
+def test_activation_rate_limit_uses_trusted_cloudflare_client_ip(client, monkeypatch):
+    monkeypatch.setenv("DEFEND_TRUST_CLOUDFLARE", "true")
+    token = "invite_cloudflare_rate_limit"
+    for _ in range(5):
+        response = client.post(
+            f"/api/activate/{token}",
+            headers={"CF-Connecting-IP": "203.0.113.10"},
+            json={"password": "a sufficiently long password"},
+        )
+        assert response.status_code == 410
+
+    different_client = client.post(
+        f"/api/activate/{token}",
+        headers={"CF-Connecting-IP": "203.0.113.11"},
+        json={"password": "a sufficiently long password"},
+    )
+    assert different_client.status_code == 410
+
+
+def test_sensitive_activation_path_is_redacted_before_outer_access_logging():
+    middleware = getattr(
+        api_identity_routes,
+        "SensitivePathRedactionMiddleware",
+        None,
+    )
+    assert middleware is not None
+
+    inner = FastAPI()
+    inner.add_middleware(middleware)
+
+    @inner.get("/api/activate/{token}/status")
+    def status(token: str):
+        return {"received": bool(token)}
+
+    class CaptureScopeAfterResponse:
+        def __init__(self, app):
+            self.app = app
+            self.path = None
+            self.raw_path = None
+
+        async def __call__(self, scope, receive, send):
+            async def capture_at_response_start(message):
+                if message.get("type") == "http.response.start":
+                    self.path = scope.get("path")
+                    self.raw_path = scope.get("raw_path")
+                await send(message)
+
+            await self.app(scope, receive, capture_at_response_start)
+
+    captured = CaptureScopeAfterResponse(inner)
+    raw_token = "invite_raw-secret-token"
+    with TestClient(captured) as redaction_client:
+        response = redaction_client.get(f"/api/activate/{raw_token}/status")
+
+    assert response.status_code == 200
+    assert captured.path == "/api/activate/[redacted]/status"
+    assert captured.raw_path == b"/api/activate/[redacted]/status"
+    assert raw_token not in captured.path
 
 
 def test_admin_cannot_invite_an_admin_account(client, identity, owner):

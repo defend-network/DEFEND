@@ -24,6 +24,7 @@ from defend_data.identity_store import (
     InvitationRecord,
     RoleViolation,
 )
+from defend_data.visitor_store import client_ip
 
 
 router = APIRouter()
@@ -31,6 +32,38 @@ router = APIRouter()
 _ACCOUNT_COOKIE = "defend_account_session"
 _RATE_LIMIT_ATTEMPTS = 5
 _RATE_LIMIT_WINDOW_SECONDS = 60.0
+
+
+class SensitivePathRedactionMiddleware:
+    """Remove raw activation tokens before outer server access logging."""
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send) -> None:
+        path = scope.get("path", "") if scope.get("type") == "http" else ""
+        sensitive = path.startswith("/api/activate/")
+
+        def redact() -> None:
+            if not sensitive:
+                return
+            suffix = "/status" if path.endswith("/status") else ""
+            redacted = f"/api/activate/[redacted]{suffix}"
+            scope["path"] = redacted
+            scope["raw_path"] = redacted.encode("ascii")
+
+        async def redact_before_response(message) -> None:
+            if message.get("type") == "http.response.start":
+                redact()
+            await send(message)
+
+        try:
+            await self.app(scope, receive, redact_before_response)
+        except Exception:
+            # Starlette's outer error middleware may generate the response;
+            # redact before control returns to that logging boundary as well.
+            redact()
+            raise
 
 
 class _BoundedRateLimiter:
@@ -100,8 +133,14 @@ def _limiter(request: Request, name: str) -> _BoundedRateLimiter:
 
 
 def _client_ip(request: Request) -> str:
-    host = request.client.host if request.client is not None else "unknown"
-    return (host or "unknown").strip().casefold()[:128] or "unknown"
+    headers = {key.lower(): value for key, value in request.headers.items()}
+    observed = request.client.host if request.client is not None else None
+    trust_cloudflare = os.getenv("DEFEND_TRUST_CLOUDFLARE", "false").strip().lower()
+    return client_ip(
+        headers,
+        observed,
+        trust_cloudflare=trust_cloudflare in {"1", "true", "yes", "on"},
+    )
 
 
 def _rate_key(request: Request, identifier: str) -> str:
@@ -234,14 +273,10 @@ def create_account(
 ) -> dict[str, object]:
     store = _identity_store(request)
     try:
-        account = store.create_account(
+        account, invitation, token = store.create_account_with_invitation(
             email=body.email,
             display_name=body.display_name,
             role=body.role,
-            created_by=principal.account_id,
-        )
-        invitation, token = store.create_invitation(
-            account_id=account.account_id,
             created_by=principal.account_id,
         )
     except RoleViolation as exc:

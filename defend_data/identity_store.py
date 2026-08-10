@@ -411,6 +411,84 @@ class IdentityStore:
         return account
 
     @_serialized
+    def create_account_with_invitation(
+        self,
+        *,
+        email: str,
+        display_name: str,
+        role: AccountRole,
+        created_by: str,
+    ) -> tuple[AccountRecord, InvitationRecord, str]:
+        """Atomically create a pending account and its initial invitation."""
+        if role not in self.VALID_ROLES:
+            raise ValueError("invalid account role")
+        normalized = normalize_email(email)
+        clean_name = self._clean_display_name(display_name)
+        now_dt = datetime.now(timezone.utc)
+        now = now_dt.isoformat()
+        account_id = f"acct_{uuid.uuid4().hex}"
+        invitation_id = f"inv_{uuid.uuid4().hex}"
+        token, stored_hash = new_token("invite")
+        try:
+            with transaction(self.conn, immediate=True):
+                self._authorized_creator(created_by, role)
+                self.conn.execute(
+                    """
+                    INSERT INTO accounts(
+                        account_id,email,username,display_name,role,status,password_hash,
+                        created_by,created_at,updated_at
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        account_id,
+                        normalized,
+                        None,
+                        clean_name,
+                        role,
+                        "pending_activation",
+                        None,
+                        created_by,
+                        now,
+                        now,
+                    ),
+                )
+                self.conn.execute(
+                    """
+                    INSERT INTO invitations(
+                        invitation_id,account_id,email,intended_role,token_hash,created_by,
+                        created_at,expires_at
+                    ) VALUES(?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        invitation_id,
+                        account_id,
+                        normalized,
+                        role,
+                        stored_hash,
+                        created_by,
+                        now,
+                        (now_dt + timedelta(hours=48)).isoformat(),
+                    ),
+                )
+        except sqlite3.IntegrityError as exc:
+            message = str(exc).lower()
+            if "accounts.email" in message:
+                raise ValueError("email already exists") from exc
+            raise
+        account_row = self.conn.execute(
+            "SELECT * FROM accounts WHERE account_id=?", (account_id,)
+        ).fetchone()
+        invitation_row = self.conn.execute(
+            "SELECT * FROM invitations WHERE invitation_id=?", (invitation_id,)
+        ).fetchone()
+        assert account_row is not None and invitation_row is not None
+        return (
+            self._account_from_row(account_row),
+            self._invitation_from_row(invitation_row),
+            token,
+        )
+
+    @_serialized
     def disable_account(self, *, actor: object, target_id: str) -> AccountRecord:
         """Disable a user/admin while enforcing authority from persisted roles."""
         actor_id = (
