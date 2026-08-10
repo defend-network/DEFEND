@@ -23,6 +23,7 @@ from admin_auth import AdminPrincipal, require_admin
 from api_admin_tt_routes import router as admin_tt_router
 from api_batch3_routes import router as batch3_router, ensure_visitor_session
 from defend_data import DataCore
+from defend_data.ingest_policy import AIIngestExcluded, assert_ai_ingest_allowed
 
 from production_policy import ProductionPolicy
 
@@ -497,7 +498,8 @@ async def upload_files(
         from documents_store import save_document, content_hash_bytes  # type: ignore
 
     for f in files:
-        raw_name = Path(f.filename or "upload.bin").name
+        filename = f.filename or "upload.bin"
+        raw_name = Path(filename).name
         ext = Path(raw_name).suffix.lower()
         if ext not in ALLOWED_EXT:
             raise HTTPException(status_code=400, detail=f"Extension not allowed: {ext}")
@@ -506,6 +508,10 @@ async def upload_files(
         data = await f.read()
         if len(data) > 25_000_000:
             raise HTTPException(status_code=400, detail=f"File too large: {raw_name}")
+        try:
+            assert_ai_ingest_allowed(filename=filename, content_prefix=data[:4096])
+        except AIIngestExcluded as e:
+            raise HTTPException(status_code=400, detail=str(e))
         dest.write_bytes(data)
 
         # Register in DocumentsStore so documents.read / search can resolve the ID
