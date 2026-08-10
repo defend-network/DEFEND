@@ -1,0 +1,39 @@
+DEFEND32B — ORIGINAL BACKEND + NEXT UI
+
+Your control_plane, tools, research V2, RAG, Modelfile identity are preserved.
+
+=== Terminal A — Ollama ===
+ollama serve
+# if needed: ollama create defend-ai -f Modelfile
+
+=== Terminal B — Agent API (required for website chat) ===
+cd C:\Users\thoma\Downloads\DEFEND32B
+$env:DEFEND_MODEL="defend-ai:latest"
+$env:TAVILY_API_KEY="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"
+$env:DEFEND_NUM_CTX="8192"
+$env:DEFEND_NUM_PREDICT="1024"
+python api_server.py
+
+=== Terminal C — Website ===
+cd C:\Users\thoma\Downloads\DEFEND32B\defend-ui-v2
+npm.cmd install
+npm.cmd run dev
+
+=== Tunnel ===
+ai.defend-network.org  -> http://127.0.0.1:3000
+api.defend-network.org -> http://127.0.0.1:8000
+
+Open: https://ai.defend-network.org
+
+Chat path:
+  Browser -> /api/chat on same host
+  Next rewrite -> 127.0.0.1:8000
+  api_server -> ControlPlane -> defend-ai
+
+=== Optional Gradio lab ===
+python ui_app.py
+-> http://127.0.0.1:7860
+
+=== Smoke test API alone ===
+curl.exe http://127.0.0.1:8000/health
+curl.exe -X POST http://127.0.0.1:8000/api/chat -H "Content-Type: application/json" -d "{\"message\":\"Who is an American?\",\"conversation_id\":\"t1\",\"document_ids\":[]}"

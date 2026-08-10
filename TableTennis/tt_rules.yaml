@@ -1,0 +1,31 @@
+# Owner-only table-tennis advisory rules.
+# The system never places a wager; operators act manually.
+
+bankroll:
+  max_stake_pct: 0.01
+  daily_loss_stop_pct: 0.03
+
+hard:
+  require_not_yet_two_zero: true
+  min_prob_reach_2_0_within_4_points: 0.80
+  allow_only_if_leader_can_still_make_2_0: true
+
+soft:
+  second_set_margin_momentum:
+    weight: 0.15
+  rank_delta_leader_favorite:
+    weight: 0.10
+  h2h_leader:
+    weight: 0.10
+
+soft_score_floor: 0.55
+max_model_adjust: 0.08
+
+# Value is surfaced separately. It does not alter the hard gate unless explicitly enabled.
+value:
+  require_positive_edge: false
+  min_edge_pct: 0.0
+
+arb:
+  min_edge_pct: 0.5
+  min_hedge_lock_pct: 0.0

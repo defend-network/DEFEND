@@ -1,0 +1,20 @@
+DEFEND AI — run instructions
+============================
+
+1) Ensure model has your Modelfile identity:
+   ollama create defend-ai -f Modelfile
+
+2) Start UI (from this folder):
+   $env:DEFEND_MODEL="defend-ai:latest"
+   $env:TAVILY_API_KEY="your-key"   # optional
+   python ui_app.py
+
+3) Open http://127.0.0.1:7860
+   Tunnel: cloudflared tunnel run defend-ai
+
+4) Identity test:
+   Who are you?
+   Who is an American?
+
+ControlPlane DIRECT/finalize paths now inject defend_system.get_system_prompt()
+(the same identity as Modelfile SYSTEM). Do not use a one-line system prompt.
