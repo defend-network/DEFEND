@@ -99,6 +99,45 @@ def test_ensure_visitor_session_records_peer_ip_and_keyed_cookie_ids(
     assert raw_auth_cookie not in "|".join(str(value) for value in row.values())
 
 
+@pytest.mark.parametrize(
+    ("configured_value", "expected_ip"),
+    [
+        ("true", "198.51.100.99"),
+        ("TRUE", "198.51.100.99"),
+        ("1", "203.0.113.8"),
+        ("yes", "203.0.113.8"),
+        ("on", "203.0.113.8"),
+    ],
+)
+def test_request_path_trusts_cloudflare_only_for_literal_true(
+    visitor_store,
+    monkeypatch,
+    configured_value,
+    expected_ip,
+):
+    monkeypatch.setenv("DEFEND_TRUST_CLOUDFLARE", configured_value)
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            defend_data=SimpleNamespace(visitors=visitor_store),
+        )
+    )
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": "/api/conversations",
+        "headers": [(b"cf-connecting-ip", b"198.51.100.99")],
+        "client": ("203.0.113.8", 43120),
+        "app": app,
+    }
+
+    ensure_visitor_session(Request(scope), Response())
+
+    row = visitor_store.conn.execute(
+        "SELECT ip_address FROM connection_events"
+    ).fetchone()
+    assert row["ip_address"] == expected_ip
+
+
 def test_purge_connection_history_deletes_only_rows_before_cutoff(visitor_store):
     old_id = visitor_store.record_connection(
         visitor_id="vis_old",

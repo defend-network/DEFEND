@@ -33,6 +33,10 @@ def _truthy_env(name: str, default: str = "false") -> bool:
     return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _trust_cloudflare() -> bool:
+    return os.getenv("DEFEND_TRUST_CLOUDFLARE", "false").strip().lower() == "true"
+
+
 def _set_cookie(response: Response, name: str, value: str) -> None:
     response.set_cookie(
         name,
@@ -52,7 +56,7 @@ def ensure_visitor_session(request: Request, response: Response) -> tuple[str, s
     ip = client_ip(
         headers,
         observed,
-        trust_cloudflare=_truthy_env("DEFEND_TRUST_CLOUDFLARE", "false"),
+        trust_cloudflare=_trust_cloudflare(),
     )
     meta = coarse_client_meta(
         request.headers.get("user-agent"),
