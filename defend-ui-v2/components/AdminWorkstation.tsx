@@ -167,7 +167,10 @@ export function AdminWorkstation() {
       </header>
 
       <div className="admin-layout">
-        <aside className="admin-nav">
+        <aside
+          className="admin-nav admin-nav--responsive"
+          aria-label="Admin navigation"
+        >
           <div className="admin-nav-title">Workstation</div>
           {navItems.map((item) => {
             const Icon = item.icon;

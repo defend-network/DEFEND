@@ -52,6 +52,9 @@ it("opens the real identity workspace in its responsive main region", async () =
   const user = userEvent.setup();
   render(<AdminWorkstation />);
 
+  expect(
+    await screen.findByRole("complementary", { name: "Admin navigation" }),
+  ).toHaveClass("admin-nav--responsive");
   await user.click(await screen.findByRole("button", { name: "Users & Roles" }));
 
   expect(await screen.findByRole("tab", { name: "Accounts" })).toBeVisible();
