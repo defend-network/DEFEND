@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 import threading
 import uuid
@@ -96,6 +97,15 @@ class IdentityStore:
 
     VALID_ROLES = {"owner", "admin", "user"}
     VALID_STATUSES = {"pending_activation", "active", "disabled", "anonymized"}
+    _AUDIT_SENSITIVE_KEYS = {
+        "password",
+        "token",
+        "cookie",
+        "authorization",
+        "secret",
+    }
+    _AUDIT_PAYLOAD_FORMAT = "identity_audit_v1"
+    _MAX_AUDIT_PAYLOAD_BYTES = 16 * 1024
 
     def __init__(self, paths: DataPaths):
         self._lock = threading.RLock()
@@ -534,6 +544,204 @@ class IdentityStore:
             assert refreshed is not None
             disabled = self._account_from_row(refreshed)
         return disabled
+
+    @_serialized
+    def link_visitor(
+        self,
+        *,
+        account_id: str,
+        visitor_id: str,
+        linked_at: str | None = None,
+    ) -> None:
+        clean_account_id = (account_id or "").strip()
+        clean_visitor_id = (visitor_id or "").strip()
+        if not clean_account_id:
+            raise ValueError("account_id must not be empty")
+        if not clean_visitor_id:
+            raise ValueError("visitor_id must not be empty")
+        observed_at = linked_at or utc_now()
+        with transaction(self.conn, immediate=True):
+            self.conn.execute(
+                """
+                INSERT OR IGNORE INTO account_visitor_links(
+                    account_id,visitor_id,linked_at,last_seen_at
+                ) VALUES(?,?,?,?)
+                """,
+                (
+                    clean_account_id,
+                    clean_visitor_id,
+                    observed_at,
+                    observed_at,
+                ),
+            )
+
+    @_serialized
+    def list_linked_visitors(self, account_id: str) -> list[str]:
+        rows = self.conn.execute(
+            """
+            SELECT visitor_id
+            FROM account_visitor_links
+            WHERE account_id=?
+            ORDER BY linked_at DESC,visitor_id ASC
+            """,
+            ((account_id or "").strip(),),
+        ).fetchall()
+        return [str(row["visitor_id"]) for row in rows]
+
+    @classmethod
+    def _validate_audit_payload(cls, value: object) -> None:
+        if isinstance(value, dict):
+            for key, nested in value.items():
+                normalized_key = str(key).casefold()
+                if any(secret in normalized_key for secret in cls._AUDIT_SENSITIVE_KEYS):
+                    raise ValueError("audit payload contains a sensitive key")
+                cls._validate_audit_payload(nested)
+        elif isinstance(value, (list, tuple)):
+            for nested in value:
+                cls._validate_audit_payload(nested)
+
+    @staticmethod
+    def _required_audit_text(name: str, value: object) -> str:
+        cleaned = str(value or "").strip()
+        if not cleaned:
+            raise ValueError(f"{name} must not be empty")
+        return cleaned
+
+    @_serialized
+    def record_audit(
+        self,
+        *,
+        actor_account_id: str | None,
+        action: str,
+        target_type: str,
+        target_id: str | None,
+        outcome: str,
+        request_id: str | None = None,
+        client_context: dict | None = None,
+        metadata: dict | None = None,
+    ) -> str:
+        if client_context is not None and not isinstance(client_context, dict):
+            raise ValueError("client_context must be an object")
+        if metadata is not None and not isinstance(metadata, dict):
+            raise ValueError("metadata must be an object")
+        safe_client_context = client_context or {}
+        safe_metadata = metadata or {}
+        self._validate_audit_payload(safe_client_context)
+        self._validate_audit_payload(safe_metadata)
+        payload = {
+            "_format": self._AUDIT_PAYLOAD_FORMAT,
+            "client_context": safe_client_context,
+            "metadata": safe_metadata,
+        }
+        try:
+            encoded_payload = json.dumps(
+                payload,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError("audit payload must be JSON serializable") from exc
+        if len(encoded_payload.encode("utf-8")) > self._MAX_AUDIT_PAYLOAD_BYTES:
+            raise ValueError("audit payload is too large")
+        event_id = f"audit_{uuid.uuid4().hex}"
+        actor_id = (actor_account_id or "").strip() or None
+        clean_target_id = None if target_id is None else str(target_id).strip() or None
+        clean_request_id = None if request_id is None else str(request_id).strip() or None
+        self.conn.execute(
+            """
+            INSERT INTO audit_events(
+                event_id,actor_account_id,action,target_type,target_id,outcome,
+                request_id,created_at,metadata_json
+            ) VALUES(?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                event_id,
+                actor_id,
+                self._required_audit_text("action", action),
+                self._required_audit_text("target_type", target_type),
+                clean_target_id,
+                self._required_audit_text("outcome", outcome),
+                clean_request_id,
+                utc_now(),
+                encoded_payload,
+            ),
+        )
+        self.conn.commit()
+        return event_id
+
+    @_serialized
+    def list_audit_events(
+        self,
+        *,
+        query: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[dict]:
+        if (
+            not isinstance(limit, int)
+            or isinstance(limit, bool)
+            or not 1 <= limit <= 100
+        ):
+            raise ValueError("limit must be between 1 and 100")
+        if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0:
+            raise ValueError("offset must be zero or greater")
+
+        clean_query = (query or "").strip().casefold()
+        parameters: list[object] = []
+        where = ""
+        if clean_query:
+            pattern = f"%{clean_query}%"
+            where = """
+                WHERE lower(coalesce(actor_account_id,'')) LIKE ?
+                   OR lower(action) LIKE ?
+                   OR lower(target_type) LIKE ?
+                   OR lower(coalesce(target_id,'')) LIKE ?
+                   OR lower(outcome) LIKE ?
+                   OR lower(coalesce(request_id,'')) LIKE ?
+            """
+            parameters.extend([pattern] * 6)
+        parameters.extend([limit, offset])
+        rows = self.conn.execute(
+            f"""
+            SELECT * FROM audit_events
+            {where}
+            ORDER BY created_at DESC,rowid DESC
+            LIMIT ? OFFSET ?
+            """,
+            parameters,
+        ).fetchall()
+
+        events: list[dict] = []
+        for row in rows:
+            try:
+                stored_payload = json.loads(row["metadata_json"])
+            except (TypeError, ValueError):
+                stored_payload = {}
+            if (
+                isinstance(stored_payload, dict)
+                and stored_payload.get("_format") == self._AUDIT_PAYLOAD_FORMAT
+            ):
+                stored_context = stored_payload.get("client_context", {})
+                stored_metadata = stored_payload.get("metadata", {})
+            else:
+                stored_context = {}
+                stored_metadata = stored_payload if isinstance(stored_payload, dict) else {}
+            events.append(
+                {
+                    "event_id": row["event_id"],
+                    "actor_account_id": row["actor_account_id"],
+                    "action": row["action"],
+                    "target_type": row["target_type"],
+                    "target_id": row["target_id"],
+                    "outcome": row["outcome"],
+                    "request_id": row["request_id"],
+                    "created_at": row["created_at"],
+                    "client_context": stored_context,
+                    "metadata": stored_metadata,
+                }
+            )
+        return events
 
     @_serialized
     def bootstrap_owner(
