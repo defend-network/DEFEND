@@ -269,6 +269,34 @@ export const adminResearch = (token: string, question: string) =>
 
 export type AdminRole = "admin" | "owner";
 
+export type ActivationStatus =
+  | "pending"
+  | "expired"
+  | "consumed"
+  | "revoked"
+  | "invalid";
+
+export type ActivationStatusResponse = {
+  status: ActivationStatus;
+  expires_at?: string;
+  email?: string;
+  display_name?: string | null;
+};
+
+export type ActivatedAccount = {
+  account_id: string;
+  email: string;
+  display_name: string | null;
+  role: "admin" | "owner" | "user";
+  status: "active";
+  created_at: string;
+  last_access_at: string | null;
+};
+
+export type ActivateAccountResponse = {
+  account: ActivatedAccount;
+};
+
 export type AdminLoginResponse = {
   username: string;
   role: AdminRole;
@@ -284,6 +312,17 @@ export const adminLogin = (username: string, password: string) =>
   json<AdminLoginResponse>("/api/admin/login", {
     method: "POST",
     body: JSON.stringify({ username, password }),
+  });
+
+export const activationStatus = (token: string) =>
+  json<ActivationStatusResponse>(
+    `/api/activate/${encodeURIComponent(token)}/status`
+  );
+
+export const activateAccount = (token: string, password: string) =>
+  json<ActivateAccountResponse>(`/api/activate/${encodeURIComponent(token)}`, {
+    method: "POST",
+    body: JSON.stringify({ password }),
   });
 
 export const adminLogout = (token: string) =>
