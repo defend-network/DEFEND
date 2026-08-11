@@ -13,6 +13,7 @@ import pytest
 
 import defend_control.health as health_module
 import defend_control.processes as processes_module
+import defend_control.windows_job as windows_job_module
 from defend_control.health import probe_http
 from defend_control.processes import LogBuffer, ProcessSpec, ProcessSupervisor
 from defend_control.windows_job import WindowsJob
@@ -771,3 +772,370 @@ time.sleep(30)
         for pid in observed:
             if _windows_process_running(pid):
                 _terminate_windows_process(pid)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows Job Objects only")
+def test_job_stop_finds_orphan_from_unknown_short_lived_intermediary(
+    tmp_path,
+):
+    trigger = tmp_path / "spawn-intermediary"
+    intermediary_done = tmp_path / "intermediary-done"
+    grandchild_file = tmp_path / "unknown-grandchild.pid"
+    intermediary_script = """
+import os
+import pathlib
+import subprocess
+import sys
+
+child = subprocess.Popen(
+    [sys.executable, "-c", "import time;time.sleep(30)"],
+    stdin=subprocess.DEVNULL,
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+)
+pathlib.Path(os.environ["GRANDCHILD_FILE"]).write_text(
+    str(child.pid), encoding="utf-8"
+)
+"""
+    root_script = """
+import os
+import pathlib
+import subprocess
+import sys
+import time
+
+trigger = pathlib.Path(os.environ["TRIGGER"])
+while not trigger.exists():
+    time.sleep(0.005)
+subprocess.Popen(
+    [sys.executable, "-c", os.environ["INTERMEDIARY_SCRIPT"]],
+    stdin=subprocess.DEVNULL,
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+    env=os.environ,
+).wait()
+pathlib.Path(os.environ["INTERMEDIARY_DONE"]).write_text(
+    "done", encoding="utf-8"
+)
+time.sleep(30)
+"""
+    class RaceJob(WindowsJob):
+        first_observation = True
+
+        def _active_process_ids(self, job_handle: int) -> set[int]:
+            process_ids = super()._active_process_ids(job_handle)
+            if self.first_observation:
+                self.first_observation = False
+                trigger.write_text("spawn", encoding="utf-8")
+                deadline = time.monotonic() + 5
+                while (
+                    not intermediary_done.exists()
+                    and time.monotonic() < deadline
+                ):
+                    time.sleep(0.005)
+                assert intermediary_done.exists()
+            return process_ids
+
+    job = RaceJob()
+    supervisor = ProcessSupervisor(job=job)
+    grandchild_pid: int | None = None
+    try:
+        process = supervisor.start(
+            ProcessSpec(
+                "unknown-intermediary",
+                (sys.executable, "-c", root_script),
+                ROOT,
+                {
+                    "GRANDCHILD_FILE": str(grandchild_file),
+                    "INTERMEDIARY_DONE": str(intermediary_done),
+                    "INTERMEDIARY_SCRIPT": intermediary_script,
+                    "TRIGGER": str(trigger),
+                },
+                None,
+            )
+        )
+        job.terminate_tree(process)
+        process.wait(timeout=3)
+        assert intermediary_done.exists()
+        grandchild_pid = int(grandchild_file.read_text(encoding="utf-8"))
+
+        assert not _windows_process_running(grandchild_pid)
+    finally:
+        supervisor.close()
+        if grandchild_pid is not None and _windows_process_running(grandchild_pid):
+            _terminate_windows_process(grandchild_pid)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows Job Objects only")
+def test_stop_drains_job_descendant_after_root_already_exited(tmp_path):
+    child_file = tmp_path / "exited-root-child.pid"
+    root_script = """
+import os
+import pathlib
+import subprocess
+import sys
+
+child = subprocess.Popen(
+    [sys.executable, "-c", "import time;time.sleep(30)"],
+    stdin=subprocess.DEVNULL,
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+)
+pathlib.Path(os.environ["CHILD_FILE"]).write_text(
+    str(child.pid), encoding="utf-8"
+)
+"""
+    supervisor = ProcessSupervisor(job=WindowsJob())
+    child_pid: int | None = None
+    try:
+        root = supervisor.start(
+            ProcessSpec(
+                "exited-root",
+                (sys.executable, "-c", root_script),
+                ROOT,
+                {"CHILD_FILE": str(child_file)},
+                None,
+            )
+        )
+        root.wait(timeout=5)
+        child_pid = int(child_file.read_text(encoding="utf-8"))
+        assert _windows_process_running(child_pid)
+
+        assert supervisor.stop("exited-root") is True
+
+        assert not _windows_process_running(child_pid)
+    finally:
+        supervisor.close()
+        if child_pid is not None and _windows_process_running(child_pid):
+            _terminate_windows_process(child_pid)
+
+
+def test_windows_job_enumeration_failure_is_not_treated_as_empty(monkeypatch):
+    class FailingKernel:
+        @staticmethod
+        def QueryInformationJobObject(*_args) -> bool:
+            return False
+
+    job = object.__new__(WindowsJob)
+    job._kernel32 = FailingKernel()
+    job._lock = threading.Lock()
+    job._handle = None
+    monkeypatch.setattr(windows_job_module.ctypes, "get_last_error", lambda: 5)
+
+    with pytest.raises(OSError):
+        job._active_process_ids(123)
+
+
+def test_windows_job_close_failure_preserves_native_handle():
+    class CloseKernel:
+        succeeds = False
+
+        def CloseHandle(self, _handle: int) -> bool:
+            return self.succeeds
+
+    kernel = CloseKernel()
+    job = object.__new__(WindowsJob)
+    job._kernel32 = kernel
+    job._lock = threading.Lock()
+    job._handle = 123
+
+    with pytest.raises(OSError):
+        job.close()
+
+    assert job._handle == 123
+    kernel.succeeds = True
+    job.close()
+    assert job._handle is None
+
+
+def test_stop_all_preserves_generation_when_native_job_close_fails(
+    monkeypatch,
+):
+    jobs: list[object] = []
+
+    class CloseKernel:
+        def __init__(self, succeeds: bool) -> None:
+            self.succeeds = succeeds
+
+        def CloseHandle(self, _handle: int) -> bool:
+            return self.succeeds
+
+    class NativeCloseJob:
+        def __init__(self) -> None:
+            native = object.__new__(WindowsJob)
+            native._kernel32 = CloseKernel(succeeds=bool(jobs))
+            native._lock = threading.Lock()
+            native._handle = 100 + len(jobs)
+            self.native = native
+            self.stop_fails = not jobs
+            jobs.append(self)
+
+        def assign(self, _process: FakeProcess) -> None:
+            return None
+
+        def resume(self, _process: FakeProcess) -> None:
+            return None
+
+        def terminate_tree(self, process: FakeProcess) -> None:
+            if self.stop_fails:
+                raise OSError("synthetic-native-stop-detail")
+            process.terminate()
+
+        def close(self) -> None:
+            self.native.close()
+
+    monkeypatch.setattr(processes_module, "WindowsJob", NativeCloseJob)
+    fake_popen = FakePopen()
+    supervisor = ProcessSupervisor(popen=fake_popen)
+    supervisor.start(ProcessSpec("api", ("python", "api"), ROOT, {}, None))
+
+    with pytest.raises(RuntimeError) as raised:
+        supervisor.stop_all()
+
+    assert "OSError" in str(raised.value)
+    assert "synthetic-native-stop-detail" not in str(raised.value)
+    assert [item.name for item in supervisor.snapshot()] == ["api"]
+    assert supervisor._job is jobs[0]
+    assert jobs[0].native._handle == 100
+    assert jobs[1].native._handle is None
+
+    jobs[0].stop_fails = False
+    jobs[0].native._kernel32.succeeds = True
+    supervisor.stop_all()
+    assert supervisor.snapshot() == ()
+    supervisor.close()
+
+
+def test_stop_all_retains_replacement_when_its_disposal_close_fails(
+    monkeypatch,
+):
+    jobs: list[object] = []
+
+    class CloseKernel:
+        succeeds = False
+
+        def CloseHandle(self, _handle: int) -> bool:
+            return self.succeeds
+
+    class NativeCloseJob:
+        def __init__(self) -> None:
+            native = object.__new__(WindowsJob)
+            native._kernel32 = CloseKernel()
+            native._lock = threading.Lock()
+            native._handle = 200 + len(jobs)
+            self.native = native
+            self.stop_fails = not jobs
+            jobs.append(self)
+
+        def assign(self, _process: FakeProcess) -> None:
+            return None
+
+        def resume(self, _process: FakeProcess) -> None:
+            return None
+
+        def terminate_tree(self, process: FakeProcess) -> None:
+            if self.stop_fails:
+                raise OSError("synthetic-private-stop-detail")
+            process.terminate()
+
+        def close(self) -> None:
+            self.native.close()
+
+    monkeypatch.setattr(processes_module, "WindowsJob", NativeCloseJob)
+    process = FakeProcess()
+    supervisor = ProcessSupervisor(popen=lambda *_a, **_k: process)
+    supervisor.start(ProcessSpec("api", ("python", "api"), ROOT, {}, None))
+
+    with pytest.raises(RuntimeError) as raised:
+        supervisor.stop_all()
+
+    assert "OSError" in str(raised.value)
+    assert "synthetic-private" not in str(raised.value)
+    assert supervisor._job is jobs[0]
+    assert supervisor._retained_jobs == [jobs[1]]
+    assert [item.name for item in supervisor.snapshot()] == ["api"]
+
+    jobs[0].stop_fails = False
+    jobs[0].native._kernel32.succeeds = True
+    jobs[1].native._kernel32.succeeds = True
+    supervisor.stop_all()
+    assert jobs[1].native._handle is None
+    jobs[2].native._kernel32.succeeds = True
+    supervisor.close()
+
+
+def test_reader_start_rollback_failure_keeps_live_process_tracked(
+    fake_job, monkeypatch
+):
+    class UnstoppableProcess(FakeProcess):
+        def terminate(self) -> None:
+            raise OSError("synthetic-private-terminate-detail")
+
+        def kill(self) -> None:
+            raise OSError("synthetic-private-kill-detail")
+
+    class FailingThread:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def start(self) -> None:
+            raise RuntimeError("synthetic-private-reader-detail")
+
+    process = UnstoppableProcess()
+    monkeypatch.setattr(processes_module.threading, "Thread", FailingThread)
+    supervisor = ProcessSupervisor(job=fake_job, popen=lambda *_a, **_k: process)
+
+    try:
+        with pytest.raises(RuntimeError) as raised:
+            supervisor.start(
+                ProcessSpec("api", ("python", "api"), ROOT, {}, None)
+            )
+
+        assert [item.name for item in supervisor.snapshot()] == ["api"]
+        assert supervisor.snapshot()[0].running
+        assert "RuntimeError" in str(raised.value)
+        assert "synthetic-private" not in str(raised.value)
+    finally:
+        process.returncode = -9
+        supervisor.close()
+
+
+def test_blocking_pipe_close_cannot_hold_lifecycle_lock_indefinitely(fake_job):
+    close_started = threading.Event()
+    release_close = threading.Event()
+    stop_finished = threading.Event()
+    stop_errors: list[BaseException] = []
+
+    class BlockingCloseStream(StringIO):
+        def close(self) -> None:
+            close_started.set()
+            release_close.wait(10)
+            super().close()
+
+    process = FakeProcess()
+    process.stdout = BlockingCloseStream()
+    process.stderr = BlockingCloseStream()
+    supervisor = ProcessSupervisor(job=fake_job, popen=lambda *_a, **_k: process)
+    supervisor.start(ProcessSpec("api", ("python", "api"), ROOT, {}, None))
+
+    def stop() -> None:
+        try:
+            supervisor.stop("api")
+        except BaseException as error:
+            stop_errors.append(error)
+        finally:
+            stop_finished.set()
+
+    started = time.monotonic()
+    stop_thread = threading.Thread(target=stop)
+    stop_thread.start()
+    try:
+        assert close_started.wait(1)
+        assert stop_finished.wait(3)
+        assert time.monotonic() - started < 3
+    finally:
+        release_close.set()
+        stop_thread.join(timeout=2)
+        supervisor.close()
+
+    assert stop_errors == []

@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import deque
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
+import _thread
 import os
 from pathlib import Path
 import re
@@ -45,6 +46,7 @@ _SECRET_ARG_SHAPE = re.compile(
 )
 _MAX_LOG_READ_CHARS = 64 * 1024 + 1
 _CREATE_SUSPENDED = 0x00000004
+_IO_TEARDOWN_TIMEOUT_SECONDS = 2.0
 
 
 class _Job(Protocol):
@@ -183,6 +185,7 @@ class ProcessSupervisor:
             self._job_factory = WindowsJob
             job = self._job_factory()
         self._job = job
+        self._retained_jobs: list[_Job] = []
         self._popen = popen
         self.logs = logs or LogBuffer(
             max_entries=2_000, max_line_chars=4_096, known_secrets=()
@@ -230,39 +233,56 @@ class ProcessSupervisor:
             )
 
     @staticmethod
-    def _close_streams(streams: Iterable[IO[str]]) -> None:
+    def _teardown_io(
+        streams: Iterable[IO[str]], readers: Iterable[Any]
+    ) -> None:
+        deadline = time.monotonic() + _IO_TEARDOWN_TIMEOUT_SECONDS
+        close_events: list[threading.Event] = []
         for stream in streams:
-            try:
-                stream.close()
-            except Exception:
-                pass
+            complete = threading.Event()
+            close_events.append(complete)
 
-    @staticmethod
-    def _join_readers(readers: Iterable[Any]) -> None:
-        deadline = time.monotonic() + 2.0
+            def close_stream(
+                target: IO[str] = stream,
+                finished: threading.Event = complete,
+            ) -> None:
+                try:
+                    target.close()
+                except Exception:
+                    pass
+                finally:
+                    finished.set()
+
+            try:
+                _thread.start_new_thread(close_stream, ())
+            except Exception:
+                complete.set()
+
         for reader in readers:
             remaining = max(0.0, deadline - time.monotonic())
             try:
                 reader.join(timeout=remaining)
             except Exception:
                 pass
+        for complete in close_events:
+            complete.wait(max(0.0, deadline - time.monotonic()))
 
     def _rollback_reader_start(
         self,
-        process: Any,
-        streams: tuple[IO[str], ...],
-        readers: tuple[Any, ...],
-    ) -> None:
+        owned: _OwnedProcess,
+    ) -> bool:
+        terminated = False
         try:
-            self._terminate(process)
+            self._terminate(owned.process)
+            terminated = owned.process.poll() is not None
         except Exception:
             try:
-                process.kill()
-                process.wait(timeout=2)
+                owned.process.kill()
+                owned.process.wait(timeout=2)
             except Exception:
                 pass
-        self._close_streams(streams)
-        self._join_readers(readers)
+        self._teardown_io(owned.streams, owned.readers)
+        return terminated
 
     def start(self, spec: ProcessSpec) -> Any:
         if not isinstance(spec, ProcessSpec):
@@ -333,6 +353,8 @@ class ProcessSupervisor:
                 if stream is not None
             )
             streams = tuple(stream for _name, stream in named_streams)
+            owned = _OwnedProcess(process, spec, (), streams)
+            self._owned[spec.name] = owned
             readers: list[Any] = []
             started_readers: list[Any] = []
             try:
@@ -346,17 +368,15 @@ class ProcessSupervisor:
                     readers.append(reader)
                     reader.start()
                     started_readers.append(reader)
+                    owned.readers = tuple(started_readers)
             except Exception as error:
-                self._rollback_reader_start(
-                    process, streams, tuple(started_readers)
-                )
+                if self._rollback_reader_start(owned):
+                    self._owned.pop(spec.name, None)
                 raise RuntimeError(
                     "Could not start process log readers "
                     f"({_safe_error_type(error)})"
                 ) from None
-            self._owned[spec.name] = _OwnedProcess(
-                process, spec, tuple(readers), streams
-            )
+            owned.readers = tuple(readers)
             return process
 
     def observe_external(
@@ -374,16 +394,13 @@ class ProcessSupervisor:
             self._external[name] = _ExternalProcess(pid, health_url)
 
     def _terminate(self, process: Any) -> None:
-        if process.poll() is not None:
-            return
         terminate_tree = getattr(self._job, "terminate_tree", None)
         if callable(terminate_tree):
-            try:
-                terminate_tree(process)
-                process.wait(timeout=3)
-                return
-            except (OSError, RuntimeError, subprocess.TimeoutExpired):
-                pass
+            terminate_tree(process)
+            process.wait(timeout=3)
+            return
+        if process.poll() is not None:
+            return
         send_signal = getattr(process, "send_signal", None)
         if sys.platform == "win32" and callable(send_signal):
             try:
@@ -406,13 +423,11 @@ class ProcessSupervisor:
         try:
             self._terminate(owned.process)
         except Exception as error:
-            self._close_streams(owned.streams)
-            self._join_readers(owned.readers)
+            self._teardown_io(owned.streams, owned.readers)
             raise RuntimeError(
                 f"Could not stop {name} ({_safe_error_type(error)})"
             ) from None
-        self._close_streams(owned.streams)
-        self._join_readers(owned.readers)
+        self._teardown_io(owned.streams, owned.readers)
         self._owned.pop(name, None)
         return True
 
@@ -421,8 +436,25 @@ class ProcessSupervisor:
             return self._stop_locked(name)
 
     def _stop_all_locked(self, *, reset_job: bool) -> None:
+        retained_errors: list[BaseException] = []
+        still_retained: list[_Job] = []
+        for retained in self._retained_jobs:
+            try:
+                retained.close()
+            except Exception as error:
+                retained_errors.append(error)
+                still_retained.append(retained)
+        self._retained_jobs = still_retained
+
         names = tuple(reversed(self._owned))
-        first_error: RuntimeError | None = None
+        first_error: RuntimeError | None = (
+            RuntimeError(
+                "Could not dispose replacement process ownership "
+                f"({_safe_error_type(retained_errors[0])})"
+            )
+            if retained_errors
+            else None
+        )
         for name in names:
             try:
                 self._stop_locked(name)
@@ -443,7 +475,10 @@ class ProcessSupervisor:
                 try:
                     previous.close()
                 except Exception as error:
-                    replacement.close()
+                    try:
+                        replacement.close()
+                    except Exception:
+                        self._retained_jobs.append(replacement)
                     if first_error is None:
                         first_error = RuntimeError(
                             "Could not reset process ownership "
@@ -452,8 +487,7 @@ class ProcessSupervisor:
                 else:
                     self._job = replacement
                     for name, owned in tuple(self._owned.items()):
-                        self._close_streams(owned.streams)
-                        self._join_readers(owned.readers)
+                        self._teardown_io(owned.streams, owned.readers)
                         self._owned.pop(name, None)
         if first_error is not None:
             raise first_error

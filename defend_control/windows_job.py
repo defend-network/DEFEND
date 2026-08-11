@@ -9,9 +9,9 @@ from typing import Protocol
 
 
 _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
+_JOB_OBJECT_BASIC_PROCESS_ID_LIST = 3
 _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
 _TH32CS_SNAPTHREAD = 0x00000004
-_TH32CS_SNAPPROCESS = 0x00000002
 _THREAD_SUSPEND_RESUME = 0x0002
 _PROCESS_TERMINATE = 0x0001
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
@@ -20,6 +20,9 @@ _INVALID_HANDLE_VALUE = wintypes.HANDLE(-1).value
 _WAIT_OBJECT_0 = 0x00000000
 _WAIT_TIMEOUT = 0x00000102
 _WAIT_FAILED = 0xFFFFFFFF
+_ERROR_MORE_DATA = 234
+_ERROR_INVALID_PARAMETER = 87
+_MAX_JOB_PROCESS_IDS = 65_536
 _TERMINATE_TIMEOUT_SECONDS = 5.0
 
 
@@ -76,18 +79,11 @@ class _ThreadEntry32(ctypes.Structure):
     ]
 
 
-class _ProcessEntry32(ctypes.Structure):
+class _BasicProcessIdList(ctypes.Structure):
     _fields_ = [
-        ("dwSize", wintypes.DWORD),
-        ("cntUsage", wintypes.DWORD),
-        ("th32ProcessID", wintypes.DWORD),
-        ("th32DefaultHeapID", ctypes.c_size_t),
-        ("th32ModuleID", wintypes.DWORD),
-        ("cntThreads", wintypes.DWORD),
-        ("th32ParentProcessID", wintypes.DWORD),
-        ("pcPriClassBase", wintypes.LONG),
-        ("dwFlags", wintypes.DWORD),
-        ("szExeFile", wintypes.WCHAR * 260),
+        ("NumberOfAssignedProcesses", wintypes.DWORD),
+        ("NumberOfProcessIdsInList", wintypes.DWORD),
+        ("ProcessIdList", ctypes.c_size_t * 1),
     ]
 
 
@@ -108,6 +104,14 @@ class WindowsJob:
             wintypes.DWORD,
         ]
         self._kernel32.SetInformationJobObject.restype = wintypes.BOOL
+        self._kernel32.QueryInformationJobObject.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        self._kernel32.QueryInformationJobObject.restype = wintypes.BOOL
         self._kernel32.AssignProcessToJobObject.argtypes = [
             wintypes.HANDLE,
             wintypes.HANDLE,
@@ -138,16 +142,6 @@ class WindowsJob:
         self._kernel32.OpenThread.restype = wintypes.HANDLE
         self._kernel32.ResumeThread.argtypes = [wintypes.HANDLE]
         self._kernel32.ResumeThread.restype = wintypes.DWORD
-        self._kernel32.Process32FirstW.argtypes = [
-            wintypes.HANDLE,
-            ctypes.POINTER(_ProcessEntry32),
-        ]
-        self._kernel32.Process32FirstW.restype = wintypes.BOOL
-        self._kernel32.Process32NextW.argtypes = [
-            wintypes.HANDLE,
-            ctypes.POINTER(_ProcessEntry32),
-        ]
-        self._kernel32.Process32NextW.restype = wintypes.BOOL
         self._kernel32.OpenProcess.argtypes = [
             wintypes.DWORD,
             wintypes.BOOL,
@@ -231,48 +225,36 @@ class WindowsJob:
         if resumed == 0:
             raise OSError("Could not resume the owned process")
 
-    def _snapshot_children(self) -> dict[int, list[int]]:
-        snapshot = self._kernel32.CreateToolhelp32Snapshot(
-            _TH32CS_SNAPPROCESS, 0
-        )
-        if snapshot == _INVALID_HANDLE_VALUE:
-            raise OSError("CreateToolhelp32Snapshot failed")
-        children: dict[int, list[int]] = {}
-        try:
-            entry = _ProcessEntry32()
-            entry.dwSize = ctypes.sizeof(entry)
-            available = self._kernel32.Process32FirstW(
-                snapshot, ctypes.byref(entry)
-            )
-            while available:
-                children.setdefault(int(entry.th32ParentProcessID), []).append(
-                    int(entry.th32ProcessID)
-                )
-                available = self._kernel32.Process32NextW(
-                    snapshot, ctypes.byref(entry)
-                )
-        finally:
-            self._kernel32.CloseHandle(snapshot)
-        return children
+    def _active_process_ids(self, job_handle: int) -> set[int]:
+        capacity = 64
+        process_ids_offset = _BasicProcessIdList.ProcessIdList.offset
+        while capacity <= _MAX_JOB_PROCESS_IDS:
+            size = process_ids_offset + capacity * ctypes.sizeof(ctypes.c_size_t)
+            buffer = ctypes.create_string_buffer(size)
+            information = ctypes.cast(
+                buffer, ctypes.POINTER(_BasicProcessIdList)
+            ).contents
+            returned = wintypes.DWORD()
+            if self._kernel32.QueryInformationJobObject(
+                job_handle,
+                _JOB_OBJECT_BASIC_PROCESS_ID_LIST,
+                buffer,
+                size,
+                ctypes.byref(returned),
+            ):
+                count = int(information.NumberOfProcessIdsInList)
+                if count > capacity:
+                    raise OSError("Invalid Job process enumeration result")
+                array_type = ctypes.c_size_t * count
+                values = array_type.from_buffer(buffer, process_ids_offset)
+                return {int(pid) for pid in values if int(pid) > 0}
 
-    @staticmethod
-    def _descendants(
-        root_pid: int, children: dict[int, list[int]]
-    ) -> list[int]:
-        targets: list[int] = []
-        visited: set[int] = set()
-
-        def collect(pid: int) -> None:
-            if pid in visited:
-                return
-            visited.add(pid)
-            for child_pid in children.get(pid, ()):
-                collect(child_pid)
-            if pid != root_pid:
-                targets.append(pid)
-
-        collect(root_pid)
-        return targets
+            error = ctypes.get_last_error()
+            if error != _ERROR_MORE_DATA:
+                raise OSError("QueryInformationJobObject failed")
+            assigned = int(information.NumberOfAssignedProcesses)
+            capacity = max(capacity * 2, assigned)
+        raise OSError("Job process enumeration exceeded safe bounds")
 
     def _is_in_job(self, process_handle: int, job_handle: int) -> bool:
         in_job = wintypes.BOOL()
@@ -290,13 +272,18 @@ class WindowsJob:
             raise OSError("WaitForSingleObject failed")
         if state != _WAIT_TIMEOUT:
             raise OSError("Unexpected process wait state")
-        if not self._kernel32.TerminateProcess(handle, 1):
-            if self._kernel32.WaitForSingleObject(handle, 0) != _WAIT_OBJECT_0:
-                raise OSError("TerminateProcess failed")
-            return
+        terminated = bool(self._kernel32.TerminateProcess(handle, 1))
         remaining_ms = max(0, int((deadline - time.monotonic()) * 1000))
-        if self._kernel32.WaitForSingleObject(handle, remaining_ms) != _WAIT_OBJECT_0:
+        final_state = self._kernel32.WaitForSingleObject(handle, remaining_ms)
+        if final_state == _WAIT_OBJECT_0:
+            return
+        if final_state == _WAIT_FAILED:
+            raise OSError("WaitForSingleObject failed")
+        if not terminated:
+            raise OSError("TerminateProcess failed")
+        if final_state == _WAIT_TIMEOUT:
             raise TimeoutError("Owned process termination timed out")
+        raise OSError("Unexpected process wait state")
 
     def terminate_tree(self, process: _ProcessHandle) -> None:
         deadline = time.monotonic() + _TERMINATE_TIMEOUT_SECONDS
@@ -308,38 +295,28 @@ class WindowsJob:
                 raise RuntimeError("Windows Job Object is closed")
             job_handle = self._handle
 
-            # Preserve the lineage before quiescing the root: Windows can
-            # reparent surviving descendants as soon as their parent exits.
-            initial_children = self._snapshot_children()
-            initial_targets = self._descendants(
-                int(process.pid), initial_children
-            )
-            known_lineage = {int(process.pid), *initial_targets}
-            pending = set(initial_targets)
+            # Establish an initial authoritative observation. A member can
+            # still create another Job member immediately afterward, so this
+            # snapshot is never treated as the complete target set.
+            self._active_process_ids(job_handle)
 
-            # Quiesce the only process that can create new service descendants.
-            if not self._is_in_job(root_handle, job_handle):
-                raise OSError("Owned process is not in the Job Object")
-            self._terminate_and_wait(root_handle, deadline)
+            root_state = self._kernel32.WaitForSingleObject(root_handle, 0)
+            if root_state == _WAIT_FAILED:
+                raise OSError("WaitForSingleObject failed")
+            if root_state == _WAIT_TIMEOUT:
+                if not self._is_in_job(root_handle, job_handle):
+                    raise OSError("Owned process is not in the Job Object")
+                self._terminate_and_wait(root_handle, deadline)
+            elif root_state != _WAIT_OBJECT_0:
+                raise OSError("Unexpected process wait state")
 
-            stable_scans = 0
-            while stable_scans < 2:
+            while True:
                 if time.monotonic() >= deadline:
                     raise TimeoutError("Owned process tree termination timed out")
-                children = self._snapshot_children()
-                frontier = list(known_lineage)
-                discovered: set[int] = set()
-                while frontier:
-                    parent_pid = frontier.pop()
-                    for child_pid in children.get(parent_pid, ()):
-                        if child_pid in known_lineage or child_pid in discovered:
-                            continue
-                        discovered.add(child_pid)
-                        frontier.append(child_pid)
-                known_lineage.update(discovered)
-                pending.update(discovered)
-                terminated = 0
-                for pid in tuple(pending):
+                process_ids = self._active_process_ids(job_handle)
+                if not process_ids:
+                    return
+                for pid in process_ids:
                     handle = self._kernel32.OpenProcess(
                         _PROCESS_TERMINATE
                         | _PROCESS_QUERY_LIMITED_INFORMATION
@@ -349,28 +326,24 @@ class WindowsJob:
                     )
                     if not handle:
                         error = ctypes.get_last_error()
-                        if error != 87:  # ERROR_INVALID_PARAMETER: already gone.
+                        if error != _ERROR_INVALID_PARAMETER:
                             raise OSError("OpenProcess failed")
                         continue
                     try:
                         if self._is_in_job(handle, job_handle):
                             self._terminate_and_wait(handle, deadline)
-                            terminated += 1
                     finally:
-                        self._kernel32.CloseHandle(handle)
-                    pending.discard(pid)
-                stable_scans = (
-                    stable_scans + 1
-                    if terminated == 0 and not discovered
-                    else 0
-                )
+                        if not self._kernel32.CloseHandle(handle):
+                            raise OSError("CloseHandle failed")
 
     def close(self) -> None:
         with self._lock:
             handle = self._handle
+            if handle is None:
+                return
+            if not self._kernel32.CloseHandle(handle):
+                raise OSError("CloseHandle failed")
             self._handle = None
-        if handle is not None:
-            self._kernel32.CloseHandle(handle)
 
     def __enter__(self) -> "WindowsJob":
         return self
