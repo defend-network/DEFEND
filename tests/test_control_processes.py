@@ -910,6 +910,46 @@ pathlib.Path(os.environ["CHILD_FILE"]).write_text(
             _terminate_windows_process(child_pid)
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows Job Objects only")
+@pytest.mark.parametrize("explicit_global", [False, True])
+def test_named_stop_preserves_sibling_service_then_stop_all_kills_it(
+    explicit_global,
+):
+    supervisor = ProcessSupervisor(
+        job=WindowsJob() if explicit_global else None
+    )
+    first = supervisor.start(
+        ProcessSpec(
+            "probe-a",
+            (sys.executable, "-c", "import time;time.sleep(30)"),
+            ROOT,
+            {},
+            None,
+        )
+    )
+    second = supervisor.start(
+        ProcessSpec(
+            "probe-b",
+            (sys.executable, "-c", "import time;time.sleep(30)"),
+            ROOT,
+            {},
+            None,
+        )
+    )
+    try:
+        assert supervisor.stop("probe-a") is True
+        assert first.poll() is not None
+        assert second.poll() is None
+        assert [(item.name, item.running) for item in supervisor.snapshot()] == [
+            ("probe-b", True)
+        ]
+
+        supervisor.stop_all()
+        assert second.poll() is not None
+    finally:
+        supervisor.close()
+
+
 def test_windows_job_enumeration_failure_is_not_treated_as_empty(monkeypatch):
     class FailingKernel:
         @staticmethod
@@ -967,7 +1007,7 @@ def test_stop_all_preserves_generation_when_native_job_close_fails(
             native._lock = threading.Lock()
             native._handle = 100 + len(jobs)
             self.native = native
-            self.stop_fails = not jobs
+            self.stop_fails = len(jobs) < 2
             jobs.append(self)
 
         def assign(self, _process: FakeProcess) -> None:
@@ -997,9 +1037,9 @@ def test_stop_all_preserves_generation_when_native_job_close_fails(
     assert [item.name for item in supervisor.snapshot()] == ["api"]
     assert supervisor._job is jobs[0]
     assert jobs[0].native._handle == 100
-    assert jobs[1].native._handle is None
+    assert jobs[2].native._handle is None
 
-    jobs[0].stop_fails = False
+    jobs[1].stop_fails = False
     jobs[0].native._kernel32.succeeds = True
     supervisor.stop_all()
     assert supervisor.snapshot() == ()
@@ -1052,16 +1092,97 @@ def test_stop_all_retains_replacement_when_its_disposal_close_fails(
     assert "OSError" in str(raised.value)
     assert "synthetic-private" not in str(raised.value)
     assert supervisor._job is jobs[0]
-    assert supervisor._retained_jobs == [jobs[1]]
+    assert supervisor._retained_jobs == [jobs[2]]
     assert [item.name for item in supervisor.snapshot()] == ["api"]
 
     jobs[0].stop_fails = False
     jobs[0].native._kernel32.succeeds = True
     jobs[1].native._kernel32.succeeds = True
-    supervisor.stop_all()
-    assert jobs[1].native._handle is None
     jobs[2].native._kernel32.succeeds = True
+    supervisor.stop_all()
+    assert jobs[2].native._handle is None
+    jobs[3].native._kernel32.succeeds = True
     supervisor.close()
+
+
+def test_supervisor_close_failure_preserves_retryable_state(monkeypatch):
+    class FailOnceJob:
+        def __init__(self) -> None:
+            self.close_calls = 0
+
+        def assign(self, _process: FakeProcess) -> None:
+            return None
+
+        def close(self) -> None:
+            self.close_calls += 1
+            if self.close_calls == 1:
+                raise OSError("synthetic-private-close-detail")
+
+    monkeypatch.setattr(processes_module, "WindowsJob", FailOnceJob)
+    supervisor = ProcessSupervisor()
+    job = supervisor._job
+    supervisor.observe_external("observed", pid=901)
+
+    with pytest.raises(RuntimeError) as raised:
+        supervisor.close()
+
+    assert "OSError" in str(raised.value)
+    assert "synthetic-private" not in str(raised.value)
+    assert [(item.name, item.owned) for item in supervisor.snapshot()] == [
+        ("observed", False)
+    ]
+    assert job.close_calls == 1
+    with pytest.raises(RuntimeError, match="closing"):
+        supervisor.stop_all()
+    assert job.close_calls == 1
+
+    supervisor.close()
+    assert job.close_calls == 2
+    assert supervisor.snapshot() == ()
+
+
+def test_supervisor_close_retries_service_job_before_terminal_state(monkeypatch):
+    jobs: list[object] = []
+
+    class FailServiceCloseOnceJob:
+        def __init__(self) -> None:
+            self.index = len(jobs)
+            self.close_calls = 0
+            jobs.append(self)
+
+        def assign(self, _process: FakeProcess) -> None:
+            return None
+
+        def resume(self, _process: FakeProcess) -> None:
+            return None
+
+        def terminate_tree(self, process: FakeProcess) -> None:
+            process.terminate()
+
+        def close(self) -> None:
+            self.close_calls += 1
+            if self.index == 1 and self.close_calls == 1:
+                raise OSError("synthetic-private-service-close-detail")
+
+    monkeypatch.setattr(
+        processes_module, "WindowsJob", FailServiceCloseOnceJob
+    )
+    process = FakeProcess()
+    supervisor = ProcessSupervisor(popen=lambda *_a, **_k: process)
+    supervisor.start(ProcessSpec("api", ("python", "api"), ROOT, {}, None))
+
+    with pytest.raises(RuntimeError) as raised:
+        supervisor.close()
+
+    assert "OSError" in str(raised.value)
+    assert "synthetic-private" not in str(raised.value)
+    assert [item.name for item in supervisor.snapshot()] == ["api"]
+    assert jobs[0].close_calls == 1
+    assert jobs[1].close_calls == 1
+
+    supervisor.close()
+    assert jobs[1].close_calls == 2
+    assert supervisor.snapshot() == ()
 
 
 def test_reader_start_rollback_failure_keeps_live_process_tracked(
@@ -1139,3 +1260,84 @@ def test_blocking_pipe_close_cannot_hold_lifecycle_lock_indefinitely(fake_job):
         supervisor.close()
 
     assert stop_errors == []
+
+
+def test_repeated_blocking_teardown_retains_one_cleanup_until_release(fake_job):
+    release_close = threading.Event()
+    close_finished = [threading.Event(), threading.Event()]
+
+    class BlockingCloseStream(StringIO):
+        def __init__(self, finished: threading.Event) -> None:
+            super().__init__()
+            self.finished = finished
+            self.close_calls = 0
+
+        def close(self) -> None:
+            self.close_calls += 1
+            release_close.wait(10)
+            super().close()
+            self.finished.set()
+
+    process = FakeProcess()
+    streams = tuple(BlockingCloseStream(done) for done in close_finished)
+    process.stdout, process.stderr = streams
+    supervisor = ProcessSupervisor(job=fake_job, popen=lambda *_a, **_k: process)
+    supervisor.start(ProcessSpec("api", ("python", "api"), ROOT, {}, None))
+
+    cleanup_worker_ids: tuple[int, ...] | None = None
+    try:
+        for _ in range(3):
+            started = time.monotonic()
+            assert supervisor.stop("api") is True
+            assert time.monotonic() - started < 3
+            assert [(item.name, item.running) for item in supervisor.snapshot()] == [
+                ("api", False)
+            ]
+            assert [stream.close_calls for stream in streams] == [1, 1]
+            workers = supervisor._owned["api"].cleanup_threads
+            assert len(workers) == 2
+            current_ids = tuple(id(worker) for worker in workers)
+            if cleanup_worker_ids is None:
+                cleanup_worker_ids = current_ids
+            assert current_ids == cleanup_worker_ids
+
+        release_close.set()
+        assert all(done.wait(2) for done in close_finished)
+        assert supervisor.stop("api") is True
+        assert supervisor.snapshot() == ()
+    finally:
+        release_close.set()
+        supervisor.close()
+
+
+def test_cleanup_worker_start_failure_retries_only_missing_worker(
+    fake_job, monkeypatch
+):
+    created: list[object] = []
+
+    class FlakyCleanupThread(threading.Thread):
+        def __init__(self, **kwargs) -> None:
+            super().__init__(**kwargs)
+            self.fail_start = not created
+            created.append(self)
+
+        def start(self) -> None:
+            if self.fail_start:
+                raise RuntimeError("synthetic-private-cleanup-detail")
+            super().start()
+
+    monkeypatch.setattr(
+        processes_module, "_CLEANUP_THREAD_CLASS", FlakyCleanupThread
+    )
+    process = FakeProcess()
+    supervisor = ProcessSupervisor(job=fake_job, popen=lambda *_a, **_k: process)
+    supervisor.start(ProcessSpec("api", ("python", "api"), ROOT, {}, None))
+
+    assert supervisor.stop("api") is True
+    assert [item.name for item in supervisor.snapshot()] == ["api"]
+    assert len(created) == 2
+
+    assert supervisor.stop("api") is True
+    assert supervisor.snapshot() == ()
+    assert len(created) == 3
+    supervisor.close()

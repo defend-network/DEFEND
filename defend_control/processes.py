@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections import deque
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
-import _thread
 import os
 from pathlib import Path
 import re
@@ -46,7 +45,8 @@ _SECRET_ARG_SHAPE = re.compile(
 )
 _MAX_LOG_READ_CHARS = 64 * 1024 + 1
 _CREATE_SUSPENDED = 0x00000004
-_IO_TEARDOWN_TIMEOUT_SECONDS = 2.0
+_IO_TEARDOWN_TIMEOUT_SECONDS = 0.5
+_CLEANUP_THREAD_CLASS = threading.Thread
 
 
 class _Job(Protocol):
@@ -140,8 +140,12 @@ class ProcessSnapshot:
 class _OwnedProcess:
     process: Any
     spec: ProcessSpec
+    service_job: _Job
+    owns_service_job: bool
     readers: tuple[Any, ...]
     streams: tuple[IO[str], ...]
+    service_job_closed: bool = False
+    cleanup_threads: tuple[Any | None, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -184,6 +188,9 @@ class ProcessSupervisor:
         if job is None:
             self._job_factory = WindowsJob
             job = self._job_factory()
+        self._service_job_factory = self._job_factory
+        if self._service_job_factory is None and isinstance(job, WindowsJob):
+            self._service_job_factory = WindowsJob
         self._job = job
         self._retained_jobs: list[_Job] = []
         self._popen = popen
@@ -194,6 +201,7 @@ class ProcessSupervisor:
         self._external: dict[str, _ExternalProcess] = {}
         self._lock = threading.RLock()
         self._closed = False
+        self._closing = False
         self._stopping = False
 
     @staticmethod
@@ -233,39 +241,86 @@ class ProcessSupervisor:
             )
 
     @staticmethod
-    def _teardown_io(
-        streams: Iterable[IO[str]], readers: Iterable[Any]
-    ) -> None:
+    def _teardown_io(owned: _OwnedProcess) -> bool:
         deadline = time.monotonic() + _IO_TEARDOWN_TIMEOUT_SECONDS
-        close_events: list[threading.Event] = []
-        for stream in streams:
-            complete = threading.Event()
-            close_events.append(complete)
+        if owned.streams:
+            cleanup_threads: list[Any | None] = (
+                list(owned.cleanup_threads)
+                if owned.cleanup_threads
+                else [None] * len(owned.streams)
+            )
+            for index, stream in enumerate(owned.streams):
+                if cleanup_threads[index] is not None:
+                    continue
 
-            def close_stream(
-                target: IO[str] = stream,
-                finished: threading.Event = complete,
-            ) -> None:
+                def close_stream(target: IO[str] = stream) -> None:
+                    try:
+                        target.close()
+                    except Exception:
+                        pass
+
                 try:
-                    target.close()
+                    worker = _CLEANUP_THREAD_CLASS(
+                        target=close_stream,
+                        daemon=True,
+                        name=f"defend-{owned.spec.name}-close-{index}",
+                    )
+                    worker.start()
                 except Exception:
-                    pass
-                finally:
-                    finished.set()
+                    cleanup_threads[index] = None
+                else:
+                    cleanup_threads[index] = worker
+            owned.cleanup_threads = tuple(cleanup_threads)
 
-            try:
-                _thread.start_new_thread(close_stream, ())
-            except Exception:
-                complete.set()
-
-        for reader in readers:
+        for reader in owned.readers:
             remaining = max(0.0, deadline - time.monotonic())
             try:
                 reader.join(timeout=remaining)
             except Exception:
                 pass
-        for complete in close_events:
-            complete.wait(max(0.0, deadline - time.monotonic()))
+        for worker in owned.cleanup_threads:
+            if worker is None:
+                continue
+            remaining = max(0.0, deadline - time.monotonic())
+            try:
+                worker.join(timeout=remaining)
+            except Exception:
+                pass
+
+        def finished(worker: Any | None) -> bool:
+            if worker is None:
+                return False
+            is_alive = getattr(worker, "is_alive", None)
+            if not callable(is_alive):
+                return True
+            try:
+                return not bool(is_alive())
+            except Exception:
+                return False
+
+        readers_finished = True
+        for reader in owned.readers:
+            is_alive = getattr(reader, "is_alive", None)
+            if callable(is_alive):
+                try:
+                    if is_alive():
+                        readers_finished = False
+                except Exception:
+                    readers_finished = False
+        return readers_finished and all(
+            finished(worker) for worker in owned.cleanup_threads
+        )
+
+    @staticmethod
+    def _close_service_job(owned: _OwnedProcess) -> bool:
+        if not owned.owns_service_job or owned.service_job_closed:
+            return True
+        try:
+            owned.service_job.close()
+        except Exception:
+            return False
+        owned.service_job_closed = True
+        return True
 
     def _rollback_reader_start(
         self,
@@ -273,7 +328,7 @@ class ProcessSupervisor:
     ) -> bool:
         terminated = False
         try:
-            self._terminate(owned.process)
+            self._terminate(owned)
             terminated = owned.process.poll() is not None
         except Exception:
             try:
@@ -281,8 +336,9 @@ class ProcessSupervisor:
                 owned.process.wait(timeout=2)
             except Exception:
                 pass
-        self._teardown_io(owned.streams, owned.readers)
-        return terminated
+        service_closed = self._close_service_job(owned) if terminated else False
+        io_complete = self._teardown_io(owned)
+        return terminated and service_closed and io_complete
 
     def start(self, spec: ProcessSpec) -> Any:
         if not isinstance(spec, ProcessSpec):
@@ -298,10 +354,24 @@ class ProcessSupervisor:
         with self._lock:
             if self._closed:
                 raise RuntimeError("process supervisor is closed")
+            if self._closing:
+                raise RuntimeError("process supervisor is closing")
             if self._stopping:
                 raise RuntimeError("process supervisor is stopping")
             if spec.name in self._owned or spec.name in self._external:
                 raise ValueError("process name is already supervised")
+            owns_service_job = self._service_job_factory is not None
+            try:
+                service_job = (
+                    self._service_job_factory()
+                    if self._service_job_factory is not None
+                    else self._job
+                )
+            except Exception as error:
+                raise RuntimeError(
+                    "Could not create service process ownership "
+                    f"({_safe_error_type(error)})"
+                ) from None
             try:
                 resume = getattr(self._job, "resume", None)
                 creationflags = getattr(
@@ -323,12 +393,19 @@ class ProcessSupervisor:
                     creationflags=creationflags,
                 )
             except Exception as error:
+                if owns_service_job:
+                    try:
+                        service_job.close()
+                    except Exception:
+                        self._retained_jobs.append(service_job)
                 raise RuntimeError(
                     f"Could not start {spec.name} ({_safe_error_type(error)})"
                 ) from None
 
             try:
                 self._job.assign(process)
+                if owns_service_job:
+                    service_job.assign(process)
                 if callable(resume):
                     resume(process)
             except Exception as error:
@@ -340,6 +417,11 @@ class ProcessSupervisor:
                         process.kill()
                     except Exception:
                         pass
+                if owns_service_job:
+                    try:
+                        service_job.close()
+                    except Exception:
+                        self._retained_jobs.append(service_job)
                 raise RuntimeError(
                     f"Could not own {spec.name} ({_safe_error_type(error)})"
                 ) from None
@@ -353,7 +435,14 @@ class ProcessSupervisor:
                 if stream is not None
             )
             streams = tuple(stream for _name, stream in named_streams)
-            owned = _OwnedProcess(process, spec, (), streams)
+            owned = _OwnedProcess(
+                process,
+                spec,
+                service_job,
+                owns_service_job,
+                (),
+                streams,
+            )
             self._owned[spec.name] = owned
             readers: list[Any] = []
             started_readers: list[Any] = []
@@ -389,12 +478,17 @@ class ProcessSupervisor:
         with self._lock:
             if self._closed:
                 raise RuntimeError("process supervisor is closed")
+            if self._closing:
+                raise RuntimeError("process supervisor is closing")
             if name in self._owned:
                 raise ValueError("process name is already owned")
             self._external[name] = _ExternalProcess(pid, health_url)
 
-    def _terminate(self, process: Any) -> None:
-        terminate_tree = getattr(self._job, "terminate_tree", None)
+    def _terminate(self, owned: _OwnedProcess) -> None:
+        process = owned.process
+        if process.poll() is not None and owned.service_job_closed:
+            return
+        terminate_tree = getattr(owned.service_job, "terminate_tree", None)
         if callable(terminate_tree):
             terminate_tree(process)
             process.wait(timeout=3)
@@ -421,14 +515,17 @@ class ProcessSupervisor:
         if owned is None:
             return False
         try:
-            self._terminate(owned.process)
+            self._terminate(owned)
         except Exception as error:
-            self._teardown_io(owned.streams, owned.readers)
+            self._teardown_io(owned)
             raise RuntimeError(
                 f"Could not stop {name} ({_safe_error_type(error)})"
             ) from None
-        self._teardown_io(owned.streams, owned.readers)
-        self._owned.pop(name, None)
+        if not self._close_service_job(owned):
+            self._teardown_io(owned)
+            raise RuntimeError(f"Could not close {name} ownership (OSError)")
+        if self._teardown_io(owned):
+            self._owned.pop(name, None)
         return True
 
     def stop(self, name: str) -> bool:
@@ -487,8 +584,10 @@ class ProcessSupervisor:
                 else:
                     self._job = replacement
                     for name, owned in tuple(self._owned.items()):
-                        self._teardown_io(owned.streams, owned.readers)
-                        self._owned.pop(name, None)
+                        service_closed = self._close_service_job(owned)
+                        io_complete = self._teardown_io(owned)
+                        if service_closed and io_complete:
+                            self._owned.pop(name, None)
         if first_error is not None:
             raise first_error
 
@@ -496,6 +595,8 @@ class ProcessSupervisor:
         with self._lock:
             if self._closed:
                 return
+            if self._closing:
+                raise RuntimeError("process supervisor is closing")
             self._stopping = True
             try:
                 self._stop_all_locked(reset_job=True)
@@ -536,13 +637,37 @@ class ProcessSupervisor:
         with self._lock:
             if self._closed:
                 return
+            self._closing = True
             self._stopping = True
             try:
-                self._stop_all_locked(reset_job=False)
-            finally:
+                stop_error: RuntimeError | None = None
+                try:
+                    self._stop_all_locked(reset_job=False)
+                except RuntimeError as error:
+                    stop_error = error
+                if self._retained_jobs:
+                    if stop_error is not None:
+                        raise stop_error
+                    raise RuntimeError(
+                        "Could not close retained process ownership"
+                    )
+                try:
+                    self._job.close()
+                except Exception as error:
+                    raise RuntimeError(
+                        "Could not close process ownership "
+                        f"({_safe_error_type(error)})"
+                    ) from None
+                if self._owned:
+                    if stop_error is not None:
+                        raise stop_error
+                    raise RuntimeError("Process cleanup pending (TimeoutError)")
                 self._closed = True
+                self._closing = False
                 self._external.clear()
-                self._job.close()
+                if stop_error is not None:
+                    raise stop_error
+            finally:
                 self._stopping = False
 
     def __enter__(self) -> "ProcessSupervisor":
