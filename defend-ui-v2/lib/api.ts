@@ -315,14 +315,15 @@ export const adminLogin = (username: string, password: string) =>
   });
 
 export const activationStatus = (token: string) =>
-  json<ActivationStatusResponse>(
-    `/api/activate/${encodeURIComponent(token)}/status`
-  );
+  json<ActivationStatusResponse>("/api/activate/status", {
+    method: "POST",
+    body: JSON.stringify({ token }),
+  });
 
 export const activateAccount = (token: string, password: string) =>
-  json<ActivateAccountResponse>(`/api/activate/${encodeURIComponent(token)}`, {
+  json<ActivateAccountResponse>("/api/activate", {
     method: "POST",
-    body: JSON.stringify({ password }),
+    body: JSON.stringify({ token, password }),
   });
 
 export const adminLogout = (token: string) =>

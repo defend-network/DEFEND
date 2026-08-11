@@ -9,17 +9,19 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from admin_auth import (
     AdminPrincipal,
     authenticate,
+    canonical_admin_login_identifier,
     require_admin,
     require_owner,
     revoke,
     token_from_header,
 )
+from api_identity_routes import _admin_login_rate_keys, _limiter
 
 _TT_ROOT = Path(__file__).resolve().parent / "TableTennis"
 if str(_TT_ROOT) not in sys.path:
@@ -44,7 +46,7 @@ router = APIRouter()
 
 class LoginIn(BaseModel):
     username: str = Field(min_length=1, max_length=128)
-    password: str = Field(min_length=1, max_length=512)
+    password: str
 
 
 class ManualMatchIn(BaseModel):
@@ -103,7 +105,13 @@ class SettleIn(BaseModel):
 
 
 @router.post("/api/admin/login")
-async def admin_login(body: LoginIn) -> dict[str, Any]:
+async def admin_login(body: LoginIn, request: Request) -> dict[str, Any]:
+    limiter = _limiter(request, "admin_login")
+    rate_identifier = canonical_admin_login_identifier(body.username)
+    if not limiter.allow_many(_admin_login_rate_keys(request, rate_identifier)):
+        raise HTTPException(status_code=429, detail="Too many authentication attempts")
+    if len(body.password) > 512:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
     username, role, token, expires_in = authenticate(body.username, body.password)
     return {
         "username": username,

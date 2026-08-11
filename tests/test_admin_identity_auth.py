@@ -8,6 +8,7 @@ from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
 import admin_auth
+import api_identity_routes
 from admin_auth import AdminPrincipal
 from api_admin_tt_routes import router as admin_router
 from defend_data.identity_store import IdentityStore, RoleViolation
@@ -34,6 +35,16 @@ def _principal(account, *, claimed_role: str | None = None) -> AdminPrincipal:
         role=claimed_role or account.role,
         expires_at=time.time() + 60,
     )
+
+
+def _admin_login_app(identity, monkeypatch) -> FastAPI:
+    monkeypatch.setenv("DEFEND_OWNER_USER", "MASSA")
+    monkeypatch.setenv("DEFEND_OWNER_PASS", "valid owner password")
+    monkeypatch.setenv("DEFEND_OWNER_EMAIL", "chairman@defend-network.org")
+    admin_auth.configure_identity_store(identity)
+    app = FastAPI()
+    app.include_router(admin_router)
+    return app
 
 
 def test_admin_cannot_manage_admin_even_with_forged_owner_claim(identity, owner):
@@ -187,3 +198,193 @@ def test_login_accepts_owner_email_and_logout_revokes_session(
         headers = {"Authorization": f"Bearer {payload['token']}"}
         assert client.post("/api/admin/logout", headers=headers).status_code == 200
         assert client.post("/api/admin/logout", headers=headers).status_code == 401
+
+
+def test_admin_login_throttles_by_observed_ip_before_more_password_hashes(
+    identity,
+    monkeypatch,
+):
+    app = _admin_login_app(identity, monkeypatch)
+    with TestClient(app) as client:
+        for index in range(5):
+            response = client.post(
+                "/api/admin/login",
+                json={"username": f"unknown-{index}", "password": "wrong password"},
+            )
+            assert response.status_code == 401
+
+        limited = client.post(
+            "/api/admin/login",
+            json={"username": "MASSA", "password": "valid owner password"},
+        )
+
+    assert limited.status_code == 429
+    assert limited.json() == {"detail": "Too many authentication attempts"}
+    assert identity.conn.execute("SELECT COUNT(*) FROM login_events").fetchone()[0] == 5
+
+
+def test_admin_login_throttles_normalized_identifier_across_cloudflare_ips(
+    identity,
+    monkeypatch,
+):
+    app = _admin_login_app(identity, monkeypatch)
+    monkeypatch.setenv("DEFEND_TRUST_CLOUDFLARE", "true")
+    with TestClient(app) as client:
+        for index, identifier in enumerate(
+            [
+                "CHAIRMAN@DEFEND-NETWORK.ORG",
+                "chairman@defend-network.org",
+                " Chairman@Defend-Network.Org ",
+                "CHAIRMAN@defend-network.org",
+                "chairman@DEFEND-NETWORK.ORG",
+            ]
+        ):
+            response = client.post(
+                "/api/admin/login",
+                headers={"CF-Connecting-IP": f"203.0.113.{index + 1}"},
+                json={"username": identifier, "password": "wrong password"},
+            )
+            assert response.status_code == 401
+
+        limited = client.post(
+            "/api/admin/login",
+            headers={"CF-Connecting-IP": "203.0.113.99"},
+            json={
+                "username": "chairman@defend-network.org",
+                "password": "valid owner password",
+            },
+        )
+
+    assert limited.status_code == 429
+    assert limited.json() == {"detail": "Too many authentication attempts"}
+
+
+def test_admin_login_throttles_all_known_account_aliases_in_one_identifier_bucket(
+    identity,
+    owner,
+    monkeypatch,
+):
+    identity.conn.execute(
+        "UPDATE accounts SET username=? WHERE account_id=?",
+        ("MASSA", owner.account_id),
+    )
+    identity.conn.commit()
+    app = _admin_login_app(identity, monkeypatch)
+    monkeypatch.setenv("DEFEND_TRUST_CLOUDFLARE", "true")
+    aliases = [
+        "MASSA",
+        owner.email,
+        owner.account_id,
+        "massa",
+        owner.email.upper(),
+    ]
+    with TestClient(app) as client:
+        for index, identifier in enumerate(aliases):
+            response = client.post(
+                "/api/admin/login",
+                headers={"CF-Connecting-IP": f"198.51.100.{index + 1}"},
+                json={"username": identifier, "password": "wrong password"},
+            )
+            assert response.status_code == 401
+
+        limited = client.post(
+            "/api/admin/login",
+            headers={"CF-Connecting-IP": "198.51.100.99"},
+            json={
+                "username": owner.account_id,
+                "password": "valid owner password",
+            },
+        )
+
+    assert limited.status_code == 429
+    assert limited.json() == {"detail": "Too many authentication attempts"}
+    assert identity.conn.execute("SELECT COUNT(*) FROM login_events").fetchone()[0] == 5
+
+
+def test_oversized_admin_password_is_generic_not_reflected_and_counts_toward_throttle(
+    identity,
+    monkeypatch,
+):
+    app = _admin_login_app(identity, monkeypatch)
+    oversized_secret = "oversized-secret-" + ("x" * 600)
+
+    with TestClient(app) as client:
+        for _ in range(5):
+            response = client.post(
+                "/api/admin/login",
+                json={"username": "MASSA", "password": oversized_secret},
+            )
+            assert response.status_code == 401
+            assert response.json() == {"detail": "Invalid credentials"}
+            assert oversized_secret not in response.text
+
+        limited = client.post(
+            "/api/admin/login",
+            json={"username": "MASSA", "password": "valid owner password"},
+        )
+
+    assert limited.status_code == 429
+    assert limited.json() == {"detail": "Too many authentication attempts"}
+    assert identity.conn.execute("SELECT COUNT(*) FROM login_events").fetchone()[0] == 0
+
+
+def test_admin_login_rate_limit_recovers_after_the_window(identity, monkeypatch):
+    app = _admin_login_app(identity, monkeypatch)
+    now = [1_000.0]
+    limiter = api_identity_routes._BoundedRateLimiter()
+    limiter._clock = lambda: now[0]
+    app.state.identity_admin_login_rate_limiter = limiter
+
+    with TestClient(app) as client:
+        for _ in range(5):
+            assert client.post(
+                "/api/admin/login",
+                json={"username": "MASSA", "password": "wrong password"},
+            ).status_code == 401
+        assert client.post(
+            "/api/admin/login",
+            json={"username": "MASSA", "password": "valid owner password"},
+        ).status_code == 429
+
+        now[0] += 61
+        recovered = client.post(
+            "/api/admin/login",
+            json={"username": "MASSA", "password": "valid owner password"},
+        )
+
+    assert recovered.status_code == 200
+
+
+def test_admin_login_does_not_enumerate_valid_non_admin_accounts(
+    identity,
+    owner,
+    monkeypatch,
+):
+    user = _activate_account(
+        identity,
+        owner,
+        email="member@example.com",
+        role="user",
+    )
+    app = _admin_login_app(identity, monkeypatch)
+    with TestClient(app) as client:
+        unknown = client.post(
+            "/api/admin/login",
+            json={"username": "unknown@example.com", "password": "wrong password"},
+        )
+        wrong = client.post(
+            "/api/admin/login",
+            json={"username": "MASSA", "password": "wrong password"},
+        )
+        non_admin = client.post(
+            "/api/admin/login",
+            json={
+                "username": user.email,
+                "password": f"valid password for {user.email}",
+            },
+        )
+
+    assert unknown.status_code == wrong.status_code == non_admin.status_code == 401
+    assert unknown.json() == wrong.json() == non_admin.json() == {
+        "detail": "Invalid credentials"
+    }

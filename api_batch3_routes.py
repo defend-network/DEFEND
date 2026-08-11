@@ -19,6 +19,7 @@ router = APIRouter()
 
 VISITOR_COOKIE = "defend_vid"
 SESSION_COOKIE = "defend_vsid"
+ACCOUNT_SESSION_COOKIE = "defend_account_session"
 COOKIE_MAX_AGE = 60 * 60 * 24 * 365
 
 
@@ -47,6 +48,19 @@ def _set_cookie(response: Response, name: str, value: str) -> None:
         samesite="lax",
         path="/",
     )
+
+
+def _link_authenticated_visitor(data, request: Request, visitor_id: str) -> None:
+    raw_session = request.cookies.get(ACCOUNT_SESSION_COOKIE)
+    identity = getattr(data, "identity", None)
+    if not raw_session or identity is None:
+        return
+    account = identity.resolve_session(raw_session)
+    if account is not None:
+        identity.link_visitor(
+            account_id=account.account_id,
+            visitor_id=visitor_id,
+        )
 
 
 def ensure_visitor_session(request: Request, response: Response) -> tuple[str, str]:
@@ -91,6 +105,7 @@ def ensure_visitor_session(request: Request, response: Response) -> tuple[str, s
         _set_cookie(response, VISITOR_COOKIE, visitor_id)
     if old_sid != session_id:
         _set_cookie(response, SESSION_COOKIE, session_id)
+    _link_authenticated_visitor(data, request, visitor_id)
     return visitor_id, session_id
 
 

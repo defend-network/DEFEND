@@ -1,7 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useParams } from "next/navigation";
+import { useEffect, useRef, useState } from "react";
 import {
   activateAccount,
   activationStatus,
@@ -32,8 +31,9 @@ const unavailableCopy: Record<Exclude<ActivationStatus, "pending">, [string, str
 };
 
 export default function AccountActivation() {
-  const params = useParams<{ token?: string | string[] }>();
-  const token = typeof params?.token === "string" ? params.token : "";
+  const tokenRef = useRef("");
+  const fragmentCapturedRef = useRef(false);
+  const statusRequestRef = useRef<Promise<ActivationStatusResponse> | null>(null);
   const [view, setView] = useState<View>("loading");
   const [invitation, setInvitation] = useState<ActivationStatusResponse | null>(null);
   const [password, setPassword] = useState("");
@@ -42,26 +42,43 @@ export default function AccountActivation() {
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
+    if (!fragmentCapturedRef.current) {
+      const fragment = new URLSearchParams(window.location.hash.slice(1));
+      tokenRef.current = fragment.get("token") ?? "";
+      fragmentCapturedRef.current = true;
+      window.history.replaceState(
+        window.history.state,
+        "",
+        `${window.location.pathname}${window.location.search}`,
+      );
+    }
+    const token = tokenRef.current;
     if (!token) {
       setView("invalid");
       return;
     }
 
     let active = true;
-    activationStatus(token)
+    const request = statusRequestRef.current ?? activationStatus(token);
+    statusRequestRef.current = request;
+    request
       .then((response) => {
         if (!active) return;
+        if (response.status !== "pending") tokenRef.current = "";
         setInvitation(response);
         setView(response.status === "pending" ? "valid" : response.status);
       })
       .catch(() => {
-        if (active) setView("error");
+        if (active) {
+          tokenRef.current = "";
+          setView("error");
+        }
       });
 
     return () => {
       active = false;
     };
-  }, [token]);
+  }, []);
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -78,7 +95,8 @@ export default function AccountActivation() {
 
     setSubmitting(true);
     try {
-      await activateAccount(token, password);
+      await activateAccount(tokenRef.current, password);
+      tokenRef.current = "";
       setPassword("");
       setConfirmation("");
       setView("success");

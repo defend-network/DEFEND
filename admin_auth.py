@@ -88,6 +88,16 @@ def _identity_store() -> IdentityStore:
     return _IDENTITY_STORE
 
 
+def canonical_admin_login_identifier(identifier: str) -> str:
+    """Collapse known account aliases before login rate-limit hashing."""
+    cleaned = (identifier or "").strip()
+    try:
+        account = _identity_store().get_account(cleaned)
+    except (TypeError, ValueError):
+        account = None
+    return account.account_id if account is not None else cleaned
+
+
 def authenticate(username: str, password: str) -> tuple[str, AdminRole, str, int]:
     store = _identity_store()
     identifier = (username or "").strip()
@@ -96,7 +106,7 @@ def authenticate(username: str, password: str) -> tuple[str, AdminRole, str, int
     except AuthenticationFailed as exc:
         raise HTTPException(status_code=401, detail="Invalid credentials") from exc
     if account.role not in {"admin", "owner"}:
-        raise HTTPException(status_code=403, detail="Admin access required")
+        raise HTTPException(status_code=401, detail="Invalid credentials")
 
     ttl = _session_seconds()
     expires_at = datetime.now(timezone.utc) + timedelta(seconds=ttl)

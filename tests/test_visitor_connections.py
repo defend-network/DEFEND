@@ -8,9 +8,11 @@ from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 import pytest
-from fastapi import Request, Response
+from fastapi import FastAPI, Request, Response
+from fastapi.testclient import TestClient
 
-from api_batch3_routes import ensure_visitor_session
+from api_batch3_routes import ensure_visitor_session, router as visitor_router
+from api_identity_routes import router as identity_router
 from defend_data.visitor_store import VisitorStore, client_ip
 
 
@@ -244,6 +246,110 @@ def test_ensure_visitor_session_records_peer_ip_and_keyed_cookie_ids(
     assert row["user_agent"] == "Browser/1 full user agent"
     assert row["cookie_hash"] == f"cookie_{expected_hash}"
     assert raw_auth_cookie not in "|".join(str(value) for value in row.values())
+
+
+def _active_user(identity, owner, *, email: str):
+    account = identity.create_account(
+        email=email,
+        display_name="Linked User",
+        role="user",
+        created_by=owner.account_id,
+    )
+    _, invitation_token = identity.create_invitation(
+        account_id=account.account_id,
+        created_by=owner.account_id,
+    )
+    return identity.consume_invitation(
+        invitation_token,
+        password="a sufficiently long password",
+    )
+
+
+def _identity_visitor_app(identity, visitor_store) -> FastAPI:
+    app = FastAPI()
+    app.state.defend_data = SimpleNamespace(
+        identity=identity,
+        visitors=visitor_store,
+    )
+    app.include_router(identity_router)
+    app.include_router(visitor_router)
+    return app
+
+
+def test_account_login_links_normal_conversation_traffic_idempotently_without_raw_session_storage(
+    identity,
+    owner,
+    visitor_store,
+):
+    account = _active_user(identity, owner, email="linked@example.com")
+    app = _identity_visitor_app(identity, visitor_store)
+
+    with TestClient(app, base_url="https://testserver") as client:
+        login = client.post(
+            "/api/account/login",
+            json={
+                "email": account.email,
+                "password": "a sufficiently long password",
+            },
+        )
+        assert login.status_code == 200
+        raw_session = client.cookies.get("defend_account_session")
+        assert raw_session
+
+        first = client.get("/api/conversations")
+        second = client.get("/api/conversations")
+
+    assert first.status_code == second.status_code == 200
+    visitor_id = client.cookies.get("defend_vid")
+    assert visitor_id
+    assert identity.list_linked_visitors(account.account_id) == [visitor_id]
+    assert identity.conn.execute(
+        "SELECT COUNT(*) FROM account_visitor_links WHERE account_id=? AND visitor_id=?",
+        (account.account_id, visitor_id),
+    ).fetchone()[0] == 1
+    persisted_session = identity.conn.execute(
+        "SELECT session_hash,last_seen_at FROM account_sessions WHERE account_id=?",
+        (account.account_id,),
+    ).fetchone()
+    assert persisted_session["last_seen_at"]
+    assert raw_session != persisted_session["session_hash"]
+    visitor_values = visitor_store.conn.execute(
+        "SELECT cookie_hash,user_agent FROM connection_events"
+    ).fetchall()
+    assert raw_session not in repr([tuple(row) for row in visitor_values])
+
+
+@pytest.mark.parametrize("session_state", ["invalid", "expired", "disabled"])
+def test_invalid_expired_or_disabled_account_sessions_do_not_link_visitors(
+    session_state,
+    identity,
+    owner,
+    visitor_store,
+):
+    account = _active_user(
+        identity,
+        owner,
+        email=f"{session_state}@example.com",
+    )
+    raw_session = identity.create_session(account.account_id)
+    if session_state == "invalid":
+        raw_session = "session_invalid-credential"
+    elif session_state == "expired":
+        identity.conn.execute(
+            "UPDATE account_sessions SET expires_at=? WHERE account_id=?",
+            ("2000-01-01T00:00:00+00:00", account.account_id),
+        )
+        identity.conn.commit()
+    else:
+        identity.disable_account(actor=owner.account_id, target_id=account.account_id)
+
+    app = _identity_visitor_app(identity, visitor_store)
+    with TestClient(app, base_url="https://testserver") as client:
+        client.cookies.set("defend_account_session", raw_session)
+        response = client.get("/api/conversations")
+
+    assert response.status_code == 200
+    assert identity.list_linked_visitors(account.account_id) == []
 
 
 @pytest.mark.parametrize(

@@ -42,7 +42,10 @@ class SensitivePathRedactionMiddleware:
 
     async def __call__(self, scope, receive, send) -> None:
         path = scope.get("path", "") if scope.get("type") == "http" else ""
-        sensitive = path.startswith("/api/activate/")
+        sensitive = (
+            path.startswith("/api/activate/")
+            and path.rstrip("/") != "/api/activate/status"
+        )
 
         def redact() -> None:
             if not sensitive:
@@ -71,24 +74,38 @@ class _BoundedRateLimiter:
         self._max_keys = max_keys
         self._events: OrderedDict[str, deque[float]] = OrderedDict()
         self._lock = threading.Lock()
+        self._clock = time.monotonic
 
     def allow(self, key: str) -> bool:
-        now = time.monotonic()
+        return self.allow_many((key,))
+
+    def allow_many(self, keys: tuple[str, ...]) -> bool:
+        unique_keys = tuple(dict.fromkeys(keys))
+        now = self._clock()
         cutoff = now - _RATE_LIMIT_WINDOW_SECONDS
         with self._lock:
-            attempts = self._events.get(key)
-            if attempts is None:
-                if len(self._events) >= self._max_keys:
-                    self._events.popitem(last=False)
-                attempts = deque()
-                self._events[key] = attempts
-            else:
+            existing: dict[str, deque[float]] = {}
+            for key in unique_keys:
+                attempts = self._events.get(key)
+                if attempts is None:
+                    continue
+                while attempts and attempts[0] <= cutoff:
+                    attempts.popleft()
                 self._events.move_to_end(key)
-            while attempts and attempts[0] <= cutoff:
-                attempts.popleft()
-            if len(attempts) >= _RATE_LIMIT_ATTEMPTS:
+                existing[key] = attempts
+            if any(
+                len(existing.get(key, ())) >= _RATE_LIMIT_ATTEMPTS
+                for key in unique_keys
+            ):
                 return False
-            attempts.append(now)
+            for key in unique_keys:
+                attempts = existing.get(key)
+                if attempts is None:
+                    while len(self._events) >= self._max_keys:
+                        self._events.popitem(last=False)
+                    attempts = deque()
+                    self._events[key] = attempts
+                attempts.append(now)
             return True
 
     def reset(self, key: str) -> None:
@@ -103,7 +120,12 @@ class CreateAccountIn(BaseModel):
 
 
 class ActivateIn(BaseModel):
+    token: str
     password: str
+
+
+class ActivationStatusIn(BaseModel):
+    token: str
 
 
 class AccountLoginIn(BaseModel):
@@ -154,24 +176,43 @@ def _admin_audit(
     outcome: Literal["success", "failure"],
     metadata: dict | None = None,
 ) -> None:
+    context = _admin_audit_context(request, metadata=metadata)
     store.record_audit(
         actor_account_id=principal.account_id,
         action=action,
         target_type=target_type,
         target_id=target_id,
         outcome=outcome,
-        request_id=(request.headers.get("x-request-id") or "")[:200] or None,
-        client_context={
+        request_id=context["request_id"],
+        client_context=context["client_context"],
+        metadata=context["metadata"],
+    )
+
+
+def _admin_audit_context(
+    request: Request,
+    *,
+    metadata: dict | None = None,
+) -> dict[str, object]:
+    return {
+        "request_id": (request.headers.get("x-request-id") or "")[:200] or None,
+        "client_context": {
             "ip_address": _client_ip(request),
             "user_agent": request.headers.get("user-agent", "")[:512],
         },
-        metadata=metadata or {},
-    )
+        "metadata": metadata or {},
+    }
 
 
 def _rate_key(request: Request, identifier: str) -> str:
     digest = hashlib.sha256(identifier.encode("utf-8")).hexdigest()
     return f"{_client_ip(request)}:{digest}"
+
+
+def _admin_login_rate_keys(request: Request, identifier: str) -> tuple[str, str]:
+    normalized = _email_rate_identifier(identifier)
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    return (f"ip:{_client_ip(request)}", f"identifier:{digest}")
 
 
 def _email_rate_identifier(value: str) -> str:
@@ -200,7 +241,7 @@ def _public_origin() -> str:
 
 
 def _activation_url(token: str) -> str:
-    return f"{_public_origin()}/activate/{quote(token, safe='')}"
+    return f"{_public_origin()}/activate#token={quote(token, safe='')}"
 
 
 def _account_payload(account: AccountRecord) -> dict[str, str | None]:
@@ -304,6 +345,7 @@ def create_account(
             display_name=body.display_name,
             role=body.role,
             created_by=principal.account_id,
+            audit_context=_admin_audit_context(request),
         )
     except RoleViolation as exc:
         _admin_audit(
@@ -331,16 +373,6 @@ def create_account(
         status_code = 409 if str(exc) == "email already exists" else 400
         detail = "Email already exists" if status_code == 409 else "Invalid account request"
         raise HTTPException(status_code=status_code, detail=detail) from exc
-    _admin_audit(
-        store,
-        request,
-        principal,
-        action="account.create",
-        target_type="account",
-        target_id=account.account_id,
-        outcome="success",
-        metadata={"intended_role": body.role, "invitation_id": invitation.invitation_id},
-    )
     invitation, delivery = _deliver_invitation(store, invitation, token)
     return {
         "account": _account_payload(account),
@@ -376,6 +408,8 @@ def resend_invitation(
         invitation, token = store.create_invitation(
             account_id=existing.account_id,
             created_by=principal.account_id,
+            replaces_invitation_id=invitation_id,
+            audit_context=_admin_audit_context(request),
         )
     except RoleViolation as exc:
         _admin_audit(
@@ -401,16 +435,6 @@ def resend_invitation(
             metadata={"reason": "invalid_state"},
         )
         raise HTTPException(status_code=409, detail="Invitation cannot be resent") from exc
-    _admin_audit(
-        store,
-        request,
-        principal,
-        action="invitation.resend",
-        target_type="invitation",
-        target_id=invitation_id,
-        outcome="success",
-        metadata={"replacement_invitation_id": invitation.invitation_id, "account_id": invitation.account_id},
-    )
     invitation, delivery = _deliver_invitation(store, invitation, token)
     return {
         "invitation": _invitation_payload(
@@ -432,6 +456,7 @@ def revoke_invitation(
         invitation = store.revoke_invitation(
             invitation_id,
             revoked_by=principal.account_id,
+            audit_context=_admin_audit_context(request),
         )
     except KeyError as exc:
         _admin_audit(
@@ -469,21 +494,12 @@ def revoke_invitation(
             metadata={"reason": "invalid_state"},
         )
         raise HTTPException(status_code=409, detail="Invitation cannot be revoked") from exc
-    _admin_audit(
-        store,
-        request,
-        principal,
-        action="invitation.revoke",
-        target_type="invitation",
-        target_id=invitation_id,
-        outcome="success",
-        metadata={"account_id": invitation.account_id},
-    )
     return {"invitation": _invitation_payload(invitation)}
 
 
-@router.get("/api/activate/{token}/status")
-def activation_status(token: str, request: Request) -> dict[str, object]:
+@router.post("/api/activate/status")
+def activation_status(body: ActivationStatusIn, request: Request) -> dict[str, object]:
+    token = body.token
     if len(token) > 512:
         return {"status": "invalid"}
     store = _identity_store(request)
@@ -499,8 +515,9 @@ def activation_status(token: str, request: Request) -> dict[str, object]:
     }
 
 
-@router.post("/api/activate/{token}")
-def activate_account(token: str, body: ActivateIn, request: Request) -> dict[str, object]:
+@router.post("/api/activate")
+def activate_account(body: ActivateIn, request: Request) -> dict[str, object]:
+    token = body.token
     limiter = _limiter(request, "activation")
     key = _rate_key(request, token[:512])
     if not limiter.allow(key):

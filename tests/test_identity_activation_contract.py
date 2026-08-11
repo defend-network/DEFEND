@@ -34,7 +34,9 @@ def invitation_token(identity, owner):
 
 
 def test_activation_status_never_returns_token_hash(client, invitation_token):
-    payload = client.get(f"/api/activate/{invitation_token}/status").json()
+    payload = client.post(
+        "/api/activate/status", json={"token": invitation_token}
+    ).json()
 
     assert payload["status"] == "pending"
     assert "token_hash" not in payload

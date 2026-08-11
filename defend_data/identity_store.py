@@ -428,6 +428,7 @@ class IdentityStore:
         display_name: str,
         role: AccountRole,
         created_by: str,
+        audit_context: dict[str, object] | None = None,
     ) -> tuple[AccountRecord, InvitationRecord, str]:
         """Atomically create a pending account and its initial invitation."""
         if role not in self.VALID_ROLES:
@@ -480,6 +481,19 @@ class IdentityStore:
                         (now_dt + timedelta(hours=48)).isoformat(),
                     ),
                 )
+                if audit_context is not None:
+                    self._insert_account_mutation_audit(
+                        actor_id=created_by,
+                        action="account.create",
+                        target_id=account_id,
+                        audit_context=self._merge_required_audit_metadata(
+                            audit_context,
+                            {
+                                "intended_role": role,
+                                "invitation_id": invitation_id,
+                            },
+                        ),
+                    )
         except sqlite3.IntegrityError as exc:
             message = str(exc).lower()
             if "accounts.email" in message:
@@ -978,6 +992,23 @@ class IdentityStore:
             metadata=audit_context.get("metadata"),
         )
 
+    @staticmethod
+    def _merge_required_audit_metadata(
+        audit_context: dict[str, object],
+        required_metadata: dict[str, object],
+    ) -> dict[str, object]:
+        unexpected = set(audit_context) - {"request_id", "client_context", "metadata"}
+        if unexpected:
+            raise ValueError("invalid audit context")
+        supplied_metadata = audit_context.get("metadata") or {}
+        if not isinstance(supplied_metadata, dict):
+            raise ValueError("metadata must be an object")
+        return {
+            "request_id": audit_context.get("request_id"),
+            "client_context": audit_context.get("client_context"),
+            "metadata": {**supplied_metadata, **required_metadata},
+        }
+
     def _insert_audit(
         self,
         *,
@@ -1248,6 +1279,8 @@ class IdentityStore:
         *,
         account_id: str,
         created_by: str,
+        replaces_invitation_id: str | None = None,
+        audit_context: dict[str, object] | None = None,
     ) -> tuple[InvitationRecord, str]:
         now_dt = datetime.now(timezone.utc)
         expiry = now_dt + timedelta(hours=48)
@@ -1286,6 +1319,24 @@ class IdentityStore:
                     expiry.isoformat(),
                 ),
             )
+            if audit_context is not None:
+                context = self._merge_required_audit_metadata(
+                    audit_context,
+                    {
+                        "replacement_invitation_id": invitation_id,
+                        "account_id": account.account_id,
+                    },
+                )
+                self._insert_audit(
+                    actor_account_id=created_by,
+                    action="invitation.resend",
+                    target_type="invitation",
+                    target_id=(replaces_invitation_id or "").strip() or None,
+                    outcome="success",
+                    request_id=context.get("request_id"),
+                    client_context=context.get("client_context"),
+                    metadata=context.get("metadata"),
+                )
         row = self.conn.execute(
             "SELECT * FROM invitations WHERE invitation_id=?", (invitation_id,)
         ).fetchone()
@@ -1362,6 +1413,7 @@ class IdentityStore:
         invitation_id: str,
         *,
         revoked_by: str,
+        audit_context: dict[str, object] | None = None,
     ) -> InvitationRecord:
         with transaction(self.conn, immediate=True):
             row = self.conn.execute(
@@ -1383,6 +1435,21 @@ class IdentityStore:
             ).fetchone()
             assert refreshed is not None
             revoked = self._invitation_from_row(refreshed)
+            if audit_context is not None:
+                context = self._merge_required_audit_metadata(
+                    audit_context,
+                    {"account_id": invitation.account_id},
+                )
+                self._insert_audit(
+                    actor_account_id=revoked_by,
+                    action="invitation.revoke",
+                    target_type="invitation",
+                    target_id=invitation_id,
+                    outcome="success",
+                    request_id=context.get("request_id"),
+                    client_context=context.get("client_context"),
+                    metadata=context.get("metadata"),
+                )
         return revoked
 
     @_serialized

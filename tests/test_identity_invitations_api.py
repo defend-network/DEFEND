@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from fastapi import FastAPI
@@ -75,24 +76,28 @@ def test_invitation_is_single_use_and_expires_in_exactly_48_hours(
     token = invitation["token"]
 
     assert invitation["expires_at"] == (FROZEN_NOW + timedelta(hours=48)).isoformat()
-    assert invitation["activation_url"] == (
-        f"https://ai.defend-network.org/activate/{token}"
-    )
+    activation_url = urlsplit(invitation["activation_url"])
+    assert activation_url.scheme == "https"
+    assert activation_url.netloc == "ai.defend-network.org"
+    assert activation_url.path == "/activate"
+    assert activation_url.query == ""
+    assert parse_qs(activation_url.fragment) == {"token": [token]}
+    assert token not in f"{activation_url.path}?{activation_url.query}"
     assert invitation["delivery"] == {
         "delivered": True,
         "provider_message_id": "<message@example.com>",
         "error": None,
     }
     activated = client.post(
-        f"/api/activate/{token}",
-        json={"password": "a sufficiently long password"},
+        "/api/activate",
+        json={"token": token, "password": "a sufficiently long password"},
     )
     assert activated.status_code == 200
     assert activated.json()["account"]["status"] == "active"
 
     reused = client.post(
-        f"/api/activate/{token}",
-        json={"password": "another sufficiently long password"},
+        "/api/activate",
+        json={"token": token, "password": "another sufficiently long password"},
     )
     assert reused.status_code == 410
     assert reused.json() == {"detail": "Invitation is unavailable"}
@@ -126,6 +131,40 @@ def test_initial_account_and_invitation_are_created_atomically(
     assert identity.get_account("atomic-failure@example.com") is None
 
 
+def test_initial_account_and_invitation_roll_back_when_required_audit_fails(
+    client,
+    admin_headers,
+    identity,
+):
+    identity.conn.executescript(
+        """
+        CREATE TRIGGER fail_test_account_create_audit
+        BEFORE INSERT ON audit_events
+        WHEN NEW.action='account.create'
+        BEGIN
+            SELECT RAISE(ABORT, 'simulated account create audit failure');
+        END;
+        """
+    )
+
+    with pytest.raises(sqlite3.IntegrityError, match="simulated account create audit"):
+        client.post(
+            "/api/admin/accounts",
+            headers=admin_headers,
+            json={
+                "email": "audit-atomic-create@example.com",
+                "display_name": "Audit Atomic Create",
+                "role": "user",
+            },
+        )
+
+    assert identity.get_account("audit-atomic-create@example.com") is None
+    assert identity.conn.execute(
+        "SELECT COUNT(*) FROM invitations WHERE email=?",
+        ("audit-atomic-create@example.com",),
+    ).fetchone()[0] == 0
+
+
 def test_resend_revokes_the_old_token_and_revoke_blocks_the_new_token(
     client, admin_headers
 ):
@@ -140,11 +179,13 @@ def test_resend_revokes_the_old_token_and_revoke_blocks_the_new_token(
     assert resent_response.status_code == 200, resent_response.text
     resent = resent_response.json()["invitation"]
     assert resent["token"] != old_token
-    assert client.get(f"/api/activate/{old_token}/status").json()["status"] == "revoked"
+    assert client.post(
+        "/api/activate/status", json={"token": old_token}
+    ).json()["status"] == "revoked"
     assert (
         client.post(
-            f"/api/activate/{old_token}",
-            json={"password": "a sufficiently long password"},
+            "/api/activate",
+            json={"token": old_token, "password": "a sufficiently long password"},
         ).status_code
         == 410
     )
@@ -155,7 +196,86 @@ def test_resend_revokes_the_old_token_and_revoke_blocks_the_new_token(
     )
     assert revoked.status_code == 200
     assert revoked.json()["invitation"]["status"] == "revoked"
-    assert client.get(f"/api/activate/{resent['token']}/status").json()["status"] == "revoked"
+    assert client.post(
+        "/api/activate/status", json={"token": resent["token"]}
+    ).json()["status"] == "revoked"
+
+
+def test_resend_replacement_rolls_back_when_required_audit_fails(
+    client,
+    admin_headers,
+    identity,
+):
+    created = _create_invitation(
+        client,
+        admin_headers,
+        email="audit-atomic-resend@example.com",
+    )
+    original = created["invitation"]
+    original_token = original["token"]
+    identity.conn.executescript(
+        """
+        CREATE TRIGGER fail_test_invitation_resend_audit
+        BEFORE INSERT ON audit_events
+        WHEN NEW.action='invitation.resend'
+        BEGIN
+            SELECT RAISE(ABORT, 'simulated invitation resend audit failure');
+        END;
+        """
+    )
+
+    with pytest.raises(sqlite3.IntegrityError, match="simulated invitation resend audit"):
+        client.post(
+            f"/api/admin/invitations/{original['invitation_id']}/resend",
+            headers=admin_headers,
+        )
+
+    stored = identity.get_invitation(original["invitation_id"])
+    assert stored is not None
+    assert stored.revoked_at is None
+    assert identity.conn.execute(
+        "SELECT COUNT(*) FROM invitations WHERE account_id=?",
+        (original["account_id"],),
+    ).fetchone()[0] == 1
+    assert client.post(
+        "/api/activate/status", json={"token": original_token}
+    ).json()["status"] == "pending"
+
+
+def test_revoke_rolls_back_when_required_audit_fails(
+    client,
+    admin_headers,
+    identity,
+):
+    created = _create_invitation(
+        client,
+        admin_headers,
+        email="audit-atomic-revoke@example.com",
+    )
+    invitation = created["invitation"]
+    identity.conn.executescript(
+        """
+        CREATE TRIGGER fail_test_invitation_revoke_audit
+        BEFORE INSERT ON audit_events
+        WHEN NEW.action='invitation.revoke'
+        BEGIN
+            SELECT RAISE(ABORT, 'simulated invitation revoke audit failure');
+        END;
+        """
+    )
+
+    with pytest.raises(sqlite3.IntegrityError, match="simulated invitation revoke audit"):
+        client.post(
+            f"/api/admin/invitations/{invitation['invitation_id']}/revoke",
+            headers=admin_headers,
+        )
+
+    stored = identity.get_invitation(invitation["invitation_id"])
+    assert stored is not None
+    assert stored.revoked_at is None
+    assert client.post(
+        "/api/activate/status", json={"token": invitation["token"]}
+    ).json()["status"] == "pending"
 
 
 def test_creation_requires_admin_auth_and_persists_bounded_delivery_failure(
@@ -195,7 +315,9 @@ def test_account_login_errors_are_generic_and_rate_limited_by_ip_and_email(
     created = _create_invitation(client, admin_headers)
     token = created["invitation"]["token"]
     password = "a sufficiently long password"
-    assert client.post(f"/api/activate/{token}", json={"password": password}).status_code == 200
+    assert client.post(
+        "/api/activate", json={"token": token, "password": password}
+    ).status_code == 200
 
     unknown = client.post(
         "/api/account/login",
@@ -234,8 +356,8 @@ def test_account_login_sets_http_only_cookie_and_logout_revokes_it(
     password = "a sufficiently long password"
     assert (
         client.post(
-            f"/api/activate/{created['invitation']['token']}",
-            json={"password": password},
+            "/api/activate",
+            json={"token": created["invitation"]["token"], "password": password},
         ).status_code
         == 200
     )
@@ -263,15 +385,15 @@ def test_account_login_sets_http_only_cookie_and_logout_revokes_it(
 def test_activation_failures_are_generic_and_rate_limited(client):
     for _ in range(5):
         response = client.post(
-            "/api/activate/invite_unknown",
-            json={"password": "a sufficiently long password"},
+            "/api/activate",
+            json={"token": "invite_unknown", "password": "a sufficiently long password"},
         )
         assert response.status_code == 410
         assert response.json() == {"detail": "Invitation is unavailable"}
 
     limited = client.post(
-        "/api/activate/invite_unknown",
-        json={"password": "a sufficiently long password"},
+        "/api/activate",
+        json={"token": "invite_unknown", "password": "a sufficiently long password"},
     )
     assert limited.status_code == 429
     assert limited.json() == {"detail": "Too many authentication attempts"}
@@ -282,59 +404,88 @@ def test_activation_rate_limit_uses_trusted_cloudflare_client_ip(client, monkeyp
     token = "invite_cloudflare_rate_limit"
     for _ in range(5):
         response = client.post(
-            f"/api/activate/{token}",
+            "/api/activate",
             headers={"CF-Connecting-IP": "203.0.113.10"},
-            json={"password": "a sufficiently long password"},
+            json={"token": token, "password": "a sufficiently long password"},
         )
         assert response.status_code == 410
 
     different_client = client.post(
-        f"/api/activate/{token}",
+        "/api/activate",
         headers={"CF-Connecting-IP": "203.0.113.11"},
-        json={"password": "a sufficiently long password"},
+        json={"token": token, "password": "a sufficiently long password"},
     )
     assert different_client.status_code == 410
 
 
-def test_sensitive_activation_path_is_redacted_before_outer_access_logging():
-    middleware = getattr(
-        api_identity_routes,
-        "SensitivePathRedactionMiddleware",
-        None,
+def test_activation_api_uses_only_fixed_paths_and_disables_legacy_token_routes(client):
+    registered_paths = {route.path for route in router.routes}
+    assert "/api/activate/status" in registered_paths
+    assert "/api/activate" in registered_paths
+    assert not any("{token}" in path for path in registered_paths)
+
+    raw_token = "invite_raw-secret-token"
+    legacy_status = client.get(f"/api/activate/{raw_token}/status")
+    legacy_activation = client.post(
+        f"/api/activate/{raw_token}",
+        json={"password": "a sufficiently long password"},
     )
-    assert middleware is not None
+    assert legacy_status.status_code == 404
+    assert legacy_activation.status_code == 404
 
+
+def test_activation_requests_never_put_the_token_in_path_or_query(client):
+    raw_token = "invite_body-only-secret"
+    status = client.post("/api/activate/status", json={"token": raw_token})
+    activation = client.post(
+        "/api/activate",
+        json={"token": raw_token, "password": "a sufficiently long password"},
+    )
+
+    assert status.status_code == 200
+    assert status.json() == {"status": "invalid"}
+    assert activation.status_code == 410
+    for response in (status, activation):
+        assert raw_token not in response.request.url.path
+        assert raw_token not in response.request.url.query.decode()
+
+
+def test_only_legacy_activation_paths_are_redacted_at_the_outer_logging_boundary(
+    identity,
+):
     inner = FastAPI()
-    inner.add_middleware(middleware)
-
-    @inner.get("/api/activate/{token}/status")
-    def status(token: str):
-        return {"received": bool(token)}
+    inner.state.defend_data = SimpleNamespace(identity=identity)
+    inner.add_middleware(api_identity_routes.SensitivePathRedactionMiddleware)
+    inner.include_router(router)
 
     class CaptureScopeAfterResponse:
         def __init__(self, app):
             self.app = app
-            self.path = None
-            self.raw_path = None
+            self.paths = []
 
         async def __call__(self, scope, receive, send):
             async def capture_at_response_start(message):
                 if message.get("type") == "http.response.start":
-                    self.path = scope.get("path")
-                    self.raw_path = scope.get("raw_path")
+                    self.paths.append(scope.get("path"))
                 await send(message)
 
             await self.app(scope, receive, capture_at_response_start)
 
     captured = CaptureScopeAfterResponse(inner)
-    raw_token = "invite_raw-secret-token"
+    raw_token = "invite_stale-legacy-secret"
     with TestClient(captured) as redaction_client:
-        response = redaction_client.get(f"/api/activate/{raw_token}/status")
+        fixed = redaction_client.post(
+            "/api/activate/status", json={"token": "invite_unknown"}
+        )
+        legacy = redaction_client.get(f"/api/activate/{raw_token}/status")
 
-    assert response.status_code == 200
-    assert captured.path == "/api/activate/[redacted]/status"
-    assert captured.raw_path == b"/api/activate/[redacted]/status"
-    assert raw_token not in captured.path
+    assert fixed.status_code == 200
+    assert legacy.status_code == 404
+    assert captured.paths == [
+        "/api/activate/status",
+        "/api/activate/[redacted]/status",
+    ]
+    assert raw_token not in repr(captured.paths)
 
 
 def test_admin_cannot_invite_an_admin_account(client, identity, owner):
