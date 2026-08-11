@@ -6,8 +6,23 @@ import ssl
 from dataclasses import dataclass
 from email.message import EmailMessage
 from email.utils import make_msgid
+from urllib.parse import quote, urlsplit
 
 from .identity_security import normalize_email
+
+
+def public_web_origin() -> str:
+    configured = os.getenv(
+        "DEFEND_PUBLIC_WEB_ORIGIN", "https://ai.defend-network.org"
+    ).strip().rstrip("/")
+    parsed = urlsplit(configured)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return "https://ai.defend-network.org"
+    return configured
+
+
+def activation_url(credential: str) -> str:
+    return f"{public_web_origin()}/activate#token={quote(credential, safe='')}"
 
 
 @dataclass(frozen=True)

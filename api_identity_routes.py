@@ -7,13 +7,16 @@ import time
 from collections import OrderedDict, deque
 from datetime import datetime, timedelta, timezone
 from typing import Literal
-from urllib.parse import quote, urlsplit
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from admin_auth import AdminPrincipal, require_admin
-from defend_data.identity_mailer import DeliveryResult, GmailInvitationMailer
+from defend_data.identity_mailer import (
+    DeliveryResult,
+    GmailInvitationMailer,
+    activation_url,
+)
 from defend_data.identity_security import normalize_email
 from defend_data.identity_store import (
     AccountRecord,
@@ -230,20 +233,6 @@ def _session_seconds() -> int:
     return max(900, min(int(hours * 3600), 7 * 24 * 3600))
 
 
-def _public_origin() -> str:
-    configured = os.getenv(
-        "DEFEND_PUBLIC_WEB_ORIGIN", "https://ai.defend-network.org"
-    ).strip().rstrip("/")
-    parsed = urlsplit(configured)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        return "https://ai.defend-network.org"
-    return configured
-
-
-def _activation_url(token: str) -> str:
-    return f"{_public_origin()}/activate#token={quote(token, safe='')}"
-
-
 def _account_payload(account: AccountRecord) -> dict[str, str | None]:
     return {
         "account_id": account.account_id,
@@ -288,7 +277,7 @@ def _invitation_payload(
     }
     if token is not None:
         payload["token"] = token
-        payload["activation_url"] = _activation_url(token)
+        payload["activation_url"] = activation_url(token)
     if delivery is not None:
         payload["delivery"] = {
             "delivered": delivery.delivered,
@@ -316,7 +305,7 @@ def _deliver_invitation(
 ) -> tuple[InvitationRecord, DeliveryResult]:
     result = _mailer().send_invitation(
         recipient=invitation.email,
-        activation_url=_activation_url(token),
+        activation_url=activation_url(token),
         expires_at=invitation.expires_at,
     )
     safe_result = DeliveryResult(

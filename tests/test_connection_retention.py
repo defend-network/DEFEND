@@ -46,10 +46,18 @@ class FlakyVisitorStore:
         return self.backing_store.purge_connection_history(before=before)
 
 
+class ReadyIdentityStore:
+    def __init__(self):
+        self.preflight_calls = 0
+
+    def assert_invitation_transport_ready(self) -> None:
+        self.preflight_calls += 1
+
+
 class FakeDataCore:
     def __init__(self, visitors):
         self.visitors = visitors
-        self.identity = object()
+        self.identity = ReadyIdentityStore()
         self.memory = object()
         self.conversations = object()
         self.paths = SimpleNamespace(root="test-data-root")
@@ -178,7 +186,7 @@ def test_lifespan_runs_connection_cleanup_at_startup(visitor_store, monkeypatch)
     )
     data = SimpleNamespace(
         visitors=visitor_store,
-        identity=object(),
+        identity=ReadyIdentityStore(),
         memory=object(),
         conversations=object(),
         paths=SimpleNamespace(root="test-data-root"),
@@ -203,6 +211,46 @@ def test_lifespan_runs_connection_cleanup_at_startup(visitor_store, monkeypatch)
             assert visitor_store.connection_detail(keep) is not None
 
     asyncio.run(exercise_lifespan())
+    assert data.identity.preflight_calls == 1
+
+
+def test_lifespan_refuses_traffic_when_invitation_transport_preflight_blocks(
+    visitor_store,
+    monkeypatch,
+):
+    class BlockingIdentityStore:
+        def assert_invitation_transport_ready(self) -> None:
+            raise RuntimeError("legacy invitation rollout required")
+
+    close_calls = []
+    data = SimpleNamespace(
+        visitors=visitor_store,
+        identity=BlockingIdentityStore(),
+        memory=object(),
+        conversations=object(),
+        paths=SimpleNamespace(root="test-data-root"),
+        close=lambda: close_calls.append(True),
+    )
+    app = SimpleNamespace(state=SimpleNamespace())
+    model_builds = []
+
+    monkeypatch.setattr(api_server, "DataCore", lambda _root: data)
+    monkeypatch.setattr(
+        api_server,
+        "build_model_client",
+        lambda: model_builds.append(True),
+    )
+
+    async def exercise_lifespan():
+        async with api_server.lifespan(app):
+            raise AssertionError("lifespan must not yield after a blocked preflight")
+
+    with pytest.raises(RuntimeError, match="rollout required"):
+        asyncio.run(exercise_lifespan())
+
+    assert model_builds == []
+    assert close_calls == [True]
+    assert getattr(app.state, "defend_data", None) is None
 
 
 def test_request_check_runs_cleanup_when_daily_guard_expires(

@@ -300,6 +300,9 @@ async def lifespan(app: FastAPI):
     model_needs_exit = False
     try:
         data = DataCore(DATA_ROOT)
+        # Refuse to bind application traffic until every still-live invitation
+        # uses the fragment-only credential transport.
+        data.identity.assert_invitation_transport_ready()
         state.last_connection_cleanup_at = None
         try:
             _run_connection_retention_cleanup(data)

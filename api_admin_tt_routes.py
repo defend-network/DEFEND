@@ -5,12 +5,15 @@ included with `app.include_router(admin_tt_router)` and removed cleanly later.
 """
 from __future__ import annotations
 
+import os
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from admin_auth import (
     AdminPrincipal,
@@ -42,6 +45,44 @@ from tt_store import (  # noqa: E402
 )
 
 router = APIRouter()
+
+
+class _LoginWorkGate:
+    """Bound admitted login work before it reaches the shared worker pool."""
+
+    def __init__(self, limit: int) -> None:
+        self.limit = limit
+        self._active = 0
+        self._lock = threading.Lock()
+
+    def try_acquire(self) -> bool:
+        with self._lock:
+            if self._active >= self.limit:
+                return False
+            self._active += 1
+            return True
+
+    def release(self) -> None:
+        with self._lock:
+            if self._active <= 0:
+                raise RuntimeError("admin login work gate released without acquisition")
+            self._active -= 1
+
+
+def _login_work_concurrency() -> int:
+    try:
+        configured = int(os.getenv("DEFEND_ADMIN_LOGIN_HASH_CONCURRENCY", "2"))
+    except ValueError:
+        configured = 2
+    return max(1, min(configured, 8))
+
+
+def _login_work_gate(request: Request) -> _LoginWorkGate:
+    gate = getattr(request.app.state, "admin_login_work_gate", None)
+    if gate is None:
+        gate = _LoginWorkGate(_login_work_concurrency())
+        setattr(request.app.state, "admin_login_work_gate", gate)
+    return gate
 
 
 class LoginIn(BaseModel):
@@ -106,13 +147,25 @@ class SettleIn(BaseModel):
 
 @router.post("/api/admin/login")
 async def admin_login(body: LoginIn, request: Request) -> dict[str, Any]:
-    limiter = _limiter(request, "admin_login")
-    rate_identifier = canonical_admin_login_identifier(body.username)
-    if not limiter.allow_many(_admin_login_rate_keys(request, rate_identifier)):
+    gate = _login_work_gate(request)
+    if not gate.try_acquire():
         raise HTTPException(status_code=429, detail="Too many authentication attempts")
-    if len(body.password) > 512:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    username, role, token, expires_in = authenticate(body.username, body.password)
+    try:
+        rate_identifier = await run_in_threadpool(
+            canonical_admin_login_identifier, body.username
+        )
+        limiter = _limiter(request, "admin_login")
+        if not limiter.allow_many(_admin_login_rate_keys(request, rate_identifier)):
+            raise HTTPException(
+                status_code=429, detail="Too many authentication attempts"
+            )
+        if len(body.password) > 512:
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+        username, role, token, expires_in = await run_in_threadpool(
+            authenticate, body.username, body.password
+        )
+    finally:
+        gate.release()
     return {
         "username": username,
         "role": role,

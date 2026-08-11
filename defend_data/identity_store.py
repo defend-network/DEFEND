@@ -8,7 +8,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from functools import wraps
-from typing import Literal
+from typing import Callable, Literal
 
 from .config import DataPaths
 from .identity_security import (
@@ -24,6 +24,7 @@ from .sqlite_utils import connect_sqlite, transaction
 
 AccountRole = Literal["owner", "admin", "user"]
 AccountStatus = Literal["pending_activation", "active", "disabled", "anonymized"]
+InvitationTransport = Literal["legacy_path", "fragment_v1"]
 
 
 class IdentityError(ValueError):
@@ -43,6 +44,14 @@ class InvitationInvalid(IdentityError):
 
 
 class InvitationExpired(InvitationInvalid):
+    pass
+
+
+class InvitationTransportRolloutRequired(RuntimeError):
+    pass
+
+
+class InvitationTransportDeliveryFailed(RuntimeError):
     pass
 
 
@@ -70,6 +79,13 @@ class InvitationRecord:
     revoked_at: str | None
     delivery_status: str
     delivery_error: str | None
+    transport_version: InvitationTransport
+
+
+@dataclass(frozen=True)
+class InvitationTransportPreflight:
+    ready: bool
+    legacy_pending_count: int
 
 
 def utc_now() -> str:
@@ -138,13 +154,13 @@ class IdentityStore:
                 current_version = int(row["value"]) if row is not None else 0
             except (TypeError, ValueError) as exc:
                 raise RuntimeError("invalid identity schema version") from exc
-        if current_version > 3:
+        if current_version > 4:
             raise RuntimeError(
                 f"newer identity schema version {current_version} is not supported"
             )
         if current_version < 0:
             raise RuntimeError("invalid identity schema version")
-        if current_version == 3:
+        if current_version == 4:
             return
 
         try:
@@ -300,6 +316,30 @@ class IdentityStore:
             COMMIT;
                     """
                 )
+                current_version = 3
+
+            if current_version == 3:
+                invitation_columns = {
+                    row["name"]
+                    for row in self.conn.execute("PRAGMA table_info(invitations)")
+                }
+                if "transport_version" not in invitation_columns:
+                    self.conn.executescript(
+                        """
+            BEGIN IMMEDIATE;
+            ALTER TABLE invitations ADD COLUMN transport_version TEXT NOT NULL
+                DEFAULT 'legacy_path'
+                CHECK(transport_version IN ('legacy_path','fragment_v1'));
+            INSERT OR REPLACE INTO schema_meta(key,value) VALUES('schema_version','4');
+            COMMIT;
+                        """
+                    )
+                else:
+                    with transaction(self.conn, immediate=True):
+                        self.conn.execute(
+                            "INSERT OR REPLACE INTO schema_meta(key,value) "
+                            "VALUES('schema_version','4')"
+                        )
         except Exception:
             if self.conn.in_transaction:
                 self.conn.rollback()
@@ -331,6 +371,7 @@ class IdentityStore:
             revoked_at=row["revoked_at"],
             delivery_status=row["delivery_status"],
             delivery_error=row["delivery_error"],
+            transport_version=row["transport_version"],
         )
 
     @staticmethod
@@ -467,8 +508,8 @@ class IdentityStore:
                     """
                     INSERT INTO invitations(
                         invitation_id,account_id,email,intended_role,token_hash,created_by,
-                        created_at,expires_at
-                    ) VALUES(?,?,?,?,?,?,?,?)
+                        created_at,expires_at,transport_version
+                    ) VALUES(?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         invitation_id,
@@ -479,6 +520,7 @@ class IdentityStore:
                         created_by,
                         now,
                         (now_dt + timedelta(hours=48)).isoformat(),
+                        "fragment_v1",
                     ),
                 )
                 if audit_context is not None:
@@ -1273,6 +1315,178 @@ class IdentityStore:
             raise AuthenticationFailed("invalid credentials")
         return authenticated
 
+    def _live_legacy_invitation_rows(
+        self, *, now: datetime
+    ) -> list[sqlite3.Row]:
+        rows = self.conn.execute(
+            """
+            SELECT * FROM invitations
+            WHERE transport_version='legacy_path'
+              AND consumed_at IS NULL
+              AND revoked_at IS NULL
+            ORDER BY account_id,created_at DESC,rowid DESC
+            """
+        ).fetchall()
+        live: list[sqlite3.Row] = []
+        for row in rows:
+            try:
+                expired = _parse_time(row["expires_at"]) <= now
+            except (TypeError, ValueError):
+                # A malformed outstanding credential cannot be proven safe.
+                expired = False
+            if not expired:
+                live.append(row)
+        return live
+
+    @_serialized
+    def invitation_transport_preflight(self) -> InvitationTransportPreflight:
+        pending = len(
+            self._live_legacy_invitation_rows(now=datetime.now(timezone.utc))
+        )
+        return InvitationTransportPreflight(
+            ready=pending == 0,
+            legacy_pending_count=pending,
+        )
+
+    @_serialized
+    def assert_invitation_transport_ready(self) -> None:
+        preflight = self.invitation_transport_preflight()
+        if not preflight.ready:
+            suffix = "invitation" if preflight.legacy_pending_count == 1 else "invitations"
+            raise InvitationTransportRolloutRequired(
+                "identity rollout blocked: "
+                f"{preflight.legacy_pending_count} active legacy {suffix} must be "
+                "revoked and reissued before API traffic"
+            )
+
+    @_serialized
+    def reissue_legacy_pending_invitations(
+        self,
+        *,
+        deliver: Callable[[InvitationRecord, str], bool] | None = None,
+    ) -> list[tuple[InvitationRecord, str]]:
+        """Atomically replace live pre-fragment credentials without exposing them."""
+        now_dt = datetime.now(timezone.utc)
+        now = now_dt.isoformat()
+        replacements: list[tuple[InvitationRecord, str]] = []
+        with transaction(self.conn, immediate=True):
+            legacy_rows = self._live_legacy_invitation_rows(now=now_dt)
+            if not legacy_rows:
+                return []
+            owner = self.conn.execute(
+                "SELECT * FROM accounts WHERE role='owner' AND status='active'"
+            ).fetchone()
+            if owner is None:
+                raise RoleViolation("an active owner is required for invitation rollout")
+
+            by_account: dict[str, list[sqlite3.Row]] = {}
+            for legacy in legacy_rows:
+                by_account.setdefault(legacy["account_id"], []).append(legacy)
+
+            for account_id, account_legacy_rows in by_account.items():
+                account = self.conn.execute(
+                    "SELECT * FROM accounts WHERE account_id=?", (account_id,)
+                ).fetchone()
+                if account is None:
+                    raise RuntimeError("legacy invitation account is missing")
+
+                legacy_ids = [row["invitation_id"] for row in account_legacy_rows]
+                placeholders = ",".join("?" for _ in legacy_ids)
+                self.conn.execute(
+                    f"UPDATE invitations SET revoked_at=? "
+                    f"WHERE invitation_id IN ({placeholders})",
+                    (now, *legacy_ids),
+                )
+
+                replacement_id: str | None = None
+                replacement_token: str | None = None
+                if account["status"] == "pending_activation":
+                    current_fragment = self.conn.execute(
+                        """
+                        SELECT * FROM invitations
+                        WHERE account_id=? AND transport_version='fragment_v1'
+                          AND consumed_at IS NULL AND revoked_at IS NULL
+                        ORDER BY created_at DESC,rowid DESC
+                        LIMIT 1
+                        """,
+                        (account_id,),
+                    ).fetchone()
+                    if current_fragment is None or (
+                        _parse_time(current_fragment["expires_at"]) <= now_dt
+                    ):
+                        if current_fragment is not None:
+                            self.conn.execute(
+                                "UPDATE invitations SET revoked_at=? WHERE invitation_id=?",
+                                (now, current_fragment["invitation_id"]),
+                            )
+                        replacement_id = f"inv_{uuid.uuid4().hex}"
+                        replacement_token, stored_hash = new_token("invite")
+                        self.conn.execute(
+                            """
+                            INSERT INTO invitations(
+                                invitation_id,account_id,email,intended_role,token_hash,
+                                created_by,created_at,expires_at,transport_version
+                            ) VALUES(?,?,?,?,?,?,?,?,?)
+                            """,
+                            (
+                                replacement_id,
+                                account_id,
+                                account["email"],
+                                account["role"],
+                                stored_hash,
+                                owner["account_id"],
+                                now,
+                                (now_dt + timedelta(hours=48)).isoformat(),
+                                "fragment_v1",
+                            ),
+                        )
+                        replacement_row = self.conn.execute(
+                            "SELECT * FROM invitations WHERE invitation_id=?",
+                            (replacement_id,),
+                        ).fetchone()
+                        assert replacement_row is not None
+                        replacements.append(
+                            (
+                                self._invitation_from_row(replacement_row),
+                                replacement_token,
+                            )
+                        )
+                    else:
+                        replacement_id = current_fragment["invitation_id"]
+
+                for legacy in account_legacy_rows:
+                    self._insert_audit(
+                        actor_account_id=owner["account_id"],
+                        action="invitation.transport_reissue",
+                        target_type="invitation",
+                        target_id=legacy["invitation_id"],
+                        outcome="success",
+                        metadata={
+                            "account_id": account_id,
+                            "replacement_invitation_id": replacement_id,
+                            "source_transport": "legacy_path",
+                            "replacement_transport": (
+                                "fragment_v1" if replacement_id is not None else None
+                            ),
+                        },
+                    )
+
+            if deliver is not None:
+                for invitation, credential in replacements:
+                    if not deliver(invitation, credential):
+                        raise InvitationTransportDeliveryFailed(
+                            "invitation delivery failed during rollout"
+                        )
+                    self.conn.execute(
+                        """
+                        UPDATE invitations
+                        SET delivery_status='delivered',delivery_error=NULL
+                        WHERE invitation_id=?
+                        """,
+                        (invitation.invitation_id,),
+                    )
+        return replacements
+
     @_serialized
     def create_invitation(
         self,
@@ -1305,8 +1519,8 @@ class IdentityStore:
                 """
                 INSERT INTO invitations(
                     invitation_id,account_id,email,intended_role,token_hash,created_by,
-                    created_at,expires_at
-                ) VALUES(?,?,?,?,?,?,?,?)
+                    created_at,expires_at,transport_version
+                ) VALUES(?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     invitation_id,
@@ -1317,6 +1531,7 @@ class IdentityStore:
                     created_by,
                     now,
                     expiry.isoformat(),
+                    "fragment_v1",
                 ),
             )
             if audit_context is not None:

@@ -18,7 +18,7 @@ from defend_data.identity_store import (
 )
 
 
-def test_schema_version_three_creates_identity_tables(identity):
+def test_schema_version_four_creates_identity_tables(identity):
     tables = {
         row["name"]
         for row in identity.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
@@ -34,7 +34,7 @@ def test_schema_version_three_creates_identity_tables(identity):
     version = identity.conn.execute(
         "SELECT value FROM schema_meta WHERE key='schema_version'"
     ).fetchone()
-    assert version["value"] == "3"
+    assert version["value"] == "4"
 
 
 def _insert_audit_event(identity, owner, event_id="audit_test"):
@@ -118,7 +118,7 @@ def test_audit_event_preserves_actor_id_after_account_deletion(identity, owner):
     assert row["actor_account_id"] == owner.account_id
 
 
-def test_populated_v1_audit_events_migrate_to_append_only_v3(data_paths):
+def test_populated_v1_audit_events_migrate_to_append_only_v4(data_paths):
     seed = IdentityStore(data_paths)
     owner = seed.bootstrap_owner(
         email="chairman@defend-network.org",
@@ -176,7 +176,7 @@ def test_populated_v1_audit_events_migrate_to_append_only_v3(data_paths):
         version = migrated.conn.execute(
             "SELECT value FROM schema_meta WHERE key='schema_version'"
         ).fetchone()
-        assert version["value"] == "3"
+        assert version["value"] == "4"
         migrated.conn.execute("DELETE FROM accounts WHERE account_id=?", (owner.account_id,))
         migrated.conn.commit()
         row = migrated.conn.execute(

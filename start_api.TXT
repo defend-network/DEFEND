@@ -20,6 +20,10 @@ Persistent data and identity
   values use 12 hours; the effective lifetime is bounded from 15 minutes to 7 days.
 - DEFEND_ACCOUNT_SESSION_HOURS: optional account-session lifetime in hours. Invalid
   values use 12 hours; the effective lifetime is bounded from 15 minutes to 7 days.
+- DEFEND_ADMIN_LOGIN_HASH_CONCURRENCY: optional maximum number of concurrently
+  admitted admin-login account lookups and password checks. Invalid values use 2;
+  the effective value is bounded from 1 through 8. Keep this low because each real
+  or dummy password check deliberately consumes substantial CPU and memory.
 - DEFEND_COOKIE_SECURE: keep true in the HTTPS deployment. Disabling it is only
   appropriate for an isolated local HTTP development environment.
 - Admin, account, and activation throttles are bounded but process-local. Run one
@@ -85,12 +89,29 @@ Safe secret generation
 
 Startup order
 -------------
-1. Provision the persistent data root and inject all required environment and
+1. Stop API workers and prevent all public traffic. Provision the persistent data
+   root, take an approved backup, and inject all required environment and
    secret-manager values into the API service account.
-2. Start the configured model backend and verify it is ready.
-3. From the repository root, start the API with:
+2. From the repository root, with the same DEFEND_DATA_ROOT and backend
+   environment that the API service will use, run the mandatory credential-safe
+   invitation transport preflight:
+     .\.venv\Scripts\python.exe -m tools.identity_invitation_rollout check
+   READY with legacy_pending=0 proves the gate is clear. BLOCKED means live
+   invitations created before fragment transport remain; do not start the API.
+3. If blocked, verify the Gmail delivery variables above, then revoke and reissue
+   every live legacy invitation transactionally with:
+     .\.venv\Scripts\python.exe -m tools.identity_invitation_rollout reissue
+   The command prints counts and status only, never recipients, links, credentials,
+   hashes, or provider errors. A delivery or database failure rolls back legacy
+   revocation, replacements, and audits and exits nonzero. Resolve the delivery
+   configuration and rerun it while traffic remains stopped. Never restore or
+   temporarily route path/query activation credentials.
+4. Run the check command again. Do not continue until it exits zero and reports
+   READY with legacy_pending=0. API startup independently enforces the same gate.
+5. Start the configured model backend and verify it is ready.
+6. From the repository root, start the API with:
      .\.venv\Scripts\python.exe api_server.py
-4. Build and start the Next.js frontend with its public API-origin setting, then
+7. Build and start the Next.js frontend with its public API-origin setting, then
    start the trusted Cloudflare tunnel routes.
-5. Verify API health, owner login, invitation delivery/fallback copying, fragment
+8. Verify API health, owner login, invitation delivery/fallback copying, fragment
    activation, account login, and normal visitor linking before enabling traffic.
