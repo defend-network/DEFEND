@@ -557,7 +557,7 @@ def test_vast_waits_through_null_and_loading_until_running(fake_http: FakeHttp):
         "vast_synthetic_secret",
         transport=fake_http,
         sleep=sleeps.append,
-        monotonic=iter((0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0)).__next__,
+        monotonic=iter(tuple(float(value) for value in range(10))).__next__,
     )
 
     instance = client.wait_until_running(4815, poll_interval_seconds=0.25)
@@ -661,7 +661,7 @@ def test_vast_running_just_before_deadline_uses_only_remaining_request_budget(
         url="https://console.vast.ai/api/v0/instances/4815/",
         json=_running_instance_document(),
     )
-    clock = iter((0.0, 299.0, 299.999)).__next__
+    clock = iter((0.0, 299.0, 299.0, 299.999)).__next__
     client = VastClient(
         "vast_synthetic_secret", transport=fake_http, monotonic=clock
     )
@@ -702,7 +702,7 @@ def test_vast_clamps_sleep_and_next_request_to_deadline(fake_http: FakeHttp):
         url="https://console.vast.ai/api/v0/instances/4815/", json=loading
     )
     sleeps = []
-    clock = iter((0.0, 299.75, 299.8, 300.0)).__next__
+    clock = iter((0.0, 299.75, 299.75, 299.8, 300.0)).__next__
     client = VastClient(
         "vast_synthetic_secret",
         transport=fake_http,
@@ -716,6 +716,61 @@ def test_vast_clamps_sleep_and_next_request_to_deadline(fake_http: FakeHttp):
     assert len(fake_http.requests) == 1
     assert fake_http.last_request.timeout == pytest.approx(0.25)
     assert sleeps == [pytest.approx(0.2)]
+
+
+def test_vast_retry_reaching_deadline_issues_no_second_status_request(
+    fake_http: FakeHttp,
+):
+    instance_url = "https://console.vast.ai/api/v0/instances/4815/"
+    fake_http.add_response(
+        url=instance_url, status_code=429, json={"error": "limited"}
+    )
+    fake_http.add_response(url=instance_url, json=_running_instance_document())
+    sleeps = []
+    clock = iter((0.0, 299.75, 299.75, 300.25)).__next__
+    client = VastClient(
+        "vast_synthetic_secret",
+        transport=fake_http,
+        monotonic=clock,
+        sleep=sleeps.append,
+        jitter=lambda: 1.0,
+    )
+
+    with pytest.raises(VastError) as pending:
+        client.wait_until_running(4815)
+
+    assert str(pending.value) == "Vast.ai provisioning timed out after 300 seconds"
+    assert len(fake_http.requests) == 1
+    assert fake_http.last_request.timeout == pytest.approx(0.25)
+    assert sleeps == []
+
+
+def test_vast_retry_refreshes_timeout_and_clamps_each_sleep_to_deadline(
+    fake_http: FakeHttp,
+):
+    instance_url = "https://console.vast.ai/api/v0/instances/4815/"
+    for _ in range(2):
+        fake_http.add_response(
+            url=instance_url, status_code=429, json={"error": "limited"}
+        )
+    fake_http.add_response(url=instance_url, json=_running_instance_document())
+    sleeps = []
+    clock = iter(
+        (0.0, 299.0, 299.0, 299.2, 299.6, 299.75, 299.99, 299.999)
+    ).__next__
+    client = VastClient(
+        "vast_synthetic_secret",
+        transport=fake_http,
+        monotonic=clock,
+        sleep=sleeps.append,
+        jitter=lambda: 1.0,
+    )
+
+    assert client.wait_until_running(4815).actual_status == "running"
+    assert [request.timeout for request in fake_http.requests] == pytest.approx(
+        [1.0, 0.4, 0.01]
+    )
+    assert sleeps == pytest.approx([0.5, 0.25])
 
 
 def test_vast_offer_rented_race_and_failure_never_expose_provider_body(
@@ -858,6 +913,60 @@ def test_vast_mutations_accept_documented_empty_success_and_reconcile_ssh_key(
 
     assert client.set_state(4815, "stopped") is True
     assert client.ensure_account_ssh_key(public_key) == 12
+
+
+@pytest.mark.parametrize("status_code", [200, 201, 202])
+@pytest.mark.parametrize(
+    ("operation", "safe_error"),
+    [
+        ("state", "Vast.ai state change failed"),
+        ("destroy", "Vast.ai destruction failed"),
+        ("ssh_key", "Vast.ai SSH key creation failed"),
+    ],
+)
+def test_vast_empty_mutation_body_requires_http_204(
+    fake_http: FakeHttp,
+    operation: str,
+    safe_error: str,
+    status_code: int,
+):
+    client = VastClient("vast_synthetic_secret", transport=fake_http)
+    if operation == "state":
+        fake_http.add_raw_response(
+            method="PUT",
+            url="https://console.vast.ai/api/v0/instances/4815",
+            status_code=status_code,
+            body=b"",
+        )
+        invoke = lambda: client.set_state(4815, "stopped")
+    elif operation == "destroy":
+        fake_http.add_raw_response(
+            method="DELETE",
+            url="https://console.vast.ai/api/v0/instances/4815/",
+            status_code=status_code,
+            body=b"",
+        )
+        invoke = lambda: client.destroy_instance(
+            4815, confirmed_instance_id=4815
+        )
+    else:
+        fake_http.add_response(
+            url="https://console.vast.ai/api/v0/ssh", json={"ssh_keys": []}
+        )
+        fake_http.add_raw_response(
+            method="POST",
+            url="https://console.vast.ai/api/v0/ssh",
+            status_code=status_code,
+            body=b"",
+        )
+        invoke = lambda: client.ensure_account_ssh_key(
+            "ssh-ed25519 AAAAC3NzaEmptyFailure defend-control"
+        )
+
+    with pytest.raises(VastError) as pending:
+        invoke()
+
+    assert str(pending.value) == safe_error
 
 
 def test_vast_retries_429_with_bounded_jitter_and_caps_response_size(

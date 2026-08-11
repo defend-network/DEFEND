@@ -32,6 +32,10 @@ class VastOfferUnavailable(VastError):
     """Raised when an offer becomes unavailable before instance creation."""
 
 
+class _DeadlineExceeded(Exception):
+    pass
+
+
 @dataclass(frozen=True)
 class _Response:
     status_code: int
@@ -203,6 +207,7 @@ class VastClient:
         instance_id: int,
         *,
         timeout_seconds: float = _TIMEOUT_SECONDS,
+        deadline: float | None = None,
     ) -> VastInstance:
         parsed_id = _positive_int(instance_id, "instance ID")
         if (
@@ -216,6 +221,7 @@ class VastClient:
             f"{_API_ROOT}/instances/{parsed_id}/",
             None,
             timeout_seconds=float(timeout_seconds),
+            deadline=deadline,
         )
         raw: object = document
         if isinstance(document, Mapping) and "instances" in document:
@@ -324,7 +330,9 @@ class VastClient:
         response: _Response, safe_error: str
     ) -> Mapping[str, object] | None:
         if not response.body:
-            return None
+            if response.status_code == 204:
+                return None
+            raise VastError(safe_error)
         try:
             document = json.loads(response.body.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
@@ -359,10 +367,16 @@ class VastClient:
             remaining = deadline - self._monotonic()
             if remaining <= 0:
                 raise VastError("Vast.ai provisioning timed out after 300 seconds")
-            instance = self.show_instance(
-                parsed_id,
-                timeout_seconds=min(_TIMEOUT_SECONDS, remaining),
-            )
+            try:
+                instance = self.show_instance(
+                    parsed_id,
+                    timeout_seconds=min(_TIMEOUT_SECONDS, remaining),
+                    deadline=deadline,
+                )
+            except _DeadlineExceeded:
+                raise VastError(
+                    "Vast.ai provisioning timed out after 300 seconds"
+                ) from None
             after_response = self._monotonic()
             if after_response >= deadline:
                 raise VastError("Vast.ai provisioning timed out after 300 seconds")
@@ -466,6 +480,7 @@ class VastClient:
         offer_race: bool = False,
         retry_429: bool = True,
         timeout_seconds: float = _TIMEOUT_SECONDS,
+        deadline: float | None = None,
     ) -> _Response:
         headers = {
             "Accept": "application/json",
@@ -476,13 +491,19 @@ class VastClient:
         response: _Response | None = None
         max_attempts = _MAX_ATTEMPTS if retry_429 else 1
         for attempt in range(max_attempts):
+            attempt_timeout = timeout_seconds
+            if deadline is not None:
+                remaining = deadline - self._monotonic()
+                if remaining <= 0:
+                    raise _DeadlineExceeded
+                attempt_timeout = min(attempt_timeout, remaining)
             try:
                 response = self._transport.request(
                     method,
                     url,
                     headers=headers,
                     json=body,
-                    timeout=timeout_seconds,
+                    timeout=attempt_timeout,
                     max_response_bytes=_MAX_RESPONSE_BYTES,
                 )
             except Exception as error:
@@ -499,6 +520,11 @@ class VastClient:
                 jitter = 0.0
             jitter = min(1.0, max(0.0, jitter))
             delay = min(2.0, (2**attempt) * 0.5 * jitter)
+            if deadline is not None:
+                remaining = deadline - self._monotonic()
+                if remaining <= 0:
+                    raise _DeadlineExceeded
+                delay = min(delay, remaining)
             self._sleep(delay)
         assert response is not None
         if offer_race and response.status_code in (400, 404, 409):
@@ -518,6 +544,7 @@ class VastClient:
         offer_race: bool = False,
         retry_429: bool = True,
         timeout_seconds: float = _TIMEOUT_SECONDS,
+        deadline: float | None = None,
     ) -> object:
         response = self._request(
             method,
@@ -526,6 +553,7 @@ class VastClient:
             offer_race=offer_race,
             retry_429=retry_429,
             timeout_seconds=timeout_seconds,
+            deadline=deadline,
         )
         try:
             return json.loads(response.body.decode("utf-8"))
