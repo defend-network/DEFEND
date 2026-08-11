@@ -122,6 +122,11 @@ class HuggingFaceClient:
             raise HuggingFaceError("Hugging Face adapter configuration is invalid")
         if config.get("peft_type") != "LORA":
             raise HuggingFaceError("Hugging Face adapter must use LORA")
+        lora_rank = config.get("r")
+        if type(lora_rank) is not int or not 1 <= lora_rank <= 512:
+            raise HuggingFaceError(
+                "Hugging Face adapter LoRA rank must be an integer from 1 to 512"
+            )
         base_repo = config.get("base_model_name_or_path")
         if (
             not isinstance(base_repo, str)
@@ -147,6 +152,7 @@ class HuggingFaceClient:
             base_repo=base_repo,
             base_revision=base_revision,
             peft_type="LORA",
+            lora_rank=lora_rank,
         )
 
     @staticmethod

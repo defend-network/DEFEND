@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import argparse
+from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -10,9 +12,10 @@ import tkinter as tk
 from tkinter import messagebox
 
 from defend_control.controller import ControlController
+from defend_control.health import probe_http
 from defend_control.local_model import LocalOllamaBackend
 from defend_control.orchestrator import StackOrchestrator
-from defend_control.preflight import PreflightRunner
+from defend_control.preflight import CheckResult, PreflightRunner
 from defend_control.processes import ProcessSupervisor
 from defend_control.secrets import DpapiSecretStore
 from defend_control.settings import ControlSettings, JsonSettingsStore
@@ -23,6 +26,130 @@ from defend_control.ui import ControlCenterUI, SetupDialog
 class _Runtime:
     controller: ControlController
     supervisor: ProcessSupervisor
+
+
+@dataclass(frozen=True)
+class CheckModeReport:
+    """Credential-free summary of the non-billable acceptance checks."""
+
+    checks: tuple[CheckResult, ...]
+
+    @property
+    def ready(self) -> bool:
+        return all(check.ok for check in self.checks)
+
+
+_CHECK_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "dependencies",
+        (
+            "python-version",
+            "node-version",
+            "npm.cmd",
+            "git",
+            "ssh.exe",
+            "import:",
+        ),
+    ),
+    ("secrets", ("secrets",)),
+    ("ports", ("service-ports", "port:")),
+    ("data-root", ("data-root", "settings-root", "logs")),
+    ("invitation-transport", ("invitations",)),
+    ("cloudflare", ("cloudflared.exe", "cloudflared-config")),
+    ("frontend-build", ("next-build",)),
+)
+
+
+def _group_check_results(
+    raw_results: tuple[CheckResult, ...],
+) -> tuple[CheckResult, ...]:
+    grouped: list[CheckResult] = [
+        CheckResult("settings", True, "Control Center settings are valid")
+    ]
+    for group_name, selectors in _CHECK_GROUPS:
+        members = tuple(
+            result
+            for result in raw_results
+            if any(
+                result.name == selector
+                or (selector.endswith(":") and result.name.startswith(selector))
+                for selector in selectors
+            )
+        )
+        failures = tuple(result for result in members if not result.ok)
+        failure = (
+            max(failures, key=lambda result: len(result.detail))
+            if failures
+            else None
+        )
+        if failure is None:
+            grouped.append(CheckResult(group_name, True, f"{group_name} ready"))
+        else:
+            grouped.append(
+                CheckResult(
+                    group_name,
+                    False,
+                    failure.detail,
+                    failure.remediation,
+                )
+            )
+    return tuple(grouped)
+
+
+def run_check_mode(
+    settings: ControlSettings,
+    secrets: Mapping[str, str] | object,
+    *,
+    vast: object | None = None,
+    preflight: PreflightRunner | None = None,
+    health_probe=probe_http,
+) -> CheckModeReport:
+    """Run both-mode validation without provider access or process mutation."""
+
+    # `vast` is accepted only so tests/callers can prove that check mode never
+    # touches the provider. It must remain deliberately unused.
+    del vast
+    runner = preflight or PreflightRunner()
+    raw_results = tuple(
+        result
+        for mode in ("ollama", "vast")
+        for result in runner.run(mode, settings, secrets)
+    )
+    checks = list(_group_check_results(raw_results))
+
+    occupied = any(
+        not result.ok and result.name.startswith("port:")
+        for result in raw_results
+    )
+    if occupied:
+        try:
+            public = health_probe(
+                f"{settings.public_web_origin.rstrip('/')}/health",
+                3.0,
+                public_origin=settings.public_web_origin,
+            )
+            checks.append(
+                CheckResult(
+                    "public-route",
+                    bool(public.ok),
+                    "Existing public route is healthy"
+                    if public.ok
+                    else f"Existing public route check failed ({public.error_type or 'NotReady'})",
+                    None
+                    if public.ok
+                    else "Stop duplicate services or repair the named Cloudflare route",
+                )
+            )
+        except Exception as error:
+            checks.append(
+                CheckResult(
+                    "public-route",
+                    False,
+                    f"Existing public route check failed ({type(error).__name__})",
+                    "Stop duplicate services or repair the named Cloudflare route",
+                )
+            )
+    return CheckModeReport(tuple(checks))
 
 
 @dataclass(frozen=True)
@@ -394,5 +521,52 @@ def run_control_center() -> None:
     root.mainloop()
 
 
+def _check_paths() -> tuple[ControlSettings, DpapiSecretStore]:
+    repo_root = Path(__file__).resolve().parents[1]
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if not local_app_data:
+        raise RuntimeError("LOCALAPPDATA is required for DEFEND Control Center")
+    settings_root = Path(local_app_data) / "DEFEND"
+    settings_store = JsonSettingsStore(settings_root / "control-center.json")
+    try:
+        settings = settings_store.load()
+    except FileNotFoundError:
+        settings = _default_settings(repo_root)
+    return settings, DpapiSecretStore(settings_root / "secrets.dpapi")
+
+
+def _print_check_report(report: CheckModeReport) -> None:
+    for check in report.checks:
+        status = "READY" if check.ok else "BLOCKED"
+        print(f"{status} {check.name}: {check.detail}")
+        if not check.ok and check.remediation:
+            print(f"REMEDIATION {check.name}: {check.remediation}")
+    print("READY" if report.ready else "NOT READY")
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="DEFEND Windows Control Center")
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="run non-billable readiness checks without starting DEFEND",
+    )
+    args = parser.parse_args(argv)
+    if not args.check:
+        run_control_center()
+        return 0
+
+    try:
+        settings, secrets = _check_paths()
+        report = run_check_mode(settings, secrets)
+    except Exception as error:
+        print(f"BLOCKED check-mode: setup could not be loaded ({type(error).__name__})")
+        print("REMEDIATION check-mode: Open Start-DEFEND.cmd and complete Setup")
+        print("NOT READY")
+        return 2
+    _print_check_report(report)
+    return 0 if report.ready else 2
+
+
 if __name__ == "__main__":
-    run_control_center()
+    raise SystemExit(main())

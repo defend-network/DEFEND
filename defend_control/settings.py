@@ -159,6 +159,22 @@ class ControlSettings:
         if len({api_port, web_port, model_port}) != 3:
             raise ValueError("api_port, web_port, and model_port must be unique")
 
+        vllm_image = _string(
+            raw.get("vllm_image", "vllm/vllm-openai:v0.10.0"), "vllm_image"
+        )
+        if vllm_image != "vllm/vllm-openai:v0.10.0":
+            raise ValueError("vllm_image must be exactly vllm/vllm-openai:v0.10.0")
+        vllm_disk_gb = _positive_int(
+            raw.get("vllm_disk_gb", 160), "vllm_disk_gb"
+        )
+        if vllm_disk_gb != 160:
+            raise ValueError("vllm_disk_gb must be exactly 160")
+        max_model_len = _positive_int(
+            raw.get("max_model_len", 8192), "max_model_len"
+        )
+        if max_model_len != 8192:
+            raise ValueError("max_model_len must be exactly 8192")
+
         return cls(
             repo_root=repo_root,
             data_root=_path(raw["data_root"], "data_root"),
@@ -176,15 +192,9 @@ class ControlSettings:
             api_port=api_port,
             web_port=web_port,
             model_port=model_port,
-            vllm_image=_string(
-                raw.get("vllm_image", "vllm/vllm-openai:v0.10.0"), "vllm_image"
-            ),
-            vllm_disk_gb=_positive_int(
-                raw.get("vllm_disk_gb", 160), "vllm_disk_gb"
-            ),
-            max_model_len=_positive_int(
-                raw.get("max_model_len", 8192), "max_model_len"
-            ),
+            vllm_image=vllm_image,
+            vllm_disk_gb=vllm_disk_gb,
+            max_model_len=max_model_len,
         )
 
 

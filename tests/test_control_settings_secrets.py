@@ -162,6 +162,9 @@ def test_settings_are_frozen_and_apply_required_defaults(tmp_path):
         ("vast_max_hourly", "NaN", "finite"),
         ("api_port", 0, "port"),
         ("api_port", True, "port"),
+        ("vllm_image", "vllm/vllm-openai:latest", "vllm_image"),
+        ("vllm_disk_gb", 161, "vllm_disk_gb"),
+        ("max_model_len", 4096, "max_model_len"),
     ],
 )
 def test_rejects_invalid_settings_values(tmp_path, key, value, message):

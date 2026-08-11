@@ -63,6 +63,57 @@ class FakeSshCommands:
         raise AssertionError(f"unexpected synthetic command: {argv!r}")
 
 
+class WarmingSshCommands(FakeSshCommands):
+    def __init__(self, key_line: str, unavailable_scans: int) -> None:
+        super().__init__(key_line)
+        self.unavailable_scans = unavailable_scans
+
+    def __call__(
+        self,
+        argv: tuple[str, ...],
+        *,
+        stdin: bytes | None,
+        timeout: float,
+    ) -> CommandResult:
+        if (
+            Path(argv[0]).name.casefold() == "ssh-keyscan.exe"
+            and self.unavailable_scans > 0
+        ):
+            self.calls.append((argv, stdin, timeout))
+            self.unavailable_scans -= 1
+            return CommandResult(1, b"", b"synthetic unavailable endpoint")
+        return super().__call__(argv, stdin=stdin, timeout=timeout)
+
+
+class KeyscanKexFallbackCommands(FakeSshCommands):
+    def __call__(
+        self,
+        argv: tuple[str, ...],
+        *,
+        stdin: bytes | None,
+        timeout: float,
+    ) -> CommandResult:
+        executable = Path(argv[0]).name.casefold()
+        if executable == "ssh-keyscan.exe":
+            self.calls.append((argv, stdin, timeout))
+            return CommandResult(
+                1,
+                b"",
+                b"choose_kex: unsupported KEX method",
+            )
+        if executable == "ssh.exe":
+            self.calls.append((argv, stdin, timeout))
+            known_hosts_option = next(
+                argument
+                for argument in argv
+                if argument.startswith("UserKnownHostsFile=")
+            )
+            capture_path = Path(known_hosts_option.split("=", 1)[1])
+            capture_path.write_text(self.key_line + "\n", encoding="ascii")
+            return CommandResult(255, b"", b"Permission denied")
+        return super().__call__(argv, stdin=stdin, timeout=timeout)
+
+
 def running_instance() -> VastInstance:
     return VastInstance(
         instance_id=4815,
@@ -130,6 +181,92 @@ def test_host_scan_rejects_key_line_for_a_different_endpoint(tmp_path: Path):
 
     with pytest.raises(SshTunnelError, match="exact endpoint"):
         tunnel.prepare_host(running_instance(), confirm_fingerprint=None)
+
+
+def test_host_scan_retries_brief_running_to_ssh_readiness_gap(tmp_path: Path):
+    key_path = tmp_path / "vast_ed25519"
+    key_path.write_text("synthetic private key", encoding="utf-8")
+    key_path.with_suffix(".pub").write_text(
+        "ssh-ed25519 AAAAC3NzaSyntheticKey defend-control\n",
+        encoding="utf-8",
+    )
+    commands = WarmingSshCommands(
+        "[ssh.example.test]:2222 ssh-ed25519 AAAAC3NzaPresentedHostKey",
+        unavailable_scans=2,
+    )
+    waits: list[float] = []
+    tunnel = SshTunnel(
+        RecordingSupervisor(),
+        known_hosts=tmp_path / "known_hosts",
+        key_path=key_path,
+        command_runner=commands,
+        acl=lambda _path: None,
+        ssh_exe=Path("C:/Windows/System32/OpenSSH/ssh.exe"),
+        ssh_keyscan_exe=Path("C:/Windows/System32/OpenSSH/ssh-keyscan.exe"),
+        ssh_keygen_exe=Path("C:/Windows/System32/OpenSSH/ssh-keygen.exe"),
+        scan_attempts=3,
+        scan_retry_seconds=2.0,
+        sleep=waits.append,
+    )
+
+    with pytest.raises(HostFingerprintConfirmation):
+        tunnel.prepare_host(running_instance(), confirm_fingerprint=None)
+
+    assert waits == [2.0, 2.0]
+    assert sum(
+        Path(call[0][0]).name.casefold() == "ssh-keyscan.exe"
+        for call in commands.calls
+    ) == 3
+
+
+def test_host_scan_falls_back_to_ssh_capture_for_windows_kex_gap(
+    tmp_path: Path,
+):
+    key_path = tmp_path / "vast_ed25519"
+    key_path.write_text("synthetic private key", encoding="utf-8")
+    key_path.with_suffix(".pub").write_text(
+        "ssh-ed25519 AAAAC3NzaSyntheticKey defend-control\n",
+        encoding="utf-8",
+    )
+    commands = KeyscanKexFallbackCommands(
+        "[ssh.example.test]:2222 ssh-ed25519 AAAAC3NzaPresentedHostKey"
+    )
+    waits: list[float] = []
+    tunnel = SshTunnel(
+        RecordingSupervisor(),
+        known_hosts=tmp_path / "known_hosts",
+        key_path=key_path,
+        command_runner=commands,
+        acl=lambda _path: None,
+        ssh_exe=Path("C:/Windows/System32/OpenSSH/ssh.exe"),
+        ssh_keyscan_exe=Path("C:/Windows/System32/OpenSSH/ssh-keyscan.exe"),
+        ssh_keygen_exe=Path("C:/Windows/System32/OpenSSH/ssh-keygen.exe"),
+        scan_attempts=6,
+        scan_retry_seconds=5.0,
+        sleep=waits.append,
+    )
+
+    with pytest.raises(HostFingerprintConfirmation) as pending:
+        tunnel.prepare_host(running_instance(), confirm_fingerprint=None)
+
+    assert pending.value.fingerprint == "SHA256:syntheticFingerprint"
+    ssh_call = next(
+        call
+        for call in commands.calls
+        if Path(call[0][0]).name.casefold() == "ssh.exe"
+    )
+    assert "StrictHostKeyChecking=accept-new" in ssh_call[0]
+    assert "PreferredAuthentications=none" in ssh_call[0]
+    assert all(str(key_path) not in argument for argument in ssh_call[0])
+    assert waits == []
+    capture_path = Path(
+        next(
+            argument
+            for argument in ssh_call[0]
+            if argument.startswith("UserKnownHostsFile=")
+        ).split("=", 1)[1]
+    )
+    assert not capture_path.exists()
 
 
 def test_confirmed_host_is_pinned_for_exact_endpoint_and_instance(tmp_path: Path):
@@ -341,6 +478,7 @@ def adapter_spec() -> AdapterSpec:
         base_repo="Qwen/example-32B",
         base_revision="b" * 40,
         peft_type="LORA",
+        lora_rank=64,
     )
 
 
@@ -393,8 +531,12 @@ def test_remote_bootstrap_sends_bounded_script_over_stdin_without_secret_argv(
     assert "--port 8000" in rendered
     assert "--enable-lora" in rendered
     assert "defend-ai=/workspace/defend/adapter" in rendered
+    assert "--max-lora-rank 64" in rendered
     assert "--max-model-len 8192" in rendered
+    assert "--disable-log-requests" in rendered
+    assert "--disable-uvicorn-access-log" in rendered
     assert "printf '%s\\n' \"$!\" > /workspace/defend/vllm.pid" in rendered
+    assert "export VLLM_API_KEY" in rendered
     assert "--api-key" not in rendered
     for secret in secrets.values():
         assert secret not in rendered
@@ -551,6 +693,52 @@ def test_model_probe_retries_unready_models_and_never_posts_early():
     assert sleeps == [0.25, 0.25]
 
 
+def test_model_probe_retries_transient_connection_refusal_until_models_listen():
+    class WarmingTransport(FakeProbeTransport):
+        def __init__(self):
+            super().__init__(
+                [
+                    ProbeResponse(200, b'{"data":[{"id":"defend-ai"}]}'),
+                    ProbeResponse(
+                        200,
+                        b'{"choices":[{"message":{"content":"READY"}}]}',
+                    ),
+                ]
+            )
+            self.failures_remaining = 2
+
+        def request(self, method, url, **options):
+            if self.failures_remaining:
+                self.requests.append((method, url, options))
+                self.failures_remaining -= 1
+                raise ConnectionRefusedError("synthetic refused")
+            return super().request(method, url, **options)
+
+    transport = WarmingTransport()
+    sleeps: list[float] = []
+    probe = ModelProbe(
+        transport=transport,
+        monotonic=lambda: 0.0,
+        sleep=sleeps.append,
+    )
+
+    ready = probe.wait_ready(
+        "http://127.0.0.1:8001/v1",
+        "vllm_synthetic",
+        timeout_seconds=300.0,
+        poll_interval_seconds=2.0,
+    )
+
+    assert ready.model == "defend-ai"
+    assert [method for method, _url, _options in transport.requests] == [
+        "GET",
+        "GET",
+        "GET",
+        "POST",
+    ]
+    assert sleeps == [2.0, 2.0]
+
+
 def test_model_probe_rejects_non_loopback_and_safe_generation_failure():
     probe = ModelProbe(transport=FakeProbeTransport([]))
     with pytest.raises(ValueError, match="loopback"):
@@ -575,6 +763,31 @@ def test_model_probe_rejects_non_loopback_and_safe_generation_failure():
 
     assert str(pending.value) == "vLLM generation probe did not return content"
     assert sentinel not in repr(pending.value)
+
+
+def test_model_probe_cleans_remote_token_immediately_after_models_ready():
+    events: list[str] = []
+
+    class EventTransport(FakeProbeTransport):
+        def request(self, method, url, **options):
+            events.append(method)
+            return super().request(method, url, **options)
+
+    transport = EventTransport(
+        [
+            ProbeResponse(200, b'{"data":[{"id":"defend-ai"}]}'),
+            ProbeResponse(200, b'{"choices":[]}'),
+        ]
+    )
+
+    with pytest.raises(ModelProbeError, match="did not return content"):
+        ModelProbe(transport=transport, monotonic=lambda: 0.0).wait_ready(
+            "http://127.0.0.1:8001/v1",
+            "vllm_synthetic",
+            on_models_ready=lambda: events.append("cleanup"),
+        )
+
+    assert events == ["GET", "cleanup", "POST"]
 
 
 class MutableClock:

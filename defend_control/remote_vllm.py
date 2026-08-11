@@ -80,6 +80,8 @@ def _validate_adapter(adapter: AdapterSpec) -> None:
         or not _REPOSITORY.fullmatch(adapter.base_repo)
         or not _REVISION.fullmatch(adapter.adapter_revision)
         or not _REVISION.fullmatch(adapter.base_revision)
+        or type(adapter.lora_rank) is not int
+        or not 1 <= adapter.lora_rank <= 512
     ):
         raise RemoteVllmError("Pinned Hugging Face adapter specification is invalid")
 
@@ -148,7 +150,10 @@ nohup vllm serve /workspace/defend/base \\
   --port 8000 \\
   --enable-lora \\
   --lora-modules defend-ai=/workspace/defend/adapter \\
+  --max-lora-rank {adapter.lora_rank} \\
   --max-model-len {self._max_model_len} \\
+  --disable-log-requests \\
+  --disable-uvicorn-access-log \\
   >/workspace/defend/vllm.log 2>&1 </dev/null &
 printf '%s\\n' "$!" > /workspace/defend/vllm.pid
 unset VLLM_API_KEY

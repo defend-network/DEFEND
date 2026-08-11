@@ -19,6 +19,8 @@ artifacts/
 chat.json
 research.json
 .superpowers/
+.test-tmp/
+.pytest-tmp*/
 .worktrees/
 defend-ui-v2/.npm-cache/
 *.tsbuildinfo

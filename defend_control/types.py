@@ -30,6 +30,7 @@ class AdapterSpec:
     base_repo: str
     base_revision: str
     peft_type: str
+    lora_rank: int
 
 
 @dataclass(frozen=True)
@@ -41,7 +42,12 @@ class LaunchSpec:
 
     @classmethod
     def default(cls) -> "LaunchSpec":
-        return cls("vllm/vllm-openai:v0.10.0", 160, "ssh_direct", "defend-vllm")
+        return cls(
+            "vllm/vllm-openai:v0.10.0",
+            160,
+            "ssh_direc ssh_proxy",
+            "defend-vllm",
+        )
 
 
 @dataclass(frozen=True)
@@ -51,6 +57,8 @@ class VastOffer:
     gpu_ram_mb: int
     dph_total: Decimal
     reliability: Decimal
+    storage_cost_per_gb_month: Decimal | None = None
+    storage_total_hourly: Decimal | None = None
 
 
 @dataclass(frozen=True)
