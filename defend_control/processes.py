@@ -146,6 +146,19 @@ class _OwnedProcess:
     streams: tuple[IO[str], ...]
     service_job_closed: bool = False
     cleanup_threads: tuple[Any | None, ...] = ()
+    cleanup_outcomes: tuple[_CleanupOutcome | None, ...] = ()
+
+
+@dataclass
+class _CleanupOutcome:
+    completed: bool = False
+    error_type: str | None = None
+
+
+@dataclass(frozen=True)
+class _IoTeardownOutcome:
+    complete: bool
+    error_type: str | None = None
 
 
 @dataclass(frozen=True)
@@ -241,7 +254,7 @@ class ProcessSupervisor:
             )
 
     @staticmethod
-    def _teardown_io(owned: _OwnedProcess) -> bool:
+    def _teardown_io(owned: _OwnedProcess) -> _IoTeardownOutcome:
         deadline = time.monotonic() + _IO_TEARDOWN_TIMEOUT_SECONDS
         if owned.streams:
             cleanup_threads: list[Any | None] = (
@@ -249,15 +262,27 @@ class ProcessSupervisor:
                 if owned.cleanup_threads
                 else [None] * len(owned.streams)
             )
+            cleanup_outcomes: list[_CleanupOutcome | None] = (
+                list(owned.cleanup_outcomes)
+                if owned.cleanup_outcomes
+                else [None] * len(owned.streams)
+            )
             for index, stream in enumerate(owned.streams):
                 if cleanup_threads[index] is not None:
                     continue
 
-                def close_stream(target: IO[str] = stream) -> None:
+                outcome = _CleanupOutcome()
+
+                def close_stream(
+                    target: IO[str] = stream,
+                    result: _CleanupOutcome = outcome,
+                ) -> None:
                     try:
                         target.close()
-                    except Exception:
-                        pass
+                    except Exception as error:
+                        result.error_type = _safe_error_type(error)
+                    finally:
+                        result.completed = True
 
                 try:
                     worker = _CLEANUP_THREAD_CLASS(
@@ -268,9 +293,12 @@ class ProcessSupervisor:
                     worker.start()
                 except Exception:
                     cleanup_threads[index] = None
+                    cleanup_outcomes[index] = None
                 else:
                     cleanup_threads[index] = worker
+                    cleanup_outcomes[index] = outcome
             owned.cleanup_threads = tuple(cleanup_threads)
+            owned.cleanup_outcomes = tuple(cleanup_outcomes)
 
         for reader in owned.readers:
             remaining = max(0.0, deadline - time.monotonic())
@@ -307,8 +335,31 @@ class ProcessSupervisor:
                         readers_finished = False
                 except Exception:
                     readers_finished = False
-        return readers_finished and all(
-            finished(worker) for worker in owned.cleanup_threads
+        cleanup_finished: list[bool] = []
+        error_types: list[str] = []
+        cleanup_threads = list(owned.cleanup_threads)
+        for index, worker in enumerate(cleanup_threads):
+            outcome = owned.cleanup_outcomes[index]
+            worker_finished = finished(worker)
+            successful = bool(
+                worker_finished
+                and outcome is not None
+                and outcome.completed
+                and outcome.error_type is None
+            )
+            cleanup_finished.append(successful)
+            if (
+                worker_finished
+                and outcome is not None
+                and outcome.completed
+                and outcome.error_type is not None
+            ):
+                error_types.append(outcome.error_type)
+                cleanup_threads[index] = None
+        owned.cleanup_threads = tuple(cleanup_threads)
+        return _IoTeardownOutcome(
+            readers_finished and all(cleanup_finished),
+            error_types[0] if error_types else None,
         )
 
     @staticmethod
@@ -337,8 +388,8 @@ class ProcessSupervisor:
             except Exception:
                 pass
         service_closed = self._close_service_job(owned) if terminated else False
-        io_complete = self._teardown_io(owned)
-        return terminated and service_closed and io_complete
+        io_outcome = self._teardown_io(owned)
+        return terminated and service_closed and io_outcome.complete
 
     def start(self, spec: ProcessSpec) -> Any:
         if not isinstance(spec, ProcessSpec):
@@ -524,7 +575,12 @@ class ProcessSupervisor:
         if not self._close_service_job(owned):
             self._teardown_io(owned)
             raise RuntimeError(f"Could not close {name} ownership (OSError)")
-        if self._teardown_io(owned):
+        io_outcome = self._teardown_io(owned)
+        if io_outcome.error_type is not None:
+            raise RuntimeError(
+                f"Could not close {name} streams ({io_outcome.error_type})"
+            )
+        if io_outcome.complete:
             self._owned.pop(name, None)
         return True
 
@@ -585,8 +641,8 @@ class ProcessSupervisor:
                     self._job = replacement
                     for name, owned in tuple(self._owned.items()):
                         service_closed = self._close_service_job(owned)
-                        io_complete = self._teardown_io(owned)
-                        if service_closed and io_complete:
+                        io_outcome = self._teardown_io(owned)
+                        if service_closed and io_outcome.complete:
                             self._owned.pop(name, None)
         if first_error is not None:
             raise first_error

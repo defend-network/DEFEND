@@ -1341,3 +1341,78 @@ def test_cleanup_worker_start_failure_retries_only_missing_worker(
     assert supervisor.snapshot() == ()
     assert len(created) == 3
     supervisor.close()
+
+
+def test_stream_close_failure_retains_state_and_retries_only_failed_worker(
+    fake_job, monkeypatch
+):
+    created_workers: list[threading.Thread] = []
+
+    class TrackingCleanupThread(threading.Thread):
+        def __init__(self, **kwargs) -> None:
+            super().__init__(**kwargs)
+            created_workers.append(self)
+
+    class FailOnceCloseStream(StringIO):
+        def __init__(self) -> None:
+            super().__init__()
+            self.close_calls = 0
+
+        def close(self) -> None:
+            self.close_calls += 1
+            if self.close_calls == 1:
+                raise OSError("synthetic-private-stream-close-detail")
+            super().close()
+
+    class CountingCloseStream(StringIO):
+        def __init__(self) -> None:
+            super().__init__()
+            self.close_calls = 0
+
+        def close(self) -> None:
+            self.close_calls += 1
+            super().close()
+
+    monkeypatch.setattr(
+        processes_module, "_CLEANUP_THREAD_CLASS", TrackingCleanupThread
+    )
+    failed_stream = FailOnceCloseStream()
+    successful_stream = CountingCloseStream()
+    process = FakeProcess()
+    process.stdout = failed_stream
+    process.stderr = successful_stream
+    supervisor = ProcessSupervisor(job=fake_job, popen=lambda *_a, **_k: process)
+    supervisor.start(ProcessSpec("api", ("python", "api"), ROOT, {}, None))
+
+    try:
+        started = time.monotonic()
+        with pytest.raises(RuntimeError) as raised:
+            supervisor.stop("api")
+        assert time.monotonic() - started < 1
+        assert "OSError" in str(raised.value)
+        assert "synthetic-private-stream-close-detail" not in str(raised.value)
+        assert [(item.name, item.running) for item in supervisor.snapshot()] == [
+            ("api", False)
+        ]
+        owned = supervisor._owned["api"]
+        assert owned.streams == (failed_stream, successful_stream)
+        assert failed_stream.close_calls == 1
+        assert successful_stream.close_calls == 1
+        assert len(created_workers) == 2
+        assert owned.cleanup_threads[0] is None
+        assert owned.cleanup_threads[1] is created_workers[1]
+
+        started = time.monotonic()
+        assert supervisor.stop("api") is True
+        assert time.monotonic() - started < 1
+        assert supervisor.snapshot() == ()
+        assert failed_stream.close_calls == 2
+        assert successful_stream.close_calls == 1
+        assert len(created_workers) == 3
+        assert [worker.name for worker in created_workers] == [
+            "defend-api-close-0",
+            "defend-api-close-1",
+            "defend-api-close-0",
+        ]
+    finally:
+        supervisor.close()
