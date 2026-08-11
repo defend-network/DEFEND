@@ -6,6 +6,7 @@ $venvPython = Join-Path $repo ".venv\Scripts\python.exe"
 
 if (-not (Test-Path -LiteralPath $venvPython)) {
     py -3.14 -m venv (Join-Path $repo ".venv")
+    if ($LASTEXITCODE -ne 0) { throw "Python virtual environment creation failed" }
 }
 
 & $venvPython -m pip install --requirement (Join-Path $repo "requirements-dev.txt")
