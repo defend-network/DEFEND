@@ -1,6 +1,7 @@
 from collections.abc import Mapping
 from dataclasses import MISSING, asdict, dataclass, fields
 from decimal import Decimal, InvalidOperation
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -35,6 +36,30 @@ def _positive_int(raw: object, name: str) -> int:
     if isinstance(raw, bool) or not isinstance(raw, int) or raw <= 0:
         raise ValueError(f"{name} must be a positive integer")
     return raw
+
+
+def _is_valid_hostname(hostname: str) -> bool:
+    try:
+        ipaddress.ip_address(hostname)
+        return True
+    except ValueError:
+        pass
+
+    try:
+        ascii_hostname = hostname.encode("idna").decode("ascii").rstrip(".")
+    except UnicodeError:
+        return False
+    if not ascii_hostname or len(ascii_hostname) > 253:
+        return False
+    labels = ascii_hostname.split(".")
+    return all(
+        label
+        and len(label) <= 63
+        and label[0].isalnum()
+        and label[-1].isalnum()
+        and all(character.isalnum() or character == "-" for character in label)
+        for label in labels
+    )
 
 
 @dataclass(frozen=True)
@@ -79,9 +104,26 @@ class ControlSettings:
             raise ValueError("repo_root must be an existing directory")
 
         public_web_origin = _string(raw["public_web_origin"], "public_web_origin")
-        parsed_origin = urlsplit(public_web_origin)
+        if any(
+            character.isspace()
+            or ord(character) < 0x20
+            or ord(character) == 0x7F
+            for character in public_web_origin
+        ):
+            raise ValueError("public_web_origin must not contain whitespace")
+        try:
+            parsed_origin = urlsplit(public_web_origin)
+        except ValueError as exc:
+            raise ValueError("public_web_origin must contain a valid hostname") from exc
         if parsed_origin.scheme.lower() != "https" or not parsed_origin.netloc:
             raise ValueError("public_web_origin must use HTTPS")
+        hostname = parsed_origin.hostname
+        if hostname is None or not _is_valid_hostname(hostname):
+            raise ValueError("public_web_origin must contain a valid hostname")
+        try:
+            parsed_origin.port
+        except ValueError as exc:
+            raise ValueError("public_web_origin must contain a valid port") from exc
         if (
             parsed_origin.username is not None
             or parsed_origin.password is not None

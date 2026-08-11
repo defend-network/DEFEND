@@ -1,3 +1,5 @@
+import ctypes
+from ctypes import wintypes
 from dataclasses import FrozenInstanceError
 from decimal import Decimal
 import json
@@ -6,6 +8,7 @@ import sys
 
 import pytest
 
+import defend_control.secrets as secrets_module
 from defend_control.redaction import redact_text
 from defend_control.secrets import DpapiSecretStore
 from defend_control.settings import ControlSettings, JsonSettingsStore
@@ -48,6 +51,41 @@ def test_rejects_non_https_public_origin(tmp_path):
         ControlSettings.from_mapping(raw)
 
 
+@pytest.mark.parametrize(
+    "origin",
+    [
+        " https://example.test",
+        "https://example.test\n",
+        "https://exam\tple.test",
+    ],
+)
+def test_rejects_public_origins_with_surrounding_or_control_whitespace(
+    tmp_path, origin
+):
+    raw = valid_settings(tmp_path)
+    raw["public_web_origin"] = origin
+
+    with pytest.raises(ValueError, match="whitespace"):
+        ControlSettings.from_mapping(raw)
+
+
+@pytest.mark.parametrize(
+    ("origin", "message"),
+    [
+        ("https://example.test:notaport", "port"),
+        ("https://:", "hostname"),
+    ],
+)
+def test_rejects_public_origins_with_malformed_host_or_port(
+    tmp_path, origin, message
+):
+    raw = valid_settings(tmp_path)
+    raw["public_web_origin"] = origin
+
+    with pytest.raises(ValueError, match=message):
+        ControlSettings.from_mapping(raw)
+
+
 def test_secret_store_never_writes_plaintext(tmp_path):
     path = tmp_path / "secrets.dpapi"
     store = DpapiSecretStore(path, backend=ReversingBackend(), acl=lambda _: None)
@@ -63,6 +101,33 @@ def test_real_dpapi_round_trip_is_current_user_scoped(tmp_path):
     store.save({"DEFEND_OWNER_PASS": "temporary-test-value"})
     assert store.load() == {"DEFEND_OWNER_PASS": "temporary-test-value"}
     assert b"temporary-test-value" not in path.read_bytes()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows ACL is Windows-only")
+def test_acl_invokes_icacls_from_trusted_system_directory(tmp_path, monkeypatch):
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetSystemDirectoryW.argtypes = [wintypes.LPWSTR, wintypes.UINT]
+    kernel32.GetSystemDirectoryW.restype = wintypes.UINT
+    system_directory_buffer = ctypes.create_unicode_buffer(32_768)
+    copied = kernel32.GetSystemDirectoryW(
+        system_directory_buffer, len(system_directory_buffer)
+    )
+    assert 0 < copied < len(system_directory_buffer)
+    expected_executable = Path(system_directory_buffer.value) / "icacls.exe"
+    captured_argv: list[str] = []
+
+    def capture_run(argv, **_kwargs):
+        captured_argv.extend(argv)
+        return secrets_module.subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(secrets_module, "_current_user_sid", lambda: "S-1-test")
+    monkeypatch.setattr(secrets_module.subprocess, "run", capture_run)
+
+    secrets_module.restrict_to_current_user(tmp_path / "synthetic.dpapi")
+
+    executable = Path(captured_argv[0])
+    assert executable.is_absolute()
+    assert executable == expected_executable
 
 
 def test_redacts_known_and_secret_shaped_values():
@@ -182,6 +247,51 @@ def test_secret_store_rejects_payloads_over_64_kib(tmp_path):
         store.load()
 
 
+def test_secret_store_uses_one_bounded_handle_before_unprotect(tmp_path, monkeypatch):
+    path = tmp_path / "secrets.dpapi"
+    path.write_bytes(b"x")
+    read_sizes: list[int] = []
+    open_count = 0
+
+    class SyntheticGrowingHandle:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self, size: int = -1) -> bytes:
+            read_sizes.append(size)
+            return b"x" * (64 * 1024 + 1)
+
+    original_open = Path.open
+
+    def capture_open(candidate, *args, **kwargs):
+        nonlocal open_count
+        if candidate == path:
+            open_count += 1
+            return SyntheticGrowingHandle()
+        return original_open(candidate, *args, **kwargs)
+
+    class TrackingBackend(IdentityBackend):
+        unprotect_calls = 0
+
+        def unprotect(self, data: bytes) -> bytes:
+            self.unprotect_calls += 1
+            return data
+
+    backend = TrackingBackend()
+    monkeypatch.setattr(Path, "open", capture_open)
+    store = DpapiSecretStore(path, backend=backend, acl=lambda _: None)
+
+    with pytest.raises(ValueError, match="64 KiB"):
+        store.load()
+
+    assert open_count == 1
+    assert read_sizes == [64 * 1024 + 1]
+    assert backend.unprotect_calls == 0
+
+
 def test_secret_store_protects_before_opening_destination(tmp_path):
     path = tmp_path / "secrets.dpapi"
 
@@ -228,6 +338,26 @@ def test_redacts_case_insensitive_secret_key_shapes():
     for secret in ("alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf"):
         assert secret not in cleaned
     assert "safe=hotel" in cleaned
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        "Authorization: Basic synthetic-credential",
+        (
+            'Authorization: Digest username="synthetic-user", '
+            'response="synthetic-response"'
+        ),
+        "Cookie: first=one; second=two",
+        "X-Secret: two words",
+    ],
+)
+def test_redacts_entire_sensitive_header_value_through_line_end(header):
+    header_name = header.split(":", 1)[0]
+
+    cleaned = redact_text(f"{header}\r\nSafe: retained", [])
+
+    assert cleaned == f"{header_name}: [REDACTED]\r\nSafe: retained"
 
 
 def test_redaction_handles_literal_known_secrets_and_utf8_byte_bounds():

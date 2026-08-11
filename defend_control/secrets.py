@@ -182,14 +182,34 @@ def _current_user_sid() -> str:
         kernel32.CloseHandle(token)
 
 
+def _system_directory() -> Path:
+    _require_windows()
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetSystemDirectoryW.argtypes = [wintypes.LPWSTR, wintypes.UINT]
+    kernel32.GetSystemDirectoryW.restype = wintypes.UINT
+    buffer = ctypes.create_unicode_buffer(32_768)
+    copied = kernel32.GetSystemDirectoryW(buffer, len(buffer))
+    if copied == 0:
+        raise _last_windows_error("GetSystemDirectoryW")
+    if copied >= len(buffer):
+        raise OSError("Windows system directory path exceeds the supported length")
+    directory = Path(buffer.value)
+    if not directory.is_absolute():
+        raise OSError("Windows returned a non-absolute system directory")
+    return directory
+
+
 def restrict_to_current_user(path: Path) -> None:
     """Replace inherited file permissions with full access for this user SID."""
 
     _require_windows()
     sid = _current_user_sid()
+    icacls_executable = _system_directory() / "icacls.exe"
+    if not icacls_executable.is_file():
+        raise OSError("trusted Windows icacls.exe was not found")
     completed = subprocess.run(
         [
-            "icacls.exe",
+            str(icacls_executable),
             str(path),
             "/inheritance:r",
             "/grant:r",
@@ -257,11 +277,13 @@ class DpapiSecretStore:
             temporary_path.unlink(missing_ok=True)
 
     def load(self) -> dict[str, str]:
-        if not self._path.exists():
+        try:
+            with self._path.open("rb") as secret_file:
+                protected = secret_file.read(_MAX_PAYLOAD_BYTES + 1)
+        except FileNotFoundError:
             return {}
-        if self._path.stat().st_size > _MAX_PAYLOAD_BYTES:
+        if len(protected) > _MAX_PAYLOAD_BYTES:
             raise ValueError("protected secret payload must not exceed 64 KiB")
-        protected = self._path.read_bytes()
         if not protected:
             raise ValueError("protected secret payload must not be empty")
 

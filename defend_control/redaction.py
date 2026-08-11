@@ -10,6 +10,10 @@ _SECRET_KEY = (
     r"(?:token|password|secret|cookie|authorization|api_key|app_password)"
     r"[A-Za-z0-9_.-]*"
 )
+_HEADER_VALUE = re.compile(
+    rf"^(?P<prefix>[ \t]*{_SECRET_KEY}[ \t]*:[ \t]*)[^\r\n]*",
+    re.IGNORECASE | re.MULTILINE,
+)
 _QUOTED_VALUE = re.compile(
     rf"(?P<prefix>(?<![A-Za-z0-9_.-])[\"']?{_SECRET_KEY}[\"']?\s*[:=]\s*)"
     rf"(?P<quote>[\"'])(?P<value>.*?)(?P=quote)",
@@ -63,6 +67,9 @@ def redact_text(value: str, known_secrets: Iterable[str]) -> str:
             lambda match: f"{match.group('prefix')}{_REDACTED}", cleaned
         )
         cleaned = _UNQUOTED_VALUE.sub(
+            lambda match: f"{match.group('prefix')}{_REDACTED}", cleaned
+        )
+        cleaned = _HEADER_VALUE.sub(
             lambda match: f"{match.group('prefix')}{_REDACTED}", cleaned
         )
         if cleaned == previous:
