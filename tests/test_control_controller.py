@@ -11,6 +11,7 @@ from defend_control.controller import (
 )
 from defend_control.orchestrator import ComponentSnapshot, StackSnapshot
 from defend_control.processes import LogEntry
+from defend_control.types import VastInstance, VastOffer
 from defend_control.ui import ControlCenterUI
 import defend_control.ui as ui_module
 
@@ -123,6 +124,10 @@ class FakeOrchestrator:
         self.launches = []
         self.offer_confirmations = []
         self.fingerprint_confirmations = []
+        self.instance_selections = []
+        self.restart_confirmations = []
+        self.replacement_confirmations = []
+        self.declined_instance_actions = 0
 
     def start(self, mode, cancellation=None):
         self.start_cancellations.append(cancellation)
@@ -147,6 +152,20 @@ class FakeOrchestrator:
 
     def confirm_fingerprint(self, instance_id, fingerprint):
         self.fingerprint_confirmations.append((instance_id, fingerprint))
+
+    def select_vast_instance(self, instance_id):
+        self.instance_selections.append(instance_id)
+
+    def confirm_instance_restart(self, instance_id, hourly_price):
+        self.restart_confirmations.append((instance_id, hourly_price))
+
+    def confirm_instance_replacement(self, instance_id, offer_id, hourly_price):
+        self.replacement_confirmations.append(
+            (instance_id, offer_id, hourly_price)
+        )
+
+    def decline_instance_action(self):
+        self.declined_instance_actions += 1
 
     def snapshot(self):
         return StackSnapshot(
@@ -375,10 +394,50 @@ def test_fingerprint_confirmation_and_resume_stays_on_single_worker():
     ]
 
 
+def test_instance_selection_and_restart_resume_stay_on_single_worker():
+    orchestrator = FakeOrchestrator(instance_id=4815)
+    executor = RecordingExecutor()
+    controller = ControlController(orchestrator, executor=executor)
+
+    controller.select_vast_instance(4815)
+    controller.confirm_vast_restart(4815, "1.75")
+
+    assert executor.submitted == [
+        ("select_vast_instance_and_start", 4815),
+        ("confirm_instance_restart_and_start", 4815, "1.75"),
+    ]
+
+
+def test_replacement_confirmation_resumes_on_single_worker():
+    orchestrator = FakeOrchestrator(instance_id=4815)
+    executor = RecordingExecutor()
+    controller = ControlController(orchestrator, executor=executor)
+
+    controller.confirm_vast_replacement(4815, 901, "1.25")
+
+    assert executor.submitted == [
+        ("confirm_instance_replacement_and_start", 4815, 901, "1.25")
+    ]
+
+
+def test_declining_instance_action_is_queued_without_starting():
+    orchestrator = FakeOrchestrator(instance_id=4815)
+    executor = RecordingExecutor()
+    controller = ControlController(orchestrator, executor=executor)
+
+    controller.decline_vast_instance_action()
+
+    assert executor.submitted == [("decline_instance_action",)]
+
+
 class ConfirmationController:
     def __init__(self):
         self.offer_confirmations = []
         self.fingerprint_confirmations = []
+        self.instance_selections = []
+        self.restart_confirmations = []
+        self.replacement_confirmations = []
+        self.declined_instance_actions = 0
 
     def confirm_vast_offer(self, offer_id, price):
         self.offer_confirmations.append((offer_id, price))
@@ -387,6 +446,22 @@ class ConfirmationController:
     def confirm_vast_fingerprint(self, instance_id, fingerprint):
         self.fingerprint_confirmations.append((instance_id, fingerprint))
         return "fingerprint-queued"
+
+    def select_vast_instance(self, instance_id):
+        self.instance_selections.append(instance_id)
+        return "selection-queued"
+
+    def confirm_vast_restart(self, instance_id, price):
+        self.restart_confirmations.append((instance_id, price))
+        return "restart-queued"
+
+    def confirm_vast_replacement(self, instance_id, offer_id, price):
+        self.replacement_confirmations.append((instance_id, offer_id, price))
+        return "replacement-queued"
+
+    def decline_vast_instance_action(self):
+        self.declined_instance_actions += 1
+        return "decline-queued"
 
 
 def confirmation_state(kind):
@@ -402,6 +477,9 @@ def confirmation_state(kind):
         vast_offer_id=101,
         vast_gpu_ram_mb=81920,
         vast_reliability="0.987",
+        vast_storage_cost_per_gb_month="0.15",
+        vast_storage_total_hourly="0.032",
+        vast_disk_gb=160,
         vast_actual_status="running" if kind == "fingerprint" else None,
         vast_billing_warning=(
             "Compute billing may remain active until this instance is destroyed."
@@ -413,6 +491,232 @@ def confirmation_state(kind):
             "SHA256:syntheticFingerprint" if kind == "fingerprint" else None
         ),
     )
+
+
+def existing_instance_state(kind):
+    first = VastInstance(
+        47468263,
+        "exited",
+        None,
+        None,
+        "A100 SXM4",
+        81920,
+        Decimal("0.9629629629629629"),
+    )
+    second = VastInstance(
+        47468264,
+        "running",
+        None,
+        None,
+        "H100 SXM",
+        81920,
+        Decimal("1.25"),
+    )
+    return UIState(
+        state="provisioning",
+        selected_mode="vast",
+        components=(),
+        logs=(),
+        message=None,
+        vast_gpu=first.gpu_name if kind == "instance_restart" else None,
+        vast_instance_id=(
+            first.instance_id if kind == "instance_restart" else None
+        ),
+        vast_hourly_price=(
+            str(first.dph_total) if kind == "instance_restart" else None
+        ),
+        vast_gpu_ram_mb=(
+            first.gpu_ram_mb if kind == "instance_restart" else None
+        ),
+        vast_actual_status=(
+            first.actual_status if kind == "instance_restart" else None
+        ),
+        vast_billing_warning=(
+            "Instance is stopped; storage billing may remain active until this "
+            "instance is destroyed."
+            if kind == "instance_restart"
+            else None
+        ),
+        pending_confirmation=kind,
+        vast_candidates=(first, second) if kind == "instance_selection" else (),
+    )
+
+
+def replacement_state():
+    old = VastInstance(
+        47468263,
+        "scheduling",
+        None,
+        None,
+        "A100 SXM4",
+        81920,
+        Decimal("0.9629629629629629"),
+    )
+    replacement = VastOffer(
+        901,
+        "H100 SXM",
+        81920,
+        Decimal("1.25"),
+        Decimal("0.995"),
+        Decimal("0.10"),
+        Decimal("0.022"),
+    )
+    return UIState(
+        state="provisioning",
+        selected_mode="vast",
+        components=(),
+        logs=(),
+        message=None,
+        vast_gpu=old.gpu_name,
+        vast_instance_id=old.instance_id,
+        vast_hourly_price=str(old.dph_total),
+        vast_gpu_ram_mb=old.gpu_ram_mb,
+        vast_actual_status=old.actual_status,
+        vast_billing_warning=(
+            "Instance is stopped; storage billing may remain active until this "
+            "instance is destroyed."
+        ),
+        pending_confirmation="instance_replace",
+        vast_replacement_offer=replacement,
+        vast_disk_gb=160,
+    )
+
+
+def test_ui_shows_every_defend_candidate_and_queues_selected_exact_id(monkeypatch):
+    ui = object.__new__(ControlCenterUI)
+    ui.root = object()
+    ui._controller = ConfirmationController()
+    ui._last_confirmation_signature = None
+    rendered = []
+    prompts = []
+    ui._render = rendered.append
+    monkeypatch.setattr(
+        ui_module.simpledialog,
+        "askinteger",
+        lambda title, message, **options: prompts.append((title, message))
+        or 47468264,
+    )
+
+    ui._handle_confirmation(existing_instance_state("instance_selection"))
+
+    assert ui._controller.instance_selections == [47468264]
+    assert rendered == ["selection-queued"]
+    prompt = " ".join(prompts[0])
+    for expected in (
+        "47468263",
+        "47468264",
+        "A100 SXM4",
+        "H100 SXM",
+        "exited",
+        "running",
+        "$0.9629629629629629/hour",
+        "$1.25/hour",
+    ):
+        assert expected in prompt
+
+
+def test_ui_restart_warning_names_exact_instance_price_and_billing(monkeypatch):
+    ui = object.__new__(ControlCenterUI)
+    ui.root = object()
+    ui._controller = ConfirmationController()
+    ui._last_confirmation_signature = None
+    rendered = []
+    prompts = []
+    ui._render = rendered.append
+    monkeypatch.setattr(
+        ui_module.messagebox,
+        "askyesno",
+        lambda title, message, **options: prompts.append((title, message)) or True,
+    )
+
+    ui._handle_confirmation(existing_instance_state("instance_restart"))
+
+    assert ui._controller.restart_confirmations == [
+        (47468263, "0.9629629629629629")
+    ]
+    assert rendered == ["restart-queued"]
+    prompt = " ".join(prompts[0])
+    for expected in (
+        "47468263",
+        "A100 SXM4",
+        "81920",
+        "exited",
+        "$0.9629629629629629/hour",
+        "storage billing",
+        "resume compute billing",
+    ):
+        assert expected.casefold() in prompt.casefold()
+
+
+def test_ui_declined_restart_queues_no_provider_mutation(monkeypatch):
+    ui = object.__new__(ControlCenterUI)
+    ui.root = object()
+    ui._controller = ConfirmationController()
+    ui._last_confirmation_signature = None
+    ui._render = lambda _state: None
+    monkeypatch.setattr(
+        ui_module.messagebox,
+        "askyesno",
+        lambda *args, **options: False,
+    )
+
+    ui._handle_confirmation(existing_instance_state("instance_restart"))
+
+    assert ui._controller.restart_confirmations == []
+    assert ui._controller.declined_instance_actions == 1
+
+
+def test_ui_replacement_prompt_names_both_sides_and_billing(monkeypatch):
+    ui = object.__new__(ControlCenterUI)
+    ui.root = object()
+    ui._controller = ConfirmationController()
+    ui._last_confirmation_signature = None
+    rendered = []
+    prompts = []
+    ui._render = rendered.append
+    monkeypatch.setattr(
+        ui_module.messagebox,
+        "askyesno",
+        lambda title, message, **options: prompts.append((title, message)) or True,
+    )
+
+    ui._handle_confirmation(replacement_state())
+
+    assert ui._controller.replacement_confirmations == [
+        (47468263, 901, "1.25")
+    ]
+    assert rendered == ["replacement-queued"]
+    prompt = " ".join(prompts[0])
+    for expected in (
+        "47468263",
+        "scheduling",
+        "Offer ID: 901",
+        "H100 SXM",
+        "81920",
+        "0.995",
+        "$1.25/hour",
+        "storage billing",
+        "destroyed before",
+    ):
+        assert expected.casefold() in prompt.casefold()
+
+
+def test_ui_declined_replacement_dispatches_no_provider_mutation(monkeypatch):
+    ui = object.__new__(ControlCenterUI)
+    ui.root = object()
+    ui._controller = ConfirmationController()
+    ui._last_confirmation_signature = None
+    ui._render = lambda _state: None
+    monkeypatch.setattr(
+        ui_module.messagebox,
+        "askyesno",
+        lambda *args, **options: False,
+    )
+
+    ui._handle_confirmation(replacement_state())
+
+    assert ui._controller.replacement_confirmations == []
+    assert ui._controller.declined_instance_actions == 1
 
 
 def test_ui_price_prompt_is_prominent_exact_and_queues_resume(monkeypatch):
@@ -435,7 +739,19 @@ def test_ui_price_prompt_is_prominent_exact_and_queues_resume(monkeypatch):
     assert rendered == ["offer-queued"]
     assert len(prompts) == 1
     prompt = " ".join(prompts[0])
-    for expected in ("101", "A100 SXM4", "81920", "0.987", "$1.75", "BILLABLE"):
+    for expected in (
+        "101",
+        "A100 SXM4",
+        "81920",
+        "0.987",
+        "$1.75",
+        "160 GB",
+        "$0.15/GB/month",
+        "$0.032/hour",
+        "vllm/vllm-openai:v0.10.0",
+        "ssh_direc ssh_proxy",
+        "BILLABLE",
+    ):
         assert expected in prompt
 
 

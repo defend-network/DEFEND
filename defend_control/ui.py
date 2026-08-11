@@ -419,12 +419,58 @@ class ControlCenterUI:
     def _handle_confirmation(self, state: UIState) -> None:
         kind = state.pending_confirmation
         if kind == "price":
-            signature = (kind, state.vast_offer_id, state.vast_hourly_price)
+            signature = (
+                kind,
+                state.vast_offer_id,
+                state.vast_hourly_price,
+                state.vast_storage_cost_per_gb_month,
+                state.vast_storage_total_hourly,
+                state.vast_disk_gb,
+            )
         elif kind == "fingerprint":
             signature = (
                 kind,
                 state.vast_instance_id,
                 state.pending_fingerprint,
+            )
+        elif kind == "instance_selection":
+            signature = (
+                kind,
+                tuple(
+                    (
+                        candidate.instance_id,
+                        candidate.actual_status,
+                        candidate.gpu_name,
+                        candidate.gpu_ram_mb,
+                        str(candidate.dph_total),
+                    )
+                    for candidate in state.vast_candidates
+                ),
+            )
+        elif kind == "instance_restart":
+            signature = (
+                kind,
+                state.vast_instance_id,
+                state.vast_actual_status,
+                state.vast_hourly_price,
+            )
+        elif kind == "instance_replace":
+            offer = state.vast_replacement_offer
+            signature = (
+                kind,
+                state.vast_instance_id,
+                state.vast_actual_status,
+                (
+                    None
+                    if offer is None
+                    else (
+                        offer.offer_id,
+                        offer.gpu_name,
+                        offer.gpu_ram_mb,
+                        str(offer.reliability),
+                        str(offer.dph_total),
+                    )
+                ),
             )
         else:
             self._last_confirmation_signature = None
@@ -433,6 +479,167 @@ class ControlCenterUI:
             return
         self._last_confirmation_signature = signature
 
+        if kind == "instance_selection":
+            if not state.vast_candidates:
+                return
+            choices = "\n".join(
+                (
+                    f"Instance {candidate.instance_id} | "
+                    f"{candidate.actual_status or 'unknown'} | "
+                    f"{candidate.gpu_name} | {candidate.gpu_ram_mb} MB | "
+                    f"${candidate.dph_total}/hour"
+                )
+                for candidate in state.vast_candidates
+            )
+            selected = simpledialog.askinteger(
+                "Choose an existing DEFEND Vast.ai pod",
+                (
+                    "DEFEND found existing pods and will not rent another.\n\n"
+                    f"{choices}\n\n"
+                    "Enter the exact instance ID to reconnect or restart:"
+                ),
+                parent=self.root,
+                minvalue=1,
+            )
+            if selected is None:
+                try:
+                    self._render(
+                        self._controller.decline_vast_instance_action()
+                    )
+                except Exception as error:
+                    self._show_error(error)
+                return
+            if selected not in {
+                candidate.instance_id for candidate in state.vast_candidates
+            }:
+                messagebox.showwarning(
+                    "Choose a listed DEFEND pod",
+                    "The instance ID must exactly match one of the listed pods.",
+                    parent=self.root,
+                )
+                try:
+                    self._render(
+                        self._controller.decline_vast_instance_action()
+                    )
+                except Exception as error:
+                    self._show_error(error)
+                return
+            try:
+                self._render(self._controller.select_vast_instance(selected))
+            except Exception as error:
+                self._show_error(error)
+            return
+
+        if kind == "instance_restart":
+            if (
+                state.vast_instance_id is None
+                or state.vast_gpu is None
+                or state.vast_gpu_ram_mb is None
+                or state.vast_actual_status is None
+                or state.vast_hourly_price is None
+            ):
+                return
+            storage = state.vast_billing_warning or (
+                "Storage billing may remain active while this instance is stopped."
+            )
+            confirmed = messagebox.askyesno(
+                "Restart BILLABLE DEFEND Vast.ai instance",
+                (
+                    "Restart this existing DEFEND pod and resume compute billing?\n\n"
+                    f"Instance ID: {state.vast_instance_id}\n"
+                    f"Provider status: {state.vast_actual_status}\n"
+                    f"GPU: {state.vast_gpu}\n"
+                    f"GPU RAM: {state.vast_gpu_ram_mb} MB\n"
+                    f"Exact price: ${state.vast_hourly_price}/hour\n\n"
+                    f"{storage}\n"
+                    "Compute charges resume only after you confirm."
+                ),
+                parent=self.root,
+            )
+            if not confirmed:
+                try:
+                    self._render(
+                        self._controller.decline_vast_instance_action()
+                    )
+                except Exception as error:
+                    self._show_error(error)
+                return
+            try:
+                self._render(
+                    self._controller.confirm_vast_restart(
+                        state.vast_instance_id, state.vast_hourly_price
+                    )
+                )
+            except Exception as error:
+                self._show_error(error)
+            return
+
+        if kind == "instance_replace":
+            offer = state.vast_replacement_offer
+            if (
+                state.vast_instance_id is None
+                or state.vast_actual_status is None
+                or offer is None
+                or state.vast_disk_gb is None
+            ):
+                return
+            storage_warning = state.vast_billing_warning or (
+                "Storage billing may remain active until the old instance is "
+                "destroyed."
+            )
+            storage_details = ""
+            if offer.storage_cost_per_gb_month is not None:
+                storage_details += (
+                    "\nStorage rate: "
+                    f"${offer.storage_cost_per_gb_month}/GB/month"
+                )
+            if offer.storage_total_hourly is not None:
+                storage_details += (
+                    "\nStorage total: "
+                    f"${offer.storage_total_hourly}/hour"
+                )
+            confirmed = messagebox.askyesno(
+                "Replace unavailable BILLABLE Vast.ai instance",
+                (
+                    "The existing on-demand pod has remained scheduled for "
+                    "30 seconds.\n\n"
+                    f"Old instance ID: {state.vast_instance_id}\n"
+                    f"Old provider status: {state.vast_actual_status}\n"
+                    f"{storage_warning}\n\n"
+                    "Confirmed on-demand replacement:\n"
+                    f"Offer ID: {offer.offer_id}\n"
+                    f"GPU: {offer.gpu_name}\n"
+                    f"GPU RAM: {offer.gpu_ram_mb} MB\n"
+                    f"Reliability: {offer.reliability}\n"
+                    f"Exact price: ${offer.dph_total}/hour\n"
+                    f"Disk: {state.vast_disk_gb} GB"
+                    f"{storage_details}\n\n"
+                    "The old instance will be destroyed before DEFEND attempts "
+                    "this one replacement. If the offer becomes unavailable, "
+                    "DEFEND will stop and will not rent a different offer."
+                ),
+                parent=self.root,
+            )
+            if not confirmed:
+                try:
+                    self._render(
+                        self._controller.decline_vast_instance_action()
+                    )
+                except Exception as error:
+                    self._show_error(error)
+                return
+            try:
+                self._render(
+                    self._controller.confirm_vast_replacement(
+                        state.vast_instance_id,
+                        offer.offer_id,
+                        str(offer.dph_total),
+                    )
+                )
+            except Exception as error:
+                self._show_error(error)
+            return
+
         if kind == "price":
             if (
                 state.vast_offer_id is None
@@ -440,8 +647,20 @@ class ControlCenterUI:
                 or state.vast_gpu is None
                 or state.vast_gpu_ram_mb is None
                 or state.vast_reliability is None
+                or state.vast_disk_gb is None
             ):
                 return
+            storage_price = ""
+            if state.vast_storage_cost_per_gb_month is not None:
+                storage_price += (
+                    "Storage rate: "
+                    f"${state.vast_storage_cost_per_gb_month}/GB/month\n"
+                )
+            if state.vast_storage_total_hourly is not None:
+                storage_price += (
+                    "Storage total: "
+                    f"${state.vast_storage_total_hourly}/hour\n"
+                )
             confirmed = messagebox.askyesno(
                 "BILLABLE Vast.ai instance",
                 (
@@ -451,6 +670,10 @@ class ControlCenterUI:
                     f"GPU RAM: {state.vast_gpu_ram_mb} MB\n"
                     f"Reliability: {state.vast_reliability}\n"
                     f"Exact price: ${state.vast_hourly_price}/hour\n\n"
+                    f"Disk: {state.vast_disk_gb} GB\n"
+                    f"{storage_price}"
+                    "Launch body: image=vllm/vllm-openai:v0.10.0, "
+                    "runtype=ssh_direc ssh_proxy, target_state=running\n\n"
                     "Charges begin only after you confirm."
                 ),
                 parent=self.root,
