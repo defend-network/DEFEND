@@ -21,6 +21,7 @@ _PROVISIONING_TIMEOUT_SECONDS = 300.0
 _PENDING_STATUSES = frozenset(
     {None, "created", "loading", "starting", "rebooting", "restarting"}
 )
+_TERMINAL_STATUSES = frozenset({"exited", "unknown", "offline"})
 
 
 class VastError(RuntimeError):
@@ -163,9 +164,10 @@ class VastClient:
             raise ValueError("offer must be a VastOffer")
         if launch != LaunchSpec.default():
             raise ValueError("only the approved DEFEND Vast launch is supported")
+        offer_id = _positive_int(offer.offer_id, "offer ID")
         document = self._request_json(
             "PUT",
-            f"{_API_ROOT}/asks/{offer.offer_id}/",
+            f"{_API_ROOT}/asks/{offer_id}/",
             {
                 "image": launch.image,
                 "disk": launch.disk_gb,
@@ -175,6 +177,7 @@ class VastClient:
                 "label": launch.label,
             },
             offer_race=True,
+            retry_429=False,
         )
         instance_id = None
         if isinstance(document, Mapping):
@@ -195,10 +198,24 @@ class VastClient:
             offer.dph_total,
         )
 
-    def show_instance(self, instance_id: int) -> VastInstance:
+    def show_instance(
+        self,
+        instance_id: int,
+        *,
+        timeout_seconds: float = _TIMEOUT_SECONDS,
+    ) -> VastInstance:
         parsed_id = _positive_int(instance_id, "instance ID")
+        if (
+            isinstance(timeout_seconds, bool)
+            or not isinstance(timeout_seconds, (int, float))
+            or not 0 < float(timeout_seconds) <= _TIMEOUT_SECONDS
+        ):
+            raise ValueError("Vast.ai request timeout is invalid")
         document = self._request_json(
-            "GET", f"{_API_ROOT}/instances/{parsed_id}/", None
+            "GET",
+            f"{_API_ROOT}/instances/{parsed_id}/",
+            None,
+            timeout_seconds=float(timeout_seconds),
         )
         raw: object = document
         if isinstance(document, Mapping) and "instances" in document:
@@ -223,9 +240,10 @@ class VastClient:
         parsed_id = _positive_int(instance_id, "instance ID")
         if state not in ("running", "stopped"):
             raise ValueError("Vast.ai instance state must be running or stopped")
-        self._request_json(
+        response = self._request(
             "PUT", f"{_API_ROOT}/instances/{parsed_id}", {"state": state}
         )
+        self._require_mutation_success(response, "Vast.ai state change failed")
         return True
 
     def destroy_instance(
@@ -241,9 +259,10 @@ class VastClient:
             or confirmed_instance_id != parsed_id
         ):
             raise ValueError("destruction requires the exact instance ID")
-        self._request(
+        response = self._request(
             "DELETE", f"{_API_ROOT}/instances/{parsed_id}/", None
         )
+        self._require_mutation_success(response, "Vast.ai destruction failed")
         return True
 
     def ensure_account_ssh_key(self, public_key: str) -> int:
@@ -256,6 +275,32 @@ class VastClient:
         ):
             raise ValueError("dedicated SSH public key is invalid")
         document = self._request_json("GET", f"{_API_ROOT}/ssh", None)
+        existing_id = self._find_ssh_key_id(document, public_key)
+        if existing_id is not None:
+            return existing_id
+        response = self._request(
+            "POST",
+            f"{_API_ROOT}/ssh",
+            {"ssh_key": public_key},
+            retry_429=False,
+        )
+        created = self._require_mutation_success(
+            response, "Vast.ai SSH key creation failed"
+        )
+        if created is None:
+            reconciled = self._request_json("GET", f"{_API_ROOT}/ssh", None)
+            reconciled_id = self._find_ssh_key_id(reconciled, public_key)
+            if reconciled_id is None:
+                raise VastError("Vast.ai SSH key response is invalid")
+            return reconciled_id
+        created_id = created.get("id", created.get("ssh_key_id"))
+        try:
+            return _positive_int(created_id, "SSH key ID")
+        except ValueError:
+            raise VastError("Vast.ai SSH key response is invalid") from None
+
+    @staticmethod
+    def _find_ssh_key_id(document: object, public_key: str) -> int | None:
         candidates: object = document
         if isinstance(document, Mapping):
             candidates = document.get("ssh_keys", document.get("keys"))
@@ -272,16 +317,21 @@ class VastClient:
                     return _positive_int(candidate.get("id"), "SSH key ID")
                 except ValueError:
                     raise VastError("Vast.ai SSH key response is invalid") from None
-        created = self._request_json(
-            "POST", f"{_API_ROOT}/ssh", {"ssh_key": public_key}
-        )
-        created_id = None
-        if isinstance(created, Mapping):
-            created_id = created.get("id", created.get("ssh_key_id"))
+        return None
+
+    @staticmethod
+    def _require_mutation_success(
+        response: _Response, safe_error: str
+    ) -> Mapping[str, object] | None:
+        if not response.body:
+            return None
         try:
-            return _positive_int(created_id, "SSH key ID")
-        except ValueError:
-            raise VastError("Vast.ai SSH key response is invalid") from None
+            document = json.loads(response.body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise VastError(safe_error) from None
+        if not isinstance(document, Mapping) or document.get("success") is not True:
+            raise VastError(safe_error)
+        return document
 
     def wait_until_running(
         self,
@@ -304,19 +354,32 @@ class VastClient:
         ):
             raise ValueError("Vast.ai polling interval is invalid")
         parsed_id = _positive_int(instance_id, "instance ID")
-        start = self._monotonic()
+        deadline = self._monotonic() + _PROVISIONING_TIMEOUT_SECONDS
         while True:
-            instance = self.show_instance(parsed_id)
+            remaining = deadline - self._monotonic()
+            if remaining <= 0:
+                raise VastError("Vast.ai provisioning timed out after 300 seconds")
+            instance = self.show_instance(
+                parsed_id,
+                timeout_seconds=min(_TIMEOUT_SECONDS, remaining),
+            )
+            after_response = self._monotonic()
+            if after_response >= deadline:
+                raise VastError("Vast.ai provisioning timed out after 300 seconds")
             if instance.actual_status == "running":
                 return instance
             if instance.actual_status not in _PENDING_STATUSES:
+                safe_status = (
+                    instance.actual_status
+                    if instance.actual_status in _TERMINAL_STATUSES
+                    else "unrecognized"
+                )
                 raise VastError(
                     "Vast.ai provisioning failed "
-                    f"(terminal status {instance.actual_status})"
+                    f"(terminal status {safe_status})"
                 )
-            if self._monotonic() - start >= _PROVISIONING_TIMEOUT_SECONDS:
-                raise VastError("Vast.ai provisioning timed out after 300 seconds")
-            self._sleep(float(poll_interval_seconds))
+            remaining = deadline - after_response
+            self._sleep(min(float(poll_interval_seconds), remaining))
 
     @staticmethod
     def billing_warning(instance: VastInstance) -> str | None:
@@ -401,6 +464,8 @@ class VastClient:
         body: object | None,
         *,
         offer_race: bool = False,
+        retry_429: bool = True,
+        timeout_seconds: float = _TIMEOUT_SECONDS,
     ) -> _Response:
         headers = {
             "Accept": "application/json",
@@ -409,14 +474,15 @@ class VastClient:
         if body is not None:
             headers["Content-Type"] = "application/json"
         response: _Response | None = None
-        for attempt in range(_MAX_ATTEMPTS):
+        max_attempts = _MAX_ATTEMPTS if retry_429 else 1
+        for attempt in range(max_attempts):
             try:
                 response = self._transport.request(
                     method,
                     url,
                     headers=headers,
                     json=body,
-                    timeout=_TIMEOUT_SECONDS,
+                    timeout=timeout_seconds,
                     max_response_bytes=_MAX_RESPONSE_BYTES,
                 )
             except Exception as error:
@@ -425,7 +491,7 @@ class VastClient:
                 ) from None
             if len(response.body) > _MAX_RESPONSE_BYTES:
                 raise VastError("Vast.ai response exceeds 64 KiB")
-            if response.status_code != 429 or attempt == _MAX_ATTEMPTS - 1:
+            if response.status_code != 429 or attempt == max_attempts - 1:
                 break
             try:
                 jitter = float(self._jitter())
@@ -450,8 +516,17 @@ class VastClient:
         body: object | None,
         *,
         offer_race: bool = False,
+        retry_429: bool = True,
+        timeout_seconds: float = _TIMEOUT_SECONDS,
     ) -> object:
-        response = self._request(method, url, body, offer_race=offer_race)
+        response = self._request(
+            method,
+            url,
+            body,
+            offer_race=offer_race,
+            retry_429=retry_429,
+            timeout_seconds=timeout_seconds,
+        )
         try:
             return json.loads(response.body.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
