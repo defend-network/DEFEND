@@ -5,21 +5,34 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 import json
 import random
+import re
 import time
 from typing import Protocol
 from urllib.error import HTTPError
+from urllib.parse import urlencode
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from .types import LaunchSpec, VastInstance, VastOffer
 
 
 _API_ROOT = "https://console.vast.ai/api/v0"
+_API_V1_ROOT = "https://console.vast.ai/api/v1"
 _MAX_RESPONSE_BYTES = 64 * 1024
 _TIMEOUT_SECONDS = 30.0
 _MAX_ATTEMPTS = 3
 _PROVISIONING_TIMEOUT_SECONDS = 300.0
+_DESTRUCTION_VERIFY_SECONDS = 30.0
+_DESTRUCTION_POLL_SECONDS = 2.0
 _PENDING_STATUSES = frozenset(
-    {None, "created", "loading", "starting", "rebooting", "restarting"}
+    {
+        None,
+        "created",
+        "loading",
+        "scheduling",
+        "starting",
+        "rebooting",
+        "restarting",
+    }
 )
 _TERMINAL_STATUSES = frozenset({"exited", "unknown", "offline"})
 
@@ -30,6 +43,14 @@ class VastError(RuntimeError):
 
 class VastOfferUnavailable(VastError):
     """Raised when an offer becomes unavailable before instance creation."""
+
+
+class VastSchedulingTimeout(VastError):
+    """Raised when a confirmed restart cannot regain scheduled compute."""
+
+    def __init__(self, instance_id: int) -> None:
+        super().__init__("Vast.ai restart remained scheduled for 30 seconds")
+        self.instance_id = instance_id
 
 
 class _DeadlineExceeded(Exception):
@@ -129,9 +150,14 @@ class VastClient:
         self._sleep = sleep
         self._jitter = jitter
         self._monotonic = monotonic
+        self._offer_search_summary = "search not run"
 
     def __repr__(self) -> str:
         return "VastClient()"
+
+    @property
+    def offer_search_summary(self) -> str:
+        return self._offer_search_summary
 
     def search_offers(self, max_hourly: Decimal) -> tuple[VastOffer, ...]:
         ceiling = _decimal(max_hourly, "maximum hourly price")
@@ -139,7 +165,7 @@ class VastClient:
             raise ValueError("maximum hourly price must be positive")
         document = self._request_json(
             "POST",
-            f"{_API_ROOT}/bundles",
+            f"{_API_ROOT}/bundles/",
             {
                 "type": "on-demand",
                 "verified": {"eq": True},
@@ -147,7 +173,11 @@ class VastClient:
                 "rented": {"eq": False},
                 "num_gpus": {"eq": 1},
                 "gpu_ram": {"gte": 80000},
+                "disk_space": {"gte": 160},
+                "direct_port_count": {"gte": 1},
+                "reliability": {"gte": 0.98},
                 "dph_total": {"lte": float(ceiling)},
+                "allocated_storage": 160,
                 "order": [["dph_total", "asc"]],
                 "limit": 20,
             },
@@ -161,7 +191,58 @@ class VastClient:
             if offer is not None:
                 offers.append(offer)
         offers.sort(key=lambda offer: (offer.dph_total, offer.offer_id))
+        self._offer_search_summary = (
+            f"provider returned {len(raw_offers)}; eligible {len(offers)}"
+        )
         return tuple(offers[:20])
+
+    def list_labeled_instance_ids(self, label: str) -> tuple[int, ...]:
+        if (
+            not isinstance(label, str)
+            or not label
+            or len(label) > 128
+            or any(ord(character) < 0x20 for character in label)
+        ):
+            raise ValueError("Vast.ai instance label is invalid")
+        filters = json.dumps(
+            {"label": {"eq": label}}, separators=(",", ":")
+        )
+        query = urlencode({"limit": 25, "select_filters": filters})
+        document = self._request_json(
+            "GET", f"{_API_V1_ROOT}/instances/?{query}", None
+        )
+        candidates = document.get("instances") if isinstance(document, Mapping) else None
+        instances_found = (
+            document.get("instances_found") if isinstance(document, Mapping) else None
+        )
+        total_instances = (
+            document.get("total_instances") if isinstance(document, Mapping) else None
+        )
+        if (
+            not isinstance(document, Mapping)
+            or document.get("success") is not True
+            or not isinstance(candidates, list)
+            or type(instances_found) is not int
+            or type(total_instances) is not int
+            or instances_found != len(candidates)
+            or total_instances != len(candidates)
+            or len(candidates) > 25
+            or document.get("next_token") is not None
+        ):
+            raise VastError("Vast.ai instance list response is invalid")
+        instance_ids: list[int] = []
+        for candidate in candidates:
+            if not isinstance(candidate, Mapping) or candidate.get("label") != label:
+                continue
+            try:
+                instance_ids.append(
+                    _positive_int(candidate.get("id"), "instance ID")
+                )
+            except ValueError:
+                raise VastError("Vast.ai instance list response is invalid") from None
+        if len(set(instance_ids)) != len(instance_ids):
+            raise VastError("Vast.ai instance list response is invalid")
+        return tuple(instance_ids)
 
     def create_instance(self, offer: VastOffer, launch: LaunchSpec) -> VastInstance:
         if not isinstance(offer, VastOffer):
@@ -173,12 +254,23 @@ class VastClient:
             "PUT",
             f"{_API_ROOT}/asks/{offer_id}/",
             {
+                "client_id": "me",
                 "image": launch.image,
+                "env": {},
                 "disk": launch.disk_gb,
                 "runtype": launch.runtype,
                 "target_state": "running",
                 "cancel_unavail": True,
                 "label": launch.label,
+                "onstart": None,
+                "image_login": None,
+                "python_utf8": False,
+                "lang_utf8": False,
+                "use_jupyter_lab": False,
+                "jupyter_dir": None,
+                "force": False,
+                "template_hash_id": None,
+                "user": None,
             },
             offer_race=True,
             retry_429=False,
@@ -216,38 +308,64 @@ class VastClient:
             or not 0 < float(timeout_seconds) <= _TIMEOUT_SECONDS
         ):
             raise ValueError("Vast.ai request timeout is invalid")
+        raw = self._instance_payload(
+            parsed_id,
+            timeout_seconds=float(timeout_seconds),
+            deadline=deadline,
+        )
+        try:
+            return self._parse_instance(raw, parsed_id)
+        except ValueError:
+            raise VastError("Vast.ai instance response is invalid") from None
+
+    def _instance_payload(
+        self,
+        instance_id: int,
+        *,
+        timeout_seconds: float,
+        deadline: float | None,
+    ) -> Mapping[str, object]:
         document = self._request_json(
             "GET",
-            f"{_API_ROOT}/instances/{parsed_id}/",
+            f"{_API_ROOT}/instances/{instance_id}/",
             None,
-            timeout_seconds=float(timeout_seconds),
+            timeout_seconds=timeout_seconds,
             deadline=deadline,
         )
         raw: object = document
         if isinstance(document, Mapping) and "instances" in document:
             candidates = document.get("instances")
-            if not isinstance(candidates, list):
+            if isinstance(candidates, Mapping):
+                raw = candidates
+            elif isinstance(candidates, list):
+                raw = next(
+                    (
+                        candidate
+                        for candidate in candidates
+                        if isinstance(candidate, Mapping)
+                        and candidate.get("id") == instance_id
+                    ),
+                    None,
+                )
+            else:
                 raise VastError("Vast.ai instance response is invalid")
-            raw = next(
-                (
-                    candidate
-                    for candidate in candidates
-                    if isinstance(candidate, Mapping)
-                    and candidate.get("id") == parsed_id
-                ),
-                None,
-            )
-        try:
-            return self._parse_instance(raw, parsed_id)
-        except ValueError:
+        if not isinstance(raw, Mapping):
             raise VastError("Vast.ai instance response is invalid") from None
+        raw_id = raw.get("id")
+        if raw_id is not None:
+            try:
+                if _positive_int(raw_id, "instance ID") != instance_id:
+                    raise ValueError("instance ID does not match")
+            except ValueError:
+                raise VastError("Vast.ai instance response is invalid") from None
+        return raw
 
     def set_state(self, instance_id: int, state: str) -> bool:
         parsed_id = _positive_int(instance_id, "instance ID")
         if state not in ("running", "stopped"):
             raise ValueError("Vast.ai instance state must be running or stopped")
         response = self._request(
-            "PUT", f"{_API_ROOT}/instances/{parsed_id}", {"state": state}
+            "PUT", f"{_API_ROOT}/instances/{parsed_id}/", {"state": state}
         )
         self._require_mutation_success(response, "Vast.ai state change failed")
         return True
@@ -269,7 +387,39 @@ class VastClient:
             "DELETE", f"{_API_ROOT}/instances/{parsed_id}/", None
         )
         self._require_mutation_success(response, "Vast.ai destruction failed")
+        self._wait_until_destroyed(parsed_id)
         return True
+
+    def _wait_until_destroyed(self, instance_id: int) -> None:
+        deadline = self._monotonic() + _DESTRUCTION_VERIFY_SECONDS
+        url = f"{_API_ROOT}/instances/{instance_id}/"
+        while True:
+            remaining = deadline - self._monotonic()
+            if remaining <= 0:
+                raise VastError(
+                    "Vast.ai destruction could not be verified after 30 seconds"
+                )
+            try:
+                response = self._request(
+                    "GET",
+                    url,
+                    None,
+                    timeout_seconds=min(_TIMEOUT_SECONDS, remaining),
+                    deadline=deadline,
+                    allow_not_found=True,
+                )
+            except _DeadlineExceeded:
+                raise VastError(
+                    "Vast.ai destruction could not be verified after 30 seconds"
+                ) from None
+            if response.status_code == 404:
+                return
+            remaining = deadline - self._monotonic()
+            if remaining <= 0:
+                raise VastError(
+                    "Vast.ai destruction could not be verified after 30 seconds"
+                )
+            self._sleep(min(_DESTRUCTION_POLL_SECONDS, remaining))
 
     def ensure_account_ssh_key(self, public_key: str) -> int:
         if (
@@ -280,13 +430,13 @@ class VastClient:
             or len(public_key.encode("utf-8")) > 16 * 1024
         ):
             raise ValueError("dedicated SSH public key is invalid")
-        document = self._request_json("GET", f"{_API_ROOT}/ssh", None)
+        document = self._request_json("GET", f"{_API_ROOT}/ssh/", None)
         existing_id = self._find_ssh_key_id(document, public_key)
         if existing_id is not None:
             return existing_id
         response = self._request(
             "POST",
-            f"{_API_ROOT}/ssh",
+            f"{_API_ROOT}/ssh/",
             {"ssh_key": public_key},
             retry_429=False,
         )
@@ -294,7 +444,7 @@ class VastClient:
             response, "Vast.ai SSH key creation failed"
         )
         if created is None:
-            reconciled = self._request_json("GET", f"{_API_ROOT}/ssh", None)
+            reconciled = self._request_json("GET", f"{_API_ROOT}/ssh/", None)
             reconciled_id = self._find_ssh_key_id(reconciled, public_key)
             if reconciled_id is None:
                 raise VastError("Vast.ai SSH key response is invalid")
@@ -374,7 +524,9 @@ class VastClient:
         instance_id: int,
         *,
         timeout_seconds: float = _PROVISIONING_TIMEOUT_SECONDS,
-        poll_interval_seconds: float = 2.0,
+        poll_interval_seconds: float = 10.0,
+        allow_stopped_transition: bool = False,
+        scheduling_timeout_seconds: float | None = None,
     ) -> VastInstance:
         if (
             isinstance(timeout_seconds, bool)
@@ -389,14 +541,24 @@ class VastClient:
             or float(poll_interval_seconds) > 30
         ):
             raise ValueError("Vast.ai polling interval is invalid")
+        if type(allow_stopped_transition) is not bool:
+            raise ValueError("Vast.ai stopped-transition option is invalid")
+        if scheduling_timeout_seconds is not None and (
+            not allow_stopped_transition
+            or isinstance(scheduling_timeout_seconds, bool)
+            or not isinstance(scheduling_timeout_seconds, (int, float))
+            or float(scheduling_timeout_seconds) != 30.0
+        ):
+            raise ValueError("Vast.ai scheduling timeout must be 30 seconds")
         parsed_id = _positive_int(instance_id, "instance ID")
         deadline = self._monotonic() + _PROVISIONING_TIMEOUT_SECONDS
+        scheduling_deadline: float | None = None
         while True:
             remaining = deadline - self._monotonic()
             if remaining <= 0:
                 raise VastError("Vast.ai provisioning timed out after 300 seconds")
             try:
-                instance = self.show_instance(
+                raw = self._instance_payload(
                     parsed_id,
                     timeout_seconds=min(_TIMEOUT_SECONDS, remaining),
                     deadline=deadline,
@@ -408,12 +570,30 @@ class VastClient:
             after_response = self._monotonic()
             if after_response >= deadline:
                 raise VastError("Vast.ai provisioning timed out after 300 seconds")
-            if instance.actual_status == "running":
-                return instance
-            if instance.actual_status not in _PENDING_STATUSES:
+            status = raw.get("actual_status")
+            if status is not None and not isinstance(status, str):
+                raise VastError("Vast.ai instance response is invalid")
+            if status == "running":
+                try:
+                    return self._parse_instance(raw, parsed_id)
+                except ValueError:
+                    raise VastError("Vast.ai instance response is invalid") from None
+            if status == "scheduling" and scheduling_timeout_seconds is not None:
+                if scheduling_deadline is None:
+                    scheduling_deadline = (
+                        after_response + float(scheduling_timeout_seconds)
+                    )
+                if after_response >= scheduling_deadline:
+                    raise VastSchedulingTimeout(parsed_id)
+            elif status != "scheduling":
+                scheduling_deadline = None
+            pending_statuses = _PENDING_STATUSES
+            if allow_stopped_transition:
+                pending_statuses = pending_statuses | {"stopped", "exited"}
+            if status not in pending_statuses:
                 safe_status = (
-                    instance.actual_status
-                    if instance.actual_status in _TERMINAL_STATUSES
+                    status
+                    if status in _TERMINAL_STATUSES
                     else "unrecognized"
                 )
                 raise VastError(
@@ -421,6 +601,8 @@ class VastClient:
                     f"(terminal status {safe_status})"
                 )
             remaining = deadline - after_response
+            if scheduling_deadline is not None:
+                remaining = min(remaining, scheduling_deadline - after_response)
             self._sleep(min(float(poll_interval_seconds), remaining))
 
     @staticmethod
@@ -436,11 +618,23 @@ class VastClient:
         if not isinstance(raw, Mapping):
             return None
         try:
+            if "verified" in raw:
+                verified = raw.get("verified") is True
+            else:
+                verification = raw.get("verification")
+                verified = (
+                    isinstance(verification, str)
+                    and verification.strip().casefold() == "verified"
+                )
+            if "type" in raw:
+                on_demand = raw.get("type") in ("on-demand", "ondemand")
+            else:
+                on_demand = raw.get("is_bid") is False
             if (
-                raw.get("verified") is not True
+                not verified
                 or raw.get("rentable") is not True
                 or raw.get("rented") is not False
-                or raw.get("type") != "on-demand"
+                or not on_demand
                 or type(raw.get("num_gpus")) is not int
                 or raw.get("num_gpus") != 1
             ):
@@ -448,21 +642,56 @@ class VastClient:
             gpu_ram = _positive_int(raw.get("gpu_ram"), "GPU RAM")
             if gpu_ram < 80000:
                 return None
+            disk_space = _decimal(raw.get("disk_space"), "disk space")
+            if disk_space < 160:
+                return None
             dph_total = _decimal(raw.get("dph_total"), "hourly price")
             if dph_total < 0 or dph_total > ceiling:
                 return None
             offer_id = _positive_int(raw.get("id"), "offer ID")
             gpu_name = raw.get("gpu_name")
-            if not isinstance(gpu_name, str) or not gpu_name.strip():
+            if (
+                not isinstance(gpu_name, str)
+                or not re.fullmatch(
+                    r"(?:A100|H100)(?:[\s_-]+.*)?",
+                    gpu_name.strip(),
+                    re.IGNORECASE,
+                )
+            ):
                 return None
             reliability = _decimal(
                 raw.get("reliability", raw.get("reliability2")), "reliability"
             )
-            if reliability < 0 or reliability > 1:
+            if reliability < Decimal("0.98") or reliability > 1:
+                return None
+            storage_cost = (
+                None
+                if raw.get("storage_cost") is None
+                else _decimal(raw.get("storage_cost"), "storage cost")
+            )
+            storage_total = (
+                None
+                if raw.get("storage_total_cost") is None
+                else _decimal(raw.get("storage_total_cost"), "storage total cost")
+            )
+            if (
+                storage_cost is not None
+                and storage_cost < 0
+                or storage_total is not None
+                and storage_total < 0
+            ):
                 return None
         except ValueError:
             return None
-        return VastOffer(offer_id, gpu_name, gpu_ram, dph_total, reliability)
+        return VastOffer(
+            offer_id,
+            gpu_name,
+            gpu_ram,
+            dph_total,
+            reliability,
+            storage_cost,
+            storage_total,
+        )
 
     @staticmethod
     def _parse_instance(raw: object, expected_id: int) -> VastInstance:
@@ -509,6 +738,7 @@ class VastClient:
         retry_429: bool = True,
         timeout_seconds: float = _TIMEOUT_SECONDS,
         deadline: float | None = None,
+        allow_not_found: bool = False,
     ) -> _Response:
         headers = {
             "Accept": "application/json",
@@ -563,6 +793,8 @@ class VastClient:
             raise VastOfferUnavailable(
                 f"Vast.ai offer is no longer rentable (status {response.status_code})"
             )
+        if allow_not_found and response.status_code == 404:
+            return response
         if response.status_code < 200 or response.status_code >= 300:
             raise VastError(f"Vast.ai request failed (status {response.status_code})")
         return response

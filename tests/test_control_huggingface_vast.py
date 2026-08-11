@@ -3,14 +3,19 @@ from __future__ import annotations
 from dataclasses import dataclass, FrozenInstanceError
 from decimal import Decimal
 import json
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 
 import pytest
 
 from defend_control.huggingface import HuggingFaceClient
 from defend_control.huggingface import HuggingFaceError
 from defend_control.types import LaunchSpec, VastInstance, VastOffer
-from defend_control.vast import VastClient, VastError, VastOfferUnavailable
+from defend_control.vast import (
+    VastClient,
+    VastError,
+    VastOfferUnavailable,
+    VastSchedulingTimeout,
+)
 
 
 ADAPTER_SHA = "a" * 40
@@ -167,6 +172,7 @@ def test_huggingface_resolve_adapter_pins_both_revisions(fake_http: FakeHttp):
         ),
         json={
             "peft_type": "LORA",
+            "r": 64,
             "base_model_name_or_path": "Qwen/example-32B",
             "revision": BASE_SHA,
         },
@@ -181,6 +187,7 @@ def test_huggingface_resolve_adapter_pins_both_revisions(fake_http: FakeHttp):
     assert spec.base_repo == "Qwen/example-32B"
     assert spec.base_revision == BASE_SHA
     assert spec.peft_type == "LORA"
+    assert spec.lora_rank == 64
     assert all(request.timeout == 30.0 for request in fake_http.requests)
 
 
@@ -199,6 +206,7 @@ def test_huggingface_token_is_sent_only_as_a_bearer_header(fake_http: FakeHttp):
         ),
         json={
             "peft_type": "LORA",
+            "r": 64,
             "base_model_name_or_path": "Qwen/example-32B",
             "revision": BASE_SHA,
         },
@@ -233,6 +241,7 @@ def test_huggingface_resolves_missing_base_revision_and_rejects_gguf(
         url=config_url,
         json={
             "peft_type": "LORA",
+            "r": 64,
             "base_model_name_or_path": "Qwen/example-32B",
         },
     )
@@ -255,6 +264,7 @@ def test_huggingface_resolves_missing_base_revision_and_rejects_gguf(
         url=config_url,
         json={
             "peft_type": "LORA",
+            "r": 64,
             "base_model_name_or_path": "Defend-network/defend-qwen-32b-gguf",
             "revision": BASE_SHA,
         },
@@ -273,6 +283,7 @@ def test_huggingface_resolves_missing_base_revision_and_rejects_gguf(
             {"sha": ADAPTER_SHA},
             {
                 "peft_type": "IA3",
+                "r": 64,
                 "base_model_name_or_path": "Qwen/example-32B",
                 "revision": BASE_SHA,
             },
@@ -282,6 +293,7 @@ def test_huggingface_resolves_missing_base_revision_and_rejects_gguf(
             {"sha": ADAPTER_SHA},
             {
                 "peft_type": "LORA",
+                "r": 64,
                 "base_model_name_or_path": "local-path",
                 "revision": BASE_SHA,
             },
@@ -291,6 +303,7 @@ def test_huggingface_resolves_missing_base_revision_and_rejects_gguf(
             {"sha": ADAPTER_SHA},
             {
                 "peft_type": "LORA",
+                "r": 64,
                 "base_model_name_or_path": "Qwen/example-32B",
                 "revision": "main",
             },
@@ -326,6 +339,37 @@ def test_huggingface_requires_lora_repositories_and_immutable_revisions(
         )
 
 
+@pytest.mark.parametrize("rank", [None, True, 0, -1, 513, "64"])
+def test_huggingface_requires_a_bounded_integer_lora_rank(
+    fake_http: FakeHttp,
+    rank: object,
+):
+    fake_http.add_response(
+        url=(
+            "https://huggingface.co/api/models/"
+            f"{ADAPTER_REPO}/revision/main"
+        ),
+        json={"sha": ADAPTER_SHA},
+    )
+    fake_http.add_response(
+        url=(
+            f"https://huggingface.co/{ADAPTER_REPO}/resolve/"
+            f"{ADAPTER_SHA}/adapter_config.json"
+        ),
+        json={
+            "peft_type": "LORA",
+            "r": rank,
+            "base_model_name_or_path": "Qwen/example-32B",
+            "revision": BASE_SHA,
+        },
+    )
+
+    with pytest.raises(HuggingFaceError, match="LoRA rank"):
+        HuggingFaceClient(transport=fake_http).resolve_adapter(
+            ADAPTER_REPO, "hf_synthetic_secret"
+        )
+
+
 def test_huggingface_failure_exposes_only_status_or_error_type(
     fake_http: FakeHttp,
 ):
@@ -351,13 +395,14 @@ def test_vast_offer_search_is_verified_on_demand_single_80gb_and_capped(
 ):
     fake_http.add_response(
         method="POST",
-        url="https://console.vast.ai/api/v0/bundles",
+        url="https://console.vast.ai/api/v0/bundles/",
         json={
             "offers": [
                 {
                     "id": 202,
                     "gpu_name": "H100 SXM",
                     "gpu_ram": 81920,
+                    "disk_space": 500,
                     "num_gpus": 1,
                     "dph_total": 2.4,
                     "reliability": 0.99,
@@ -370,8 +415,11 @@ def test_vast_offer_search_is_verified_on_demand_single_80gb_and_capped(
                     "id": 101,
                     "gpu_name": "A100 SXM4",
                     "gpu_ram": 81920,
+                    "disk_space": 500,
                     "num_gpus": 1,
                     "dph_total": 1.75,
+                    "storage_cost": 0.15,
+                    "storage_total_cost": 0.032,
                     "reliability": 0.98,
                     "verified": True,
                     "rentable": True,
@@ -382,6 +430,7 @@ def test_vast_offer_search_is_verified_on_demand_single_80gb_and_capped(
                     "id": 303,
                     "gpu_name": "A100",
                     "gpu_ram": 40960,
+                    "disk_space": 500,
                     "num_gpus": 1,
                     "dph_total": 1.0,
                     "reliability": 0.97,
@@ -399,16 +448,165 @@ def test_vast_offer_search_is_verified_on_demand_single_80gb_and_capped(
 
     request = fake_http.last_request
     assert request.method == "POST"
-    assert request.path == "/api/v0/bundles"
+    assert request.path == "/api/v0/bundles/"
     assert request.json["type"] == "on-demand"
     assert request.json["verified"] == {"eq": True}
     assert request.json["rentable"] == {"eq": True}
     assert request.json["rented"] == {"eq": False}
     assert request.json["num_gpus"] == {"eq": 1}
     assert request.json["gpu_ram"] == {"gte": 80000}
+    assert request.json["disk_space"] == {"gte": 160}
+    assert request.json["direct_port_count"] == {"gte": 1}
+    assert request.json["reliability"] == {"gte": 0.98}
     assert request.json["dph_total"] == {"lte": 2.5}
+    assert request.json["allocated_storage"] == 160
     assert request.json["limit"] == 20
     assert [offer.offer_id for offer in offers] == [101, 202]
+    assert client.offer_search_summary == "provider returned 3; eligible 2"
+    assert offers[0].storage_cost_per_gb_month == Decimal("0.15")
+    assert offers[0].storage_total_hourly == Decimal("0.032")
+
+
+def test_vast_lists_exact_labeled_instances_for_safe_recovery(
+    fake_http: FakeHttp,
+):
+    filters = json.dumps(
+        {"label": {"eq": "defend-vllm"}}, separators=(",", ":")
+    )
+    url = (
+        "https://console.vast.ai/api/v1/instances/?"
+        + urlencode({"limit": 25, "select_filters": filters})
+    )
+    fake_http.add_response(
+        url=url,
+        json={
+            "success": True,
+            "instances_found": 2,
+            "total_instances": 2,
+            "next_token": None,
+            "instances": [
+                {
+                    "id": 47468263,
+                    "label": "defend-vllm",
+                    "actual_status": "running",
+                },
+                {
+                    "id": 47468264,
+                    "label": "other-workload",
+                    "actual_status": "running",
+                },
+            ],
+        },
+    )
+    client = VastClient("vast_synthetic_secret", transport=fake_http)
+
+    assert client.list_labeled_instance_ids("defend-vllm") == (47468263,)
+
+    request = fake_http.last_request
+    assert request.method == "GET"
+    assert request.url == url
+    assert request.json is None
+    assert "vast_synthetic_secret" not in request.url
+
+
+def test_vast_rejects_instance_list_that_claims_hidden_candidates(
+    fake_http: FakeHttp,
+):
+    filters = json.dumps(
+        {"label": {"eq": "defend-vllm"}}, separators=(",", ":")
+    )
+    url = (
+        "https://console.vast.ai/api/v1/instances/?"
+        + urlencode({"limit": 25, "select_filters": filters})
+    )
+    fake_http.add_response(
+        url=url,
+        json={
+            "success": True,
+            "instances_found": 1,
+            "total_instances": 26,
+            "next_token": None,
+            "instances": [
+                {
+                    "id": 47468263,
+                    "label": "defend-vllm",
+                    "actual_status": "running",
+                }
+            ],
+        },
+    )
+
+    with pytest.raises(VastError, match="instance list response is invalid"):
+        VastClient(
+            "vast_synthetic_secret", transport=fake_http
+        ).list_labeled_instance_ids("defend-vllm")
+
+
+@pytest.mark.parametrize("gpu_name", ["A100_SXM4", "H100_NVL"])
+def test_vast_accepts_official_underscore_gpu_names(
+    fake_http: FakeHttp, gpu_name: str
+):
+    fake_http.add_response(
+        method="POST",
+        url="https://console.vast.ai/api/v0/bundles/",
+        json={
+            "offers": [
+                {
+                    "id": 4815,
+                    "gpu_name": gpu_name,
+                    "gpu_ram": 81920,
+                    "disk_space": 500,
+                    "num_gpus": 1,
+                    "dph_total": 1.75,
+                    "reliability": 0.99,
+                    "verified": True,
+                    "rentable": True,
+                    "rented": False,
+                    "type": "on-demand",
+                }
+            ]
+        },
+    )
+
+    offers = VastClient("vast_synthetic_secret", transport=fake_http).search_offers(
+        Decimal("3.00")
+    )
+
+    assert len(offers) == 1
+    assert offers[0].gpu_name == gpu_name
+
+
+def test_vast_accepts_documented_verification_and_is_bid_offer_fields(
+    fake_http: FakeHttp,
+):
+    fake_http.add_response(
+        method="POST",
+        url="https://console.vast.ai/api/v0/bundles/",
+        json={
+            "offers": [
+                {
+                    "id": 4815,
+                    "gpu_name": "A100_SXM4",
+                    "gpu_ram": 81920,
+                    "disk_space": 500,
+                    "num_gpus": 1,
+                    "dph_total": 1.75,
+                    "reliability": 0.99,
+                    "verification": "verified",
+                    "rentable": True,
+                    "rented": False,
+                    "is_bid": False,
+                }
+            ]
+        },
+    )
+
+    offers = VastClient("vast_synthetic_secret", transport=fake_http).search_offers(
+        Decimal("3.00")
+    )
+
+    assert len(offers) == 1
+    assert offers[0].offer_id == 4815
 
 
 def test_vast_offer_search_locally_revalidates_every_constraint(
@@ -418,6 +616,7 @@ def test_vast_offer_search_locally_revalidates_every_constraint(
         "id": 1,
         "gpu_name": "H100 SXM",
         "gpu_ram": 81920,
+        "disk_space": 500,
         "num_gpus": 1,
         "dph_total": 2.0,
         "reliability": 0.99,
@@ -434,7 +633,10 @@ def test_vast_offer_search_locally_revalidates_every_constraint(
         {"num_gpus": 2},
         {"num_gpus": True},
         {"gpu_ram": 79999},
+        {"disk_space": 159},
+        {"gpu_name": "MI300X"},
         {"dph_total": 2.51},
+        {"reliability": 0.979},
         {"reliability": 1.01},
     )
     offers = [valid]
@@ -442,7 +644,7 @@ def test_vast_offer_search_locally_revalidates_every_constraint(
         offers.append({**valid, "id": offer_id, **change})
     fake_http.add_response(
         method="POST",
-        url="https://console.vast.ai/api/v0/bundles",
+        url="https://console.vast.ai/api/v0/bundles/",
         json={"offers": offers},
     )
 
@@ -475,12 +677,23 @@ def test_vast_create_has_no_hf_or_vllm_secret(fake_http: FakeHttp):
     assert "HF_TOKEN" not in serialized
     assert "API_KEY" not in serialized
     assert body == {
+        "client_id": "me",
         "image": "vllm/vllm-openai:v0.10.0",
+        "env": {},
         "disk": 160,
-        "runtype": "ssh_direct",
+        "runtype": "ssh_direc ssh_proxy",
         "target_state": "running",
         "cancel_unavail": True,
         "label": "defend-vllm",
+        "onstart": None,
+        "image_login": None,
+        "python_utf8": False,
+        "lang_utf8": False,
+        "use_jupyter_lab": False,
+        "jupyter_dir": None,
+        "force": False,
+        "template_hash_id": None,
+        "user": None,
     }
     assert instance.instance_id == 4815
     assert instance.gpu_name == offer.gpu_name
@@ -523,27 +736,26 @@ def test_vast_lifecycle_uses_only_official_methods_paths_and_state_body(
     fake_http.add_response(
         url=instance_url,
         json={
-            "instances": [
-                {
-                    "id": 4815,
-                    "actual_status": "running",
-                    "ssh_host": "ssh.example.test",
-                    "ssh_port": 2222,
-                    "gpu_name": "A100 SXM4",
-                    "gpu_ram": 81920,
-                    "dph_total": 1.75,
-                }
-            ]
+            "instances": {
+                "id": 4815,
+                "actual_status": "running",
+                "ssh_host": "ssh.example.test",
+                "ssh_port": 2222,
+                "gpu_name": "A100 SXM4",
+                "gpu_ram": 81920,
+                "dph_total": 1.75,
+            }
         },
     )
     fake_http.add_response(
         method="PUT",
-        url="https://console.vast.ai/api/v0/instances/4815",
+        url="https://console.vast.ai/api/v0/instances/4815/",
         json={"success": True},
     )
     fake_http.add_raw_response(
         method="DELETE", url=instance_url, status_code=204, body=b""
     )
+    fake_http.add_raw_response(url=instance_url, status_code=404, body=b"")
     client = VastClient("vast_synthetic_secret", transport=fake_http)
 
     instance = client.show_instance(4815)
@@ -553,14 +765,15 @@ def test_vast_lifecycle_uses_only_official_methods_paths_and_state_body(
     assert instance.actual_status == "running"
     assert [(request.method, request.path, request.json) for request in fake_http.requests] == [
         ("GET", "/api/v0/instances/4815/", None),
-        ("PUT", "/api/v0/instances/4815", {"state": "stopped"}),
+        ("PUT", "/api/v0/instances/4815/", {"state": "stopped"}),
         ("DELETE", "/api/v0/instances/4815/", None),
+        ("GET", "/api/v0/instances/4815/", None),
     ]
     assert destroyed is True
 
 
 def test_vast_ssh_key_is_posted_only_when_exact_key_is_absent(fake_http: FakeHttp):
-    ssh_url = "https://console.vast.ai/api/v0/ssh"
+    ssh_url = "https://console.vast.ai/api/v0/ssh/"
     public_key = "ssh-ed25519 AAAAC3NzaSynthetic defend-control"
     fake_http.add_response(
         url=ssh_url,
@@ -609,6 +822,38 @@ def test_vast_waits_through_null_and_loading_until_running(fake_http: FakeHttp):
     assert sleeps == [0.25, 0.25]
 
 
+def test_vast_wait_accepts_documented_partial_loading_response(
+    fake_http: FakeHttp,
+):
+    instance_url = "https://console.vast.ai/api/v0/instances/4815/"
+    fake_http.add_response(
+        url=instance_url,
+        json={
+            "instances": {
+                "actual_status": "loading",
+                "ssh_host": "ssh.example.test",
+                "ssh_port": 2222,
+            }
+        },
+    )
+    fake_http.add_response(
+        url=instance_url,
+        json={"instances": _running_instance_document()},
+    )
+    sleeps: list[float] = []
+    client = VastClient(
+        "vast_synthetic_secret",
+        transport=fake_http,
+        monotonic=lambda: 0.0,
+        sleep=sleeps.append,
+    )
+
+    instance = client.wait_until_running(4815)
+
+    assert instance.actual_status == "running"
+    assert sleeps == [10.0]
+
+
 @pytest.mark.parametrize("status", ["exited", "unknown", "offline"])
 def test_vast_terminal_provisioning_states_fail_safely(
     fake_http: FakeHttp, status: str
@@ -631,6 +876,144 @@ def test_vast_terminal_provisioning_states_fail_safely(
 
     with pytest.raises(VastError, match=f"terminal status {status}"):
         client.wait_until_running(4815)
+
+
+def test_vast_restart_wait_tolerates_stale_exited_before_running(
+    fake_http: FakeHttp,
+):
+    instance_url = "https://console.vast.ai/api/v0/instances/4815/"
+    fake_http.add_response(
+        url=instance_url,
+        json={**_running_instance_document(), "actual_status": "exited"},
+    )
+    fake_http.add_response(url=instance_url, json=_running_instance_document())
+    sleeps: list[float] = []
+    client = VastClient(
+        "vast_synthetic_secret",
+        transport=fake_http,
+        monotonic=lambda: 0.0,
+        sleep=sleeps.append,
+    )
+
+    instance = client.wait_until_running(
+        4815, allow_stopped_transition=True
+    )
+
+    assert instance.actual_status == "running"
+    assert sleeps == [10.0]
+
+
+def test_vast_restart_scheduling_clears_before_thirty_seconds(
+    fake_http: FakeHttp,
+):
+    instance_url = "https://console.vast.ai/api/v0/instances/4815/"
+    for status in ("scheduling", "scheduling", "running"):
+        fake_http.add_response(
+            url=instance_url,
+            json={**_running_instance_document(), "actual_status": status},
+        )
+
+    class AdvancingClock:
+        current = 0.0
+
+        def __call__(self):
+            return self.current
+
+        def sleep(self, seconds):
+            self.current += seconds
+
+    clock = AdvancingClock()
+    client = VastClient(
+        "vast_synthetic_secret",
+        transport=fake_http,
+        monotonic=clock,
+        sleep=clock.sleep,
+    )
+
+    instance = client.wait_until_running(
+        4815,
+        allow_stopped_transition=True,
+        scheduling_timeout_seconds=30.0,
+    )
+
+    assert instance.actual_status == "running"
+    assert clock.current == 20.0
+
+
+def test_vast_restart_scheduling_stops_at_thirty_seconds(
+    fake_http: FakeHttp,
+):
+    instance_url = "https://console.vast.ai/api/v0/instances/4815/"
+    for _ in range(4):
+        fake_http.add_response(
+            url=instance_url,
+            json={
+                **_running_instance_document(),
+                "actual_status": "scheduling",
+            },
+        )
+
+    class AdvancingClock:
+        current = 0.0
+
+        def __call__(self):
+            return self.current
+
+        def sleep(self, seconds):
+            self.current += seconds
+
+    clock = AdvancingClock()
+    client = VastClient(
+        "vast_synthetic_secret",
+        transport=fake_http,
+        monotonic=clock,
+        sleep=clock.sleep,
+    )
+
+    with pytest.raises(VastSchedulingTimeout) as pending:
+        client.wait_until_running(
+            4815,
+            allow_stopped_transition=True,
+            scheduling_timeout_seconds=30.0,
+        )
+
+    assert pending.value.instance_id == 4815
+    assert str(pending.value) == (
+        "Vast.ai restart remained scheduled for 30 seconds"
+    )
+    assert clock.current == 30.0
+
+
+@pytest.mark.parametrize("offer_type", ["bid", "reserved"])
+def test_vast_offer_response_rejects_every_non_on_demand_type(
+    fake_http: FakeHttp,
+    offer_type: str,
+):
+    fake_http.add_response(
+        method="POST",
+        url="https://console.vast.ai/api/v0/bundles/",
+        json={
+            "offers": [
+                {
+                    "id": 909,
+                    "gpu_name": "A100 SXM4",
+                    "gpu_ram": 81920,
+                    "disk_space": 500,
+                    "num_gpus": 1,
+                    "dph_total": 0.75,
+                    "reliability": 0.999,
+                    "verified": True,
+                    "rentable": True,
+                    "rented": False,
+                    "type": offer_type,
+                }
+            ]
+        },
+    )
+
+    assert VastClient(
+        "vast_synthetic_secret", transport=fake_http
+    ).search_offers(Decimal("2.50")) == ()
 
 
 def test_vast_unrecognized_terminal_status_is_not_reflected(fake_http: FakeHttp):
@@ -927,6 +1310,91 @@ def test_vast_destroy_requires_exact_id_and_reports_success_or_safe_failure(
     assert token not in repr(pending.value)
 
 
+def test_vast_destroy_waits_until_exact_instance_is_absent(fake_http: FakeHttp):
+    instance_url = "https://console.vast.ai/api/v0/instances/4815/"
+    fake_http.add_response(
+        method="DELETE", url=instance_url, json={"success": True}
+    )
+    fake_http.add_response(
+        url=instance_url,
+        json={
+            "instances": {
+                "id": 4815,
+                "actual_status": "stopped",
+                "ssh_host": None,
+                "ssh_port": None,
+                "gpu_name": "A100 SXM4",
+                "gpu_ram": 81920,
+                "dph_total": 1.75,
+            }
+        },
+    )
+    fake_http.add_raw_response(url=instance_url, status_code=404, body=b"")
+    sleeps: list[float] = []
+
+    assert VastClient(
+        "vast_synthetic_secret", transport=fake_http, sleep=sleeps.append
+    ).destroy_instance(4815, confirmed_instance_id=4815) is True
+
+    assert [(request.method, request.path) for request in fake_http.requests] == [
+        ("DELETE", "/api/v0/instances/4815/"),
+        ("GET", "/api/v0/instances/4815/"),
+        ("GET", "/api/v0/instances/4815/"),
+    ]
+    assert sleeps == [2.0]
+
+
+def test_vast_destroy_verification_has_a_safe_thirty_second_deadline():
+    instance_url = "https://console.vast.ai/api/v0/instances/4815/"
+
+    class StillPresentTransport:
+        def __init__(self) -> None:
+            self.requests: list[FakeRequest] = []
+
+        def request(
+            self,
+            method: str,
+            url: str,
+            *,
+            headers: dict[str, str],
+            json: object | None,
+            timeout: float,
+            max_response_bytes: int,
+        ) -> FakeResponse:
+            self.requests.append(FakeRequest(method, url, dict(headers), json, timeout))
+            assert url == instance_url
+            assert max_response_bytes == 64 * 1024
+            if method == "DELETE":
+                return FakeResponse(200, b'{"success":true}')
+            assert method == "GET"
+            return FakeResponse(
+                200,
+                b'{"instances":{"id":4815,"actual_status":"stopped"}}',
+            )
+
+    clock = MutableClock(0.0)
+    transport = StillPresentTransport()
+
+    def advance(seconds: float) -> None:
+        clock.current += seconds
+
+    client = VastClient(
+        "vast_synthetic_secret",
+        transport=transport,
+        monotonic=clock,
+        sleep=advance,
+    )
+
+    with pytest.raises(VastError) as pending:
+        client.destroy_instance(4815, confirmed_instance_id=4815)
+
+    assert str(pending.value) == (
+        "Vast.ai destruction could not be verified after 30 seconds"
+    )
+    assert len(transport.requests) == 16
+    assert transport.requests[-1].timeout == pytest.approx(2.0)
+
+
 @pytest.mark.parametrize("document", [{"success": False}, {"success": "true"}])
 @pytest.mark.parametrize(
     ("operation", "safe_error"),
@@ -947,7 +1415,7 @@ def test_vast_mutations_reject_2xx_false_or_malformed_success(
     if operation == "state":
         fake_http.add_response(
             method="PUT",
-            url="https://console.vast.ai/api/v0/instances/4815",
+            url="https://console.vast.ai/api/v0/instances/4815/",
             json={**document, "detail": token},
         )
         invoke = lambda: client.set_state(4815, "stopped")
@@ -962,11 +1430,11 @@ def test_vast_mutations_reject_2xx_false_or_malformed_success(
         )
     else:
         fake_http.add_response(
-            url="https://console.vast.ai/api/v0/ssh", json={"ssh_keys": []}
+            url="https://console.vast.ai/api/v0/ssh/", json={"ssh_keys": []}
         )
         fake_http.add_response(
             method="POST",
-            url="https://console.vast.ai/api/v0/ssh",
+            url="https://console.vast.ai/api/v0/ssh/",
             json={**document, "id": 12, "detail": token},
         )
         invoke = lambda: client.ensure_account_ssh_key(
@@ -983,11 +1451,11 @@ def test_vast_mutations_reject_2xx_false_or_malformed_success(
 def test_vast_mutations_accept_documented_empty_success_and_reconcile_ssh_key(
     fake_http: FakeHttp,
 ):
-    ssh_url = "https://console.vast.ai/api/v0/ssh"
+    ssh_url = "https://console.vast.ai/api/v0/ssh/"
     public_key = "ssh-ed25519 AAAAC3NzaEmptySuccess defend-control"
     fake_http.add_raw_response(
         method="PUT",
-        url="https://console.vast.ai/api/v0/instances/4815",
+        url="https://console.vast.ai/api/v0/instances/4815/",
         status_code=204,
         body=b"",
     )
@@ -1023,7 +1491,7 @@ def test_vast_empty_mutation_body_requires_http_204(
     if operation == "state":
         fake_http.add_raw_response(
             method="PUT",
-            url="https://console.vast.ai/api/v0/instances/4815",
+            url="https://console.vast.ai/api/v0/instances/4815/",
             status_code=status_code,
             body=b"",
         )
@@ -1040,11 +1508,11 @@ def test_vast_empty_mutation_body_requires_http_204(
         )
     else:
         fake_http.add_response(
-            url="https://console.vast.ai/api/v0/ssh", json={"ssh_keys": []}
+            url="https://console.vast.ai/api/v0/ssh/", json={"ssh_keys": []}
         )
         fake_http.add_raw_response(
             method="POST",
-            url="https://console.vast.ai/api/v0/ssh",
+            url="https://console.vast.ai/api/v0/ssh/",
             status_code=status_code,
             body=b"",
         )
@@ -1061,7 +1529,7 @@ def test_vast_empty_mutation_body_requires_http_204(
 def test_vast_retries_429_with_bounded_jitter_and_caps_response_size(
     fake_http: FakeHttp,
 ):
-    search_url = "https://console.vast.ai/api/v0/bundles"
+    search_url = "https://console.vast.ai/api/v0/bundles/"
     for _ in range(2):
         fake_http.add_response(
             method="POST",
@@ -1096,7 +1564,7 @@ def test_vast_429_retry_is_bounded_and_headers_never_leak_credentials(
     fake_http: FakeHttp,
 ):
     token = "vast_synthetic_secret"
-    search_url = "https://console.vast.ai/api/v0/bundles"
+    search_url = "https://console.vast.ai/api/v0/bundles/"
     for _ in range(4):
         fake_http.add_response(
             method="POST",
@@ -1155,7 +1623,7 @@ def test_vast_does_not_replay_create_instance_after_429(fake_http: FakeHttp):
 
 
 def test_vast_does_not_replay_ssh_key_creation_after_429(fake_http: FakeHttp):
-    ssh_url = "https://console.vast.ai/api/v0/ssh"
+    ssh_url = "https://console.vast.ai/api/v0/ssh/"
     public_key = "ssh-ed25519 AAAAC3NzaNoReplay defend-control"
     fake_http.add_response(url=ssh_url, json={"ssh_keys": []})
     fake_http.add_response(
@@ -1173,8 +1641,8 @@ def test_vast_does_not_replay_ssh_key_creation_after_429(fake_http: FakeHttp):
         ).ensure_account_ssh_key(public_key)
 
     assert [(request.method, request.path) for request in fake_http.requests] == [
-        ("GET", "/api/v0/ssh"),
-        ("POST", "/api/v0/ssh"),
+        ("GET", "/api/v0/ssh/"),
+        ("POST", "/api/v0/ssh/"),
     ]
 
 
@@ -1184,7 +1652,7 @@ def test_vast_retries_only_safe_idempotent_mutations_after_429(
 ):
     if operation == "state":
         method = "PUT"
-        url = "https://console.vast.ai/api/v0/instances/4815"
+        url = "https://console.vast.ai/api/v0/instances/4815/"
         invoke_name = "set_state"
     else:
         method = "DELETE"
@@ -1206,10 +1674,11 @@ def test_vast_retries_only_safe_idempotent_mutations_after_429(
     if invoke_name == "set_state":
         result = client.set_state(4815, "stopped")
     else:
+        fake_http.add_raw_response(url=url, status_code=404, body=b"")
         result = client.destroy_instance(4815, confirmed_instance_id=4815)
 
     assert result is True
-    assert len(fake_http.requests) == 3
+    assert len(fake_http.requests) == (4 if operation == "destroy" else 3)
     assert sleeps == [0.25, 0.5]
 
 
@@ -1236,7 +1705,10 @@ def test_vast_create_validates_runtime_offer_id_before_url(
 def test_task5_types_are_immutable_and_launch_default_is_exact():
     launch = LaunchSpec.default()
     assert launch == LaunchSpec(
-        "vllm/vllm-openai:v0.10.0", 160, "ssh_direct", "defend-vllm"
+        "vllm/vllm-openai:v0.10.0",
+        160,
+        "ssh_direc ssh_proxy",
+        "defend-vllm",
     )
     with pytest.raises(FrozenInstanceError):
         launch.disk_gb = 1  # type: ignore[misc]
