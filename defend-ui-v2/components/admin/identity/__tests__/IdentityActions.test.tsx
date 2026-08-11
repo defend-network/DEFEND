@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdminSession } from "@/lib/adminAuth";
 import type {
   AccountDetail,
+  AccountLinkedVisitorDetail,
   InvitationSummary,
   VisitorDetail,
 } from "@/lib/identityApi";
@@ -79,6 +80,25 @@ const accountDetail: AccountDetail = {
   login_events: [],
   invitations: [],
   linked_visitors: [],
+  linked_visitors_page: {
+    total: 0,
+    limit: 25,
+    offset: 0,
+    history_row_limit: 200,
+    history_rows_returned: 0,
+    history_row_allocations: {
+      sessions: 50,
+      connections: 50,
+      conversations: 50,
+      usage_events: 50,
+    },
+    history_rows_by_category: {
+      sessions: 0,
+      connections: 0,
+      conversations: 0,
+      usage_events: 0,
+    },
+  },
 };
 
 const visitorDetail: VisitorDetail = {
@@ -104,6 +124,23 @@ const visitorDetail: VisitorDetail = {
 };
 
 const activationUrl = "https://ai.defend-network.org/activate/one-time-token";
+
+function linkedVisitor(visitorId: string): AccountLinkedVisitorDetail {
+  return {
+    visitor_id: visitorId,
+    linked_at: "2026-08-02T12:00:00.000Z",
+    last_seen_at: "2026-08-10T11:00:00.000Z",
+    visitor: {
+      ...visitorDetail.visitor,
+      visitor_id: visitorId,
+    },
+    sessions: [],
+    connections: [],
+    conversations: [],
+    usage_events: [],
+    telemetry: { recent_ip: null, device_count: 0 },
+  };
+}
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -470,6 +507,127 @@ describe("identity management actions", () => {
 
     expect(await screen.findByText("192.0.2.44")).toBeVisible();
     expect(screen.getByText("chat.request")).toBeVisible();
+  });
+
+  it("discloses linked-visitor page metadata and loads bounded next and previous pages", async () => {
+    const user = userEvent.setup();
+    const firstPage: AccountDetail = {
+      ...accountDetail,
+      linked_visitors: Array.from({ length: 25 }, (_, index) =>
+        linkedVisitor(`vis-page-${index + 1}`),
+      ),
+      linked_visitors_page: {
+        ...accountDetail.linked_visitors_page,
+        total: 30,
+        limit: 25,
+        offset: 0,
+        history_rows_returned: 20,
+      },
+    };
+    const secondPage: AccountDetail = {
+      ...accountDetail,
+      linked_visitors: Array.from({ length: 5 }, (_, index) =>
+        linkedVisitor(`vis-page-${index + 26}`),
+      ),
+      linked_visitors_page: {
+        ...firstPage.linked_visitors_page,
+        offset: 25,
+        history_rows_returned: 5,
+      },
+    };
+    vi.mocked(identityApi.getAccount)
+      .mockResolvedValueOnce(firstPage)
+      .mockResolvedValueOnce(secondPage)
+      .mockResolvedValueOnce(firstPage);
+    render(
+      <IdentityDetailDrawer session={adminSession} accountId="acct-1" onClose={vi.fn()} />,
+    );
+
+    expect(await screen.findByText("Showing linked visitors 1-25 of 30")).toBeVisible();
+    expect(screen.getByText("vis-page-1")).toBeVisible();
+    const displayNameInput = screen.getByLabelText("Display name");
+    await user.clear(displayNameInput);
+    await user.type(displayNameInput, "Unsaved draft name");
+    const next = screen.getByRole("button", { name: "Next linked visitors" });
+    await user.click(next);
+
+    expect(await screen.findByText("Showing linked visitors 26-30 of 30")).toBeVisible();
+    expect(identityApi.getAccount).toHaveBeenLastCalledWith(
+      adminSession.token,
+      "acct-1",
+      { linkedVisitorLimit: 25, linkedVisitorOffset: 25 },
+    );
+    expect(screen.getByText("vis-page-30")).toBeVisible();
+    expect(next).not.toBeDisabled();
+    expect(next).toHaveAttribute("aria-disabled", "true");
+    expect(next).toHaveFocus();
+    expect(displayNameInput).toHaveValue("Unsaved draft name");
+
+    await user.click(screen.getByRole("button", { name: "Previous linked visitors" }));
+    expect(await screen.findByText("Showing linked visitors 1-25 of 30")).toBeVisible();
+    expect(identityApi.getAccount).toHaveBeenLastCalledWith(
+      adminSession.token,
+      "acct-1",
+      { linkedVisitorLimit: 25, linkedVisitorOffset: 0 },
+    );
+  });
+
+  it("ignores a stale linked-visitor page response after account selection changes", async () => {
+    const user = userEvent.setup();
+    const stalePage = deferred<AccountDetail>();
+    const firstPage: AccountDetail = {
+      ...accountDetail,
+      linked_visitors: [linkedVisitor("vis-account-a")],
+      linked_visitors_page: {
+        ...accountDetail.linked_visitors_page,
+        total: 26,
+        limit: 25,
+      },
+    };
+    const accountB: AccountDetail = {
+      ...accountDetail,
+      account: {
+        ...accountDetail.account,
+        account_id: "acct-2",
+        email: "second@example.com",
+        display_name: "Second member",
+      },
+      linked_visitors: [linkedVisitor("vis-account-b")],
+      linked_visitors_page: {
+        ...accountDetail.linked_visitors_page,
+        total: 1,
+      },
+    };
+    vi.mocked(identityApi.getAccount).mockImplementation(
+      (_token, accountId, query) => {
+        if (accountId === "acct-2") return Promise.resolve(accountB);
+        if (query?.linkedVisitorOffset === 25) return stalePage.promise;
+        return Promise.resolve(firstPage);
+      },
+    );
+    const { rerender } = render(
+      <IdentityDetailDrawer session={adminSession} accountId="acct-1" onClose={vi.fn()} />,
+    );
+
+    await user.click(await screen.findByRole("button", { name: "Next linked visitors" }));
+    rerender(
+      <IdentityDetailDrawer session={adminSession} accountId="acct-2" onClose={vi.fn()} />,
+    );
+    expect(await screen.findByRole("heading", { name: "Second member" })).toBeVisible();
+
+    stalePage.resolve({
+      ...firstPage,
+      linked_visitors: [linkedVisitor("vis-stale-page")],
+      linked_visitors_page: {
+        ...firstPage.linked_visitors_page,
+        offset: 25,
+      },
+    });
+    await act(async () => {
+      await stalePage.promise;
+    });
+    expect(screen.getByText("vis-account-b")).toBeVisible();
+    expect(screen.queryByText("vis-stale-page")).not.toBeInTheDocument();
   });
 
   it("requires typed confirmation to disable and keeps destructive controls owner-only", async () => {

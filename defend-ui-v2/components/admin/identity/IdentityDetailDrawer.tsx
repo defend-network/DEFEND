@@ -11,6 +11,7 @@ import {
   getVisitorConversation,
   updateAccount,
   type AccountDetail,
+  type AccountDetailQuery,
   type AccountRecord,
   type ConversationSummary,
   type VisitorConversation,
@@ -84,6 +85,7 @@ export function IdentityDetailDrawer({
   const [confirmation, setConfirmation] = useState<Confirmation>(null);
   const [confirmationText, setConfirmationText] = useState("");
   const [actionPending, setActionPending] = useState(false);
+  const [linkedVisitorLoading, setLinkedVisitorLoading] = useState(false);
   const [conversation, setConversation] = useState<VisitorConversation | null>(null);
   const [conversationLoading, setConversationLoading] = useState(false);
   const [conversationError, setConversationError] = useState<string | null>(null);
@@ -137,6 +139,7 @@ export function IdentityDetailDrawer({
     setConfirmationText("");
     setFeedback(null);
     setActionPending(false);
+    setLinkedVisitorLoading(false);
     const request = accountId
       ? getAccount(session.token, accountId)
       : visitorId
@@ -232,6 +235,7 @@ export function IdentityDetailDrawer({
     const targetId = accountId;
     const selection = selectionGeneration.current;
     const action = confirmation;
+    const detailQuery = linkedVisitorQuery(accountDetail);
     setActionPending(true);
     setError(null);
     try {
@@ -277,6 +281,7 @@ export function IdentityDetailDrawer({
         changedAccount,
         targetId,
         selection,
+        detailQuery,
       );
       if (!refreshed) return;
       setFeedback(successFeedback);
@@ -299,12 +304,13 @@ export function IdentityDetailDrawer({
     account: AccountRecord,
     targetId: string,
     selection: number,
+    query?: AccountDetailQuery,
   ): Promise<boolean> {
     if (selection !== selectionGeneration.current) return false;
     updateLoadedAccount(account);
     const requestGeneration = ++detailRequestGeneration.current;
     try {
-      const detail = await getAccount(session.token, targetId);
+      const detail = await getAccount(session.token, targetId, query);
       if (
         selection !== selectionGeneration.current ||
         requestGeneration !== detailRequestGeneration.current
@@ -326,6 +332,7 @@ export function IdentityDetailDrawer({
     if (!accountId || !account) return;
     const targetId = accountId;
     const selection = selectionGeneration.current;
+    const detailQuery = linkedVisitorQuery(accountDetail);
     const nextName = displayName.trim();
     if (!nextName || nextName === account.display_name) return;
     setActionPending(true);
@@ -340,6 +347,7 @@ export function IdentityDetailDrawer({
         result.account,
         targetId,
         selection,
+        detailQuery,
       );
       if (!refreshed) return;
       setFeedback("Display name updated");
@@ -348,6 +356,54 @@ export function IdentityDetailDrawer({
       if (selection === selectionGeneration.current) setError(messageFrom(caught));
     } finally {
       if (selection === selectionGeneration.current) setActionPending(false);
+    }
+  }
+
+  function linkedVisitorQuery(
+    detail: AccountDetail | null,
+  ): AccountDetailQuery | undefined {
+    if (!detail) return undefined;
+    return {
+      linkedVisitorLimit: detail.linked_visitors_page.limit,
+      linkedVisitorOffset: detail.linked_visitors_page.offset,
+    };
+  }
+
+  async function loadLinkedVisitorPage(offset: number) {
+    if (!accountId || !accountDetail || linkedVisitorLoading || actionPending) return;
+    const targetId = accountId;
+    const selection = selectionGeneration.current;
+    const requestGeneration = ++detailRequestGeneration.current;
+    const loadedDisplayName = accountDetail.account.display_name;
+    const query: AccountDetailQuery = {
+      linkedVisitorLimit: accountDetail.linked_visitors_page.limit,
+      linkedVisitorOffset: offset,
+    };
+    setLinkedVisitorLoading(true);
+    setError(null);
+    try {
+      const detail = await getAccount(session.token, targetId, query);
+      if (
+        selection !== selectionGeneration.current ||
+        requestGeneration !== detailRequestGeneration.current
+      ) return;
+      setAccountDetail(detail);
+      setDisplayName((current) =>
+        current === loadedDisplayName ? detail.account.display_name : current,
+      );
+    } catch (caught) {
+      if (
+        selection !== selectionGeneration.current ||
+        requestGeneration !== detailRequestGeneration.current
+      ) return;
+      setError(`Unable to load linked visitors: ${messageFrom(caught)}`);
+    } finally {
+      if (
+        selection === selectionGeneration.current &&
+        requestGeneration === detailRequestGeneration.current
+      ) {
+        setLinkedVisitorLoading(false);
+      }
     }
   }
 
@@ -378,6 +434,24 @@ export function IdentityDetailDrawer({
     account && session.role === "owner" && account.role !== "owner" && !isSelf,
   );
   const requiredConfirmation = confirmation?.toUpperCase() ?? "";
+  const linkedVisitorsPage = accountDetail?.linked_visitors_page;
+  const linkedVisitorPageStart = linkedVisitorsPage
+    ? linkedVisitorsPage.total === 0
+      ? 0
+      : Math.min(linkedVisitorsPage.offset + 1, linkedVisitorsPage.total)
+    : 0;
+  const linkedVisitorPageEnd = linkedVisitorsPage
+    ? Math.min(
+        linkedVisitorsPage.offset + (accountDetail?.linked_visitors.length ?? 0),
+        linkedVisitorsPage.total,
+      )
+    : 0;
+  const canLoadPreviousLinkedVisitors = Boolean(
+    linkedVisitorsPage && linkedVisitorsPage.offset > 0,
+  );
+  const canLoadNextLinkedVisitors = Boolean(
+    linkedVisitorsPage && linkedVisitorPageEnd < linkedVisitorsPage.total,
+  );
   const conversationMessages = conversation?.messages ?? [];
   const messagePageStart = Math.min(
     conversationMessageOffset,
@@ -464,6 +538,7 @@ export function IdentityDetailDrawer({
                     <input
                       value={displayName}
                       maxLength={160}
+                      disabled={linkedVisitorLoading}
                       onChange={(event) => setDisplayName(event.target.value)}
                     />
                   </label>
@@ -471,6 +546,7 @@ export function IdentityDetailDrawer({
                     type="submit"
                     disabled={
                       actionPending ||
+                      linkedVisitorLoading ||
                       displayName.trim().length === 0 ||
                       displayName.trim() === account.display_name
                     }
@@ -527,6 +603,73 @@ export function IdentityDetailDrawer({
 
             <section>
               <h3>Linked visitors and activity</h3>
+              {linkedVisitorsPage && (
+                <>
+                  <nav
+                    className="identity-pagination"
+                    aria-label="Linked visitors pagination"
+                    aria-busy={linkedVisitorLoading}
+                  >
+                    <button
+                      type="button"
+                      className="ghost-btn"
+                      aria-disabled={
+                        !canLoadPreviousLinkedVisitors ||
+                        linkedVisitorLoading ||
+                        actionPending
+                      }
+                      onClick={() => {
+                        if (
+                          !canLoadPreviousLinkedVisitors ||
+                          linkedVisitorLoading ||
+                          actionPending
+                        ) return;
+                        void loadLinkedVisitorPage(
+                          Math.max(
+                            0,
+                            linkedVisitorsPage.offset - linkedVisitorsPage.limit,
+                          ),
+                        );
+                      }}
+                    >
+                      Previous linked visitors
+                    </button>
+                    <span aria-live="polite">
+                      Showing linked visitors {linkedVisitorPageStart}-
+                      {linkedVisitorPageEnd} of {linkedVisitorsPage.total}
+                    </span>
+                    <button
+                      type="button"
+                      className="ghost-btn"
+                      aria-disabled={
+                        !canLoadNextLinkedVisitors ||
+                        linkedVisitorLoading ||
+                        actionPending
+                      }
+                      onClick={() => {
+                        if (
+                          !canLoadNextLinkedVisitors ||
+                          linkedVisitorLoading ||
+                          actionPending
+                        ) return;
+                        void loadLinkedVisitorPage(
+                          linkedVisitorsPage.offset + linkedVisitorsPage.limit,
+                        );
+                      }}
+                    >
+                      Next linked visitors
+                    </button>
+                  </nav>
+                  <p>
+                    Activity history for this page is bounded: {" "}
+                    {linkedVisitorsPage.history_rows_returned} rows returned with a {" "}
+                    {linkedVisitorsPage.history_row_limit}-row limit.
+                  </p>
+                  {linkedVisitorLoading && (
+                    <p role="status">Loading linked visitors...</p>
+                  )}
+                </>
+              )}
               {accountDetail.linked_visitors.length === 0 ? <p>No linked visitors.</p> : (
                 bounded(accountDetail.linked_visitors).map((linked) => (
                   <article key={linked.visitor_id}>
@@ -571,31 +714,55 @@ export function IdentityDetailDrawer({
               <section aria-label="Account actions" className="identity-danger-zone">
                 <h3>Account actions</h3>
                 {canDisable && (
-                  <button type="button" onClick={() => beginConfirmation("disable")}>
+                  <button
+                    type="button"
+                    disabled={linkedVisitorLoading}
+                    onClick={() => beginConfirmation("disable")}
+                  >
                     Disable account
                   </button>
                 )}
                 {canReactivate && (
-                  <button type="button" onClick={() => beginConfirmation("reactivate")}>
+                  <button
+                    type="button"
+                    disabled={linkedVisitorLoading}
+                    onClick={() => beginConfirmation("reactivate")}
+                  >
                     Reactivate account
                   </button>
                 )}
                 {canChangeRole && account.role === "user" && (
-                  <button type="button" onClick={() => beginConfirmation("promote")}>
+                  <button
+                    type="button"
+                    disabled={linkedVisitorLoading}
+                    onClick={() => beginConfirmation("promote")}
+                  >
                     Promote to administrator
                   </button>
                 )}
                 {canChangeRole && account.role === "admin" && (
-                  <button type="button" onClick={() => beginConfirmation("demote")}>
+                  <button
+                    type="button"
+                    disabled={linkedVisitorLoading}
+                    onClick={() => beginConfirmation("demote")}
+                  >
                     Demote to user
                   </button>
                 )}
                 {canDestroy && (
                   <>
-                    <button type="button" onClick={() => beginConfirmation("anonymize")}>
+                    <button
+                      type="button"
+                      disabled={linkedVisitorLoading}
+                      onClick={() => beginConfirmation("anonymize")}
+                    >
                       Anonymize account
                     </button>
-                    <button type="button" onClick={() => beginConfirmation("delete")}>
+                    <button
+                      type="button"
+                      disabled={linkedVisitorLoading}
+                      onClick={() => beginConfirmation("delete")}
+                    >
                       Delete account
                     </button>
                   </>

@@ -197,12 +197,36 @@ export type AccountLinkedVisitorDetail = {
   };
 };
 
+export type AccountLinkedVisitorsPage = {
+  total: number;
+  limit: number;
+  offset: number;
+  history_row_limit: number;
+  history_rows_returned: number;
+  history_row_allocations: AccountLinkedVisitorHistoryCategories;
+  history_rows_by_category: AccountLinkedVisitorHistoryCategories;
+};
+
+export type AccountLinkedVisitorHistoryCategories = {
+  sessions: number;
+  connections: number;
+  conversations: number;
+  usage_events: number;
+};
+
 export type AccountDetail = {
   account: AccountRecord;
   sessions: AccountSession[];
   login_events: LoginEvent[];
   invitations: AccountInvitationHistory[];
   linked_visitors: AccountLinkedVisitorDetail[];
+  linked_visitors_page: AccountLinkedVisitorsPage;
+};
+
+export type AccountDetailQuery = {
+  linkedVisitorLimit: number;
+  linkedVisitorOffset: number;
+  historyLimit?: number;
 };
 
 export type ConversationMessage = {
@@ -270,6 +294,29 @@ function pagePath(path: string, query: IdentityQuery): string {
   return `${path}?${params}`;
 }
 
+function boundedInteger(value: number, minimum: number, maximum: number): number {
+  if (!Number.isFinite(value)) return minimum;
+  return Math.min(maximum, Math.max(minimum, Math.trunc(value)));
+}
+
+function accountDetailPath(accountId: string, query?: AccountDetailQuery): string {
+  const path = `/api/admin/accounts/${encodePath(accountId)}`;
+  if (!query) return path;
+  const params = new URLSearchParams({
+    linked_limit: String(boundedInteger(query.linkedVisitorLimit, 1, 50)),
+    linked_offset: String(
+      boundedInteger(query.linkedVisitorOffset, 0, 1_000_000),
+    ),
+  });
+  if (query.historyLimit !== undefined) {
+    params.set(
+      "history_limit",
+      String(boundedInteger(query.historyLimit, 1, 200)),
+    );
+  }
+  return `${path}?${params}`;
+}
+
 function safeErrorMessage(status: number, text: string): string {
   try {
     const parsed = JSON.parse(text) as { detail?: unknown };
@@ -330,8 +377,9 @@ export function listAccounts(
 export function getAccount(
   token: string,
   accountId: string,
+  query?: AccountDetailQuery,
 ): Promise<AccountDetail> {
-  return identityJson(`/api/admin/accounts/${encodePath(accountId)}`, token);
+  return identityJson(accountDetailPath(accountId, query), token);
 }
 
 export function createAccount(

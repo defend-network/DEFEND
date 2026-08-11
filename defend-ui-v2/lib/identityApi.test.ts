@@ -58,6 +58,25 @@ const accountDetailContract = {
       telemetry: { recent_ip: null, device_count: 0 },
     },
   ],
+  linked_visitors_page: {
+    total: 1,
+    limit: 25,
+    offset: 0,
+    history_row_limit: 200,
+    history_rows_returned: 0,
+    history_row_allocations: {
+      sessions: 50,
+      connections: 50,
+      conversations: 50,
+      usage_events: 50,
+    },
+    history_rows_by_category: {
+      sessions: 0,
+      connections: 0,
+      conversations: 0,
+      usage_events: 0,
+    },
+  },
 } satisfies AccountDetail;
 
 const fetchMock = vi.fn<typeof fetch>();
@@ -141,6 +160,22 @@ describe("identity admin API client", () => {
     );
     expect(fetchMock.mock.calls[3]?.[1]).toEqual(
       expect.objectContaining({ method: "DELETE" }),
+    );
+  });
+
+  it("bounds linked-visitor account detail page parameters and preserves page metadata", async () => {
+    fetchMock.mockResolvedValue(jsonResponse(accountDetailContract));
+
+    const detail = await getAccount("admin-token", "acct/page", {
+      linkedVisitorLimit: 500,
+      linkedVisitorOffset: -10,
+    });
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "/api/admin/accounts/acct%2Fpage?linked_limit=50&linked_offset=0",
+    );
+    expect(detail.linked_visitors_page).toEqual(
+      expect.objectContaining({ total: 1, limit: 25, offset: 0 }),
     );
   });
 
