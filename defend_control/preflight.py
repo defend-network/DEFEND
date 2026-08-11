@@ -153,6 +153,35 @@ def _parse_expiry(value: object) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
+def _path_metadata(path: Path) -> tuple[bool, int, int, int, int]:
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return False, 0, 0, 0, 0
+    return True, stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns
+
+
+def _database_metadata(database: Path) -> tuple[tuple[bool, int, int, int, int], ...]:
+    return tuple(
+        _path_metadata(path)
+        for path in (
+            database,
+            database.with_name(f"{database.name}-wal"),
+            database.with_name(f"{database.name}-shm"),
+            database.with_name(f"{database.name}-journal"),
+        )
+    )
+
+
+def _unstable_invitation_result() -> CheckResult:
+    return CheckResult(
+        "invitations",
+        False,
+        "Invitation rollout check requires a stable database",
+        "Stop identity database writers and rerun preflight",
+    )
+
+
 def _invitation_rollout_check(data_root: Path) -> CheckResult:
     database = Path(data_root) / "db" / "identity.db"
     if not database.is_file():
@@ -161,14 +190,9 @@ def _invitation_rollout_check(data_root: Path) -> CheckResult:
     # Immutable mode cannot create SQLite WAL/SHM sidecars. A non-empty WAL may
     # contain newer invitations than the main file, so fail closed instead of
     # inspecting a stale snapshot.
-    wal = database.with_name(f"{database.name}-wal")
-    if wal.is_file() and wal.stat().st_size:
-        return CheckResult(
-            "invitations",
-            False,
-            "Invitation rollout check requires a stable database",
-            "Stop identity database writers and rerun preflight",
-        )
+    before = _database_metadata(database)
+    if any(metadata[0] for metadata in before[1:]):
+        return _unstable_invitation_result()
 
     uri = f"{database.resolve().as_uri()}?mode=ro&immutable=1"
     connection = sqlite3.connect(uri, uri=True, timeout=2)
@@ -178,36 +202,41 @@ def _invitation_rollout_check(data_root: Path) -> CheckResult:
             for row in connection.execute("PRAGMA table_info(invitations)")
         }
         if not columns:
-            return CheckResult("invitations", True, "Invitation rollout ready")
-        required = {"expires_at", "consumed_at", "revoked_at"}
-        if not required <= columns:
-            raise sqlite3.DatabaseError("unsupported invitation schema")
-
-        if "transport_version" in columns:
-            rows = connection.execute(
-                """
-                SELECT expires_at FROM invitations
-                WHERE transport_version='legacy_path'
-                  AND consumed_at IS NULL
-                  AND revoked_at IS NULL
-                """
-            )
+            pending = 0
         else:
-            # Schema versions before fragment transport are entirely legacy.
-            rows = connection.execute(
-                """
-                SELECT expires_at FROM invitations
-                WHERE consumed_at IS NULL AND revoked_at IS NULL
-                """
+            required = {"expires_at", "consumed_at", "revoked_at"}
+            if not required <= columns:
+                raise sqlite3.DatabaseError("unsupported invitation schema")
+
+            if "transport_version" in columns:
+                rows = connection.execute(
+                    """
+                    SELECT expires_at FROM invitations
+                    WHERE transport_version='legacy_path'
+                      AND consumed_at IS NULL
+                      AND revoked_at IS NULL
+                    """
+                )
+            else:
+                # Schema versions before fragment transport are entirely legacy.
+                rows = connection.execute(
+                    """
+                    SELECT expires_at FROM invitations
+                    WHERE consumed_at IS NULL AND revoked_at IS NULL
+                    """
+                )
+            now = datetime.now(timezone.utc)
+            pending = sum(
+                1
+                for (expires_at,) in rows
+                if (expiry := _parse_expiry(expires_at)) is None or expiry > now
             )
-        now = datetime.now(timezone.utc)
-        pending = sum(
-            1
-            for (expires_at,) in rows
-            if (expiry := _parse_expiry(expires_at)) is None or expiry > now
-        )
     finally:
         connection.close()
+
+    after = _database_metadata(database)
+    if after != before or any(metadata[0] for metadata in after[1:]):
+        return _unstable_invitation_result()
 
     if pending:
         noun = "invitation" if pending == 1 else "invitations"
@@ -365,9 +394,7 @@ class PreflightRunner:
             )
         )
 
-        commands = ["npm.cmd", "git"]
-        if mode == "vast":
-            commands.append("ssh.exe")
+        commands = ["npm.cmd", "git", "ssh.exe"]
         for name in commands:
             results.append(
                 self._result(

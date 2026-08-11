@@ -12,6 +12,7 @@ import time
 import pytest
 
 import defend_control.health as health_module
+import defend_control.processes as processes_module
 from defend_control.health import probe_http
 from defend_control.processes import LogBuffer, ProcessSpec, ProcessSupervisor
 from defend_control.windows_job import WindowsJob
@@ -582,3 +583,191 @@ def test_stop_all_job_fallback_kills_isolated_group_descendant(tmp_path):
         supervisor.close()
         if grandchild_pid is not None and _windows_process_running(grandchild_pid):
             _terminate_windows_process(grandchild_pid)
+
+
+def test_start_waits_for_stop_all_lifecycle_boundary(fake_job):
+    stopping = threading.Event()
+    release = threading.Event()
+    started = threading.Event()
+    errors: list[BaseException] = []
+
+    class BlockingProcess(FakeProcess):
+        def terminate(self) -> None:
+            stopping.set()
+            release.wait(2)
+            super().terminate()
+
+    processes = [BlockingProcess(), FakeProcess()]
+
+    def popen(*_args, **_kwargs):
+        return processes.pop(0)
+
+    supervisor = ProcessSupervisor(job=fake_job, popen=popen)
+    supervisor.start(ProcessSpec("api", ("python", "api"), ROOT, {}, None))
+    stop_thread = threading.Thread(target=supervisor.stop_all)
+    stop_thread.start()
+    assert stopping.wait(1)
+
+    def start_web() -> None:
+        try:
+            supervisor.start(
+                ProcessSpec("web", ("npm", "web"), ROOT, {}, None)
+            )
+        except BaseException as error:
+            errors.append(error)
+        finally:
+            started.set()
+
+    start_thread = threading.Thread(target=start_web)
+    start_thread.start()
+    try:
+        assert not started.wait(0.1)
+    finally:
+        release.set()
+        stop_thread.join(timeout=2)
+        start_thread.join(timeout=2)
+
+    assert started.is_set()
+    assert errors == []
+    assert [item.name for item in supervisor.snapshot()] == ["web"]
+
+
+def test_reader_start_failure_rolls_back_owned_child_and_closes_pipes(
+    fake_popen, fake_job, monkeypatch
+):
+    class FailingThread:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def start(self) -> None:
+            raise OSError("synthetic-private-thread-error")
+
+    monkeypatch.setattr(processes_module.threading, "Thread", FailingThread)
+    supervisor = ProcessSupervisor(job=fake_job, popen=fake_popen)
+
+    with pytest.raises(RuntimeError) as raised:
+        supervisor.start(
+            ProcessSpec("api", ("python", "api"), ROOT, {}, None)
+        )
+
+    process = fake_popen.processes[0]
+    assert process.terminate_called
+    assert process.stdout.closed
+    assert process.stderr.closed
+    assert supervisor.snapshot() == ()
+    assert "OSError" in str(raised.value)
+    assert "synthetic-private-thread-error" not in str(raised.value)
+
+
+def test_repeated_stop_restart_closes_streams_and_joins_readers(
+    fake_popen, fake_job, monkeypatch
+):
+    readers: list[object] = []
+
+    class TrackingThread:
+        def __init__(self, **_kwargs) -> None:
+            self.join_timeouts: list[float | None] = []
+            readers.append(self)
+
+        def start(self) -> None:
+            return None
+
+        def join(self, timeout: float | None = None) -> None:
+            self.join_timeouts.append(timeout)
+
+    monkeypatch.setattr(processes_module.threading, "Thread", TrackingThread)
+    supervisor = ProcessSupervisor(job=fake_job, popen=fake_popen)
+
+    for _ in range(2):
+        process = supervisor.start(
+            ProcessSpec("api", ("python", "api"), ROOT, {}, None)
+        )
+        assert supervisor.stop("api") is True
+        assert process.stdout.closed
+        assert process.stderr.closed
+
+    assert len(readers) == 4
+    assert all(reader.join_timeouts for reader in readers)
+    assert all(
+        timeout is not None and 0 < timeout <= 2
+        for reader in readers
+        for timeout in reader.join_timeouts
+    )
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows Job Objects only")
+def test_stop_catches_child_spawned_after_initial_descendant_snapshot(tmp_path):
+    ready = tmp_path / "spawner-ready"
+    pids = tmp_path / "spawned-pids"
+    child_script = "import time;time.sleep(30)"
+    parent_script = """
+import os
+import pathlib
+import subprocess
+import sys
+import threading
+import time
+
+pids = pathlib.Path(os.environ["PIDS"])
+lock = threading.Lock()
+
+def spawn():
+    return subprocess.Popen([sys.executable, "-c", os.environ["CHILD"]])
+
+def record(pid):
+    with lock:
+        with pids.open("a", encoding="utf-8") as output:
+            output.write(f"{pid}\\n")
+
+def replace_after_exit(child):
+    child.wait()
+    replacement = spawn()
+    record(replacement.pid)
+
+children = [spawn() for _ in range(24)]
+for child in children:
+    record(child.pid)
+    threading.Thread(
+        target=replace_after_exit, args=(child,), daemon=True
+    ).start()
+pathlib.Path(os.environ["READY"]).write_text("ready", encoding="utf-8")
+time.sleep(30)
+"""
+    supervisor = ProcessSupervisor(job=WindowsJob())
+    observed: set[int] = set()
+    try:
+        supervisor.start(
+            ProcessSpec(
+                "late-spawner",
+                (sys.executable, "-c", parent_script),
+                ROOT,
+                {
+                    "CHILD": child_script,
+                    "PIDS": str(pids),
+                    "READY": str(ready),
+                },
+                None,
+            )
+        )
+        deadline = time.monotonic() + 10
+        while not ready.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert ready.exists()
+
+        started_stop = time.monotonic()
+        assert supervisor.stop("late-spawner") is True
+        assert time.monotonic() - started_stop < 10
+
+        time.sleep(0.1)
+        observed = {
+            int(value)
+            for value in pids.read_text(encoding="utf-8").splitlines()
+            if value
+        }
+        assert observed
+        assert all(not _windows_process_running(pid) for pid in observed)
+    finally:
+        supervisor.close()
+        for pid in observed:
+            if _windows_process_running(pid):
+                _terminate_windows_process(pid)

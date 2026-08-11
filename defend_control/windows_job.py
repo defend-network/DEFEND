@@ -4,6 +4,7 @@ import ctypes
 from ctypes import wintypes
 import sys
 import threading
+import time
 from typing import Protocol
 
 
@@ -16,6 +17,10 @@ _PROCESS_TERMINATE = 0x0001
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 _SYNCHRONIZE = 0x00100000
 _INVALID_HANDLE_VALUE = wintypes.HANDLE(-1).value
+_WAIT_OBJECT_0 = 0x00000000
+_WAIT_TIMEOUT = 0x00000102
+_WAIT_FAILED = 0xFFFFFFFF
+_TERMINATE_TIMEOUT_SECONDS = 5.0
 
 
 class _ProcessHandle(Protocol):
@@ -160,6 +165,11 @@ class WindowsJob:
             wintypes.UINT,
         ]
         self._kernel32.TerminateProcess.restype = wintypes.BOOL
+        self._kernel32.WaitForSingleObject.argtypes = [
+            wintypes.HANDLE,
+            wintypes.DWORD,
+        ]
+        self._kernel32.WaitForSingleObject.restype = wintypes.DWORD
 
         handle = self._kernel32.CreateJobObjectW(None, None)
         if not handle:
@@ -221,7 +231,7 @@ class WindowsJob:
         if resumed == 0:
             raise OSError("Could not resume the owned process")
 
-    def terminate_tree(self, process: _ProcessHandle) -> None:
+    def _snapshot_children(self) -> dict[int, list[int]]:
         snapshot = self._kernel32.CreateToolhelp32Snapshot(
             _TH32CS_SNAPPROCESS, 0
         )
@@ -243,40 +253,117 @@ class WindowsJob:
                 )
         finally:
             self._kernel32.CloseHandle(snapshot)
+        return children
 
+    @staticmethod
+    def _descendants(
+        root_pid: int, children: dict[int, list[int]]
+    ) -> list[int]:
         targets: list[int] = []
+        visited: set[int] = set()
 
         def collect(pid: int) -> None:
+            if pid in visited:
+                return
+            visited.add(pid)
             for child_pid in children.get(pid, ()):
                 collect(child_pid)
-            targets.append(pid)
+            if pid != root_pid:
+                targets.append(pid)
 
-        collect(int(process.pid))
+        collect(root_pid)
+        return targets
+
+    def _is_in_job(self, process_handle: int, job_handle: int) -> bool:
+        in_job = wintypes.BOOL()
+        if not self._kernel32.IsProcessInJob(
+            process_handle, job_handle, ctypes.byref(in_job)
+        ):
+            raise OSError("IsProcessInJob failed")
+        return bool(in_job.value)
+
+    def _terminate_and_wait(self, handle: int, deadline: float) -> None:
+        state = self._kernel32.WaitForSingleObject(handle, 0)
+        if state == _WAIT_OBJECT_0:
+            return
+        if state == _WAIT_FAILED:
+            raise OSError("WaitForSingleObject failed")
+        if state != _WAIT_TIMEOUT:
+            raise OSError("Unexpected process wait state")
+        if not self._kernel32.TerminateProcess(handle, 1):
+            if self._kernel32.WaitForSingleObject(handle, 0) != _WAIT_OBJECT_0:
+                raise OSError("TerminateProcess failed")
+            return
+        remaining_ms = max(0, int((deadline - time.monotonic()) * 1000))
+        if self._kernel32.WaitForSingleObject(handle, remaining_ms) != _WAIT_OBJECT_0:
+            raise TimeoutError("Owned process termination timed out")
+
+    def terminate_tree(self, process: _ProcessHandle) -> None:
+        deadline = time.monotonic() + _TERMINATE_TIMEOUT_SECONDS
+        root_handle = getattr(process, "_handle", None)
+        if root_handle is None:
+            raise TypeError("process must expose a Windows process handle")
         with self._lock:
             if self._handle is None:
                 raise RuntimeError("Windows Job Object is closed")
             job_handle = self._handle
-            for pid in targets:
-                handle = self._kernel32.OpenProcess(
-                    _PROCESS_TERMINATE
-                    | _PROCESS_QUERY_LIMITED_INFORMATION
-                    | _SYNCHRONIZE,
-                    False,
-                    pid,
+
+            # Preserve the lineage before quiescing the root: Windows can
+            # reparent surviving descendants as soon as their parent exits.
+            initial_children = self._snapshot_children()
+            initial_targets = self._descendants(
+                int(process.pid), initial_children
+            )
+            known_lineage = {int(process.pid), *initial_targets}
+            pending = set(initial_targets)
+
+            # Quiesce the only process that can create new service descendants.
+            if not self._is_in_job(root_handle, job_handle):
+                raise OSError("Owned process is not in the Job Object")
+            self._terminate_and_wait(root_handle, deadline)
+
+            stable_scans = 0
+            while stable_scans < 2:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("Owned process tree termination timed out")
+                children = self._snapshot_children()
+                frontier = list(known_lineage)
+                discovered: set[int] = set()
+                while frontier:
+                    parent_pid = frontier.pop()
+                    for child_pid in children.get(parent_pid, ()):
+                        if child_pid in known_lineage or child_pid in discovered:
+                            continue
+                        discovered.add(child_pid)
+                        frontier.append(child_pid)
+                known_lineage.update(discovered)
+                pending.update(discovered)
+                terminated = 0
+                for pid in tuple(pending):
+                    handle = self._kernel32.OpenProcess(
+                        _PROCESS_TERMINATE
+                        | _PROCESS_QUERY_LIMITED_INFORMATION
+                        | _SYNCHRONIZE,
+                        False,
+                        pid,
+                    )
+                    if not handle:
+                        error = ctypes.get_last_error()
+                        if error != 87:  # ERROR_INVALID_PARAMETER: already gone.
+                            raise OSError("OpenProcess failed")
+                        continue
+                    try:
+                        if self._is_in_job(handle, job_handle):
+                            self._terminate_and_wait(handle, deadline)
+                            terminated += 1
+                    finally:
+                        self._kernel32.CloseHandle(handle)
+                    pending.discard(pid)
+                stable_scans = (
+                    stable_scans + 1
+                    if terminated == 0 and not discovered
+                    else 0
                 )
-                if not handle:
-                    continue
-                try:
-                    in_job = wintypes.BOOL()
-                    if (
-                        self._kernel32.IsProcessInJob(
-                            handle, job_handle, ctypes.byref(in_job)
-                        )
-                        and in_job.value
-                    ):
-                        self._kernel32.TerminateProcess(handle, 1)
-                finally:
-                    self._kernel32.CloseHandle(handle)
 
     def close(self) -> None:
         with self._lock:

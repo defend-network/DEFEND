@@ -3,6 +3,7 @@ from decimal import Decimal
 from pathlib import Path
 import sqlite3
 
+import defend_control.preflight as preflight_module
 from defend_control.preflight import CheckResult, PreflightRunner
 from defend_control.settings import ControlSettings
 
@@ -219,3 +220,103 @@ def test_preflight_rejects_file_where_writable_directory_is_required(tmp_path):
     results = runner.run("vast", configured, complete_secrets())
 
     assert not next(result for result in results if result.name == "data-root").ok
+
+
+def test_ollama_preflight_still_aggregates_missing_ssh(tmp_path):
+    runner = PreflightRunner(
+        command_exists=lambda name: name != "ssh.exe",
+        port_available=lambda _port: True,
+        writable=lambda _path: True,
+        invitation_check=lambda: CheckResult(
+            "invitations", False, "blocked", "Run rollout reissue"
+        ),
+        path_exists=lambda _path: True,
+        module_exists=lambda _name: True,
+        python_version=lambda: (3, 14),
+        node_version=lambda: (22, 0),
+    )
+
+    results = runner.run("ollama", settings(tmp_path), complete_secrets())
+
+    failed = {result.name for result in results if not result.ok}
+    assert {"ssh.exe", "invitations"} <= failed
+
+
+def test_invitation_gate_fails_closed_when_wal_appears_during_query(
+    tmp_path, monkeypatch
+):
+    configured = settings(tmp_path)
+    database = configured.data_root / "db" / "identity.db"
+    database.parent.mkdir(parents=True)
+    setup = sqlite3.connect(database)
+    try:
+        setup.execute("PRAGMA journal_mode=WAL")
+        setup.execute(
+            """
+            CREATE TABLE invitations (
+                invitation_id TEXT,
+                account_id TEXT,
+                created_at TEXT,
+                expires_at TEXT,
+                consumed_at TEXT,
+                revoked_at TEXT,
+                transport_version TEXT
+            )
+            """
+        )
+        setup.commit()
+    finally:
+        setup.close()
+
+    original_connect = sqlite3.connect
+    writers: list[sqlite3.Connection] = []
+    triggered = False
+
+    class TriggerConnection:
+        def __init__(self, connection: sqlite3.Connection) -> None:
+            self._connection = connection
+
+        def execute(self, statement: str):
+            nonlocal triggered
+            if not triggered and statement.startswith("PRAGMA table_info"):
+                triggered = True
+                writer = original_connect(database)
+                writer.execute("PRAGMA journal_mode=WAL")
+                writer.execute(
+                    "INSERT INTO invitations VALUES (?,?,?,?,?,?,?)",
+                    (
+                        "inv-concurrent",
+                        "account-concurrent",
+                        datetime.now(timezone.utc).isoformat(),
+                        (
+                            datetime.now(timezone.utc) + timedelta(hours=1)
+                        ).isoformat(),
+                        None,
+                        None,
+                        "legacy_path",
+                    ),
+                )
+                writer.commit()
+                writers.append(writer)
+            return self._connection.execute(statement)
+
+        def close(self) -> None:
+            self._connection.close()
+
+    def connect(candidate, *args, **kwargs):
+        connection = original_connect(candidate, *args, **kwargs)
+        return TriggerConnection(connection) if kwargs.get("uri") else connection
+
+    monkeypatch.setattr(preflight_module.sqlite3, "connect", connect)
+    try:
+        results = PreflightRunner.for_test(use_real_invitation_check=True).run(
+            "vast", configured, complete_secrets()
+        )
+    finally:
+        for writer in writers:
+            writer.close()
+
+    invitation = next(result for result in results if result.name == "invitations")
+    assert triggered
+    assert not invitation.ok
+    assert "stable" in invitation.detail.casefold()

@@ -10,6 +10,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 from types import MappingProxyType
 from typing import IO, Any, Protocol
 
@@ -137,6 +138,8 @@ class ProcessSnapshot:
 class _OwnedProcess:
     process: Any
     spec: ProcessSpec
+    readers: tuple[Any, ...]
+    streams: tuple[IO[str], ...]
 
 
 @dataclass(frozen=True)
@@ -188,6 +191,7 @@ class ProcessSupervisor:
         self._external: dict[str, _ExternalProcess] = {}
         self._lock = threading.RLock()
         self._closed = False
+        self._stopping = False
 
     @staticmethod
     def _validate_secret_argv(spec: ProcessSpec) -> None:
@@ -225,6 +229,41 @@ class ProcessSupervisor:
                 f"Log reader failed ({_safe_error_type(error)})",
             )
 
+    @staticmethod
+    def _close_streams(streams: Iterable[IO[str]]) -> None:
+        for stream in streams:
+            try:
+                stream.close()
+            except Exception:
+                pass
+
+    @staticmethod
+    def _join_readers(readers: Iterable[Any]) -> None:
+        deadline = time.monotonic() + 2.0
+        for reader in readers:
+            remaining = max(0.0, deadline - time.monotonic())
+            try:
+                reader.join(timeout=remaining)
+            except Exception:
+                pass
+
+    def _rollback_reader_start(
+        self,
+        process: Any,
+        streams: tuple[IO[str], ...],
+        readers: tuple[Any, ...],
+    ) -> None:
+        try:
+            self._terminate(process)
+        except Exception:
+            try:
+                process.kill()
+                process.wait(timeout=2)
+            except Exception:
+                pass
+        self._close_streams(streams)
+        self._join_readers(readers)
+
     def start(self, spec: ProcessSpec) -> Any:
         if not isinstance(spec, ProcessSpec):
             raise TypeError("spec must be a ProcessSpec")
@@ -239,6 +278,8 @@ class ProcessSupervisor:
         with self._lock:
             if self._closed:
                 raise RuntimeError("process supervisor is closed")
+            if self._stopping:
+                raise RuntimeError("process supervisor is stopping")
             if spec.name in self._owned or spec.name in self._external:
                 raise ValueError("process name is already supervised")
             try:
@@ -283,16 +324,39 @@ class ProcessSupervisor:
                     f"Could not own {spec.name} ({_safe_error_type(error)})"
                 ) from None
 
-            self._owned[spec.name] = _OwnedProcess(process, spec)
-            streams = (("stdout", process.stdout), ("stderr", process.stderr))
-            for stream_name, stream in streams:
-                if stream is not None:
-                    threading.Thread(
+            named_streams = tuple(
+                (stream_name, stream)
+                for stream_name, stream in (
+                    ("stdout", process.stdout),
+                    ("stderr", process.stderr),
+                )
+                if stream is not None
+            )
+            streams = tuple(stream for _name, stream in named_streams)
+            readers: list[Any] = []
+            started_readers: list[Any] = []
+            try:
+                for stream_name, stream in named_streams:
+                    reader = threading.Thread(
                         target=self._read_stream,
                         args=(spec.name, stream_name, stream),
                         daemon=True,
                         name=f"defend-{spec.name}-{stream_name}",
-                    ).start()
+                    )
+                    readers.append(reader)
+                    reader.start()
+                    started_readers.append(reader)
+            except Exception as error:
+                self._rollback_reader_start(
+                    process, streams, tuple(started_readers)
+                )
+                raise RuntimeError(
+                    "Could not start process log readers "
+                    f"({_safe_error_type(error)})"
+                ) from None
+            self._owned[spec.name] = _OwnedProcess(
+                process, spec, tuple(readers), streams
+            )
             return process
 
     def observe_external(
@@ -335,46 +399,74 @@ class ProcessSupervisor:
             process.kill()
             process.wait(timeout=2)
 
-    def stop(self, name: str) -> bool:
-        with self._lock:
-            owned = self._owned.get(name)
-            if owned is None:
-                return False
+    def _stop_locked(self, name: str) -> bool:
+        owned = self._owned.get(name)
+        if owned is None:
+            return False
         try:
             self._terminate(owned.process)
         except Exception as error:
+            self._close_streams(owned.streams)
+            self._join_readers(owned.readers)
             raise RuntimeError(
                 f"Could not stop {name} ({_safe_error_type(error)})"
             ) from None
-        with self._lock:
-            self._owned.pop(name, None)
+        self._close_streams(owned.streams)
+        self._join_readers(owned.readers)
+        self._owned.pop(name, None)
         return True
 
-    def _stop_all(self, *, reset_job: bool) -> None:
+    def stop(self, name: str) -> bool:
         with self._lock:
-            names = tuple(reversed(self._owned))
+            return self._stop_locked(name)
+
+    def _stop_all_locked(self, *, reset_job: bool) -> None:
+        names = tuple(reversed(self._owned))
         first_error: RuntimeError | None = None
         for name in names:
             try:
-                self.stop(name)
+                self._stop_locked(name)
             except RuntimeError as error:
                 if first_error is None:
                     first_error = error
         if reset_job and self._job_factory is not None:
             try:
-                self._job.close()
-                self._job = self._job_factory()
+                replacement = self._job_factory()
             except Exception as error:
                 if first_error is None:
                     first_error = RuntimeError(
                         "Could not reset process ownership "
                         f"({_safe_error_type(error)})"
                     )
+            else:
+                previous = self._job
+                try:
+                    previous.close()
+                except Exception as error:
+                    replacement.close()
+                    if first_error is None:
+                        first_error = RuntimeError(
+                            "Could not reset process ownership "
+                            f"({_safe_error_type(error)})"
+                        )
+                else:
+                    self._job = replacement
+                    for name, owned in tuple(self._owned.items()):
+                        self._close_streams(owned.streams)
+                        self._join_readers(owned.readers)
+                        self._owned.pop(name, None)
         if first_error is not None:
             raise first_error
 
     def stop_all(self) -> None:
-        self._stop_all(reset_job=True)
+        with self._lock:
+            if self._closed:
+                return
+            self._stopping = True
+            try:
+                self._stop_all_locked(reset_job=True)
+            finally:
+                self._stopping = False
 
     def snapshot(self) -> tuple[ProcessSnapshot, ...]:
         with self._lock:
@@ -407,16 +499,17 @@ class ProcessSupervisor:
         return tuple(snapshots)
 
     def close(self) -> None:
-        try:
-            self._stop_all(reset_job=False)
-        finally:
-            with self._lock:
-                should_close = not self._closed
-                if should_close:
-                    self._closed = True
-                    self._external.clear()
-            if should_close:
+        with self._lock:
+            if self._closed:
+                return
+            self._stopping = True
+            try:
+                self._stop_all_locked(reset_job=False)
+            finally:
+                self._closed = True
+                self._external.clear()
                 self._job.close()
+                self._stopping = False
 
     def __enter__(self) -> "ProcessSupervisor":
         return self
