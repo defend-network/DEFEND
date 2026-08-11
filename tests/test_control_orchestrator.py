@@ -8,14 +8,16 @@ from defend_control.health import HealthResult
 from defend_control.orchestrator import (
     AlreadyRunning,
     ExternalCloudflaredDetector,
+    PriceConfirmationRequired,
     StackOrchestrator,
     StartCancellation,
     StartCancelled,
     StartFailed,
 )
-from defend_control.processes import ProcessSnapshot
+from defend_control.processes import ProcessSnapshot, ProcessSpec
 from defend_control.settings import ControlSettings
-from defend_control.types import ModelReady
+from defend_control.ssh_tunnel import HostFingerprintConfirmation
+from defend_control.types import AdapterSpec, ModelReady, VastInstance, VastOffer
 
 
 class FakePreflight:
@@ -386,3 +388,348 @@ def _capture_error(target, function, *args):
         function(*args)
     except BaseException as error:
         target.append(error)
+
+
+class FakeHuggingFace:
+    def __init__(self, events):
+        self.events = events
+        self.calls = 0
+
+    def resolve_adapter(self, repo, token):
+        self.calls += 1
+        self.events.append("hf:resolve")
+        assert repo == "Defend-network/defend-qwen-32b-lora"
+        assert token == "hf_synthetic"
+        return AdapterSpec(repo, "a" * 40, "Qwen/example-32B", "b" * 40, "LORA")
+
+
+class FakeVast:
+    def __init__(self, events, offer, instance):
+        self.events = events
+        self.offer = offer
+        self.instance = instance
+        self.creates = 0
+        self.destroyed = []
+
+    def ensure_account_ssh_key(self, public_key):
+        self.events.append("vast:ssh-key")
+        assert public_key.startswith("ssh-ed25519 ")
+        return 44
+
+    def search_offers(self, max_hourly):
+        self.events.append("vast:search")
+        assert max_hourly == Decimal("3.00")
+        return (self.offer,)
+
+    def create_instance(self, offer, launch):
+        self.events.append("vast:create")
+        assert offer == self.offer
+        self.creates += 1
+        return VastInstance(
+            self.instance.instance_id,
+            None,
+            None,
+            None,
+            self.instance.gpu_name,
+            self.instance.gpu_ram_mb,
+            self.instance.dph_total,
+        )
+
+    def wait_until_running(self, instance_id):
+        self.events.append("vast:wait-running")
+        assert instance_id == self.instance.instance_id
+        return self.instance
+
+    def destroy_instance(self, instance_id, *, confirmed_instance_id):
+        self.events.append("vast:destroy")
+        assert instance_id == confirmed_instance_id
+        self.destroyed.append(instance_id)
+        return True
+
+
+class FakeSshTunnel:
+    fingerprint = "SHA256:syntheticFingerprint"
+
+    def __init__(self, events, supervisor, root):
+        self.events = events
+        self.supervisor = supervisor
+        self.root = root
+
+    def ensure_identity(self):
+        self.events.append("ssh:identity")
+        return "ssh-ed25519 AAAAC3NzaDedicated defend-control"
+
+    def prepare_host(self, instance, confirm_fingerprint):
+        self.events.append("ssh:prepare")
+        if confirm_fingerprint != self.fingerprint:
+            raise HostFingerprintConfirmation(instance.instance_id, self.fingerprint)
+        return self.fingerprint
+
+    def start(self, instance):
+        self.events.append("ssh:start")
+        return self.supervisor.start(
+            ProcessSpec(
+                "ssh tunnel",
+                ("synthetic-ssh.exe", "-N"),
+                self.root,
+                {},
+                None,
+            )
+        )
+
+
+class FakeRemoteBootstrap:
+    def __init__(self, events):
+        self.events = events
+
+    def start(self, instance, adapter, secrets, **options):
+        self.events.append("vllm:bootstrap")
+        assert adapter.adapter_revision == "a" * 40
+        assert secrets["HF_TOKEN"] == "hf_synthetic"
+        assert callable(options["cancelled"])
+
+    def cleanup_token_file(self, instance):
+        self.events.append("vllm:token-cleanup")
+
+
+class FakeModelProbe:
+    def __init__(self, events):
+        self.events = events
+
+    def wait_ready(self, base_url, api_key, model="defend-ai", **options):
+        self.events.append("vllm:probe")
+        assert base_url == "http://127.0.0.1:8001/v1"
+        assert api_key == "vllm_synthetic"
+        assert model == "defend-ai"
+        assert callable(options["cancelled"])
+        return ModelReady(model, "openai_compatible", base_url)
+
+
+def remote_dependencies(tmp_path):
+    kwargs, events, supervisor = dependencies(tmp_path)
+    kwargs["secrets"].update(
+        {
+            "VAST_API_KEY": "vast_synthetic",
+            "HF_TOKEN": "hf_synthetic",
+            "VLLM_API_KEY": "vllm_synthetic",
+        }
+    )
+    offer = VastOffer(
+        101,
+        "A100 SXM4",
+        81920,
+        Decimal("1.75"),
+        Decimal("0.987"),
+    )
+    instance = VastInstance(
+        4815,
+        "running",
+        "ssh.example.test",
+        2222,
+        offer.gpu_name,
+        offer.gpu_ram_mb,
+        offer.dph_total,
+    )
+    vast = FakeVast(events, offer, instance)
+    kwargs.update(
+        {
+            "huggingface_client": FakeHuggingFace(events),
+            "vast_client_factory": lambda token: vast,
+            "ssh_tunnel": FakeSshTunnel(events, supervisor, tmp_path),
+            "remote_bootstrap": FakeRemoteBootstrap(events),
+            "model_probe": FakeModelProbe(events),
+        }
+    )
+    return kwargs, events, supervisor, offer, instance, vast
+
+
+def confirm_and_start_vast(orchestrator, offer, instance):
+    with pytest.raises(PriceConfirmationRequired):
+        orchestrator.start("vast")
+    orchestrator.confirm_offer(offer.offer_id, offer.dph_total)
+    with pytest.raises(HostFingerprintConfirmation):
+        orchestrator.start("vast")
+    orchestrator.confirm_fingerprint(
+        instance.instance_id, FakeSshTunnel.fingerprint
+    )
+    return orchestrator.start("vast")
+
+
+def test_vast_start_requires_exact_price_then_exact_fingerprint(tmp_path):
+    kwargs, events, supervisor, offer, instance, vast = remote_dependencies(
+        tmp_path
+    )
+    orchestrator = StackOrchestrator(**kwargs)
+
+    with pytest.raises(PriceConfirmationRequired) as price:
+        orchestrator.start("vast")
+
+    assert price.value.offer == offer
+    assert vast.creates == 0
+    pending = orchestrator.snapshot()
+    assert pending.state == "provisioning"
+    assert pending.pending_confirmation == "price"
+    assert pending.vast_offer_id == offer.offer_id
+    assert pending.vast_gpu == offer.gpu_name
+    assert pending.vast_gpu_ram_mb == offer.gpu_ram_mb
+    assert pending.vast_reliability == str(offer.reliability)
+    assert pending.vast_hourly_price == str(offer.dph_total)
+
+    with pytest.raises(ValueError, match="exact offer"):
+        orchestrator.confirm_offer(offer.offer_id, Decimal("1.76"))
+    orchestrator.confirm_offer(offer.offer_id, offer.dph_total)
+
+    with pytest.raises(HostFingerprintConfirmation) as fingerprint:
+        orchestrator.start("vast")
+
+    assert fingerprint.value.instance_id == instance.instance_id
+    assert vast.creates == 1
+    billable = orchestrator.snapshot()
+    assert billable.pending_confirmation == "fingerprint"
+    assert billable.vast_instance_id == instance.instance_id
+    assert billable.vast_actual_status == "running"
+    assert billable.vast_billing_warning == (
+        "Compute billing may remain active until this instance is destroyed."
+    )
+
+    with pytest.raises(ValueError, match="exact fingerprint"):
+        orchestrator.confirm_fingerprint(instance.instance_id, "SHA256:wrong")
+    orchestrator.confirm_fingerprint(instance.instance_id, fingerprint.value.fingerprint)
+    result = orchestrator.start("vast")
+
+    assert result.state == "ready"
+    assert vast.creates == 1
+    assert events.index("ssh:start") < events.index("vllm:bootstrap")
+    assert events.index("vllm:bootstrap") < events.index("vllm:probe")
+    assert events.index("vllm:probe") < events.index("vllm:token-cleanup")
+    assert events.index("vllm:token-cleanup") < events.index("api:start")
+    api_spec = next(spec for spec in supervisor.started if spec.name == "api")
+    assert api_spec.env["DEFEND_MODEL_BACKEND"] == "openai_compatible"
+    assert api_spec.env["DEFEND_MODEL"] == "defend-ai"
+    assert api_spec.env["DEFEND_MODEL_BASE_URL"] == "http://127.0.0.1:8001/v1"
+    assert api_spec.env["DEFEND_MODEL_API_KEY"] == "vllm_synthetic"
+    assert not any("vllm_synthetic" in argument for argument in api_spec.argv)
+
+
+def test_vast_destroy_requires_exact_id_and_clears_billing_state(tmp_path):
+    kwargs, _events, supervisor, offer, instance, vast = remote_dependencies(
+        tmp_path
+    )
+    orchestrator = StackOrchestrator(**kwargs)
+    confirm_and_start_vast(orchestrator, offer, instance)
+
+    with pytest.raises(ValueError, match="exact instance ID"):
+        orchestrator.destroy_vast(instance.instance_id - 1)
+    assert vast.destroyed == []
+
+    orchestrator.destroy_vast(instance.instance_id)
+
+    assert vast.destroyed == [instance.instance_id]
+    assert supervisor.stopped == ["cloudflare", "web", "api", "ssh tunnel"]
+    snapshot = orchestrator.snapshot()
+    assert snapshot.state == "stopped"
+    assert snapshot.vast_instance_id is None
+    assert snapshot.vast_billing_warning is None
+
+
+def test_stop_local_keeps_vast_instance_and_prominent_billing_warning(tmp_path):
+    kwargs, _events, _supervisor, offer, instance, _vast = remote_dependencies(
+        tmp_path
+    )
+    orchestrator = StackOrchestrator(**kwargs)
+    confirm_and_start_vast(orchestrator, offer, instance)
+
+    stopped = orchestrator.stop_local()
+
+    assert stopped.state == "stopped"
+    assert stopped.vast_instance_id == instance.instance_id
+    assert "billing may remain active" in (stopped.vast_billing_warning or "")
+
+
+def test_destroy_still_stops_billing_when_local_cleanup_is_incomplete(tmp_path):
+    kwargs, _events, supervisor, offer, instance, vast = remote_dependencies(
+        tmp_path
+    )
+    orchestrator = StackOrchestrator(**kwargs)
+    confirm_and_start_vast(orchestrator, offer, instance)
+    supervisor.fail_stop_once.add("api")
+
+    with pytest.raises(RuntimeError, match="local cleanup"):
+        orchestrator.destroy_vast(instance.instance_id)
+
+    assert vast.destroyed == [instance.instance_id]
+    snapshot = orchestrator.snapshot()
+    assert snapshot.vast_instance_id is None
+    assert snapshot.vast_billing_warning is None
+    assert snapshot.state == "failed"
+    assert snapshot.owned_services == ("api",)
+
+
+def test_operator_can_switch_to_local_mode_from_unconfirmed_vast_gate(tmp_path):
+    kwargs, events, _supervisor, _offer, _instance, vast = remote_dependencies(
+        tmp_path
+    )
+    orchestrator = StackOrchestrator(**kwargs)
+    with pytest.raises(PriceConfirmationRequired):
+        orchestrator.start("vast")
+
+    result = orchestrator.start("ollama")
+
+    assert result.state == "ready"
+    assert result.mode == "ollama"
+    assert result.pending_confirmation is None
+    assert result.vast_offer_id is None
+    assert vast.creates == 0
+    assert "ollama:verify" in events
+
+
+def test_stop_local_clears_fingerprint_prompt_but_keeps_billable_instance(tmp_path):
+    kwargs, _events, _supervisor, offer, instance, _vast = remote_dependencies(
+        tmp_path
+    )
+    orchestrator = StackOrchestrator(**kwargs)
+    with pytest.raises(PriceConfirmationRequired):
+        orchestrator.start("vast")
+    orchestrator.confirm_offer(offer.offer_id, offer.dph_total)
+    with pytest.raises(HostFingerprintConfirmation):
+        orchestrator.start("vast")
+
+    stopped = orchestrator.stop_local()
+
+    assert stopped.pending_confirmation is None
+    assert stopped.pending_fingerprint is None
+    assert stopped.vast_instance_id == instance.instance_id
+    assert "billing may remain active" in (stopped.vast_billing_warning or "")
+
+
+def test_cancellation_during_remote_bootstrap_is_reported_as_cancelled(tmp_path):
+    cancellation = StartCancellation()
+    kwargs, _events, supervisor, offer, instance, _vast = remote_dependencies(
+        tmp_path
+    )
+
+    class CancellingBootstrap:
+        def start(self, _instance, _adapter, _secrets, **_options):
+            cancellation.cancel()
+            raise RuntimeError("synthetic command cancellation")
+
+        def cleanup_token_file(self, _instance):
+            raise AssertionError("cleanup cannot precede readiness")
+
+    kwargs["remote_bootstrap"] = CancellingBootstrap()
+    orchestrator = StackOrchestrator(**kwargs)
+    with pytest.raises(PriceConfirmationRequired):
+        orchestrator.start("vast")
+    orchestrator.confirm_offer(offer.offer_id, offer.dph_total)
+    with pytest.raises(HostFingerprintConfirmation):
+        orchestrator.start("vast")
+    orchestrator.confirm_fingerprint(instance.instance_id, FakeSshTunnel.fingerprint)
+
+    with pytest.raises(StartCancelled):
+        orchestrator.start("vast", cancellation)
+
+    assert supervisor.stopped == ["ssh tunnel"]
+    snapshot = orchestrator.snapshot()
+    assert snapshot.state == "stopped"
+    assert snapshot.vast_instance_id == instance.instance_id
+    assert "billing may remain active" in (snapshot.vast_billing_warning or "")

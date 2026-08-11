@@ -30,10 +30,23 @@ class UIState:
     vast_gpu: str | None
     vast_instance_id: int | None
     vast_hourly_price: str | None
+    vast_offer_id: int | None = None
+    vast_gpu_ram_mb: int | None = None
+    vast_reliability: str | None = None
+    vast_actual_status: str | None = None
+    vast_billing_warning: str | None = None
+    pending_confirmation: str | None = None
+    pending_fingerprint: str | None = None
     owned_services: tuple[str, ...] = ()
 
     @property
     def services_running(self) -> bool:
+        if (
+            self.pending_confirmation == "price"
+            and self.vast_instance_id is None
+            and not self.owned_services
+        ):
+            return False
         if self.state not in ("stopped", "failed") or self.owned_services:
             return True
         return any(
@@ -56,6 +69,22 @@ class _StartCommand:
 
     def __call__(self, mode: ModelMode):
         return self._orchestrator.start(mode, self._cancellation)
+
+
+class _ConfirmOfferAndStartCommand(_StartCommand):
+    __name__ = "confirm_offer_and_start"
+
+    def __call__(self, offer_id: int, hourly_price: str):
+        self._orchestrator.confirm_offer(offer_id, hourly_price)
+        return self._orchestrator.start("vast", self._cancellation)
+
+
+class _ConfirmFingerprintAndStartCommand(_StartCommand):
+    __name__ = "confirm_fingerprint_and_start"
+
+    def __call__(self, instance_id: int, fingerprint: str):
+        self._orchestrator.confirm_fingerprint(instance_id, fingerprint)
+        return self._orchestrator.start("vast", self._cancellation)
 
 
 @dataclass
@@ -97,7 +126,12 @@ class ControlController:
     def start(self, mode: ModelMode) -> UIState:
         if mode not in ("vast", "ollama"):
             raise ValueError("an explicit Vast.ai or Local Ollama mode is required")
-        cancellation = StartCancellation()
+        return self._queue_start(
+            _StartCommand(self._orchestrator, StartCancellation()), mode
+        )
+
+    def _queue_start(self, function, *args: object) -> UIState:
+        cancellation = function._cancellation
         with self._future_lock:
             retained: list[_StartRequest] = []
             for candidate in self._start_requests:
@@ -113,7 +147,7 @@ class ControlController:
             self._start_requests.append(request)
         try:
             future = self.submit_work(
-                _StartCommand(self._orchestrator, cancellation), mode
+                function, *args
             )
         except Exception:
             with self._future_lock:
@@ -126,6 +160,34 @@ class ControlController:
         with self._future_lock:
             request.future = future
         return self.poll_state()
+
+    def confirm_vast_offer(self, offer_id: int, hourly_price: str) -> UIState:
+        if type(offer_id) is not int or offer_id <= 0:
+            raise ValueError("Vast offer ID must be a positive integer")
+        if not isinstance(hourly_price, str) or not hourly_price:
+            raise ValueError("Vast hourly price must be provided exactly")
+        cancellation = StartCancellation()
+        return self._queue_start(
+            _ConfirmOfferAndStartCommand(self._orchestrator, cancellation),
+            offer_id,
+            hourly_price,
+        )
+
+    def confirm_vast_fingerprint(
+        self, instance_id: int, fingerprint: str
+    ) -> UIState:
+        if type(instance_id) is not int or instance_id <= 0:
+            raise ValueError("Vast instance ID must be a positive integer")
+        if not isinstance(fingerprint, str) or not fingerprint.startswith("SHA256:"):
+            raise ValueError("SSH fingerprint must use SHA256")
+        cancellation = StartCancellation()
+        return self._queue_start(
+            _ConfirmFingerprintAndStartCommand(
+                self._orchestrator, cancellation
+            ),
+            instance_id,
+            fingerprint,
+        )
 
     def _cancel_pending_starts(self) -> None:
         with self._future_lock:
@@ -192,6 +254,13 @@ class ControlController:
             vast_gpu=snapshot.vast_gpu,
             vast_instance_id=snapshot.vast_instance_id,
             vast_hourly_price=snapshot.vast_hourly_price,
+            vast_offer_id=snapshot.vast_offer_id,
+            vast_gpu_ram_mb=snapshot.vast_gpu_ram_mb,
+            vast_reliability=snapshot.vast_reliability,
+            vast_actual_status=snapshot.vast_actual_status,
+            vast_billing_warning=snapshot.vast_billing_warning,
+            pending_confirmation=snapshot.pending_confirmation,
+            pending_fingerprint=snapshot.pending_fingerprint,
             owned_services=snapshot.owned_services,
         )
 

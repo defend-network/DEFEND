@@ -300,6 +300,9 @@ class VastClient:
                 raise VastError("Vast.ai SSH key response is invalid")
             return reconciled_id
         created_id = created.get("id", created.get("ssh_key_id"))
+        nested_key = created.get("key")
+        if created_id is None and isinstance(nested_key, Mapping):
+            created_id = nested_key.get("id")
         try:
             return _positive_int(created_id, "SSH key ID")
         except ValueError:
@@ -307,6 +310,7 @@ class VastClient:
 
     @staticmethod
     def _find_ssh_key_id(document: object, public_key: str) -> int | None:
+        requested_identity = VastClient._canonical_ssh_key(public_key)
         candidates: object = document
         if isinstance(document, Mapping):
             candidates = document.get("ssh_keys", document.get("keys"))
@@ -318,12 +322,36 @@ class VastClient:
             existing_key = candidate.get(
                 "ssh_key", candidate.get("public_key", candidate.get("key"))
             )
-            if existing_key == public_key:
+            try:
+                existing_identity = (
+                    VastClient._canonical_ssh_key(existing_key)
+                    if isinstance(existing_key, str)
+                    else None
+                )
+            except ValueError:
+                continue
+            if existing_identity == requested_identity:
                 try:
                     return _positive_int(candidate.get("id"), "SSH key ID")
                 except ValueError:
                     raise VastError("Vast.ai SSH key response is invalid") from None
         return None
+
+    @staticmethod
+    def _canonical_ssh_key(public_key: str) -> tuple[str, str]:
+        fields = public_key.strip().split()
+        if len(fields) < 2:
+            raise ValueError("dedicated SSH public key is invalid")
+        algorithm, blob = fields[:2]
+        if (
+            algorithm != "ssh-ed25519"
+            or not blob
+            or not all(
+                character.isalnum() or character in "+/=" for character in blob
+            )
+        ):
+            raise ValueError("dedicated SSH public key is invalid")
+        return algorithm, blob
 
     @staticmethod
     def _require_mutation_success(

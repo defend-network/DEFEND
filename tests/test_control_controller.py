@@ -1,4 +1,5 @@
 from dataclasses import FrozenInstanceError
+from decimal import Decimal
 import threading
 
 import pytest
@@ -10,6 +11,8 @@ from defend_control.controller import (
 )
 from defend_control.orchestrator import ComponentSnapshot, StackSnapshot
 from defend_control.processes import LogEntry
+from defend_control.ui import ControlCenterUI
+import defend_control.ui as ui_module
 
 
 class RecordingExecutor:
@@ -118,6 +121,8 @@ class FakeOrchestrator:
         self.destroyed = []
         self.start_cancellations = []
         self.launches = []
+        self.offer_confirmations = []
+        self.fingerprint_confirmations = []
 
     def start(self, mode, cancellation=None):
         self.start_cancellations.append(cancellation)
@@ -136,6 +141,12 @@ class FakeOrchestrator:
 
     def stop_and_destroy_vast(self, instance_id):
         self.destroyed.append(instance_id)
+
+    def confirm_offer(self, offer_id, hourly_price):
+        self.offer_confirmations.append((offer_id, hourly_price))
+
+    def confirm_fingerprint(self, instance_id, fingerprint):
+        self.fingerprint_confirmations.append((instance_id, fingerprint))
 
     def snapshot(self):
         return StackSnapshot(
@@ -340,3 +351,186 @@ def test_ui_log_lines_are_rebounded_and_secret_shapes_are_redacted():
 
     assert "synthetic-visible-value" not in state.logs[0].text
     assert len(state.logs[0].text) <= 40
+
+
+def test_price_confirmation_and_resume_stays_on_single_worker():
+    orchestrator = FakeOrchestrator()
+    executor = RecordingExecutor()
+    controller = ControlController(orchestrator, executor=executor)
+
+    controller.confirm_vast_offer(101, "1.75")
+
+    assert executor.submitted == [("confirm_offer_and_start", 101, "1.75")]
+
+
+def test_fingerprint_confirmation_and_resume_stays_on_single_worker():
+    orchestrator = FakeOrchestrator(instance_id=4815)
+    executor = RecordingExecutor()
+    controller = ControlController(orchestrator, executor=executor)
+
+    controller.confirm_vast_fingerprint(4815, "SHA256:synthetic")
+
+    assert executor.submitted == [
+        ("confirm_fingerprint_and_start", 4815, "SHA256:synthetic")
+    ]
+
+
+class ConfirmationController:
+    def __init__(self):
+        self.offer_confirmations = []
+        self.fingerprint_confirmations = []
+
+    def confirm_vast_offer(self, offer_id, price):
+        self.offer_confirmations.append((offer_id, price))
+        return "offer-queued"
+
+    def confirm_vast_fingerprint(self, instance_id, fingerprint):
+        self.fingerprint_confirmations.append((instance_id, fingerprint))
+        return "fingerprint-queued"
+
+
+def confirmation_state(kind):
+    return UIState(
+        state="provisioning",
+        selected_mode="vast",
+        components=(),
+        logs=(),
+        message=None,
+        vast_gpu="A100 SXM4",
+        vast_instance_id=4815 if kind == "fingerprint" else None,
+        vast_hourly_price="1.75",
+        vast_offer_id=101,
+        vast_gpu_ram_mb=81920,
+        vast_reliability="0.987",
+        vast_actual_status="running" if kind == "fingerprint" else None,
+        vast_billing_warning=(
+            "Compute billing may remain active until this instance is destroyed."
+            if kind == "fingerprint"
+            else None
+        ),
+        pending_confirmation=kind,
+        pending_fingerprint=(
+            "SHA256:syntheticFingerprint" if kind == "fingerprint" else None
+        ),
+    )
+
+
+def test_ui_price_prompt_is_prominent_exact_and_queues_resume(monkeypatch):
+    ui = object.__new__(ControlCenterUI)
+    ui.root = object()
+    ui._controller = ConfirmationController()
+    ui._last_confirmation_signature = None
+    rendered = []
+    prompts = []
+    ui._render = rendered.append
+    monkeypatch.setattr(
+        ui_module.messagebox,
+        "askyesno",
+        lambda title, message, **options: prompts.append((title, message)) or True,
+    )
+
+    ui._handle_confirmation(confirmation_state("price"))
+
+    assert ui._controller.offer_confirmations == [(101, "1.75")]
+    assert rendered == ["offer-queued"]
+    assert len(prompts) == 1
+    prompt = " ".join(prompts[0])
+    for expected in ("101", "A100 SXM4", "81920", "0.987", "$1.75", "BILLABLE"):
+        assert expected in prompt
+
+
+def test_ui_fingerprint_prompt_warns_billing_and_queues_exact_resume(monkeypatch):
+    ui = object.__new__(ControlCenterUI)
+    ui.root = object()
+    ui._controller = ConfirmationController()
+    ui._last_confirmation_signature = None
+    rendered = []
+    prompts = []
+    ui._render = rendered.append
+    monkeypatch.setattr(
+        ui_module.messagebox,
+        "askyesno",
+        lambda title, message, **options: prompts.append((title, message)) or True,
+    )
+
+    ui._handle_confirmation(confirmation_state("fingerprint"))
+
+    assert ui._controller.fingerprint_confirmations == [
+        (4815, "SHA256:syntheticFingerprint")
+    ]
+    assert rendered == ["fingerprint-queued"]
+    prompt = " ".join(prompts[0])
+    assert "4815" in prompt
+    assert "SHA256:syntheticFingerprint" in prompt
+    assert "billing may remain active" in prompt
+
+
+def test_ui_declined_confirmation_is_not_reprompted_on_every_poll(monkeypatch):
+    ui = object.__new__(ControlCenterUI)
+    ui.root = object()
+    ui._controller = ConfirmationController()
+    ui._last_confirmation_signature = None
+    prompts = []
+    monkeypatch.setattr(
+        ui_module.messagebox,
+        "askyesno",
+        lambda *args, **options: prompts.append(args) or False,
+    )
+    state = confirmation_state("price")
+
+    ui._handle_confirmation(state)
+    ui._handle_confirmation(state)
+
+    assert len(prompts) == 1
+    assert ui._controller.offer_confirmations == []
+
+
+def test_price_gate_without_instance_is_not_reported_as_running_services():
+    assert not confirmation_state("price").services_running
+    assert confirmation_state("fingerprint").services_running
+
+
+class PollRoot:
+    def __init__(self):
+        self.iconified = 0
+        self.callbacks = []
+
+    def iconify(self):
+        self.iconified += 1
+
+    def after(self, milliseconds, callback):
+        self.callbacks.append((milliseconds, callback))
+
+
+class FixedStateController:
+    def __init__(self, state):
+        self.state = state
+
+    def poll_state(self):
+        return self.state
+
+
+def test_window_does_not_discard_active_vast_instance_after_local_stop():
+    state = confirmation_state("fingerprint")
+    state = UIState(
+        **{
+            **state.__dict__,
+            "state": "stopped",
+            "pending_confirmation": None,
+            "pending_fingerprint": None,
+        }
+    )
+    ui = object.__new__(ControlCenterUI)
+    ui.root = PollRoot()
+    ui._controller = FixedStateController(state)
+    ui._closing_after_stop = True
+    ui._render = lambda _state: None
+    ui._handle_confirmation = lambda _state: None
+    cleanup = []
+    ui._begin_exit_cleanup = lambda: cleanup.append(True)
+
+    ui._poll()
+
+    assert cleanup == []
+    assert ui.root.iconified == 1
+    assert not ui._closing_after_stop

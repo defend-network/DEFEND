@@ -213,6 +213,7 @@ class ControlCenterUI:
         self._closing_after_stop = False
         self._exit_future: object | None = None
         self._last_log_render: tuple[object, ...] | None = None
+        self._last_confirmation_signature: tuple[object, ...] | None = None
         self._mode = tk.StringVar(root, value="")
         self._state = tk.StringVar(root, value="stopped")
         self._component_states = {
@@ -221,6 +222,10 @@ class ControlCenterUI:
         self._vast_gpu = tk.StringVar(root, value="—")
         self._vast_instance = tk.StringVar(root, value="—")
         self._vast_price = tk.StringVar(root, value="—")
+        self._vast_ram = tk.StringVar(root, value="—")
+        self._vast_reliability = tk.StringVar(root, value="—")
+        self._vast_status = tk.StringVar(root, value="—")
+        self._vast_billing = tk.StringVar(root, value="No active Vast billing")
 
         root.title("DEFEND Control Center")
         root.minsize(720, 600)
@@ -286,8 +291,12 @@ class ControlCenterUI:
         for row, (label, variable) in enumerate(
             (
                 ("GPU", self._vast_gpu),
+                ("GPU RAM", self._vast_ram),
+                ("Reliability", self._vast_reliability),
                 ("Instance ID", self._vast_instance),
+                ("Provider status", self._vast_status),
                 ("Exact hourly price", self._vast_price),
+                ("Billing warning", self._vast_billing),
             )
         ):
             ttk.Label(vast, text=label).grid(row=row, column=0, sticky="w")
@@ -322,6 +331,7 @@ class ControlCenterUI:
             )
             return
         try:
+            self._last_confirmation_signature = None
             state = self._controller.start(mode)
             self._mode.set("")
             self._render(state)
@@ -371,6 +381,7 @@ class ControlCenterUI:
             "Stop + Destroy Vast",
             (
                 f"This stops local services and destroys billable instance {instance_id}.\n"
+                f"{state.vast_billing_warning or 'Billing may remain active until destruction.'}\n"
                 f"Enter the exact instance ID {instance_id} to continue."
             ),
             parent=self.root,
@@ -390,14 +401,97 @@ class ControlCenterUI:
         try:
             state = self._controller.poll_state()
             self._render(state)
+            self._handle_confirmation(state)
         except Exception as error:
             self._show_error(error)
             self.root.after(_POLL_MILLISECONDS, self._poll)
             return
         if self._closing_after_stop and state.state in ("stopped", "failed"):
+            if state.vast_instance_id is not None:
+                self._closing_after_stop = False
+                self.root.iconify()
+                self.root.after(_POLL_MILLISECONDS, self._poll)
+                return
             self._begin_exit_cleanup()
             return
         self.root.after(_POLL_MILLISECONDS, self._poll)
+
+    def _handle_confirmation(self, state: UIState) -> None:
+        kind = state.pending_confirmation
+        if kind == "price":
+            signature = (kind, state.vast_offer_id, state.vast_hourly_price)
+        elif kind == "fingerprint":
+            signature = (
+                kind,
+                state.vast_instance_id,
+                state.pending_fingerprint,
+            )
+        else:
+            self._last_confirmation_signature = None
+            return
+        if signature == self._last_confirmation_signature:
+            return
+        self._last_confirmation_signature = signature
+
+        if kind == "price":
+            if (
+                state.vast_offer_id is None
+                or state.vast_hourly_price is None
+                or state.vast_gpu is None
+                or state.vast_gpu_ram_mb is None
+                or state.vast_reliability is None
+            ):
+                return
+            confirmed = messagebox.askyesno(
+                "BILLABLE Vast.ai instance",
+                (
+                    "Create this BILLABLE on-demand Vast.ai instance?\n\n"
+                    f"Offer ID: {state.vast_offer_id}\n"
+                    f"GPU: {state.vast_gpu}\n"
+                    f"GPU RAM: {state.vast_gpu_ram_mb} MB\n"
+                    f"Reliability: {state.vast_reliability}\n"
+                    f"Exact price: ${state.vast_hourly_price}/hour\n\n"
+                    "Charges begin only after you confirm."
+                ),
+                parent=self.root,
+            )
+            if not confirmed:
+                return
+            try:
+                self._render(
+                    self._controller.confirm_vast_offer(
+                        state.vast_offer_id, state.vast_hourly_price
+                    )
+                )
+            except Exception as error:
+                self._show_error(error)
+            return
+
+        if state.vast_instance_id is None or state.pending_fingerprint is None:
+            return
+        billing = state.vast_billing_warning or (
+            "Compute billing may remain active until this instance is destroyed."
+        )
+        confirmed = messagebox.askyesno(
+            "Confirm Vast.ai SSH host",
+            (
+                f"Instance ID: {state.vast_instance_id}\n"
+                f"SSH fingerprint: {state.pending_fingerprint}\n\n"
+                f"{billing}\n\n"
+                "Confirm only if this fingerprint matches the expected Vast host."
+            ),
+            parent=self.root,
+        )
+        if not confirmed:
+            return
+        try:
+            self._render(
+                self._controller.confirm_vast_fingerprint(
+                    state.vast_instance_id, state.pending_fingerprint
+                )
+            )
+        except Exception as error:
+            self._show_error(error)
 
     def _begin_exit_cleanup(self) -> None:
         if self._exit_future is not None:
@@ -446,6 +540,16 @@ class ControlCenterUI:
             if state.vast_hourly_price is not None
             else "—"
         )
+        self._vast_ram.set(
+            f"{state.vast_gpu_ram_mb} MB"
+            if state.vast_gpu_ram_mb is not None
+            else "—"
+        )
+        self._vast_reliability.set(state.vast_reliability or "—")
+        self._vast_status.set(state.vast_actual_status or "—")
+        self._vast_billing.set(
+            state.vast_billing_warning or "No active Vast billing"
+        )
         if state.logs != self._last_log_render:
             self._log.configure(state="normal")
             self._log.delete("1.0", "end")
@@ -476,5 +580,15 @@ class ControlCenterUI:
         if leave_running:
             self.root.iconify()
             return
+        if state.vast_instance_id is not None:
+            messagebox.showwarning(
+                "Vast.ai instance remains active",
+                (
+                    "Local services will stop, but the Control Center will stay "
+                    "minimized so the billable Vast.ai instance remains visible "
+                    "until you explicitly destroy it."
+                ),
+                parent=self.root,
+            )
         self._closing_after_stop = True
         self._controller.stop_local()
