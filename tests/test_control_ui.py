@@ -1,3 +1,4 @@
+import defend_control.ui as ui_module
 from defend_control.ui import ControlCenterUI, SetupDialog
 from types import SimpleNamespace
 
@@ -60,6 +61,14 @@ class Root:
         self.callbacks.append(callback)
 
 
+class Button:
+    def __init__(self):
+        self.states = []
+
+    def configure(self, *, state):
+        self.states.append(state)
+
+
 class StoppedController:
     def __init__(self):
         self.shutdown_calls = 0
@@ -119,6 +128,38 @@ def test_setup_dialog_waits_for_activation_cleanup_before_destroying():
     activation_future.complete = True
     callbacks.pop(0)()
     assert destroyed == [True]
+
+
+def test_setup_dialog_recovers_when_activation_callback_raises(monkeypatch):
+    dialog = object.__new__(SetupDialog)
+    prepared = object()
+    prepare_future = DeferredFuture(prepared)
+    prepare_future.complete = True
+    dialog._save_button = Button()
+    dialog._cancel_button = Button()
+    protocols = []
+    destroyed = []
+    shown = []
+    dialog.protocol = lambda name, callback: protocols.append((name, callback))
+    dialog.destroy = lambda: destroyed.append(True)
+    dialog._on_saved = lambda _result: (_ for _ in ()).throw(
+        RuntimeError("private activation marker")
+    )
+    monkeypatch.setattr(
+        ui_module.messagebox,
+        "showerror",
+        lambda title, message, **_options: shown.append((title, message)),
+    )
+
+    dialog._finish_save(prepare_future)
+
+    assert dialog._save_button.states == ["normal"]
+    assert dialog._cancel_button.states == ["normal"]
+    assert protocols == [("WM_DELETE_WINDOW", dialog.destroy)]
+    assert destroyed == []
+    assert len(shown) == 1
+    assert "RuntimeError" in shown[0][1]
+    assert "private activation marker" not in shown[0][1]
 
 
 def test_controller_swap_does_not_publish_candidate_when_render_fails():

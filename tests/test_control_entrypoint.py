@@ -20,20 +20,37 @@ class CompletedFuture:
     def done(self):
         return True
 
-    def result(self):
+    def result(self, timeout=None):
         if self.error is not None:
             raise self.error
         return self.value
 
 
+class ManualExecutor:
+    def __init__(self):
+        self.submitted = []
+
+    def submit(self, function, *args):
+        self.submitted.append((function, args))
+        return type("Pending", (), {"done": lambda self: False})()
+
+
+class RejectingExecutor:
+    def submit(self, function, *args):
+        raise RuntimeError("synthetic private maintenance detail")
+
+
 class Controller:
-    def __init__(self, *, run=True):
+    def __init__(self, *, run=True, reject_names=()):
         self.run = run
+        self.reject_names = set(reject_names)
         self.submitted = []
         self.shutdown_calls = 0
 
     def submit_work(self, function, *args):
         self.submitted.append((function, args))
+        if function.__name__ in self.reject_names:
+            raise RuntimeError("synthetic private executor detail")
         if self.run:
             return CompletedFuture(function, args)
         return type("Pending", (), {"done": lambda self: False})()
@@ -90,7 +107,13 @@ def candidate_raw(current: ControlSettings):
     return raw
 
 
-def make_coordinator(tmp_path, *, builder=None, old_close_fails=False):
+def make_coordinator(
+    tmp_path,
+    *,
+    builder=None,
+    old_close_fails=False,
+    maintenance_executor=None,
+):
     current = settings(tmp_path)
     old = _Runtime(Controller(), Supervisor(fail_close=old_close_fails))
     settings_store = Store(current)
@@ -108,6 +131,7 @@ def make_coordinator(tmp_path, *, builder=None, old_close_fails=False):
         settings_store=settings_store,
         secret_store=secret_store,
         build_runtime=builder or default_builder,
+        maintenance_executor=maintenance_executor,
     )
     return coordinator, old, settings_store, secret_store, candidates
 
@@ -127,6 +151,31 @@ def test_replacement_build_failure_leaves_old_runtime_and_stores_untouched(tmp_p
     assert settings_store.value.local_model == "old-model"
     assert secret_store.value == {"DEFEND_OWNER_PASS": "old-value"}
     assert old.supervisor.close_calls == 0
+
+
+def test_candidate_executor_rejection_before_persistence_disposes_candidate(tmp_path):
+    candidates = []
+
+    def build_rejecting_candidate(_settings, _secrets):
+        candidate = _Runtime(
+            Controller(reject_names={"_candidate_runtime_probe"}),
+            Supervisor(),
+        )
+        candidates.append(candidate)
+        return candidate
+
+    coordinator, old, settings_store, secret_store, _ = make_coordinator(
+        tmp_path, builder=build_rejecting_candidate
+    )
+
+    with pytest.raises(RuntimeError, match="runtime validation failed"):
+        coordinator.prepare(candidate_raw(coordinator.settings), {"NEW": "value"})
+
+    assert coordinator.runtime is old
+    assert settings_store.value.local_model == "old-model"
+    assert secret_store.value == {"DEFEND_OWNER_PASS": "old-value"}
+    assert candidates[0].supervisor.close_calls == 1
+    assert candidates[0].controller.shutdown_calls == 1
 
 
 def test_secret_persistence_failure_closes_candidate_and_keeps_old_state(tmp_path):
@@ -214,16 +263,66 @@ def test_old_close_failure_keeps_new_runtime_and_config_active_for_retry(tmp_pat
     assert applied == [(candidates[0].controller, "https://ai.example.test")]
 
 
-def test_exit_cleanup_is_submitted_without_closing_on_caller_thread(tmp_path):
-    coordinator, _old, _settings_store, _secret_store, _ = make_coordinator(
-        tmp_path
+def test_activation_retirement_never_uses_candidate_controller_executor(tmp_path):
+    candidates = []
+
+    def build_candidate(_settings, _secrets):
+        candidate = _Runtime(
+            Controller(reject_names={"_retire_runtime"}),
+            Supervisor(),
+        )
+        candidates.append(candidate)
+        return candidate
+
+    coordinator, old, settings_store, _secret_store, _ = make_coordinator(
+        tmp_path, builder=build_candidate
     )
-    coordinator.runtime.controller.run = False
+    prepared = coordinator.prepare(candidate_raw(coordinator.settings), {})
+
+    completion = coordinator.activate(prepared, lambda _controller, _origin: None)
+    completion.result()
+
+    assert coordinator.runtime is candidates[0]
+    assert settings_store.value.local_model == "new-model"
+    assert old.supervisor.close_calls == 1
+    assert candidates[0].controller.submit_work(str.upper, "usable").result() == (
+        "USABLE"
+    )
+
+
+def test_activation_handoff_rejection_rolls_back_before_ui_publication(tmp_path):
+    coordinator, old, settings_store, secret_store, candidates = make_coordinator(
+        tmp_path, maintenance_executor=RejectingExecutor()
+    )
+    prepared = coordinator.prepare(
+        candidate_raw(coordinator.settings), {"NEW": "value"}
+    )
+    applied = []
+
+    with pytest.raises(RuntimeError, match="runtime swap failed"):
+        coordinator.activate(
+            prepared,
+            lambda controller, origin: applied.append((controller, origin)),
+        )
+
+    assert applied == []
+    assert coordinator.runtime is old
+    assert settings_store.value.local_model == "old-model"
+    assert secret_store.value == {"DEFEND_OWNER_PASS": "old-value"}
+    assert candidates[0].supervisor.close_calls == 1
+    assert candidates[0].controller.shutdown_calls == 1
+
+
+def test_exit_cleanup_is_submitted_without_closing_on_caller_thread(tmp_path):
+    maintenance = ManualExecutor()
+    coordinator, _old, _settings_store, _secret_store, _ = make_coordinator(
+        tmp_path, maintenance_executor=maintenance
+    )
 
     coordinator.submit_exit_cleanup()
 
     assert coordinator.runtime.supervisor.close_calls == 0
-    function, args = coordinator.runtime.controller.submitted[0]
+    function, args = maintenance.submitted[0]
     function(*args)
     assert coordinator.runtime.supervisor.close_calls == 1
 

@@ -58,10 +58,10 @@ class _StartCommand:
         return self._orchestrator.start(mode, self._cancellation)
 
 
-@dataclass(frozen=True)
+@dataclass
 class _StartRequest:
-    future: object
     cancellation: StartCancellation
+    future: object | None = None
 
 
 class ControlController:
@@ -98,21 +98,33 @@ class ControlController:
         if mode not in ("vast", "ollama"):
             raise ValueError("an explicit Vast.ai or Local Ollama mode is required")
         cancellation = StartCancellation()
-        future = self.submit_work(
-            _StartCommand(self._orchestrator, cancellation), mode
-        )
         with self._future_lock:
             retained: list[_StartRequest] = []
-            for request in self._start_requests:
-                done = getattr(request.future, "done", None)
+            for candidate in self._start_requests:
+                done = getattr(candidate.future, "done", None)
                 try:
                     completed = bool(done()) if callable(done) else False
                 except Exception:
                     completed = False
                 if not completed:
-                    retained.append(request)
+                    retained.append(candidate)
             self._start_requests = retained
-            self._start_requests.append(_StartRequest(future, cancellation))
+            request = _StartRequest(cancellation)
+            self._start_requests.append(request)
+        try:
+            future = self.submit_work(
+                _StartCommand(self._orchestrator, cancellation), mode
+            )
+        except Exception:
+            with self._future_lock:
+                self._start_requests = [
+                    candidate
+                    for candidate in self._start_requests
+                    if candidate is not request
+                ]
+            raise
+        with self._future_lock:
+            request.future = future
         return self.poll_state()
 
     def _cancel_pending_starts(self) -> None:

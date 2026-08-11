@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from decimal import Decimal
 import os
@@ -32,6 +33,19 @@ class _PreparedRuntimeReplacement:
     previous_secrets: dict[str, str] = field(repr=False)
 
 
+def _candidate_runtime_probe() -> None:
+    return None
+
+
+@dataclass
+class _ActivationHandoff:
+    prepared: _PreparedRuntimeReplacement
+    previous_runtime: _Runtime
+    ready: threading.Event = field(default_factory=threading.Event)
+    action: str | None = None
+    error_type: str | None = None
+
+
 class _RuntimeCoordinator:
     def __init__(
         self,
@@ -41,12 +55,18 @@ class _RuntimeCoordinator:
         settings_store,
         secret_store,
         build_runtime,
+        maintenance_executor=None,
     ) -> None:
         self._runtime = runtime
         self._settings = settings
         self._settings_store = settings_store
         self._secret_store = secret_store
         self._build_runtime = build_runtime
+        self._maintenance_executor = maintenance_executor or ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="defend-runtime-maintenance",
+        )
+        self._owns_maintenance_executor = maintenance_executor is None
         self._retired: list[_Runtime] = []
         self._lock = threading.RLock()
 
@@ -110,6 +130,21 @@ class _RuntimeCoordinator:
                 f"runtime build failed ({type(error).__name__})"
             ) from None
 
+        try:
+            validation = candidate.controller.submit_work(
+                _candidate_runtime_probe
+            )
+            validation.result(timeout=5)
+        except Exception as error:
+            validation_type = type(error).__name__
+            cleanup_type = self._dispose_candidate(candidate)
+            detail = (
+                f"; cleanup failed ({cleanup_type})" if cleanup_type else ""
+            )
+            raise RuntimeError(
+                f"runtime validation failed ({validation_type}){detail}"
+            ) from None
+
         previous_settings = self.settings
         try:
             self._secret_store.save(candidate_secrets)
@@ -159,6 +194,17 @@ class _RuntimeCoordinator:
             if retired in self._retired:
                 self._retired.remove(retired)
 
+    def _complete_activation(self, handoff: _ActivationHandoff) -> None:
+        handoff.ready.wait()
+        if handoff.action == "rollback":
+            self._rollback_swap(
+                handoff.prepared,
+                handoff.error_type or "Error",
+            )
+        if handoff.action != "retire":
+            raise RuntimeError("runtime activation handoff failed (RuntimeError)")
+        self._retire_runtime(handoff.previous_runtime)
+
     def activate(
         self,
         prepared: _PreparedRuntimeReplacement,
@@ -167,6 +213,13 @@ class _RuntimeCoordinator:
         with self._lock:
             previous_runtime = self._runtime
             previous_settings = self._settings
+        handoff = _ActivationHandoff(prepared, previous_runtime)
+        try:
+            completion = self._maintenance_executor.submit(
+                self._complete_activation, handoff
+            )
+        except Exception as error:
+            self._rollback_swap(prepared, type(error).__name__)
         try:
             apply_controller(
                 prepared.candidate_runtime.controller,
@@ -181,17 +234,18 @@ class _RuntimeCoordinator:
                 )
             except Exception:
                 pass
-            return prepared.candidate_runtime.controller.submit_work(
-                self._rollback_swap, prepared, error_type
-            )
+            handoff.action = "rollback"
+            handoff.error_type = error_type
+            handoff.ready.set()
+            return completion
 
         with self._lock:
             self._runtime = prepared.candidate_runtime
             self._settings = prepared.updated_settings
             self._retired.append(previous_runtime)
-        return prepared.candidate_runtime.controller.submit_work(
-            self._retire_runtime, previous_runtime
-        )
+        handoff.action = "retire"
+        handoff.ready.set()
+        return completion
 
     def _close_all(self) -> None:
         with self._lock:
@@ -207,13 +261,18 @@ class _RuntimeCoordinator:
             ) from None
 
     def submit_exit_cleanup(self):
-        return self.runtime.controller.submit_work(self._close_all)
+        return self._maintenance_executor.submit(self._close_all)
 
     def shutdown_controllers(self) -> None:
         with self._lock:
             runtimes = (*self._retired, self._runtime)
         for runtime in runtimes:
             runtime.controller.shutdown()
+        if self._owns_maintenance_executor:
+            self._maintenance_executor.shutdown(
+                wait=False,
+                cancel_futures=True,
+            )
 
 
 def _default_settings(repo_root: Path) -> ControlSettings:

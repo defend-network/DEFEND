@@ -159,7 +159,18 @@ class SetupDialog(tk.Toplevel):
                 parent=self,
             )
             return
-        completion = self._on_saved(result)
+        try:
+            completion = self._on_saved(result)
+        except Exception as error:
+            self._save_button.configure(state="normal")
+            self._cancel_button.configure(state="normal")
+            self.protocol("WM_DELETE_WINDOW", self.destroy)
+            messagebox.showerror(
+                "Setup could not be activated",
+                f"The previous runtime remains active ({type(error).__name__}).",
+                parent=self,
+            )
+            return
         done = getattr(completion, "done", None)
         if callable(done):
             self.after(50, lambda: self._finish_activation(completion))

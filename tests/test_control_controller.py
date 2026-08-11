@@ -1,4 +1,5 @@
 from dataclasses import FrozenInstanceError
+import threading
 
 import pytest
 
@@ -67,6 +68,48 @@ class InlineExecutor(RecordingExecutor):
         return type("Future", (), {"result": lambda self: function(*args)})()
 
 
+class CompletedFuture:
+    def __init__(self, function, args):
+        self.error = None
+        try:
+            self.value = function(*args)
+        except BaseException as error:
+            self.error = error
+
+    def done(self):
+        return True
+
+    def cancel(self):
+        return False
+
+    def result(self):
+        if self.error is not None:
+            raise self.error
+        return self.value
+
+
+class SubmitBarrierExecutor(RecordingExecutor):
+    def __init__(self):
+        super().__init__()
+        self.start_submit_entered = threading.Event()
+        self.release_start_submit = threading.Event()
+
+    def submit(self, function, *args):
+        self.submitted.append((function.__name__, *args))
+        if function.__name__ == "start":
+            self.start_submit_entered.set()
+            assert self.release_start_submit.wait(2)
+        return CompletedFuture(function, args)
+
+
+class RejectFirstExecutor(RecordingExecutor):
+    def submit(self, function, *args):
+        self.submitted.append((function.__name__, *args))
+        if len(self.submitted) == 1:
+            raise RuntimeError("synthetic submit detail")
+        return CompletedFuture(function, args)
+
+
 class FakeOrchestrator:
     def __init__(self, *, instance_id=None, logs=()):
         self.instance_id = instance_id
@@ -74,9 +117,12 @@ class FakeOrchestrator:
         self.cancelled = 0
         self.destroyed = []
         self.start_cancellations = []
+        self.launches = []
 
     def start(self, mode, cancellation=None):
         self.start_cancellations.append(cancellation)
+        if cancellation is None or not cancellation.is_cancelled():
+            self.launches.append(mode)
         return mode
 
     def cancel_start(self):
@@ -164,6 +210,46 @@ def test_stop_token_survives_future_running_before_orchestrator_entry():
     assert executor.futures[0].cancel_calls == 1
     assert len(orchestrator.start_cancellations) == 1
     assert orchestrator.start_cancellations[0].is_cancelled()
+
+
+def test_stop_sees_start_token_before_executor_submit_returns():
+    orchestrator = FakeOrchestrator()
+    executor = SubmitBarrierExecutor()
+    controller = ControlController(orchestrator, executor=executor)
+    errors = []
+
+    def run_start():
+        try:
+            controller.start("ollama")
+        except BaseException as error:
+            errors.append(error)
+
+    worker = threading.Thread(target=run_start)
+
+    worker.start()
+    assert executor.start_submit_entered.wait(1)
+    controller.stop_local()
+    executor.release_start_submit.set()
+    worker.join(2)
+
+    assert not worker.is_alive()
+    assert errors == []
+    assert len(orchestrator.start_cancellations) == 1
+    assert orchestrator.start_cancellations[0].is_cancelled()
+    assert orchestrator.launches == []
+
+
+def test_failed_start_submission_does_not_leave_stale_cancellation_request():
+    orchestrator = FakeOrchestrator()
+    executor = RejectFirstExecutor()
+    controller = ControlController(orchestrator, executor=executor)
+
+    with pytest.raises(RuntimeError, match="synthetic submit detail"):
+        controller.start("ollama")
+    controller.stop_local()
+
+    assert orchestrator.cancelled == 1
+    assert executor.submitted == [("start", "ollama"), ("stop_local",)]
 
 
 def test_ui_state_services_running_when_failed_snapshot_retains_ownership():
