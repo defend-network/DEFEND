@@ -25,6 +25,7 @@ import {
   isOwner,
   loadAdminSession,
 } from "@/lib/adminAuth";
+import { UsersRolesPanel } from "./admin/identity/UsersRolesPanel";
 
 type View =
   | "overview"
@@ -166,7 +167,10 @@ export function AdminWorkstation() {
       </header>
 
       <div className="admin-layout">
-        <aside className="admin-nav">
+        <aside
+          className="admin-nav admin-nav--responsive"
+          aria-label="Admin navigation"
+        >
           <div className="admin-nav-title">Workstation</div>
           {navItems.map((item) => {
             const Icon = item.icon;
@@ -190,7 +194,7 @@ export function AdminWorkstation() {
           </div>
         </aside>
 
-        <main className="admin-main">
+        <main className={view === "users" ? "admin-main admin-main--identity" : "admin-main"}>
           {error && <div className="admin-banner-err">{error}</div>}
 
           {view === "overview" && (
@@ -318,7 +322,7 @@ export function AdminWorkstation() {
             />
           )}
           {view === "users" && (
-            <Placeholder title="Users & Roles" body="Single-operator mode. Multi-user roles later." />
+            <UsersRolesPanel session={session} />
           )}
           {view === "audit" && (
             <Placeholder

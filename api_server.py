@@ -5,10 +5,13 @@ DEFEND API server — thin FastAPI adapter for defend-ui-v2 (Next.js).
 from __future__ import annotations
 
 import asyncio
+import logging
 import traceback
 import os
+import threading
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -19,10 +22,13 @@ from pydantic import BaseModel, Field
 from control_plane import AgentRequest, ControlPlane
 from registry import build_default_registry
 from model_factory import build_model_client
-from admin_auth import AdminPrincipal, require_admin
+from admin_auth import AdminPrincipal, configure_identity_store, require_admin
 from api_admin_tt_routes import router as admin_tt_router
 from api_batch3_routes import router as batch3_router, ensure_visitor_session
+from api_identity_routes import SensitivePathRedactionMiddleware, router as identity_router
+from api_identity_admin_routes import router as identity_admin_router
 from defend_data import DataCore
+from defend_data.ingest_policy import AIIngestExcluded, assert_ai_ingest_allowed
 
 from production_policy import ProductionPolicy
 
@@ -225,9 +231,57 @@ class AppState:
     model: Any = None
     cp: ControlPlane | None = None
     data: DataCore | None = None
+    last_connection_cleanup_at: datetime | None = None
 
 
 state = AppState()
+_CONNECTION_RETENTION = timedelta(days=90)
+_CONNECTION_CLEANUP_INTERVAL = timedelta(days=1)
+_connection_cleanup_lock = threading.Lock()
+_logger = logging.getLogger(__name__)
+
+
+def _connection_retention_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _log_connection_cleanup_failure(error: Exception) -> None:
+    _logger.warning(
+        "connection retention cleanup failed error_type=%s",
+        type(error).__name__[:80],
+    )
+
+
+def _run_connection_retention_cleanup(
+    data: DataCore,
+    *,
+    now: datetime | None = None,
+) -> int:
+    current = now if now is not None else _connection_retention_now()
+    if current.tzinfo is None or current.utcoffset() is None:
+        raise ValueError("connection retention cleanup requires a timezone-aware time")
+    current = current.astimezone(timezone.utc)
+
+    with _connection_cleanup_lock:
+        previous = state.last_connection_cleanup_at
+        if previous is not None and current < previous + _CONNECTION_CLEANUP_INTERVAL:
+            return 0
+
+        cutoff = current - _CONNECTION_RETENTION
+        try:
+            deleted = data.visitors.purge_connection_history(
+                before=cutoff.isoformat()
+            )
+        except Exception as error:
+            _log_connection_cleanup_failure(error)
+            return 0
+        state.last_connection_cleanup_at = current
+
+    print(
+        "[DEFEND API] connection retention cleanup "
+        f"deleted={deleted} cutoff={cutoff.isoformat()}"
+    )
+    return deleted
 
 
 def _auth(authorization: str | None) -> None:
@@ -241,41 +295,71 @@ def _auth(authorization: str | None) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    data = DataCore(DATA_ROOT)
-    registry = build_default_registry(memory_manager=data.memory)
-    model = build_model_client()
-    if hasattr(model, "__aenter__"):
-        await model.__aenter__()
-    state.data = data
-    app.state.defend_data = data
-    state.model = model
-    state.cp = ControlPlane(
-        tool_registry=registry,
-        model_client=model,
-        memory_manager=data.memory,
-        conversation_store=data.conversations,
-        policy_engine=ProductionPolicy(),
-        parallel_tool_limit=int(os.getenv("DEFEND_PARALLEL_TOOLS", "3")),
-    )
-    backend = os.getenv("DEFEND_MODEL_BACKEND", "ollama")
-    print(
-        f"[DEFEND API] backend={backend} model={MODEL_NAME} "
-        f"data_root={data.paths.root} tools={list(registry.keys())}"
-    )
+    data: DataCore | None = None
+    model: Any = None
+    model_needs_exit = False
     try:
+        data = DataCore(DATA_ROOT)
+        # Refuse to bind application traffic until every still-live invitation
+        # uses the fragment-only credential transport.
+        data.identity.assert_invitation_transport_ready()
+        state.last_connection_cleanup_at = None
+        try:
+            _run_connection_retention_cleanup(data)
+        except Exception as error:
+            _log_connection_cleanup_failure(error)
+        configure_identity_store(data.identity)
+        registry = build_default_registry(memory_manager=data.memory)
+        model = build_model_client()
+        if hasattr(model, "__aenter__"):
+            await model.__aenter__()
+            model_needs_exit = hasattr(model, "__aexit__")
+        elif hasattr(model, "__aexit__"):
+            model_needs_exit = True
+        state.data = data
+        app.state.defend_data = data
+        state.model = model
+        state.cp = ControlPlane(
+            tool_registry=registry,
+            model_client=model,
+            memory_manager=data.memory,
+            conversation_store=data.conversations,
+            policy_engine=ProductionPolicy(),
+            parallel_tool_limit=int(os.getenv("DEFEND_PARALLEL_TOOLS", "3")),
+        )
+        backend = os.getenv("DEFEND_MODEL_BACKEND", "ollama")
+        print(
+            f"[DEFEND API] backend={backend} model={MODEL_NAME} "
+            f"data_root={data.paths.root} tools={list(registry.keys())}"
+        )
         yield
     finally:
-        if state.model is not None and hasattr(state.model, "__aexit__"):
-            await state.model.__aexit__(None, None, None)
-        if state.data is not None:
-            state.data.close()
-        state.model = None
-        state.cp = None
-        state.data = None
-        app.state.defend_data = None
+        try:
+            if model_needs_exit:
+                await model.__aexit__(None, None, None)
+        finally:
+            try:
+                if data is not None:
+                    data.close()
+            finally:
+                state.model = None
+                state.cp = None
+                state.data = None
+                app.state.defend_data = None
 
 
 app = FastAPI(title="DEFEND AI API", version="0.4.0", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def connection_retention_cleanup_middleware(request: Request, call_next):
+    data = getattr(request.app.state, "defend_data", None)
+    if data is not None:
+        try:
+            _run_connection_retention_cleanup(data)
+        except Exception as error:
+            _log_connection_cleanup_failure(error)
+    return await call_next(request)
 
 app.add_middleware(
     CORSMiddleware,
@@ -291,11 +375,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(SensitivePathRedactionMiddleware)
 
 
 # Additive server-side admin login + owner-only TableTennis routes.
 app.include_router(admin_tt_router)
 app.include_router(batch3_router)
+app.include_router(identity_router)
+app.include_router(identity_admin_router)
 
 
 async def _health_payload() -> dict[str, Any]:
@@ -497,7 +584,8 @@ async def upload_files(
         from documents_store import save_document, content_hash_bytes  # type: ignore
 
     for f in files:
-        raw_name = Path(f.filename or "upload.bin").name
+        filename = f.filename or "upload.bin"
+        raw_name = Path(filename).name
         ext = Path(raw_name).suffix.lower()
         if ext not in ALLOWED_EXT:
             raise HTTPException(status_code=400, detail=f"Extension not allowed: {ext}")
@@ -506,6 +594,10 @@ async def upload_files(
         data = await f.read()
         if len(data) > 25_000_000:
             raise HTTPException(status_code=400, detail=f"File too large: {raw_name}")
+        try:
+            assert_ai_ingest_allowed(filename=filename, content_prefix=data[:4096])
+        except AIIngestExcluded as e:
+            raise HTTPException(status_code=400, detail=str(e))
         dest.write_bytes(data)
 
         # Register in DocumentsStore so documents.read / search can resolve the ID
@@ -526,6 +618,7 @@ async def upload_files(
             "source_id": f"session:{doc_id}",
             "requested_url": None,
             "final_url": None,
+            "source_path": filename,
             "media_type": media,
             "content_type": f.content_type,
             "page_count": None,

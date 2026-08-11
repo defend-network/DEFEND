@@ -1,37 +1,34 @@
 """Server-side admin/owner authentication for DEFEND admin surfaces.
 
-No usable credential defaults are shipped. Configure:
-  DEFEND_ADMIN_USER
-  DEFEND_ADMIN_PASS
-  DEFEND_OWNER_USER
-  DEFEND_OWNER_PASS
-
-Tokens are in-memory, expire automatically, and are invalidated by API restart.
-This is intentionally small and dependency-free so it can later be replaced by a
-real identity provider without changing the TableTennis routes.
+The initial owner is bootstrapped from ``DEFEND_OWNER_USER`` and
+``DEFEND_OWNER_PASS``. ``DEFEND_OWNER_EMAIL`` may override the stable owner email
+used by the identity store. Admin accounts are created through the invitation
+flow rather than environment credentials.
 """
 from __future__ import annotations
 
 import os
-import secrets
 import time
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Literal
 
 from fastapi import Header, HTTPException
+
+from defend_data.identity_store import AuthenticationFailed, IdentityStore
 
 AdminRole = Literal["admin", "owner"]
 
 
 @dataclass(frozen=True)
 class AdminPrincipal:
+    account_id: str
     username: str
     role: AdminRole
     expires_at: float
 
 
-# token -> principal
-_TOKENS: dict[str, AdminPrincipal] = {}
+_IDENTITY_STORE: IdentityStore | None = None
 
 
 def _session_seconds() -> int:
@@ -42,61 +39,89 @@ def _session_seconds() -> int:
     return max(900, min(int(hours * 3600), 7 * 24 * 3600))
 
 
-def _configured_credentials() -> tuple[str, str, str, str]:
-    admin_user = os.getenv("DEFEND_ADMIN_USER", "admin").strip()
+def _configured_owner() -> tuple[str, str, str]:
     owner_user = os.getenv("DEFEND_OWNER_USER", "MASSA").strip()
-    admin_pass = os.getenv("DEFEND_ADMIN_PASS", "")
     owner_pass = os.getenv("DEFEND_OWNER_PASS", "")
+    owner_email = os.getenv(
+        "DEFEND_OWNER_EMAIL", "chairman@defend-network.org"
+    ).strip()
 
-    # Usernames may have harmless defaults; passwords may not.
-    if not admin_pass or not owner_pass:
+    if not owner_user or not owner_pass or not owner_email:
         raise HTTPException(
             status_code=503,
             detail=(
-                "Admin credentials are not configured. Set DEFEND_ADMIN_PASS "
-                "and DEFEND_OWNER_PASS in the API environment."
+                "Owner credentials are not configured. Set DEFEND_OWNER_USER, "
+                "DEFEND_OWNER_PASS, and optionally DEFEND_OWNER_EMAIL in the API "
+                "environment."
             ),
         )
-    if admin_user == owner_user:
-        raise HTTPException(status_code=503, detail="Admin and owner usernames must differ")
-    if secrets.compare_digest(admin_pass, owner_pass):
-        raise HTTPException(status_code=503, detail="Admin and owner passwords must differ")
-    return admin_user, admin_pass, owner_user, owner_pass
+    return owner_user, owner_email, owner_pass
+
+
+def configure_identity_store(store: IdentityStore) -> None:
+    """Configure durable admin auth and idempotently bootstrap the owner."""
+    if not isinstance(store, IdentityStore):
+        raise TypeError("store must be an IdentityStore")
+    owner_user, owner_email, owner_pass = _configured_owner()
+    try:
+        store.bootstrap_owner(
+            email=owner_email,
+            display_name=owner_user,
+            password=owner_pass,
+            username=owner_user,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Owner identity configuration is invalid",
+        ) from exc
+    global _IDENTITY_STORE
+    _IDENTITY_STORE = store
+
+
+def _identity_store() -> IdentityStore:
+    if _IDENTITY_STORE is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Identity store is not configured",
+        )
+    return _IDENTITY_STORE
+
+
+def canonical_admin_login_identifier(identifier: str) -> str:
+    """Collapse known account aliases before login rate-limit hashing."""
+    cleaned = (identifier or "").strip()
+    try:
+        account = _identity_store().get_account(cleaned)
+    except (TypeError, ValueError):
+        account = None
+    return account.account_id if account is not None else cleaned
 
 
 def authenticate(username: str, password: str) -> tuple[str, AdminRole, str, int]:
-    admin_user, admin_pass, owner_user, owner_pass = _configured_credentials()
-    u = (username or "").strip()
-    p = password or ""
-
-    role: AdminRole | None = None
-    canonical_user = u
-    if secrets.compare_digest(u, owner_user) and secrets.compare_digest(p, owner_pass):
-        role = "owner"
-        canonical_user = owner_user
-    elif secrets.compare_digest(u, admin_user) and secrets.compare_digest(p, admin_pass):
-        role = "admin"
-        canonical_user = admin_user
-    if role is None:
+    store = _identity_store()
+    identifier = (username or "").strip()
+    try:
+        account = store.authenticate_account(identifier, password or "")
+    except AuthenticationFailed as exc:
+        raise HTTPException(status_code=401, detail="Invalid credentials") from exc
+    if account.role not in {"admin", "owner"}:
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     ttl = _session_seconds()
-    expires_at = time.time() + ttl
-    token = secrets.token_urlsafe(32)
-    _TOKENS[token] = AdminPrincipal(canonical_user, role, expires_at)
-    _purge_expired()
-    return canonical_user, role, token, ttl
+    expires_at = datetime.now(timezone.utc) + timedelta(seconds=ttl)
+    token = store.create_session(account.account_id, expires_at=expires_at.isoformat())
+    owner_user, _, _ = _configured_owner()
+    canonical_user = (
+        owner_user
+        if account.role == "owner" and identifier.casefold() == owner_user.casefold()
+        else account.email
+    )
+    return canonical_user, account.role, token, ttl
 
 
 def revoke(token: str) -> None:
-    _TOKENS.pop(token, None)
-
-
-def _purge_expired() -> None:
-    now = time.time()
-    for token, principal in list(_TOKENS.items()):
-        if principal.expires_at <= now:
-            _TOKENS.pop(token, None)
+    _identity_store().revoke_session(token)
 
 
 def _bearer_token(authorization: str | None) -> str:
@@ -109,12 +134,20 @@ def _bearer_token(authorization: str | None) -> str:
 
 
 def require_admin(authorization: str | None = Header(default=None)) -> AdminPrincipal:
-    _purge_expired()
     token = _bearer_token(authorization)
-    principal = _TOKENS.get(token)
-    if principal is None:
+    account = _identity_store().resolve_session(token)
+    if account is None:
         raise HTTPException(status_code=401, detail="Admin session expired or invalid")
-    return principal
+    if account.role not in {"admin", "owner"}:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return AdminPrincipal(
+        account_id=account.account_id,
+        username=account.email,
+        role=account.role,
+        # Authorization always uses the persisted session expiry. This retained
+        # field is presentation-only compatibility for existing call sites.
+        expires_at=time.time() + _session_seconds(),
+    )
 
 
 def require_owner(authorization: str | None = Header(default=None)) -> AdminPrincipal:

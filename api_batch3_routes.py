@@ -11,6 +11,7 @@ from admin_auth import AdminPrincipal, require_owner
 from defend_data.visitor_store import (
     client_ip,
     coarse_client_meta,
+    cookie_identifiers_hmac,
     fingerprint_hmac,
 )
 
@@ -18,6 +19,7 @@ router = APIRouter()
 
 VISITOR_COOKIE = "defend_vid"
 SESSION_COOKIE = "defend_vsid"
+ACCOUNT_SESSION_COOKIE = "defend_account_session"
 COOKIE_MAX_AGE = 60 * 60 * 24 * 365
 
 
@@ -32,6 +34,10 @@ def _truthy_env(name: str, default: str = "false") -> bool:
     return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _trust_cloudflare() -> bool:
+    return os.getenv("DEFEND_TRUST_CLOUDFLARE", "false").strip().lower() == "true"
+
+
 def _set_cookie(response: Response, name: str, value: str) -> None:
     response.set_cookie(
         name,
@@ -44,6 +50,19 @@ def _set_cookie(response: Response, name: str, value: str) -> None:
     )
 
 
+def _link_authenticated_visitor(data, request: Request, visitor_id: str) -> None:
+    raw_session = request.cookies.get(ACCOUNT_SESSION_COOKIE)
+    identity = getattr(data, "identity", None)
+    if not raw_session or identity is None:
+        return
+    account = identity.resolve_session(raw_session)
+    if account is not None:
+        identity.link_visitor(
+            account_id=account.account_id,
+            visitor_id=visitor_id,
+        )
+
+
 def ensure_visitor_session(request: Request, response: Response) -> tuple[str, str]:
     data = _data(request)
     headers = {k.lower(): v for k, v in request.headers.items()}
@@ -51,7 +70,7 @@ def ensure_visitor_session(request: Request, response: Response) -> tuple[str, s
     ip = client_ip(
         headers,
         observed,
-        trust_cloudflare=_truthy_env("DEFEND_TRUST_CLOUDFLARE", "false"),
+        trust_cloudflare=_trust_cloudflare(),
     )
     meta = coarse_client_meta(
         request.headers.get("user-agent"),
@@ -74,10 +93,19 @@ def ensure_visitor_session(request: Request, response: Response) -> tuple[str, s
         visitor_id,
         client_meta=meta,
     )
+    data.visitors.record_connection(
+        visitor_id=visitor_id,
+        session_id=session_id,
+        ip_address=ip,
+        user_agent=request.headers.get("user-agent", ""),
+        client_meta=meta,
+        cookie_hash=cookie_identifiers_hmac(visitor_id, session_id),
+    )
     if old_vid != visitor_id:
         _set_cookie(response, VISITOR_COOKIE, visitor_id)
     if old_sid != session_id:
         _set_cookie(response, SESSION_COOKIE, session_id)
+    _link_authenticated_visitor(data, request, visitor_id)
     return visitor_id, session_id
 
 
@@ -220,13 +248,8 @@ async def analytics_conversation(
 ) -> dict[str, Any]:
     data = _data(request)
     messages = data.conversations.get_messages(conversation_id, limit=1000)
-    if not messages:
-        row = data.visitors.conn.execute(
-            "SELECT 1 FROM conversation_index WHERE conversation_id=?",
-            (conversation_id,),
-        ).fetchone()
-        if row is None:
-            raise HTTPException(status_code=404, detail="Unknown conversation")
+    if not messages and not data.visitors.conversation_exists(conversation_id):
+        raise HTTPException(status_code=404, detail="Unknown conversation")
     return {
         "conversation_id": conversation_id,
         "messages": [
