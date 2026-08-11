@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from typing import Literal
 
 
@@ -12,3 +13,10 @@ ServiceState = Literal[
     "stopping",
     "failed",
 ]
+
+
+@dataclass(frozen=True)
+class ModelReady:
+    model: str
+    backend: str
+    endpoint: str
