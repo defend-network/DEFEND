@@ -73,6 +73,7 @@ def test_rejects_public_origins_with_surrounding_or_control_whitespace(
     ("origin", "message"),
     [
         ("https://example.test:notaport", "port"),
+        ("https://example.test:", "port"),
         ("https://:", "hostname"),
     ],
 )

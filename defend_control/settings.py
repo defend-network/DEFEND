@@ -120,6 +120,8 @@ class ControlSettings:
         hostname = parsed_origin.hostname
         if hostname is None or not _is_valid_hostname(hostname):
             raise ValueError("public_web_origin must contain a valid hostname")
+        if parsed_origin.netloc.endswith(":"):
+            raise ValueError("public_web_origin must contain a valid port")
         try:
             parsed_origin.port
         except ValueError as exc:
