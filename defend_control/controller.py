@@ -6,7 +6,11 @@ import threading
 from typing import Any
 import webbrowser
 
-from .orchestrator import ComponentSnapshot, StackOrchestrator
+from .orchestrator import (
+    ComponentSnapshot,
+    StackOrchestrator,
+    StartCancellation,
+)
 from .processes import LogEntry
 from .redaction import redact_text
 from .types import ModelMode, ServiceState
@@ -26,10 +30,38 @@ class UIState:
     vast_gpu: str | None
     vast_instance_id: int | None
     vast_hourly_price: str | None
+    owned_services: tuple[str, ...] = ()
 
     @property
     def services_running(self) -> bool:
-        return self.state not in ("stopped", "failed")
+        if self.state not in ("stopped", "failed") or self.owned_services:
+            return True
+        return any(
+            component.state
+            not in ("stopped", "not needed", "unavailable")
+            for component in self.components
+        )
+
+
+class _StartCommand:
+    __name__ = "start"
+
+    def __init__(
+        self,
+        orchestrator: StackOrchestrator,
+        cancellation: StartCancellation,
+    ) -> None:
+        self._orchestrator = orchestrator
+        self._cancellation = cancellation
+
+    def __call__(self, mode: ModelMode):
+        return self._orchestrator.start(mode, self._cancellation)
+
+
+@dataclass(frozen=True)
+class _StartRequest:
+    future: object
+    cancellation: StartCancellation
 
 
 class ControlController:
@@ -50,7 +82,7 @@ class ControlController:
         self._owns_executor = executor is None
         self._max_ui_log_entries = min(int(max_ui_log_entries), 2_000)
         self._max_ui_log_chars = min(int(max_ui_log_chars), 4_096)
-        self._start_futures: list[object] = []
+        self._start_requests: list[_StartRequest] = []
         self._future_lock = threading.Lock()
 
     def _submit(self, function, *args: object) -> UIState:
@@ -65,36 +97,39 @@ class ControlController:
     def start(self, mode: ModelMode) -> UIState:
         if mode not in ("vast", "ollama"):
             raise ValueError("an explicit Vast.ai or Local Ollama mode is required")
-        future = self.submit_work(self._orchestrator.start, mode)
+        cancellation = StartCancellation()
+        future = self.submit_work(
+            _StartCommand(self._orchestrator, cancellation), mode
+        )
         with self._future_lock:
-            retained: list[object] = []
-            for candidate in self._start_futures:
-                done = getattr(candidate, "done", None)
+            retained: list[_StartRequest] = []
+            for request in self._start_requests:
+                done = getattr(request.future, "done", None)
                 try:
                     completed = bool(done()) if callable(done) else False
                 except Exception:
                     completed = False
                 if not completed:
-                    retained.append(candidate)
-            self._start_futures = retained
-            self._start_futures.append(future)
+                    retained.append(request)
+            self._start_requests = retained
+            self._start_requests.append(_StartRequest(future, cancellation))
         return self.poll_state()
 
     def _cancel_pending_starts(self) -> None:
         with self._future_lock:
-            futures = tuple(self._start_futures)
-            self._start_futures.clear()
-        signal_running_start = not futures
-        for future in futures:
-            cancel = getattr(future, "cancel", None)
-            try:
-                cancelled = bool(cancel()) if callable(cancel) else False
-            except Exception:
-                cancelled = False
-            if not cancelled:
-                signal_running_start = True
-        if signal_running_start:
+            requests = tuple(self._start_requests)
+            self._start_requests.clear()
+        if not requests:
             self._orchestrator.cancel_start()
+            return
+        for request in requests:
+            request.cancellation.cancel()
+            cancel = getattr(request.future, "cancel", None)
+            try:
+                if callable(cancel):
+                    cancel()
+            except Exception:
+                pass
 
     def stop_local(self) -> UIState:
         self._cancel_pending_starts()
@@ -145,6 +180,7 @@ class ControlController:
             vast_gpu=snapshot.vast_gpu,
             vast_instance_id=snapshot.vast_instance_id,
             vast_hourly_price=snapshot.vast_hourly_price,
+            owned_services=snapshot.owned_services,
         )
 
     def shutdown(self) -> None:

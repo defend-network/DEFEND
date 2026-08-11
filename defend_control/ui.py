@@ -49,7 +49,7 @@ class SetupDialog(tk.Toplevel):
         parent: tk.Misc,
         settings: ControlSettings,
         submit_save: Callable[[dict[str, object], dict[str, str]], object],
-        on_saved: Callable[[object], None],
+        on_saved: Callable[[object], object],
     ) -> None:
         super().__init__(parent)
         self.title("DEFEND Setup")
@@ -159,7 +159,26 @@ class SetupDialog(tk.Toplevel):
                 parent=self,
             )
             return
-        self._on_saved(result)
+        completion = self._on_saved(result)
+        done = getattr(completion, "done", None)
+        if callable(done):
+            self.after(50, lambda: self._finish_activation(completion))
+            return
+        self.destroy()
+
+    def _finish_activation(self, future: object) -> None:
+        done = getattr(future, "done", None)
+        if not callable(done) or not done():
+            self.after(50, lambda: self._finish_activation(future))
+            return
+        try:
+            future.result()
+        except Exception as error:
+            messagebox.showerror(
+                "Setup cleanup requires attention",
+                f"The runtime transition was incomplete ({type(error).__name__}).",
+                parent=self,
+            )
         self.destroy()
 
 
@@ -171,14 +190,17 @@ class ControlCenterUI:
         *,
         public_origin: str,
         open_setup: Callable[[], None],
-        on_stopped_exit: Callable[[], None] | None = None,
+        submit_exit_cleanup: Callable[[], object],
+        destroy_window: Callable[[], None] | None = None,
     ) -> None:
         self.root = root
         self._controller = controller
         self._public_origin = public_origin
         self._open_setup = open_setup
-        self._on_stopped_exit = on_stopped_exit or root.destroy
+        self._submit_exit_cleanup = submit_exit_cleanup
+        self._destroy_window = destroy_window or root.destroy
         self._closing_after_stop = False
+        self._exit_future: object | None = None
         self._last_log_render: tuple[object, ...] | None = None
         self._mode = tk.StringVar(root, value="")
         self._state = tk.StringVar(root, value="stopped")
@@ -202,9 +224,10 @@ class ControlCenterUI:
         *,
         public_origin: str,
     ) -> None:
+        state = controller.poll_state()
+        self._render(state)
         self._controller = controller
         self._public_origin = public_origin
-        self._render(controller.poll_state())
 
     def _build(self) -> None:
         outer = ttk.Frame(self.root, padding=12)
@@ -288,7 +311,9 @@ class ControlCenterUI:
             )
             return
         try:
-            self._render(self._controller.start(mode))
+            state = self._controller.start(mode)
+            self._mode.set("")
+            self._render(state)
         except Exception as error:
             self._show_error(error)
 
@@ -359,10 +384,38 @@ class ControlCenterUI:
             self.root.after(_POLL_MILLISECONDS, self._poll)
             return
         if self._closing_after_stop and state.state in ("stopped", "failed"):
-            self._controller.shutdown()
-            self._on_stopped_exit()
+            self._begin_exit_cleanup()
             return
         self.root.after(_POLL_MILLISECONDS, self._poll)
+
+    def _begin_exit_cleanup(self) -> None:
+        if self._exit_future is not None:
+            return
+        try:
+            self._exit_future = self._submit_exit_cleanup()
+        except Exception as error:
+            self._show_error(error)
+            self._closing_after_stop = False
+            self.root.after(_POLL_MILLISECONDS, self._poll)
+            return
+        self.root.after(_POLL_MILLISECONDS, self._poll_exit_cleanup)
+
+    def _poll_exit_cleanup(self) -> None:
+        future = self._exit_future
+        done = getattr(future, "done", None)
+        if not callable(done) or not done():
+            self.root.after(_POLL_MILLISECONDS, self._poll_exit_cleanup)
+            return
+        try:
+            future.result()
+        except Exception as error:
+            self._exit_future = None
+            self._closing_after_stop = False
+            self._show_error(error)
+            self.root.after(_POLL_MILLISECONDS, self._poll)
+            return
+        self._controller.shutdown()
+        self._destroy_window()
 
     def _render(self, state: UIState) -> None:
         message = f"State: {state.state}"
@@ -396,8 +449,7 @@ class ControlCenterUI:
     def _on_close(self) -> None:
         state = self._controller.poll_state()
         if not state.services_running:
-            self._controller.shutdown()
-            self._on_stopped_exit()
+            self._begin_exit_cleanup()
             return
         leave_running = messagebox.askyesnocancel(
             "Close DEFEND Control Center",

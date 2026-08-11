@@ -29,6 +29,12 @@ class CancellableFuture:
         return True
 
 
+class RunningFuture(CancellableFuture):
+    def cancel(self):
+        self.cancel_calls += 1
+        return False
+
+
 class PendingExecutor(RecordingExecutor):
     def __init__(self):
         super().__init__()
@@ -37,6 +43,20 @@ class PendingExecutor(RecordingExecutor):
     def submit(self, function, *args):
         self.submitted.append((function.__name__, *args))
         future = CancellableFuture()
+        self.futures.append(future)
+        return future
+
+
+class BoundaryExecutor(RecordingExecutor):
+    def __init__(self):
+        super().__init__()
+        self.calls = []
+        self.futures = []
+
+    def submit(self, function, *args):
+        self.submitted.append((function.__name__, *args))
+        self.calls.append((function, args))
+        future = RunningFuture()
         self.futures.append(future)
         return future
 
@@ -53,8 +73,10 @@ class FakeOrchestrator:
         self.logs = logs
         self.cancelled = 0
         self.destroyed = []
+        self.start_cancellations = []
 
-    def start(self, mode):
+    def start(self, mode, cancellation=None):
+        self.start_cancellations.append(cancellation)
         return mode
 
     def cancel_start(self):
@@ -127,6 +149,37 @@ def test_stop_cancels_start_that_is_queued_but_not_running():
     assert executor.futures[0].cancel_calls == 1
     assert orchestrator.cancelled == 0
     assert executor.submitted == [("start", "ollama"), ("stop_local",)]
+
+
+def test_stop_token_survives_future_running_before_orchestrator_entry():
+    orchestrator = FakeOrchestrator()
+    executor = BoundaryExecutor()
+    controller = ControlController(orchestrator, executor=executor)
+
+    controller.start("ollama")
+    controller.stop_local()
+    start_function, start_args = executor.calls[0]
+    start_function(*start_args)
+
+    assert executor.futures[0].cancel_calls == 1
+    assert len(orchestrator.start_cancellations) == 1
+    assert orchestrator.start_cancellations[0].is_cancelled()
+
+
+def test_ui_state_services_running_when_failed_snapshot_retains_ownership():
+    orchestrator = FakeOrchestrator()
+    controller = ControlController(orchestrator, executor=RecordingExecutor())
+    snapshot = orchestrator.snapshot()
+    orchestrator.snapshot = lambda: type(snapshot)(
+        state="failed",
+        mode="ollama",
+        components=(ComponentSnapshot("api", "cleanup pending"),),
+        error="startup cancelled; cleanup pending",
+        logs=(),
+        owned_services=("api",),
+    )
+
+    assert controller.poll_state().services_running
 
 
 def test_setup_work_uses_the_same_nonblocking_executor():

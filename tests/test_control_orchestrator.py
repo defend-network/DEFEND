@@ -7,7 +7,9 @@ import pytest
 from defend_control.health import HealthResult
 from defend_control.orchestrator import (
     AlreadyRunning,
+    ExternalCloudflaredDetector,
     StackOrchestrator,
+    StartCancellation,
     StartCancelled,
     StartFailed,
 )
@@ -58,6 +60,7 @@ class FakeSupervisor:
         self.started = []
         self.stopped = []
         self.fail_stop_once = set()
+        self.observed = []
 
     def start(self, spec):
         self.started.append(spec)
@@ -86,6 +89,9 @@ class FakeSupervisor:
             for index, spec in enumerate(self.started, 1)
         )
 
+    def observe_external(self, name, *, pid, health_url=None):
+        self.observed.append((name, pid, health_url))
+
 
 def make_settings(tmp_path):
     return ControlSettings(
@@ -101,7 +107,7 @@ def make_settings(tmp_path):
     )
 
 
-def dependencies(tmp_path, *, health=None, external_tunnel=False, ollama=None):
+def dependencies(tmp_path, *, health=None, external_tunnel_pid=None, ollama=None):
     events = []
     supervisor = FakeSupervisor(events)
     health_by_name = {"api": True, "web": True, "public": True}
@@ -117,9 +123,9 @@ def dependencies(tmp_path, *, health=None, external_tunnel=False, ollama=None):
         events.append(f"{name}:healthy")
         return HealthResult(health_by_name[name], 200 if health_by_name[name] else 503, 1, None)
 
-    def tunnel_probe():
+    def tunnel_detector(_settings):
         events.append("tunnel:reuse-or-start")
-        return external_tunnel
+        return external_tunnel_pid
 
     values = {
         "DEFEND_OWNER_PASS": "synthetic-owner",
@@ -134,7 +140,7 @@ def dependencies(tmp_path, *, health=None, external_tunnel=False, ollama=None):
         "supervisor": supervisor,
         "local_backend": ollama or FakeOllama(events),
         "health_probe": health_probe,
-        "external_tunnel_probe": tunnel_probe,
+        "external_tunnel_detector": tunnel_detector,
         "health_timeout_seconds": 0.05,
         "poll_interval_seconds": 0,
     }, events, supervisor
@@ -172,14 +178,14 @@ def test_failed_web_health_rolls_back_only_new_processes(tmp_path):
 
 def test_public_failure_rolls_back_owned_cloudflare_but_not_reused_tunnel(tmp_path):
     kwargs, _events, supervisor = dependencies(
-        tmp_path, health={"public": False}, external_tunnel=False
+        tmp_path, health={"public": False}, external_tunnel_pid=None
     )
     with pytest.raises(StartFailed, match="public"):
         StackOrchestrator(**kwargs).start("ollama")
     assert supervisor.stopped == ["cloudflare", "web", "api"]
 
     kwargs, _events, supervisor = dependencies(
-        tmp_path, health={"public": False}, external_tunnel=True
+        tmp_path, health={"public": False}, external_tunnel_pid=7341
     )
     with pytest.raises(StartFailed, match="public"):
         StackOrchestrator(**kwargs).start("ollama")
@@ -188,7 +194,7 @@ def test_public_failure_rolls_back_owned_cloudflare_but_not_reused_tunnel(tmp_pa
 
 def test_failed_rollback_stop_retains_owned_resource_for_later_cleanup(tmp_path):
     kwargs, _events, supervisor = dependencies(
-        tmp_path, health={"public": False}, external_tunnel=False
+        tmp_path, health={"public": False}, external_tunnel_pid=None
     )
     supervisor.fail_stop_once.add("cloudflare")
     orchestrator = StackOrchestrator(**kwargs)
@@ -266,6 +272,112 @@ def test_stop_during_start_cancels_and_rolls_back_created_services(tmp_path):
 
     assert len(errors) == 1 and isinstance(errors[0], StartCancelled)
     assert supervisor.stopped == ["api"]
+    assert orchestrator.snapshot().state == "stopped"
+
+
+def test_verified_external_cloudflare_pid_is_observed_and_not_started(tmp_path):
+    kwargs, _events, supervisor = dependencies(
+        tmp_path, external_tunnel_pid=7341
+    )
+
+    StackOrchestrator(**kwargs).start("ollama")
+
+    assert supervisor.observed == [
+        ("external-cloudflare", 7341, "https://ai.example.test")
+    ]
+    assert "cloudflare" not in [spec.name for spec in supervisor.started]
+
+
+def test_healthy_public_route_without_verified_local_tunnel_starts_owned_one(tmp_path):
+    kwargs, _events, supervisor = dependencies(
+        tmp_path,
+        health={"public": True},
+        external_tunnel_pid=None,
+    )
+
+    StackOrchestrator(**kwargs).start("ollama")
+
+    assert supervisor.observed == []
+    assert "cloudflare" in [spec.name for spec in supervisor.started]
+
+
+def test_external_cloudflared_detector_requires_exact_exe_config_and_tunnel(tmp_path):
+    configured = make_settings(tmp_path)
+    exact = {
+        "pid": 7341,
+        "executable": str(configured.cloudflared_exe),
+        "argv": (
+            str(configured.cloudflared_exe),
+            "tunnel",
+            "--config",
+            str(configured.cloudflared_config),
+            "run",
+            configured.cloudflared_tunnel,
+        ),
+    }
+    assert ExternalCloudflaredDetector(query=lambda: (exact,))(configured) == 7341
+
+    for changed in (
+        {**exact, "executable": str(tmp_path / "other.exe")},
+        {
+            **exact,
+            "argv": (*exact["argv"][:3], str(tmp_path / "other.yml"), *exact["argv"][4:]),
+        },
+        {**exact, "argv": (*exact["argv"][:-1], "other-tunnel")},
+        {**exact, "pid": 0},
+    ):
+        assert ExternalCloudflaredDetector(query=lambda changed=changed: (changed,))(
+            configured
+        ) is None
+
+
+def test_per_attempt_cancellation_before_worker_entry_is_not_cleared(tmp_path):
+    kwargs, events, supervisor = dependencies(tmp_path)
+    cancellation = StartCancellation()
+    cancellation.cancel()
+
+    with pytest.raises(StartCancelled):
+        StackOrchestrator(**kwargs).start("ollama", cancellation)
+
+    assert events == []
+    assert supervisor.started == []
+
+
+def test_cancelled_start_with_failed_rollback_retains_failed_running_state(tmp_path):
+    api_started = threading.Event()
+    release_api_health = threading.Event()
+    kwargs, _events, supervisor = dependencies(tmp_path)
+    original_probe = kwargs["health_probe"]
+
+    def blocking_probe(url, timeout, **options):
+        if url.endswith(":8000/health"):
+            api_started.set()
+            release_api_health.wait(2)
+        return original_probe(url, timeout, **options)
+
+    kwargs["health_probe"] = blocking_probe
+    supervisor.fail_stop_once.add("api")
+    orchestrator = StackOrchestrator(**kwargs)
+    errors = []
+    worker = threading.Thread(
+        target=lambda: _capture_error(errors, orchestrator.start, "ollama")
+    )
+    worker.start()
+    assert api_started.wait(1)
+
+    orchestrator.cancel_start()
+    release_api_health.set()
+    worker.join(2)
+
+    snapshot = orchestrator.snapshot()
+    assert len(errors) == 1 and isinstance(errors[0], StartCancelled)
+    assert snapshot.state == "failed"
+    assert snapshot.owned_services == ("api",)
+    assert {item.name: item.state for item in snapshot.components}["api"] == (
+        "cleanup pending"
+    )
+
+    orchestrator.stop_local()
     assert orchestrator.snapshot().state == "stopped"
 
 
