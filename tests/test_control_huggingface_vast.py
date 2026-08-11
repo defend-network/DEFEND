@@ -104,6 +104,49 @@ class FakeHttp:
         return self.requests[-1]
 
 
+class MutableClock:
+    def __init__(self, *values: float) -> None:
+        self._values = list(values)
+        self.current = values[-1]
+
+    def __call__(self) -> float:
+        if self._values:
+            self.current = self._values.pop(0)
+        return self.current
+
+
+class DeadlineTransport:
+    def __init__(
+        self,
+        clock: MutableClock,
+        *,
+        response: FakeResponse | None = None,
+        error: BaseException | None = None,
+    ) -> None:
+        self.clock = clock
+        self.response = response
+        self.error = error
+        self.requests: list[FakeRequest] = []
+
+    def request(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: dict[str, str],
+        json: object | None,
+        timeout: float,
+        max_response_bytes: int,
+    ) -> FakeResponse:
+        self.requests.append(FakeRequest(method, url, dict(headers), json, timeout))
+        assert max_response_bytes == 64 * 1024
+        self.clock.current = 300.25
+        if self.error is not None:
+            raise self.error
+        assert self.response is not None
+        return self.response
+
+
 @pytest.fixture
 def fake_http() -> FakeHttp:
     return FakeHttp()
@@ -557,7 +600,7 @@ def test_vast_waits_through_null_and_loading_until_running(fake_http: FakeHttp):
         "vast_synthetic_secret",
         transport=fake_http,
         sleep=sleeps.append,
-        monotonic=iter(tuple(float(value) for value in range(10))).__next__,
+        monotonic=iter(tuple(float(value) for value in range(13))).__next__,
     )
 
     instance = client.wait_until_running(4815, poll_interval_seconds=0.25)
@@ -661,7 +704,7 @@ def test_vast_running_just_before_deadline_uses_only_remaining_request_budget(
         url="https://console.vast.ai/api/v0/instances/4815/",
         json=_running_instance_document(),
     )
-    clock = iter((0.0, 299.0, 299.0, 299.999)).__next__
+    clock = iter((0.0, 299.0, 299.0, 299.5, 299.999)).__next__
     client = VastClient(
         "vast_synthetic_secret", transport=fake_http, monotonic=clock
     )
@@ -702,7 +745,7 @@ def test_vast_clamps_sleep_and_next_request_to_deadline(fake_http: FakeHttp):
         url="https://console.vast.ai/api/v0/instances/4815/", json=loading
     )
     sleeps = []
-    clock = iter((0.0, 299.75, 299.75, 299.8, 300.0)).__next__
+    clock = iter((0.0, 299.75, 299.75, 299.8, 299.8, 300.0)).__next__
     client = VastClient(
         "vast_synthetic_secret",
         transport=fake_http,
@@ -756,7 +799,19 @@ def test_vast_retry_refreshes_timeout_and_clamps_each_sleep_to_deadline(
     fake_http.add_response(url=instance_url, json=_running_instance_document())
     sleeps = []
     clock = iter(
-        (0.0, 299.0, 299.0, 299.2, 299.6, 299.75, 299.99, 299.999)
+        (
+            0.0,
+            299.0,
+            299.0,
+            299.1,
+            299.2,
+            299.6,
+            299.7,
+            299.75,
+            299.99,
+            299.995,
+            299.999,
+        )
     ).__next__
     client = VastClient(
         "vast_synthetic_secret",
@@ -771,6 +826,40 @@ def test_vast_retry_refreshes_timeout_and_clamps_each_sleep_to_deadline(
         [1.0, 0.4, 0.01]
     )
     assert sleeps == pytest.approx([0.5, 0.25])
+
+
+@pytest.mark.parametrize("outcome", ["exception", "status", "malformed"])
+def test_vast_overdue_transport_outcome_maps_to_fixed_provisioning_timeout(
+    outcome: str,
+):
+    sentinel = "private_transport_deadline_sentinel"
+    clock = MutableClock(0.0, 299.75, 299.75)
+    if outcome == "exception":
+        transport = DeadlineTransport(
+            clock, error=TimeoutError(f"transport detail {sentinel}")
+        )
+    elif outcome == "status":
+        transport = DeadlineTransport(
+            clock,
+            response=FakeResponse(
+                500, json.dumps({"error": sentinel}).encode("utf-8")
+            ),
+        )
+    else:
+        transport = DeadlineTransport(
+            clock, response=FakeResponse(200, f"{{{sentinel}".encode("utf-8"))
+        )
+    client = VastClient(
+        "vast_synthetic_secret", transport=transport, monotonic=clock
+    )
+
+    with pytest.raises(VastError) as pending:
+        client.wait_until_running(4815)
+
+    assert str(pending.value) == "Vast.ai provisioning timed out after 300 seconds"
+    assert sentinel not in repr(pending.value)
+    assert len(transport.requests) == 1
+    assert transport.requests[0].timeout == pytest.approx(0.25)
 
 
 def test_vast_offer_rented_race_and_failure_never_expose_provider_body(

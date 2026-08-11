@@ -507,9 +507,13 @@ class VastClient:
                     max_response_bytes=_MAX_RESPONSE_BYTES,
                 )
             except Exception as error:
+                if deadline is not None and self._monotonic() >= deadline:
+                    raise _DeadlineExceeded from None
                 raise VastError(
                     f"Vast.ai request failed ({type(error).__name__})"
                 ) from None
+            if deadline is not None and self._monotonic() >= deadline:
+                raise _DeadlineExceeded
             if len(response.body) > _MAX_RESPONSE_BYTES:
                 raise VastError("Vast.ai response exceeds 64 KiB")
             if response.status_code != 429 or attempt == max_attempts - 1:
