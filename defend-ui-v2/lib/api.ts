@@ -71,8 +71,7 @@ async function json<T>(
     });
 
     if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      throw new Error(`Request failed: ${res.status} ${body.slice(0, 300)}`);
+      throw new Error(`Request failed (${res.status})`);
     }
 
     return (await res.json()) as T;
@@ -193,7 +192,7 @@ export async function uploadFiles(files: File[], conversationId: string) {
       signal: controller.signal,
     });
     if (!res.ok) {
-      throw new Error(`Request failed: ${res.status} ${await res.text()}`);
+      throw new Error(`Request failed (${res.status})`);
     }
     return (await res.json()) as {
       files: Array<{ document_id: string; name: string; status: string }>;

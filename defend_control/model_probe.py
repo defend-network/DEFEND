@@ -80,6 +80,10 @@ class ModelProbeError(RuntimeError):
     """A safe vLLM readiness failure with no response content."""
 
 
+class _TransientModelProbeError(ModelProbeError):
+    """A safe transport failure that may clear while vLLM is starting."""
+
+
 class ModelProbe:
     def __init__(
         self,
@@ -135,7 +139,7 @@ class ModelProbe:
                 max_response_bytes=_MAX_RESPONSE_BYTES,
             )
         except Exception as error:
-            raise ModelProbeError(
+            raise _TransientModelProbeError(
                 f"vLLM readiness request failed ({type(error).__name__})"
             ) from None
         if len(response.body) > _MAX_RESPONSE_BYTES:
@@ -160,6 +164,7 @@ class ModelProbe:
         timeout_seconds: float = 300.0,
         poll_interval_seconds: float = 2.0,
         cancelled: Callable[[], bool] | None = None,
+        on_models_ready: Callable[[], None] | None = None,
     ) -> ModelReady:
         base = self._base_url(base_url)
         if not isinstance(api_key, str) or not api_key:
@@ -175,6 +180,8 @@ class ModelProbe:
             or not 0 <= float(poll_interval_seconds) <= 30
         ):
             raise ValueError("vLLM probe timing is invalid")
+        if on_models_ready is not None and not callable(on_models_ready):
+            raise ValueError("vLLM models-ready callback must be callable")
         deadline = self._monotonic() + float(timeout_seconds)
         models_url = f"{base}/models"
         while True:
@@ -183,15 +190,32 @@ class ModelProbe:
             remaining = deadline - self._monotonic()
             if remaining <= 0:
                 raise ModelProbeError("vLLM readiness timed out after 300 seconds")
-            response = self._request(
-                "GET", models_url, api_key, None, min(30.0, remaining)
-            )
+            try:
+                response = self._request(
+                    "GET", models_url, api_key, None, min(30.0, remaining)
+                )
+            except _TransientModelProbeError:
+                remaining = deadline - self._monotonic()
+                if remaining <= 0:
+                    raise ModelProbeError(
+                        "vLLM readiness timed out after 300 seconds"
+                    ) from None
+                self._sleep(min(float(poll_interval_seconds), remaining))
+                continue
             document = self._json(response)
             models = document.get("data") if isinstance(document, Mapping) else None
             if isinstance(models, list) and any(
                 isinstance(candidate, Mapping) and candidate.get("id") == model
                 for candidate in models
             ):
+                if on_models_ready is not None:
+                    try:
+                        on_models_ready()
+                    except Exception as error:
+                        raise ModelProbeError(
+                            "vLLM post-readiness cleanup failed "
+                            f"({type(error).__name__})"
+                        ) from None
                 break
             remaining = deadline - self._monotonic()
             if remaining <= 0:

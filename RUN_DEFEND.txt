@@ -1,20 +1,25 @@
-DEFEND AI — run instructions
-============================
+<!-- DEFEND-AI-INGEST: EXCLUDE -->
+DEFEND AI - one-button operation
+================================
 
-1) Ensure model has your Modelfile identity:
-   ollama create defend-ai -f Modelfile
+First use or repair
+-------------------
+1. Double-click Bootstrap-DEFEND.cmd once. It runs Bootstrap-DEFEND.ps1 in a
+   one-process PowerShell session without changing the machine execution policy.
+2. Double-click Start-DEFEND.cmd.
+3. Choose Setup, enter the required local values, and save them. Secrets are
+   protected for the current Windows user and are not written into this file.
 
-2) Start UI (from this folder):
-   $env:DEFEND_MODEL="defend-ai:latest"
-   $env:TAVILY_API_KEY="your-key"   # optional
-   python ui_app.py
+Every normal start
+------------------
+1. Double-click Start-DEFEND.cmd.
+2. Choose Local Ollama or Vast.ai. A fresh mode choice is required each launch.
+3. Click Start DEFEND.
 
-3) Open http://127.0.0.1:7860
-   Tunnel: cloudflared tunnel run defend-ai
+Vast.ai asks for the exact GPU offer/price before creating anything and asks for
+the exact SSH host fingerprint afterward. Stop Local leaves a Vast instance and
+possible billing in place. Use Stop + Destroy Vast and confirm the exact instance
+ID to end the remote instance.
 
-4) Identity test:
-   Who are you?
-   Who is an American?
-
-ControlPlane DIRECT/finalize paths now inject defend_system.get_system_prompt()
-(the same identity as Modelfile SYSTEM). Do not use a one-line system prompt.
+Read docs/operations/DEFEND-Control-Center.md for setup, checks, backups,
+diagnostics, credential rotation, GitHub updates, and the future VPS boundary.

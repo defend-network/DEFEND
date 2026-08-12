@@ -24,7 +24,7 @@ from .preflight import PreflightRunner
 from .processes import LogEntry, ProcessSupervisor
 from .remote_vllm import build_remote_process_specs
 from .settings import ControlSettings
-from .ssh_tunnel import HostFingerprintConfirmation
+from .ssh_tunnel import HostFingerprintConfirmation, SshTunnelError
 from .types import (
     AdapterSpec,
     LaunchSpec,
@@ -33,6 +33,7 @@ from .types import (
     VastInstance,
     VastOffer,
 )
+from .vast import VastError, VastSchedulingTimeout
 
 
 _MAX_PROCESS_QUERY_BYTES = 64 * 1024
@@ -232,6 +233,32 @@ class PriceConfirmationRequired(RuntimeError):
         self.offer = offer
 
 
+class InstanceSelectionRequired(RuntimeError):
+    def __init__(self, count: int) -> None:
+        super().__init__(f"Choose one of {count} existing DEFEND Vast instances")
+        self.count = count
+
+
+class InstanceRestartConfirmationRequired(RuntimeError):
+    def __init__(self, instance: VastInstance) -> None:
+        super().__init__(
+            "Confirm restart of Vast instance "
+            f"{instance.instance_id} at ${instance.dph_total}/hour"
+        )
+        self.instance = instance
+
+
+class InstanceReplacementConfirmationRequired(RuntimeError):
+    def __init__(self, old_instance: VastInstance, offer: VastOffer) -> None:
+        super().__init__(
+            "Confirm replacement of Vast instance "
+            f"{old_instance.instance_id} with offer {offer.offer_id} "
+            f"at ${offer.dph_total}/hour"
+        )
+        self.old_instance = old_instance
+        self.offer = offer
+
+
 class StartCancellation:
     """One cancellation signal whose lifetime is exactly one start attempt."""
 
@@ -273,10 +300,15 @@ class StackSnapshot:
     vast_offer_id: int | None = None
     vast_gpu_ram_mb: int | None = None
     vast_reliability: str | None = None
+    vast_storage_cost_per_gb_month: str | None = None
+    vast_storage_total_hourly: str | None = None
+    vast_disk_gb: int | None = None
     vast_actual_status: str | None = None
     vast_billing_warning: str | None = None
     pending_confirmation: str | None = None
     pending_fingerprint: str | None = None
+    vast_candidates: tuple[VastInstance, ...] = ()
+    vast_replacement_offer: VastOffer | None = None
     logs: tuple[LogEntry, ...] = ()
     owned_services: tuple[str, ...] = ()
 
@@ -339,7 +371,69 @@ class StackOrchestrator:
         self._pending_confirmation: str | None = None
         self._pending_fingerprint: str | None = None
         self._confirmed_fingerprint: tuple[int, str] | None = None
+        self._vast_candidates: tuple[VastInstance, ...] = ()
+        self._confirmed_restart: tuple[int, Decimal] | None = None
+        self._replacement_instance: VastInstance | None = None
+        self._replacement_offer: VastOffer | None = None
+        self._confirmed_replacement: tuple[int, int, Decimal] | None = None
         self._ssh_key_registered = False
+
+    def _clear_replacement(self) -> None:
+        self._replacement_instance = None
+        self._replacement_offer = None
+        self._confirmed_replacement = None
+
+    def _replace_scheduled_instance(
+        self,
+        cancellation: StartCancellation,
+    ) -> None:
+        old_instance = self._replacement_instance
+        offer = self._replacement_offer
+        confirmed = self._confirmed_replacement
+        expected = (
+            old_instance.instance_id,
+            offer.offer_id,
+            offer.dph_total,
+        ) if old_instance is not None and offer is not None else None
+        if old_instance is None or offer is None or confirmed != expected:
+            return
+        existing_ids = self._vast_client.list_labeled_instance_ids(
+            LaunchSpec.default().label
+        )
+        current = self._vast_client.show_instance(old_instance.instance_id)
+        current_offers = self._vast_client.search_offers(
+            self._settings.vast_max_hourly
+        )
+        current_offer = next(
+            (candidate for candidate in current_offers if candidate.offer_id == offer.offer_id),
+            None,
+        )
+        if (
+            existing_ids != (old_instance.instance_id,)
+            or current.instance_id != old_instance.instance_id
+            or current.actual_status not in ("scheduling", "stopped", "exited")
+            or current.dph_total != old_instance.dph_total
+            or current_offer != offer
+        ):
+            self._clear_replacement()
+            self._pending_confirmation = None
+            raise StartFailed("Vast.ai", "instance or offer changed before replacement")
+        self._check_cancelled(cancellation)
+        self._vast_client.destroy_instance(
+            old_instance.instance_id,
+            confirmed_instance_id=old_instance.instance_id,
+        )
+        self._vast_instance = None
+        self._vast_offer = None
+        self._clear_replacement()
+        self._pending_confirmation = None
+        self._confirmed_restart = None
+        self._confirmed_fingerprint = None
+        self._check_cancelled(cancellation)
+        self._vast_instance = self._vast_client.create_instance(
+            current_offer,
+            LaunchSpec.default(),
+        )
 
     def _set_state(
         self,
@@ -419,6 +513,8 @@ class StackOrchestrator:
         self._ensure_remote_dependencies(secrets)
         self._check_cancelled(cancellation)
 
+        self._replace_scheduled_instance(cancellation)
+
         if self._vast_adapter is None:
             self._vast_adapter = self._huggingface_client.resolve_adapter(
                 self._settings.adapter_repo, secrets["HF_TOKEN"]
@@ -430,15 +526,41 @@ class StackOrchestrator:
             self._ssh_key_registered = True
         self._check_cancelled(cancellation)
 
-        if self._vast_offer is None:
-            offers = self._vast_client.search_offers(
-                self._settings.vast_max_hourly
-            )
-            if not offers:
-                raise StartFailed("Vast.ai", "no eligible offer is available")
-            self._vast_offer = offers[0]
-        offer = self._vast_offer
         if self._vast_instance is None:
+            existing_ids = self._vast_client.list_labeled_instance_ids(
+                LaunchSpec.default().label
+            )
+            if existing_ids:
+                candidates = tuple(
+                    self._vast_client.show_instance(instance_id)
+                    for instance_id in existing_ids
+                )
+                self._vast_candidates = candidates
+                if len(candidates) > 1:
+                    self._pending_confirmation = "instance_selection"
+                    raise InstanceSelectionRequired(len(candidates))
+                self._vast_instance = candidates[0]
+                self._vast_candidates = ()
+                self._vast_offer = None
+                self._confirmed_offer = None
+                self._pending_confirmation = None
+            else:
+                self._vast_candidates = ()
+        if self._vast_instance is None:
+            if self._vast_offer is None:
+                offers = self._vast_client.search_offers(
+                    self._settings.vast_max_hourly
+                )
+                if not offers:
+                    search_summary = getattr(
+                        self._vast_client, "offer_search_summary", None
+                    )
+                    detail = "no eligible offer is available"
+                    if isinstance(search_summary, str) and search_summary:
+                        detail += f" ({search_summary})"
+                    raise StartFailed("Vast.ai", detail)
+                self._vast_offer = offers[0]
+            offer = self._vast_offer
             expected_confirmation = (offer.offer_id, offer.dph_total)
             if self._confirmed_offer != expected_confirmation:
                 self._pending_confirmation = "price"
@@ -451,9 +573,56 @@ class StackOrchestrator:
             )
             self._confirmed_offer = None
         self._check_cancelled(cancellation)
-        self._vast_instance = self._vast_client.wait_until_running(
-            self._vast_instance.instance_id
-        )
+        instance = self._vast_instance
+        restarting_existing = False
+        if instance.actual_status in ("stopped", "exited"):
+            expected_restart = (instance.instance_id, instance.dph_total)
+            if self._confirmed_restart != expected_restart:
+                self._pending_confirmation = "instance_restart"
+                raise InstanceRestartConfirmationRequired(instance)
+            current = self._vast_client.show_instance(instance.instance_id)
+            if (
+                current.instance_id != instance.instance_id
+                or current.dph_total != instance.dph_total
+            ):
+                self._confirmed_restart = None
+                raise StartFailed(
+                    "Vast.ai", "existing instance changed before restart"
+                )
+            self._vast_instance = current
+            if current.actual_status in ("stopped", "exited"):
+                self._vast_client.set_state(current.instance_id, "running")
+                restarting_existing = True
+            self._confirmed_restart = None
+            self._pending_confirmation = None
+            self._check_cancelled(cancellation)
+        try:
+            self._vast_instance = self._vast_client.wait_until_running(
+                self._vast_instance.instance_id,
+                allow_stopped_transition=restarting_existing,
+                scheduling_timeout_seconds=(30.0 if restarting_existing else None),
+            )
+        except VastSchedulingTimeout:
+            current = self._vast_client.show_instance(
+                self._vast_instance.instance_id
+            )
+            if current.actual_status == "running":
+                self._vast_instance = current
+            else:
+                offers = self._vast_client.search_offers(
+                    self._settings.vast_max_hourly
+                )
+                if not offers:
+                    raise StartFailed(
+                        "Vast.ai",
+                        "restart remained scheduled and no replacement offer is available",
+                    ) from None
+                self._vast_instance = current
+                self._replacement_instance = current
+                self._replacement_offer = offers[0]
+                self._confirmed_replacement = None
+                self._pending_confirmation = "instance_replace"
+                raise InstanceReplacementConfirmationRequired(current, offers[0])
         instance = self._vast_instance
 
         confirmed_fingerprint = None
@@ -495,12 +664,14 @@ class StackOrchestrator:
                 secrets["VLLM_API_KEY"],
                 model="defend-ai",
                 cancelled=cancellation.is_cancelled,
+                on_models_ready=lambda: self._remote_bootstrap.cleanup_token_file(
+                    instance
+                ),
             )
         except Exception:
             self._check_cancelled(cancellation)
             raise
         self._check_cancelled(cancellation)
-        self._remote_bootstrap.cleanup_token_file(instance)
         self._set_component("model", "ready")
         return build_remote_process_specs(self._settings, secrets, ready)
 
@@ -607,7 +778,11 @@ class StackOrchestrator:
             checks = self._preflight.run(mode, self._settings, secrets)
             failed_checks = tuple(check for check in checks if not check.ok)
             if failed_checks:
-                raise StartFailed("preflight", "required checks did not pass")
+                first_failure = failed_checks[0]
+                failure_detail = f"{first_failure.name}: {first_failure.detail}"
+                if first_failure.remediation:
+                    failure_detail += f"; {first_failure.remediation}"
+                raise StartFailed("preflight", failure_detail)
             self._check_cancelled(attempt_cancellation)
             if mode == "vast":
                 specs = self._prepare_vast_model(
@@ -679,7 +854,13 @@ class StackOrchestrator:
             self._set_component("cloudflare", "ready")
             self._set_state("ready")
             return self.snapshot()
-        except (PriceConfirmationRequired, HostFingerprintConfirmation) as pending:
+        except (
+            PriceConfirmationRequired,
+            HostFingerprintConfirmation,
+            InstanceSelectionRequired,
+            InstanceRestartConfirmationRequired,
+            InstanceReplacementConfirmationRequired,
+        ) as pending:
             self._rollback(attempt)
             self._set_state("provisioning", error=str(pending))
             raise
@@ -698,6 +879,16 @@ class StackOrchestrator:
             self._rollback(attempt)
             self._set_state("failed", error=str(error))
             raise
+        except VastError as error:
+            self._rollback(attempt)
+            safe = StartFailed("Vast.ai", str(error))
+            self._set_state("failed", error=str(safe))
+            raise safe from None
+        except SshTunnelError as error:
+            self._rollback(attempt)
+            safe = StartFailed("SSH tunnel", str(error))
+            self._set_state("failed", error=str(safe))
+            raise safe from None
         except Exception as error:
             self._rollback(attempt)
             safe = StartFailed("startup", f"unexpected {type(error).__name__}")
@@ -753,6 +944,106 @@ class StackOrchestrator:
             self._pending_confirmation = None
             self._error = None
 
+    def select_vast_instance(self, instance_id: int) -> None:
+        with self._state_lock:
+            if (
+                self._pending_confirmation != "instance_selection"
+                or type(instance_id) is not int
+            ):
+                raise ValueError("selection requires an exact listed instance")
+            selected = next(
+                (
+                    candidate
+                    for candidate in self._vast_candidates
+                    if candidate.instance_id == instance_id
+                ),
+                None,
+            )
+            if selected is None:
+                raise ValueError("selection requires an exact listed instance")
+            self._vast_instance = selected
+            self._vast_candidates = ()
+            self._vast_offer = None
+            self._confirmed_offer = None
+            self._confirmed_restart = None
+            self._pending_confirmation = None
+            self._error = None
+
+    def confirm_instance_restart(
+        self, instance_id: int, hourly_price: Decimal | str
+    ) -> None:
+        with self._state_lock:
+            instance = self._vast_instance
+            try:
+                parsed_price = Decimal(str(hourly_price))
+            except (InvalidOperation, ValueError):
+                parsed_price = Decimal("NaN")
+            if (
+                instance is None
+                or self._pending_confirmation != "instance_restart"
+                or type(instance_id) is not int
+                or instance_id != instance.instance_id
+                or not parsed_price.is_finite()
+                or parsed_price != instance.dph_total
+            ):
+                raise ValueError(
+                    "confirmation requires the exact instance ID and price"
+                )
+            self._confirmed_restart = (instance.instance_id, instance.dph_total)
+            self._pending_confirmation = None
+            self._error = None
+
+    def confirm_instance_replacement(
+        self,
+        instance_id: int,
+        offer_id: int,
+        hourly_price: Decimal | str,
+    ) -> None:
+        with self._state_lock:
+            instance = self._replacement_instance
+            offer = self._replacement_offer
+            try:
+                parsed_price = Decimal(str(hourly_price))
+            except (InvalidOperation, ValueError):
+                parsed_price = Decimal("NaN")
+            if (
+                instance is None
+                or offer is None
+                or self._pending_confirmation != "instance_replace"
+                or type(instance_id) is not int
+                or instance_id != instance.instance_id
+                or type(offer_id) is not int
+                or offer_id != offer.offer_id
+                or not parsed_price.is_finite()
+                or parsed_price != offer.dph_total
+            ):
+                raise ValueError(
+                    "confirmation requires the exact instance, offer, and price"
+                )
+            self._confirmed_replacement = (
+                instance.instance_id,
+                offer.offer_id,
+                offer.dph_total,
+            )
+            self._pending_confirmation = None
+            self._error = None
+
+    def decline_instance_action(self) -> StackSnapshot:
+        with self._state_lock:
+            if self._pending_confirmation not in (
+                "instance_selection",
+                "instance_restart",
+                "instance_replace",
+            ):
+                raise ValueError("there is no pending instance action")
+            self._pending_confirmation = None
+            self._vast_candidates = ()
+            self._confirmed_restart = None
+            self._clear_replacement()
+            self._error = None
+            self._state = "stopped"
+        return self.snapshot()
+
     def stop_local(self) -> StackSnapshot:
         self.cancel_start()
         with self._operation_lock:
@@ -778,6 +1069,9 @@ class StackOrchestrator:
             with self._state_lock:
                 self._pending_confirmation = None
                 self._pending_fingerprint = None
+                self._vast_candidates = ()
+                self._confirmed_restart = None
+                self._clear_replacement()
             if first_error is not None:
                 self._set_state("failed", error=str(first_error))
                 raise first_error
@@ -820,8 +1114,11 @@ class StackOrchestrator:
                 self._vast_offer = None
                 self._confirmed_offer = None
                 self._confirmed_fingerprint = None
+                self._confirmed_restart = None
+                self._clear_replacement()
                 self._pending_confirmation = None
                 self._pending_fingerprint = None
+                self._vast_candidates = ()
                 if local_cleanup_error is None:
                     self._state = "stopped"
                     self._error = None
@@ -860,9 +1157,9 @@ class StackOrchestrator:
             instance = self._vast_instance
             billing_warning = None
             if instance is not None:
-                if instance.actual_status == "stopped":
+                if instance.actual_status in ("stopped", "exited"):
                     billing_warning = (
-                        "Instance is stopped; disk billing may remain active until "
+                        "Instance is stopped; storage billing may remain active until "
                         "this instance is destroyed."
                     )
                 else:
@@ -899,12 +1196,31 @@ class StackOrchestrator:
                 vast_reliability=(
                     str(offer.reliability) if offer is not None else None
                 ),
+                vast_storage_cost_per_gb_month=(
+                    str(offer.storage_cost_per_gb_month)
+                    if offer is not None
+                    and offer.storage_cost_per_gb_month is not None
+                    else None
+                ),
+                vast_storage_total_hourly=(
+                    str(offer.storage_total_hourly)
+                    if offer is not None
+                    and offer.storage_total_hourly is not None
+                    else None
+                ),
+                vast_disk_gb=(
+                    self._settings.vllm_disk_gb
+                    if offer is not None or instance is not None
+                    else None
+                ),
                 vast_actual_status=(
                     instance.actual_status if instance is not None else None
                 ),
                 vast_billing_warning=billing_warning,
                 pending_confirmation=self._pending_confirmation,
                 pending_fingerprint=self._pending_fingerprint,
+                vast_candidates=self._vast_candidates,
+                vast_replacement_offer=self._replacement_offer,
                 logs=logs,
                 owned_services=tuple(self._owned_order),
             )

@@ -8,6 +8,9 @@ from defend_control.health import HealthResult
 from defend_control.orchestrator import (
     AlreadyRunning,
     ExternalCloudflaredDetector,
+    InstanceReplacementConfirmationRequired,
+    InstanceRestartConfirmationRequired,
+    InstanceSelectionRequired,
     PriceConfirmationRequired,
     StackOrchestrator,
     StartCancellation,
@@ -16,8 +19,9 @@ from defend_control.orchestrator import (
 )
 from defend_control.processes import ProcessSnapshot, ProcessSpec
 from defend_control.settings import ControlSettings
-from defend_control.ssh_tunnel import HostFingerprintConfirmation
+from defend_control.ssh_tunnel import HostFingerprintConfirmation, SshTunnelError
 from defend_control.types import AdapterSpec, ModelReady, VastInstance, VastOffer
+from defend_control.vast import VastError, VastOfferUnavailable, VastSchedulingTimeout
 
 
 class FakePreflight:
@@ -214,10 +218,15 @@ def test_preflight_failure_starts_no_resources_and_reports_safe_component(tmp_pa
     kwargs, events, supervisor = dependencies(tmp_path)
     kwargs["preflight"] = FakePreflight(events, ok=False)
 
+    orchestrator = StackOrchestrator(**kwargs)
     with pytest.raises(StartFailed, match="preflight") as raised:
-        StackOrchestrator(**kwargs).start("ollama")
+        orchestrator.start("ollama")
 
     assert "synthetic-owner" not in str(raised.value)
+    assert str(raised.value) == (
+        "preflight start failed: synthetic-check: missing dependency; repair setup"
+    )
+    assert orchestrator.snapshot().error == str(raised.value)
     assert supervisor.started == []
 
 
@@ -400,7 +409,14 @@ class FakeHuggingFace:
         self.events.append("hf:resolve")
         assert repo == "Defend-network/defend-qwen-32b-lora"
         assert token == "hf_synthetic"
-        return AdapterSpec(repo, "a" * 40, "Qwen/example-32B", "b" * 40, "LORA")
+        return AdapterSpec(
+            repo,
+            "a" * 40,
+            "Qwen/example-32B",
+            "b" * 40,
+            "LORA",
+            64,
+        )
 
 
 class FakeVast:
@@ -410,6 +426,16 @@ class FakeVast:
         self.instance = instance
         self.creates = 0
         self.destroyed = []
+        self.offer_search_summary = "provider returned 7; eligible 0"
+        self.wait_error = None
+        self.recovery_ids = ()
+        self.instances = {instance.instance_id: instance}
+        self.state_changes = []
+        self.wait_stopped_transitions = []
+        self.wait_scheduling_timeouts = []
+        self.created_instance = None
+        self.create_error = None
+        self.state_change_status = "running"
 
     def ensure_account_ssh_key(self, public_key):
         self.events.append("vast:ssh-key")
@@ -419,13 +445,42 @@ class FakeVast:
     def search_offers(self, max_hourly):
         self.events.append("vast:search")
         assert max_hourly == Decimal("3.00")
-        return (self.offer,)
+        return () if self.offer is None else (self.offer,)
+
+    def list_labeled_instance_ids(self, label):
+        self.events.append("vast:list-instances")
+        assert label == "defend-vllm"
+        return self.recovery_ids
+
+    def show_instance(self, instance_id):
+        self.events.append("vast:show-instance")
+        return self.instances[instance_id]
+
+    def set_state(self, instance_id, state):
+        self.events.append("vast:set-state")
+        self.state_changes.append((instance_id, state))
+        current = self.instances[instance_id]
+        updated = VastInstance(
+            current.instance_id,
+            self.state_change_status,
+            current.ssh_host,
+            current.ssh_port,
+            current.gpu_name,
+            current.gpu_ram_mb,
+            current.dph_total,
+        )
+        self.instances[instance_id] = updated
+        if self.instance.instance_id == instance_id:
+            self.instance = updated
+        return True
 
     def create_instance(self, offer, launch):
         self.events.append("vast:create")
         assert offer == self.offer
+        if self.create_error is not None:
+            raise self.create_error
         self.creates += 1
-        return VastInstance(
+        created = self.created_instance or VastInstance(
             self.instance.instance_id,
             None,
             None,
@@ -434,11 +489,24 @@ class FakeVast:
             self.instance.gpu_ram_mb,
             self.instance.dph_total,
         )
+        if self.created_instance is not None:
+            self.instances[created.instance_id] = created
+            self.instance = created
+        return created
 
-    def wait_until_running(self, instance_id):
+    def wait_until_running(
+        self,
+        instance_id,
+        *,
+        allow_stopped_transition=False,
+        scheduling_timeout_seconds=None,
+    ):
         self.events.append("vast:wait-running")
-        assert instance_id == self.instance.instance_id
-        return self.instance
+        self.wait_stopped_transitions.append(allow_stopped_transition)
+        self.wait_scheduling_timeouts.append(scheduling_timeout_seconds)
+        if self.wait_error is not None:
+            raise self.wait_error
+        return self.instances[instance_id]
 
     def destroy_instance(self, instance_id, *, confirmed_instance_id):
         self.events.append("vast:destroy")
@@ -497,11 +565,14 @@ class FakeModelProbe:
         self.events = events
 
     def wait_ready(self, base_url, api_key, model="defend-ai", **options):
-        self.events.append("vllm:probe")
         assert base_url == "http://127.0.0.1:8001/v1"
         assert api_key == "vllm_synthetic"
         assert model == "defend-ai"
         assert callable(options["cancelled"])
+        assert callable(options["on_models_ready"])
+        self.events.append("vllm:models-ready")
+        options["on_models_ready"]()
+        self.events.append("vllm:probe")
         return ModelReady(model, "openai_compatible", base_url)
 
 
@@ -520,6 +591,8 @@ def remote_dependencies(tmp_path):
         81920,
         Decimal("1.75"),
         Decimal("0.987"),
+        Decimal("0.15"),
+        Decimal("0.032"),
     )
     instance = VastInstance(
         4815,
@@ -574,6 +647,9 @@ def test_vast_start_requires_exact_price_then_exact_fingerprint(tmp_path):
     assert pending.vast_gpu_ram_mb == offer.gpu_ram_mb
     assert pending.vast_reliability == str(offer.reliability)
     assert pending.vast_hourly_price == str(offer.dph_total)
+    assert pending.vast_storage_cost_per_gb_month == "0.15"
+    assert pending.vast_storage_total_hourly == "0.032"
+    assert pending.vast_disk_gb == 160
 
     with pytest.raises(ValueError, match="exact offer"):
         orchestrator.confirm_offer(offer.offer_id, Decimal("1.76"))
@@ -600,15 +676,404 @@ def test_vast_start_requires_exact_price_then_exact_fingerprint(tmp_path):
     assert result.state == "ready"
     assert vast.creates == 1
     assert events.index("ssh:start") < events.index("vllm:bootstrap")
-    assert events.index("vllm:bootstrap") < events.index("vllm:probe")
-    assert events.index("vllm:probe") < events.index("vllm:token-cleanup")
-    assert events.index("vllm:token-cleanup") < events.index("api:start")
+    assert events.index("vllm:bootstrap") < events.index("vllm:models-ready")
+    assert events.index("vllm:models-ready") < events.index("vllm:token-cleanup")
+    assert events.index("vllm:token-cleanup") < events.index("vllm:probe")
+    assert events.index("vllm:probe") < events.index("api:start")
     api_spec = next(spec for spec in supervisor.started if spec.name == "api")
     assert api_spec.env["DEFEND_MODEL_BACKEND"] == "openai_compatible"
     assert api_spec.env["DEFEND_MODEL"] == "defend-ai"
     assert api_spec.env["DEFEND_MODEL_BASE_URL"] == "http://127.0.0.1:8001/v1"
     assert api_spec.env["DEFEND_MODEL_API_KEY"] == "vllm_synthetic"
     assert not any("vllm_synthetic" in argument for argument in api_spec.argv)
+
+
+def test_vast_start_adopts_one_existing_labeled_instance_without_new_offer(
+    tmp_path,
+):
+    kwargs, events, _supervisor, _offer, instance, vast = remote_dependencies(
+        tmp_path
+    )
+    vast.recovery_ids = (instance.instance_id,)
+    orchestrator = StackOrchestrator(**kwargs)
+
+    with pytest.raises(HostFingerprintConfirmation):
+        orchestrator.start("vast")
+    orchestrator.confirm_fingerprint(
+        instance.instance_id, FakeSshTunnel.fingerprint
+    )
+    result = orchestrator.start("vast")
+
+    assert result.state == "ready"
+    assert result.vast_instance_id == instance.instance_id
+    assert vast.creates == 0
+    assert "vast:search" not in events
+
+
+def test_vast_start_requires_selection_when_multiple_labeled_instances_exist(
+    tmp_path,
+):
+    kwargs, events, _supervisor, _offer, instance, vast = remote_dependencies(
+        tmp_path
+    )
+    other = VastInstance(
+        instance.instance_id + 1,
+        "running",
+        "other.example.test",
+        2223,
+        "H100 SXM",
+        81920,
+        Decimal("1.95"),
+    )
+    vast.instances[other.instance_id] = other
+    vast.recovery_ids = (instance.instance_id, other.instance_id)
+    orchestrator = StackOrchestrator(**kwargs)
+
+    with pytest.raises(InstanceSelectionRequired):
+        orchestrator.start("vast")
+
+    snapshot = orchestrator.snapshot()
+    assert snapshot.pending_confirmation == "instance_selection"
+    assert tuple(row.instance_id for row in snapshot.vast_candidates) == (
+        instance.instance_id,
+        other.instance_id,
+    )
+    assert vast.creates == 0
+    assert "vast:search" not in events
+
+    with pytest.raises(ValueError, match="exact listed instance"):
+        orchestrator.select_vast_instance(999999)
+    orchestrator.select_vast_instance(other.instance_id)
+    with pytest.raises(HostFingerprintConfirmation):
+        orchestrator.start("vast")
+    assert orchestrator.snapshot().vast_instance_id == other.instance_id
+    assert vast.creates == 0
+
+
+def test_one_exited_instance_requires_exact_restart_confirmation(tmp_path):
+    kwargs, _events, _supervisor, _offer, instance, vast = remote_dependencies(
+        tmp_path
+    )
+    exited = VastInstance(
+        instance.instance_id,
+        "exited",
+        instance.ssh_host,
+        instance.ssh_port,
+        instance.gpu_name,
+        instance.gpu_ram_mb,
+        instance.dph_total,
+    )
+    vast.instance = exited
+    vast.instances[exited.instance_id] = exited
+    vast.recovery_ids = (exited.instance_id,)
+    orchestrator = StackOrchestrator(**kwargs)
+
+    with pytest.raises(InstanceRestartConfirmationRequired):
+        orchestrator.start("vast")
+
+    pending = orchestrator.snapshot()
+    assert pending.pending_confirmation == "instance_restart"
+    assert pending.vast_instance_id == exited.instance_id
+    assert "storage billing" in (pending.vast_billing_warning or "")
+    assert vast.state_changes == []
+
+    with pytest.raises(ValueError, match="exact instance ID and price"):
+        orchestrator.confirm_instance_restart(
+            exited.instance_id, Decimal("0.01")
+        )
+    orchestrator.confirm_instance_restart(
+        exited.instance_id, exited.dph_total
+    )
+    with pytest.raises(HostFingerprintConfirmation):
+        orchestrator.start("vast")
+
+    assert vast.state_changes == [(exited.instance_id, "running")]
+    assert vast.wait_stopped_transitions == [True]
+    assert vast.creates == 0
+
+
+def test_declined_restart_changes_no_provider_state_and_can_be_requested_again(
+    tmp_path,
+):
+    kwargs, _events, _supervisor, _offer, instance, vast = remote_dependencies(
+        tmp_path
+    )
+    exited = VastInstance(
+        instance.instance_id,
+        "exited",
+        instance.ssh_host,
+        instance.ssh_port,
+        instance.gpu_name,
+        instance.gpu_ram_mb,
+        instance.dph_total,
+    )
+    vast.instance = exited
+    vast.instances[exited.instance_id] = exited
+    vast.recovery_ids = (exited.instance_id,)
+    orchestrator = StackOrchestrator(**kwargs)
+    with pytest.raises(InstanceRestartConfirmationRequired):
+        orchestrator.start("vast")
+
+    declined = orchestrator.decline_instance_action()
+
+    assert declined.state == "stopped"
+    assert declined.pending_confirmation is None
+    assert vast.state_changes == []
+    with pytest.raises(InstanceRestartConfirmationRequired):
+        orchestrator.start("vast")
+
+
+def test_restart_confirmation_revalidates_price_before_provider_mutation(tmp_path):
+    kwargs, _events, _supervisor, _offer, instance, vast = remote_dependencies(
+        tmp_path
+    )
+    exited = VastInstance(
+        instance.instance_id,
+        "exited",
+        instance.ssh_host,
+        instance.ssh_port,
+        instance.gpu_name,
+        instance.gpu_ram_mb,
+        instance.dph_total,
+    )
+    vast.instance = exited
+    vast.instances[exited.instance_id] = exited
+    vast.recovery_ids = (exited.instance_id,)
+    orchestrator = StackOrchestrator(**kwargs)
+    with pytest.raises(InstanceRestartConfirmationRequired):
+        orchestrator.start("vast")
+    orchestrator.confirm_instance_restart(exited.instance_id, exited.dph_total)
+    vast.instances[exited.instance_id] = VastInstance(
+        exited.instance_id,
+        "exited",
+        exited.ssh_host,
+        exited.ssh_port,
+        exited.gpu_name,
+        exited.gpu_ram_mb,
+        Decimal("1.25"),
+    )
+
+    with pytest.raises(StartFailed, match="changed before restart"):
+        orchestrator.start("vast")
+
+    assert vast.state_changes == []
+
+
+def _reach_replacement_confirmation(tmp_path):
+    kwargs, events, _supervisor, offer, instance, vast = remote_dependencies(
+        tmp_path
+    )
+    exited = VastInstance(
+        instance.instance_id,
+        "exited",
+        instance.ssh_host,
+        instance.ssh_port,
+        instance.gpu_name,
+        instance.gpu_ram_mb,
+        instance.dph_total,
+    )
+    vast.instance = exited
+    vast.instances[exited.instance_id] = exited
+    vast.recovery_ids = (exited.instance_id,)
+    orchestrator = StackOrchestrator(**kwargs)
+    with pytest.raises(InstanceRestartConfirmationRequired):
+        orchestrator.start("vast")
+    orchestrator.confirm_instance_restart(exited.instance_id, exited.dph_total)
+    vast.state_change_status = "scheduling"
+    vast.wait_error = VastSchedulingTimeout(exited.instance_id)
+
+    with pytest.raises(InstanceReplacementConfirmationRequired):
+        orchestrator.start("vast")
+
+    return orchestrator, events, vast, exited, offer
+
+
+def test_scheduling_timeout_requires_exact_replacement_confirmation(tmp_path):
+    orchestrator, _events, vast, exited, offer = (
+        _reach_replacement_confirmation(tmp_path)
+    )
+
+    state = orchestrator.snapshot()
+    assert state.pending_confirmation == "instance_replace"
+    assert state.vast_instance_id == exited.instance_id
+    assert state.vast_actual_status == "scheduling"
+    assert state.vast_replacement_offer == offer
+    assert vast.destroyed == []
+    assert vast.creates == 0
+    assert vast.wait_scheduling_timeouts == [30.0]
+
+
+def test_declined_replacement_changes_no_provider_state(tmp_path):
+    orchestrator, _events, vast, _exited, _offer = (
+        _reach_replacement_confirmation(tmp_path)
+    )
+
+    declined = orchestrator.decline_instance_action()
+
+    assert declined.state == "stopped"
+    assert declined.pending_confirmation is None
+    assert declined.vast_replacement_offer is None
+    assert vast.destroyed == []
+    assert vast.creates == 0
+
+
+def test_confirmed_replacement_revalidates_destroys_then_creates_once(tmp_path):
+    orchestrator, events, vast, exited, offer = (
+        _reach_replacement_confirmation(tmp_path)
+    )
+    vast.wait_error = None
+    vast.instances[exited.instance_id] = VastInstance(
+        exited.instance_id,
+        "scheduling",
+        exited.ssh_host,
+        exited.ssh_port,
+        exited.gpu_name,
+        exited.gpu_ram_mb,
+        exited.dph_total,
+    )
+    vast.created_instance = VastInstance(
+        exited.instance_id + 1000,
+        "running",
+        "replacement.example.test",
+        2299,
+        offer.gpu_name,
+        offer.gpu_ram_mb,
+        offer.dph_total,
+    )
+    orchestrator.confirm_instance_replacement(
+        exited.instance_id,
+        offer.offer_id,
+        offer.dph_total,
+    )
+    event_start = len(events)
+
+    with pytest.raises(HostFingerprintConfirmation):
+        orchestrator.start("vast")
+
+    replacement_events = events[event_start:]
+    assert replacement_events.index("vast:show-instance") < (
+        replacement_events.index("vast:destroy")
+    )
+    assert replacement_events.index("vast:destroy") < (
+        replacement_events.index("vast:create")
+    )
+    assert vast.destroyed == [exited.instance_id]
+    assert vast.creates == 1
+    assert orchestrator.snapshot().vast_instance_id == exited.instance_id + 1000
+
+
+def test_changed_replacement_offer_requires_fresh_confirmation(tmp_path):
+    orchestrator, _events, vast, exited, offer = (
+        _reach_replacement_confirmation(tmp_path)
+    )
+    orchestrator.confirm_instance_replacement(
+        exited.instance_id,
+        offer.offer_id,
+        offer.dph_total,
+    )
+    vast.offer = VastOffer(
+        offer.offer_id,
+        offer.gpu_name,
+        offer.gpu_ram_mb,
+        offer.dph_total + Decimal("0.01"),
+        offer.reliability,
+    )
+
+    with pytest.raises(StartFailed, match="changed before replacement"):
+        orchestrator.start("vast")
+
+    assert vast.destroyed == []
+    assert vast.creates == 0
+
+
+def test_offer_race_after_destroy_does_not_rent_different_offer(tmp_path):
+    orchestrator, _events, vast, exited, offer = (
+        _reach_replacement_confirmation(tmp_path)
+    )
+    orchestrator.confirm_instance_replacement(
+        exited.instance_id,
+        offer.offer_id,
+        offer.dph_total,
+    )
+    vast.instances[exited.instance_id] = VastInstance(
+        exited.instance_id,
+        "scheduling",
+        exited.ssh_host,
+        exited.ssh_port,
+        exited.gpu_name,
+        exited.gpu_ram_mb,
+        exited.dph_total,
+    )
+    vast.wait_error = None
+    vast.create_error = VastOfferUnavailable("synthetic offer race")
+
+    with pytest.raises(StartFailed):
+        orchestrator.start("vast")
+
+    assert vast.destroyed == [exited.instance_id]
+    assert vast.creates == 0
+
+
+def test_vast_empty_search_reports_safe_offer_counts(tmp_path):
+    kwargs, _events, _supervisor, _offer, _instance, vast = remote_dependencies(
+        tmp_path
+    )
+    vast.offer = None
+
+    with pytest.raises(StartFailed) as pending:
+        StackOrchestrator(**kwargs).start("vast")
+
+    assert str(pending.value) == (
+        "Vast.ai start failed: no eligible offer is available "
+        "(provider returned 7; eligible 0)"
+    )
+
+
+def test_vast_provider_failure_keeps_safe_specific_diagnostic(tmp_path):
+    kwargs, _events, _supervisor, offer, _instance, vast = remote_dependencies(
+        tmp_path
+    )
+    orchestrator = StackOrchestrator(**kwargs)
+    with pytest.raises(PriceConfirmationRequired):
+        orchestrator.start("vast")
+    orchestrator.confirm_offer(offer.offer_id, offer.dph_total)
+    vast.wait_error = VastError("Vast.ai request failed (status 429)")
+
+    with pytest.raises(StartFailed) as pending:
+        orchestrator.start("vast")
+
+    assert str(pending.value) == (
+        "Vast.ai start failed: Vast.ai request failed (status 429)"
+    )
+    assert orchestrator.snapshot().vast_instance_id == vast.instance.instance_id
+
+
+def test_vast_ssh_failure_keeps_safe_specific_diagnostic_and_instance(tmp_path):
+    kwargs, _events, _supervisor, offer, _instance, vast = remote_dependencies(
+        tmp_path
+    )
+
+    class FailingSshTunnel(FakeSshTunnel):
+        def prepare_host(self, _instance, _confirm_fingerprint):
+            raise SshTunnelError("SSH host key scan failed")
+
+    kwargs["ssh_tunnel"] = FailingSshTunnel(
+        kwargs["ssh_tunnel"].events,
+        kwargs["ssh_tunnel"].supervisor,
+        kwargs["ssh_tunnel"].root,
+    )
+    orchestrator = StackOrchestrator(**kwargs)
+    with pytest.raises(PriceConfirmationRequired):
+        orchestrator.start("vast")
+    orchestrator.confirm_offer(offer.offer_id, offer.dph_total)
+
+    with pytest.raises(StartFailed) as failure:
+        orchestrator.start("vast")
+
+    assert str(failure.value) == (
+        "SSH tunnel start failed: SSH host key scan failed"
+    )
+    assert orchestrator.snapshot().vast_instance_id == vast.instance.instance_id
 
 
 def test_vast_destroy_requires_exact_id_and_clears_billing_state(tmp_path):

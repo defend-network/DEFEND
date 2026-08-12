@@ -13,7 +13,7 @@ from .orchestrator import (
 )
 from .processes import LogEntry
 from .redaction import redact_text
-from .types import ModelMode, ServiceState
+from .types import ModelMode, ServiceState, VastInstance, VastOffer
 
 
 class ConfirmationRequired(RuntimeError):
@@ -33,10 +33,15 @@ class UIState:
     vast_offer_id: int | None = None
     vast_gpu_ram_mb: int | None = None
     vast_reliability: str | None = None
+    vast_storage_cost_per_gb_month: str | None = None
+    vast_storage_total_hourly: str | None = None
+    vast_disk_gb: int | None = None
     vast_actual_status: str | None = None
     vast_billing_warning: str | None = None
     pending_confirmation: str | None = None
     pending_fingerprint: str | None = None
+    vast_candidates: tuple[VastInstance, ...] = ()
+    vast_replacement_offer: VastOffer | None = None
     owned_services: tuple[str, ...] = ()
 
     @property
@@ -84,6 +89,34 @@ class _ConfirmFingerprintAndStartCommand(_StartCommand):
 
     def __call__(self, instance_id: int, fingerprint: str):
         self._orchestrator.confirm_fingerprint(instance_id, fingerprint)
+        return self._orchestrator.start("vast", self._cancellation)
+
+
+class _SelectVastInstanceAndStartCommand(_StartCommand):
+    __name__ = "select_vast_instance_and_start"
+
+    def __call__(self, instance_id: int):
+        self._orchestrator.select_vast_instance(instance_id)
+        return self._orchestrator.start("vast", self._cancellation)
+
+
+class _ConfirmInstanceRestartAndStartCommand(_StartCommand):
+    __name__ = "confirm_instance_restart_and_start"
+
+    def __call__(self, instance_id: int, hourly_price: str):
+        self._orchestrator.confirm_instance_restart(instance_id, hourly_price)
+        return self._orchestrator.start("vast", self._cancellation)
+
+
+class _ConfirmInstanceReplacementAndStartCommand(_StartCommand):
+    __name__ = "confirm_instance_replacement_and_start"
+
+    def __call__(self, instance_id: int, offer_id: int, hourly_price: str):
+        self._orchestrator.confirm_instance_replacement(
+            instance_id,
+            offer_id,
+            hourly_price,
+        )
         return self._orchestrator.start("vast", self._cancellation)
 
 
@@ -189,6 +222,59 @@ class ControlController:
             fingerprint,
         )
 
+    def select_vast_instance(self, instance_id: int) -> UIState:
+        if type(instance_id) is not int or instance_id <= 0:
+            raise ValueError("Vast instance ID must be a positive integer")
+        cancellation = StartCancellation()
+        return self._queue_start(
+            _SelectVastInstanceAndStartCommand(
+                self._orchestrator, cancellation
+            ),
+            instance_id,
+        )
+
+    def confirm_vast_restart(
+        self, instance_id: int, hourly_price: str
+    ) -> UIState:
+        if type(instance_id) is not int or instance_id <= 0:
+            raise ValueError("Vast instance ID must be a positive integer")
+        if not isinstance(hourly_price, str) or not hourly_price:
+            raise ValueError("Vast hourly price must be provided exactly")
+        cancellation = StartCancellation()
+        return self._queue_start(
+            _ConfirmInstanceRestartAndStartCommand(
+                self._orchestrator, cancellation
+            ),
+            instance_id,
+            hourly_price,
+        )
+
+    def confirm_vast_replacement(
+        self,
+        instance_id: int,
+        offer_id: int,
+        hourly_price: str,
+    ) -> UIState:
+        if type(instance_id) is not int or instance_id <= 0:
+            raise ValueError("Vast instance ID must be a positive integer")
+        if type(offer_id) is not int or offer_id <= 0:
+            raise ValueError("Vast offer ID must be a positive integer")
+        if not isinstance(hourly_price, str) or not hourly_price:
+            raise ValueError("Vast hourly price must be provided exactly")
+        cancellation = StartCancellation()
+        return self._queue_start(
+            _ConfirmInstanceReplacementAndStartCommand(
+                self._orchestrator,
+                cancellation,
+            ),
+            instance_id,
+            offer_id,
+            hourly_price,
+        )
+
+    def decline_vast_instance_action(self) -> UIState:
+        return self._submit(self._orchestrator.decline_instance_action)
+
     def _cancel_pending_starts(self) -> None:
         with self._future_lock:
             requests = tuple(self._start_requests)
@@ -257,10 +343,17 @@ class ControlController:
             vast_offer_id=snapshot.vast_offer_id,
             vast_gpu_ram_mb=snapshot.vast_gpu_ram_mb,
             vast_reliability=snapshot.vast_reliability,
+            vast_storage_cost_per_gb_month=(
+                snapshot.vast_storage_cost_per_gb_month
+            ),
+            vast_storage_total_hourly=snapshot.vast_storage_total_hourly,
+            vast_disk_gb=snapshot.vast_disk_gb,
             vast_actual_status=snapshot.vast_actual_status,
             vast_billing_warning=snapshot.vast_billing_warning,
             pending_confirmation=snapshot.pending_confirmation,
             pending_fingerprint=snapshot.pending_fingerprint,
+            vast_candidates=snapshot.vast_candidates,
+            vast_replacement_offer=snapshot.vast_replacement_offer,
             owned_services=snapshot.owned_services,
         )
 

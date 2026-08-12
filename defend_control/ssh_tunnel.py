@@ -265,9 +265,20 @@ class SshTunnel:
         ssh_keyscan_exe: Path | None = None,
         ssh_keygen_exe: Path | None = None,
         local_port: int = 8001,
+        scan_attempts: int = 6,
+        scan_retry_seconds: float = 5.0,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         if type(local_port) is not int or not 1 <= local_port <= 65_535:
             raise ValueError("local SSH forward port is invalid")
+        if type(scan_attempts) is not int or not 1 <= scan_attempts <= 12:
+            raise ValueError("SSH scan attempts are invalid")
+        if (
+            isinstance(scan_retry_seconds, bool)
+            or not isinstance(scan_retry_seconds, (int, float))
+            or not 0 <= float(scan_retry_seconds) <= 30
+        ):
+            raise ValueError("SSH scan retry interval is invalid")
         self._supervisor = supervisor
         self._known_hosts = Path(known_hosts)
         self._key_path = Path(key_path)
@@ -281,6 +292,9 @@ class SshTunnel:
             "ssh-keygen.exe"
         )
         self._local_port = local_port
+        self._scan_attempts = scan_attempts
+        self._scan_retry_seconds = float(scan_retry_seconds)
+        self._sleep = sleep
 
     @property
     def key_path(self) -> Path:
@@ -345,27 +359,43 @@ class SshTunnel:
         return public_key
 
     def _scan(self, host: str, port: int) -> tuple[str, str]:
-        try:
-            scanned = self._run(
-                (
-                    str(self._ssh_keyscan_exe),
-                    "-T",
-                    "10",
-                    "-t",
-                    "ed25519",
-                    "-p",
-                    str(port),
-                    host,
-                ),
-                stdin=None,
-                timeout=15.0,
-            )
-        except Exception as error:
-            raise SshTunnelError(
-                f"SSH host key scan failed ({type(error).__name__})"
-            ) from None
+        scanned = None
+        for attempt in range(self._scan_attempts):
+            try:
+                scanned = self._run(
+                    (
+                        str(self._ssh_keyscan_exe),
+                        "-T",
+                        "10",
+                        "-t",
+                        "ed25519",
+                        "-p",
+                        str(port),
+                        host,
+                    ),
+                    stdin=None,
+                    timeout=15.0,
+                )
+            except (OSError, TimeoutError) as error:
+                if attempt + 1 < self._scan_attempts:
+                    self._sleep(self._scan_retry_seconds)
+                continue
+            except Exception as error:
+                raise SshTunnelError(
+                    f"SSH host key scan failed ({type(error).__name__})"
+                ) from None
+            if scanned.returncode == 0 and scanned.stdout:
+                break
+            if (
+                scanned.returncode != 0
+                and b"choose_kex: unsupported KEX method" in scanned.stderr
+            ):
+                break
+            if attempt + 1 < self._scan_attempts:
+                self._sleep(self._scan_retry_seconds)
+        assert scanned is not None
         if scanned.returncode != 0 or not scanned.stdout:
-            raise SshTunnelError("SSH host key scan failed")
+            scanned = self._capture_host_with_ssh(host, port)
         if len(scanned.stdout) > _MAX_COMMAND_OUTPUT:
             raise SshTunnelError("SSH host key scan exceeded 64 KiB")
         try:
@@ -413,6 +443,72 @@ class SshTunnel:
         if fingerprint is None:
             raise SshTunnelError("SSH fingerprint calculation was invalid")
         return f"{key_type} {key_blob}", fingerprint
+
+    def _capture_host_with_ssh(self, host: str, port: int) -> CommandResult:
+        self._known_hosts.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, capture_name = tempfile.mkstemp(
+            dir=self._known_hosts.parent,
+            prefix=".host-capture.",
+            suffix=".tmp",
+        )
+        os.close(descriptor)
+        capture_path = Path(capture_name)
+        try:
+            try:
+                self._run(
+                    (
+                        str(self._ssh_exe),
+                        "-p",
+                        str(port),
+                        "-o",
+                        "ConnectTimeout=10",
+                        "-o",
+                        "ConnectionAttempts=1",
+                        "-o",
+                        "BatchMode=yes",
+                        "-o",
+                        "StrictHostKeyChecking=accept-new",
+                        "-o",
+                        "HashKnownHosts=no",
+                        "-o",
+                        f"UserKnownHostsFile={capture_path}",
+                        "-o",
+                        "GlobalKnownHostsFile=NUL",
+                        "-o",
+                        "PreferredAuthentications=none",
+                        "-o",
+                        "PubkeyAuthentication=no",
+                        "-o",
+                        "PasswordAuthentication=no",
+                        "-o",
+                        "KbdInteractiveAuthentication=no",
+                        "-o",
+                        "LogLevel=ERROR",
+                        f"root@{host}",
+                        "exit",
+                    ),
+                    stdin=None,
+                    timeout=15.0,
+                )
+            except Exception as error:
+                raise SshTunnelError(
+                    f"SSH host key capture failed ({type(error).__name__})"
+                ) from None
+            try:
+                if capture_path.stat().st_size > _MAX_COMMAND_OUTPUT:
+                    raise SshTunnelError("SSH host key capture exceeded 64 KiB")
+                payload = capture_path.read_bytes()
+            except SshTunnelError:
+                raise
+            except OSError as error:
+                raise SshTunnelError(
+                    f"SSH host key capture failed ({type(error).__name__})"
+                ) from None
+            if not payload:
+                raise SshTunnelError("SSH host key capture failed")
+            return CommandResult(0, payload, b"")
+        finally:
+            capture_path.unlink(missing_ok=True)
 
     def _is_pinned(self, marker: str, identity: str, instance_id: int) -> bool:
         try:
