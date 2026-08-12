@@ -8,8 +8,11 @@ from pathlib import Path
 import tempfile
 from urllib.parse import urlsplit
 
+from .types import ResourceProfile
+
 
 _ADAPTER_REPO = "Defend-network/defend-qwen-32b-lora"
+_DEFAULT_GPU_FAMILIES = ("A100", "H100", "H200", "B200")
 
 
 def _string(raw: object, name: str) -> str:
@@ -79,6 +82,19 @@ class ControlSettings:
     vllm_image: str = "vllm/vllm-openai:v0.10.0"
     vllm_disk_gb: int = 160
     max_model_len: int = 8192
+    # Resource policy (higher default floor + modern GPU families)
+    min_gpu_ram_mb: int = 140_000
+    allowed_gpu_families: tuple[str, ...] = _DEFAULT_GPU_FAMILIES
+
+    def resource_profile(self) -> ResourceProfile:
+        return ResourceProfile(
+            min_gpu_ram_mb=self.min_gpu_ram_mb,
+            allowed_gpu_families=self.allowed_gpu_families,
+            num_gpus=1,
+            min_reliability=Decimal("0.98"),
+            min_disk_gb=self.vllm_disk_gb,
+            max_model_len=self.max_model_len,
+        )
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, object]) -> "ControlSettings":
@@ -175,6 +191,22 @@ class ControlSettings:
         if max_model_len != 8192:
             raise ValueError("max_model_len must be exactly 8192")
 
+        min_gpu_ram_mb = _positive_int(
+            raw.get("min_gpu_ram_mb", 140_000), "min_gpu_ram_mb"
+        )
+        if min_gpu_ram_mb < 80_000:
+            raise ValueError("min_gpu_ram_mb must be at least 80000")
+
+        raw_families = raw.get("allowed_gpu_families", list(_DEFAULT_GPU_FAMILIES))
+        if not isinstance(raw_families, (list, tuple)) or not raw_families:
+            raise ValueError("allowed_gpu_families must be a non-empty list of strings")
+        families: list[str] = []
+        for item in raw_families:
+            if not isinstance(item, str) or not item.strip():
+                raise ValueError("allowed_gpu_families entries must be non-empty strings")
+            families.append(item.strip().upper())
+        allowed_gpu_families = tuple(dict.fromkeys(families))  # preserve order, dedupe
+
         return cls(
             repo_root=repo_root,
             data_root=_path(raw["data_root"], "data_root"),
@@ -195,6 +227,8 @@ class ControlSettings:
             vllm_image=vllm_image,
             vllm_disk_gb=vllm_disk_gb,
             max_model_len=max_model_len,
+            min_gpu_ram_mb=min_gpu_ram_mb,
+            allowed_gpu_families=allowed_gpu_families,
         )
 
 
@@ -221,6 +255,8 @@ class JsonSettingsStore:
         ):
             raw[name] = str(raw[name])
         raw["vast_max_hourly"] = str(raw["vast_max_hourly"])
+        # tuples become lists in JSON
+        raw["allowed_gpu_families"] = list(raw["allowed_gpu_families"])
         encoded = (json.dumps(raw, indent=2, sort_keys=True) + "\n").encode("utf-8")
 
         self._path.parent.mkdir(parents=True, exist_ok=True)
