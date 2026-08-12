@@ -12,7 +12,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-from .types import LaunchSpec, VastInstance, VastOffer
+from .types import LaunchSpec, ResourceProfile, VastInstance, VastOffer
 
 
 _API_ROOT = "https://console.vast.ai/api/v0"
@@ -35,6 +35,9 @@ _PENDING_STATUSES = frozenset(
     }
 )
 _TERMINAL_STATUSES = frozenset({"exited", "unknown", "offline"})
+
+# Default profile used when callers do not supply one (higher floor + modern families)
+_DEFAULT_PROFILE = ResourceProfile()
 
 
 class VastError(RuntimeError):
@@ -133,6 +136,15 @@ def _positive_int(value: object, field: str) -> int:
     return value
 
 
+def _gpu_name_matches(gpu_name: str, families: tuple[str, ...]) -> bool:
+    """Return True when the GPU name starts with any allowed family."""
+    normalized = gpu_name.strip().upper()
+    for family in families:
+        if normalized.startswith(family.upper()):
+            return True
+    return False
+
+
 class VastClient:
     def __init__(
         self,
@@ -159,10 +171,15 @@ class VastClient:
     def offer_search_summary(self) -> str:
         return self._offer_search_summary
 
-    def search_offers(self, max_hourly: Decimal) -> tuple[VastOffer, ...]:
+    def search_offers(
+        self,
+        max_hourly: Decimal,
+        profile: ResourceProfile | None = None,
+    ) -> tuple[VastOffer, ...]:
         ceiling = _decimal(max_hourly, "maximum hourly price")
         if ceiling <= 0:
             raise ValueError("maximum hourly price must be positive")
+        policy = profile if profile is not None else _DEFAULT_PROFILE
         document = self._request_json(
             "POST",
             f"{_API_ROOT}/bundles/",
@@ -171,13 +188,13 @@ class VastClient:
                 "verified": {"eq": True},
                 "rentable": {"eq": True},
                 "rented": {"eq": False},
-                "num_gpus": {"eq": 1},
-                "gpu_ram": {"gte": 80000},
-                "disk_space": {"gte": 160},
+                "num_gpus": {"eq": policy.num_gpus},
+                "gpu_ram": {"gte": policy.min_gpu_ram_mb},
+                "disk_space": {"gte": policy.min_disk_gb},
                 "direct_port_count": {"gte": 1},
-                "reliability": {"gte": 0.98},
+                "reliability": {"gte": float(policy.min_reliability)},
                 "dph_total": {"lte": float(ceiling)},
-                "allocated_storage": 160,
+                "allocated_storage": policy.min_disk_gb,
                 "order": [["dph_total", "asc"]],
                 "limit": 20,
             },
@@ -187,7 +204,7 @@ class VastClient:
             raise VastError("Vast.ai offer response is invalid")
         offers: list[VastOffer] = []
         for raw in raw_offers:
-            offer = self._validated_offer(raw, ceiling)
+            offer = self._validated_offer(raw, ceiling, policy)
             if offer is not None:
                 offers.append(offer)
         offers.sort(key=lambda offer: (offer.dph_total, offer.offer_id))
@@ -614,7 +631,11 @@ class VastClient:
         return None
 
     @staticmethod
-    def _validated_offer(raw: object, ceiling: Decimal) -> VastOffer | None:
+    def _validated_offer(
+        raw: object,
+        ceiling: Decimal,
+        profile: ResourceProfile,
+    ) -> VastOffer | None:
         if not isinstance(raw, Mapping):
             return None
         try:
@@ -636,33 +657,28 @@ class VastClient:
                 or raw.get("rented") is not False
                 or not on_demand
                 or type(raw.get("num_gpus")) is not int
-                or raw.get("num_gpus") != 1
+                or raw.get("num_gpus") != profile.num_gpus
             ):
                 return None
             gpu_ram = _positive_int(raw.get("gpu_ram"), "GPU RAM")
-            if gpu_ram < 80000:
+            if gpu_ram < profile.min_gpu_ram_mb:
                 return None
             disk_space = _decimal(raw.get("disk_space"), "disk space")
-            if disk_space < 160:
+            if disk_space < profile.min_disk_gb:
                 return None
             dph_total = _decimal(raw.get("dph_total"), "hourly price")
             if dph_total < 0 or dph_total > ceiling:
                 return None
             offer_id = _positive_int(raw.get("id"), "offer ID")
             gpu_name = raw.get("gpu_name")
-            if (
-                not isinstance(gpu_name, str)
-                or not re.fullmatch(
-                    r"(?:A100|H100)(?:[\s_-]+.*)?",
-                    gpu_name.strip(),
-                    re.IGNORECASE,
-                )
+            if not isinstance(gpu_name, str) or not _gpu_name_matches(
+                gpu_name, profile.allowed_gpu_families
             ):
                 return None
             reliability = _decimal(
                 raw.get("reliability", raw.get("reliability2")), "reliability"
             )
-            if reliability < Decimal("0.98") or reliability > 1:
+            if reliability < profile.min_reliability or reliability > 1:
                 return None
             storage_cost = (
                 None
