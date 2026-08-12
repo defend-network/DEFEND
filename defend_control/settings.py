@@ -13,6 +13,7 @@ from .types import ResourceProfile
 
 _ADAPTER_REPO = "Defend-network/defend-qwen-32b-lora"
 _DEFAULT_GPU_FAMILIES = ("A100", "H100", "H200", "B200")
+_MIN_GPU_RAM_FLOOR = 140_000
 
 
 def _string(raw: object, name: str) -> str:
@@ -82,13 +83,15 @@ class ControlSettings:
     vllm_image: str = "vllm/vllm-openai:v0.10.0"
     vllm_disk_gb: int = 160
     max_model_len: int = 8192
-    # Resource policy (higher default floor + modern GPU families)
-    min_gpu_ram_mb: int = 140_000
+    # Resource policy — floor is hard-enforced at 140 GB
+    min_gpu_ram_mb: int = _MIN_GPU_RAM_FLOOR
     allowed_gpu_families: tuple[str, ...] = _DEFAULT_GPU_FAMILIES
 
     def resource_profile(self) -> ResourceProfile:
+        # Always enforce the floor, even if an old settings file had a lower value
+        floor = max(self.min_gpu_ram_mb, _MIN_GPU_RAM_FLOOR)
         return ResourceProfile(
-            min_gpu_ram_mb=self.min_gpu_ram_mb,
+            min_gpu_ram_mb=floor,
             allowed_gpu_families=self.allowed_gpu_families,
             num_gpus=1,
             min_reliability=Decimal("0.98"),
@@ -191,11 +194,12 @@ class ControlSettings:
         if max_model_len != 8192:
             raise ValueError("max_model_len must be exactly 8192")
 
-        min_gpu_ram_mb = _positive_int(
-            raw.get("min_gpu_ram_mb", 140_000), "min_gpu_ram_mb"
-        )
-        if min_gpu_ram_mb < 80_000:
-            raise ValueError("min_gpu_ram_mb must be at least 80000")
+        # Always force the 140 GB floor. Old settings files that still contain
+        # 80000 (or any lower value) are silently raised.
+        requested = raw.get("min_gpu_ram_mb", _MIN_GPU_RAM_FLOOR)
+        min_gpu_ram_mb = _positive_int(requested, "min_gpu_ram_mb")
+        if min_gpu_ram_mb < _MIN_GPU_RAM_FLOOR:
+            min_gpu_ram_mb = _MIN_GPU_RAM_FLOOR
 
         raw_families = raw.get("allowed_gpu_families", list(_DEFAULT_GPU_FAMILIES))
         if not isinstance(raw_families, (list, tuple)) or not raw_families:
