@@ -22,7 +22,7 @@ from .local_model import (
 )
 from .preflight import PreflightRunner
 from .processes import LogEntry, ProcessSupervisor
-from .remote_vllm import build_remote_process_specs
+from .remote_vllm import RemoteVllmError, build_remote_process_specs
 from .settings import ControlSettings
 from .ssh_tunnel import HostFingerprintConfirmation, SshTunnelError
 from .types import (
@@ -888,6 +888,11 @@ class StackOrchestrator:
         except SshTunnelError as error:
             self._rollback(attempt)
             safe = StartFailed("SSH tunnel", str(error))
+            self._set_state("failed", error=str(safe))
+            raise safe from None
+        except RemoteVllmError as error:
+            self._rollback(attempt)
+            safe = StartFailed("remote vLLM", str(error))
             self._set_state("failed", error=str(safe))
             raise safe from None
         except Exception as error:
