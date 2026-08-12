@@ -51,6 +51,23 @@ class LaunchSpec:
 
 
 @dataclass(frozen=True)
+class ResourceProfile:
+    """Configurable resource policy for Vast.ai instance selection.
+
+    Defaults are intentionally higher than the original 80 GB A100/H100 floor
+    so that H200 / B200-class cards are preferred while still accepting strong
+    single-GPU offers. Single-GPU remains the default path.
+    """
+
+    min_gpu_ram_mb: int = 140_000
+    allowed_gpu_families: tuple[str, ...] = ("A100", "H100", "H200", "B200")
+    num_gpus: int = 1
+    min_reliability: Decimal = Decimal("0.98")
+    min_disk_gb: int = 160
+    max_model_len: int = 8192
+
+
+@dataclass(frozen=True)
 class VastOffer:
     offer_id: int
     gpu_name: str
