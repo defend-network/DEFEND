@@ -173,6 +173,13 @@ def _database_metadata(database: Path) -> tuple[tuple[bool, int, int, int, int],
     )
 
 
+def _unsafe_invitation_sidecars(
+    metadata: tuple[tuple[bool, int, int, int, int], ...],
+) -> bool:
+    _main, wal, _shm, journal = metadata
+    return (wal[0] and wal[3] > 0) or journal[0]
+
+
 def _unstable_invitation_result() -> CheckResult:
     return CheckResult(
         "invitations",
@@ -191,7 +198,7 @@ def _invitation_rollout_check(data_root: Path) -> CheckResult:
     # contain newer invitations than the main file, so fail closed instead of
     # inspecting a stale snapshot.
     before = _database_metadata(database)
-    if any(metadata[0] for metadata in before[1:]):
+    if _unsafe_invitation_sidecars(before):
         return _unstable_invitation_result()
 
     uri = f"{database.resolve().as_uri()}?mode=ro&immutable=1"
@@ -235,7 +242,7 @@ def _invitation_rollout_check(data_root: Path) -> CheckResult:
         connection.close()
 
     after = _database_metadata(database)
-    if after != before or any(metadata[0] for metadata in after[1:]):
+    if after != before or _unsafe_invitation_sidecars(after):
         return _unstable_invitation_result()
 
     if pending:
