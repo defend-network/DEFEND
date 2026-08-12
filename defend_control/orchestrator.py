@@ -177,7 +177,8 @@ class ExternalCloudflaredDetector:
             candidates = self._query()
         except Exception:
             return None
-        matches: list[int] = []
+        exact_matches: list[int] = []
+        name_matches: list[int] = []
         for candidate in candidates:
             pid = candidate.get("pid") if isinstance(candidate, Mapping) else None
             executable = (
@@ -203,15 +204,23 @@ class ExternalCloudflaredDetector:
                 run_index = normalized.index("run")
             except ValueError:
                 continue
-            if (
-                "tunnel" not in normalized[1:run_index]
-                or run_index + 1 >= len(argv)
-                or argv[run_index + 1] != settings.cloudflared_tunnel
-                or not self._has_config(argv, settings.cloudflared_config)
-            ):
+            if "tunnel" not in normalized[1:run_index]:
                 continue
-            matches.append(pid)
-        return matches[0] if len(matches) == 1 else None
+            tunnel_name = settings.cloudflared_tunnel
+            exact_config = self._has_config(argv, settings.cloudflared_config)
+            named = (
+                run_index + 1 < len(argv)
+                and argv[run_index + 1] == tunnel_name
+            ) or any(item == tunnel_name for item in argv)
+            if exact_config and named:
+                exact_matches.append(pid)
+            elif named:
+                name_matches.append(pid)
+        if len(exact_matches) == 1:
+            return exact_matches[0]
+        if len(name_matches) == 1:
+            return name_matches[0]
+        return None
 
 
 class StartFailed(RuntimeError):
@@ -327,6 +336,7 @@ class StackOrchestrator:
         health_probe: Callable[..., HealthResult] = probe_http,
         external_tunnel_detector: Callable[[ControlSettings], int | None] | None = None,
         health_timeout_seconds: float = 30.0,
+        public_health_timeout_seconds: float = 90.0,
         poll_interval_seconds: float = 0.2,
         huggingface_client: Any | None = None,
         vast_client_factory: Callable[[str], Any] | None = None,
@@ -336,6 +346,8 @@ class StackOrchestrator:
     ) -> None:
         if health_timeout_seconds <= 0 or poll_interval_seconds < 0:
             raise ValueError("health timing values are invalid")
+        if public_health_timeout_seconds <= 0:
+            raise ValueError("public health timing values are invalid")
         self._settings = settings
         self._secrets_source = secrets
         self._preflight = preflight
@@ -343,6 +355,7 @@ class StackOrchestrator:
         self._local_backend = local_backend
         self._health_probe = health_probe
         self._health_timeout_seconds = float(health_timeout_seconds)
+        self._public_health_timeout_seconds = float(public_health_timeout_seconds)
         self._poll_interval_seconds = float(poll_interval_seconds)
         self._external_tunnel_detector = (
             external_tunnel_detector
@@ -683,8 +696,20 @@ class StackOrchestrator:
         cancellation: StartCancellation,
         *,
         public: bool = False,
+        timeout_seconds: float | None = None,
     ) -> None:
-        deadline = time.monotonic() + self._health_timeout_seconds
+        limit = (
+            float(timeout_seconds)
+            if timeout_seconds is not None
+            else (
+                self._public_health_timeout_seconds
+                if public
+                else self._health_timeout_seconds
+            )
+        )
+        if limit <= 0:
+            raise ValueError("health timeout must be positive")
+        deadline = time.monotonic() + limit
         while True:
             self._check_cancelled(cancellation)
             remaining = max(0.001, deadline - time.monotonic())
@@ -878,6 +903,18 @@ class StackOrchestrator:
                 )
             raise
         except StartFailed as error:
+            # Public edge lag must not tear down a healthy local stack or an
+            # already-provisioned remote model. Degrade instead of hard-fail.
+            if error.component == "public route":
+                self._set_component("cloudflare", "degraded")
+                self._set_state(
+                    "degraded",
+                    error=(
+                        "Local API and frontend are up; public route is not healthy yet. "
+                        f"{error}"
+                    ),
+                )
+                return self.snapshot()
             self._rollback(attempt)
             self._set_state("failed", error=str(error))
             raise
