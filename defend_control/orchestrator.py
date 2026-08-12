@@ -846,9 +846,10 @@ class StackOrchestrator:
                 self._remember_owned("cloudflare", attempt)
                 self._set_component("cloudflare", "running")
             self._check_cancelled(attempt_cancellation)
+            # Public frontend may not expose /health; probe the origin root instead.
             self._wait_healthy(
                 "public route",
-                f"{self._settings.public_web_origin}/health",
+                f"{self._settings.public_web_origin.rstrip('/')}/",
                 attempt_cancellation,
                 public=True,
             )
