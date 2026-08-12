@@ -383,6 +383,13 @@ class StackOrchestrator:
         self._replacement_offer = None
         self._confirmed_replacement = None
 
+    def _search_offers(self):
+        """Always search under the current ResourceProfile (140GB+ by default)."""
+        return self._vast_client.search_offers(
+            self._settings.vast_max_hourly,
+            profile=self._settings.resource_profile(),
+        )
+
     def _replace_scheduled_instance(
         self,
         cancellation: StartCancellation,
@@ -401,9 +408,7 @@ class StackOrchestrator:
             LaunchSpec.default().label
         )
         current = self._vast_client.show_instance(old_instance.instance_id)
-        current_offers = self._vast_client.search_offers(
-            self._settings.vast_max_hourly
-        )
+        current_offers = self._search_offers()
         current_offer = next(
             (candidate for candidate in current_offers if candidate.offer_id == offer.offer_id),
             None,
@@ -548,9 +553,7 @@ class StackOrchestrator:
                 self._vast_candidates = ()
         if self._vast_instance is None:
             if self._vast_offer is None:
-                offers = self._vast_client.search_offers(
-                    self._settings.vast_max_hourly
-                )
+                offers = self._search_offers()
                 if not offers:
                     search_summary = getattr(
                         self._vast_client, "offer_search_summary", None
@@ -609,9 +612,7 @@ class StackOrchestrator:
             if current.actual_status == "running":
                 self._vast_instance = current
             else:
-                offers = self._vast_client.search_offers(
-                    self._settings.vast_max_hourly
-                )
+                offers = self._search_offers()
                 if not offers:
                     raise StartFailed(
                         "Vast.ai",
