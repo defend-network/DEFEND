@@ -132,6 +132,8 @@ class RemoteVllmBootstrap:
         vllm_encoded = base64.b64encode(vllm_api_key.encode("utf-8")).decode(
             "ascii"
         )
+        # Use huggingface_hub Python API — more reliable than bare `hf` CLI
+        # across vllm/vllm-openai image variants.
         script = f"""#!/usr/bin/env bash
 set -euo pipefail
 set +x
@@ -140,12 +142,47 @@ install -d -m 700 /workspace/defend
 printf '%s' {shlex.quote(hf_encoded)} | base64 --decode > /workspace/defend/.hf_token
 chmod 600 /workspace/defend/.hf_token
 export HF_TOKEN="$(cat /workspace/defend/.hf_token)"
+export HUGGING_FACE_HUB_TOKEN="$HF_TOKEN"
 VLLM_API_KEY="$(printf '%s' {shlex.quote(vllm_encoded)} | base64 --decode)"
 export VLLM_API_KEY
-hf download {shlex.quote(adapter.base_repo)} --revision {shlex.quote(adapter.base_revision)} --local-dir /workspace/defend/base
-hf download {shlex.quote(adapter.adapter_repo)} --revision {shlex.quote(adapter.adapter_revision)} --local-dir /workspace/defend/adapter
-unset HF_TOKEN
-nohup vllm serve /workspace/defend/base \\
+
+python3 - <<'PY'
+import os
+from huggingface_hub import snapshot_download
+
+base_repo = {adapter.base_repo!r}
+base_rev = {adapter.base_revision!r}
+adapter_repo = {adapter.adapter_repo!r}
+adapter_rev = {adapter.adapter_revision!r}
+
+snapshot_download(
+    repo_id=base_repo,
+    revision=base_rev,
+    local_dir="/workspace/defend/base",
+    token=os.environ.get("HF_TOKEN"),
+)
+snapshot_download(
+    repo_id=adapter_repo,
+    revision=adapter_rev,
+    local_dir="/workspace/defend/adapter",
+    token=os.environ.get("HF_TOKEN"),
+)
+print("downloads complete", flush=True)
+PY
+
+unset HF_TOKEN HUGGING_FACE_HUB_TOKEN
+
+# Prefer `vllm` on PATH; fall back to python -m vllm if needed
+if command -v vllm >/dev/null 2>&1; then
+  VLLM_CMD=(vllm serve)
+elif python3 -c "import vllm" >/dev/null 2>&1; then
+  VLLM_CMD=(python3 -m vllm.entrypoints.openai.api_server)
+else
+  echo "vllm not found" >&2
+  exit 127
+fi
+
+nohup "${{VLLM_CMD[@]}}" /workspace/defend/base \\
   --host 127.0.0.1 \\
   --port 8000 \\
   --enable-lora \\
