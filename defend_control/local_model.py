@@ -151,7 +151,7 @@ def build_local_process_specs(
             ("npm.cmd", "run", "start"),
             repo / "defend-ui-v2",
             {"PORT": "3000", "HOSTNAME": "127.0.0.1"},
-            "http://127.0.0.1:3000/health",
+            "http://127.0.0.1:3000/",
         ),
         cloudflare=ProcessSpec(
             "cloudflare",
