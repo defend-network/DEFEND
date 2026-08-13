@@ -215,6 +215,41 @@ def test_invitation_gate_allows_unchanged_empty_wal_and_stale_shm(tmp_path):
     assert invitation.detail == "Invitation rollout ready"
 
 
+def test_invitation_gate_reads_committed_rows_from_stale_nonempty_wal(tmp_path):
+    configured = settings(tmp_path)
+    database = configured.data_root / "db" / "identity.db"
+    database.parent.mkdir(parents=True)
+    connection = sqlite3.connect(database)
+    try:
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute("PRAGMA wal_autocheckpoint=0")
+        connection.execute(
+            """
+            CREATE TABLE invitations (
+                invitation_id TEXT,
+                account_id TEXT,
+                created_at TEXT,
+                expires_at TEXT,
+                consumed_at TEXT,
+                revoked_at TEXT,
+                transport_version TEXT
+            )
+            """
+        )
+        connection.commit()
+        assert database.with_name(f"{database.name}-wal").stat().st_size > 0
+
+        results = PreflightRunner.for_test(use_real_invitation_check=True).run(
+            "vast", configured, complete_secrets()
+        )
+    finally:
+        connection.close()
+
+    invitation = next(result for result in results if result.name == "invitations")
+    assert invitation.ok
+    assert invitation.detail == "Invitation rollout ready"
+
+
 def test_preflight_requires_configured_cloudflared_executable_path(tmp_path):
     configured = settings(tmp_path)
     runner = PreflightRunner(

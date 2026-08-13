@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   Activity,
+  BadgeCheck,
   Bot,
   Database,
   FileSearch,
@@ -27,10 +28,12 @@ import {
 } from "@/lib/adminAuth";
 import { UsersRolesPanel } from "./admin/identity/UsersRolesPanel";
 import { KnowledgeRagPanel } from "./admin/KnowledgeRagPanel";
+import { BackgroundCheckPanel } from "./admin/BackgroundCheckPanel";
 
 type View =
   | "overview"
   | "knowledge"
+  | "background"
   | "documents"
   | "research"
   | "models"
@@ -44,6 +47,7 @@ type View =
 const baseItems: Array<{ id: View; label: string; icon: any }> = [
   { id: "overview", label: "Overview", icon: Gauge },
   { id: "knowledge", label: "Knowledge / RAG", icon: Database },
+  { id: "background", label: "Background Check", icon: BadgeCheck },
   { id: "documents", label: "Documents", icon: FileText },
   { id: "research", label: "Research Lab", icon: FileSearch },
   { id: "models", label: "Models", icon: Bot },
@@ -250,6 +254,8 @@ export function AdminWorkstation() {
               onDocumentsChanged={refresh}
             />
           )}
+
+          {view === "background" && <BackgroundCheckPanel />}
 
           {view === "documents" && <DocumentsPanel docs={docs} />}
 

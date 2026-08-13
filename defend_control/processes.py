@@ -539,6 +539,18 @@ class ProcessSupervisor:
         process = owned.process
         if process.poll() is not None and owned.service_job_closed:
             return
+        send_signal = getattr(process, "send_signal", None)
+        if (
+            process.poll() is None
+            and sys.platform == "win32"
+            and callable(send_signal)
+        ):
+            try:
+                send_signal(signal.CTRL_BREAK_EVENT)
+                process.wait(timeout=3)
+                return
+            except (OSError, ValueError, subprocess.TimeoutExpired):
+                pass
         terminate_tree = getattr(owned.service_job, "terminate_tree", None)
         if callable(terminate_tree):
             terminate_tree(process)
@@ -546,14 +558,6 @@ class ProcessSupervisor:
             return
         if process.poll() is not None:
             return
-        send_signal = getattr(process, "send_signal", None)
-        if sys.platform == "win32" and callable(send_signal):
-            try:
-                send_signal(signal.CTRL_BREAK_EVENT)
-                process.wait(timeout=3)
-                return
-            except (OSError, ValueError, subprocess.TimeoutExpired):
-                pass
         process.terminate()
         try:
             process.wait(timeout=5)

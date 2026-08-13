@@ -101,6 +101,33 @@ def test_stop_all_terminates_only_owned_handles(fake_popen, fake_job):
     assert 999 not in fake_job.terminated_pids
 
 
+def test_windows_stop_offers_graceful_break_before_job_kill(monkeypatch):
+    class GracefulProcess(FakeProcess):
+        def __init__(self) -> None:
+            super().__init__()
+            self.signals: list[int] = []
+
+        def send_signal(self, value: int) -> None:
+            self.signals.append(value)
+            self.returncode = 0
+
+    class TrackingJob(FakeJob):
+        def terminate_tree(self, process: FakeProcess) -> None:
+            self.terminated_pids.append(process.pid)
+            process.kill()
+
+    process = GracefulProcess()
+    job = TrackingJob()
+    supervisor = ProcessSupervisor(job=job, popen=lambda *_args, **_kwargs: process)
+    monkeypatch.setattr(processes_module.sys, "platform", "win32")
+
+    supervisor.start(ProcessSpec("api", ("python", "api_server.py"), ROOT, {}, None))
+    assert supervisor.stop("api") is True
+
+    assert process.signals == [processes_module.signal.CTRL_BREAK_EVENT]
+    assert job.terminated_pids == []
+
+
 def test_log_buffer_redacts_and_bounds_entries():
     logs = LogBuffer(max_entries=2, max_line_chars=80, known_secrets=["hf_secret"])
     logs.append("api", "token=hf_secret")
