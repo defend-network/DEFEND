@@ -50,7 +50,7 @@ class ScsAuthorizer:
         for role in principal.roles:
             granted.update(_ROLE_PERMISSIONS.get(role, set()))
         if _TECH_MANAGERS.intersection(principal.functions):
-            granted.update({Permission.VIEW_TECHNICIAN_LEVEL, Permission.MANAGE_TECHNICIAN_LEVEL})
+            granted.update({Permission.VIEW_TECHNICIAN_LEVEL, Permission.MANAGE_TECHNICIAN_LEVEL, Permission.VIEW_ALL_JOBS})
         return frozenset(granted)
 
     def require(self, principal: ScsPrincipal, permission: Permission) -> None:

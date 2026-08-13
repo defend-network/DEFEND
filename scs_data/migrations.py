@@ -149,6 +149,42 @@ _MIGRATIONS = {
             changed_by TEXT NOT NULL, occurred_at TEXT NOT NULL
         );
     """,
+    5: """
+        CREATE TABLE scs_jobs (
+            job_id TEXT PRIMARY KEY, customer_id TEXT NOT NULL REFERENCES scs_customers(customer_id),
+            site_id TEXT NOT NULL REFERENCES scs_sites(site_id), job_type TEXT NOT NULL,
+            job_date TEXT NOT NULL, requested_scope TEXT, priority TEXT NOT NULL,
+            discipline TEXT, scheduled_start TEXT, scheduled_end TEXT,
+            created_by TEXT NOT NULL, created_at TEXT NOT NULL
+        );
+        CREATE TABLE scs_job_status_events (
+            event_id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES scs_jobs(job_id),
+            status TEXT NOT NULL, changed_by TEXT NOT NULL, occurred_at TEXT NOT NULL
+        );
+        CREATE TABLE scs_job_visits (
+            visit_id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES scs_jobs(job_id),
+            work_performed TEXT NOT NULL, findings TEXT, recommendations TEXT,
+            readings_summary TEXT, arrived_at TEXT, completed_at TEXT,
+            author_id TEXT NOT NULL, created_at TEXT NOT NULL
+        );
+        CREATE TABLE scs_job_assignments (
+            assignment_id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES scs_jobs(job_id),
+            employee_id TEXT NOT NULL REFERENCES scs_employees(employee_id), assignment_role TEXT NOT NULL,
+            assigned_by TEXT NOT NULL, effective_at TEXT NOT NULL, ended_at TEXT
+        );
+        CREATE TABLE scs_job_notes (
+            note_id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES scs_jobs(job_id),
+            body TEXT NOT NULL, visibility TEXT NOT NULL,
+            author_id TEXT NOT NULL, created_at TEXT NOT NULL
+        );
+        CREATE TABLE scs_job_classification_events (
+            event_id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES scs_jobs(job_id),
+            code TEXT NOT NULL, active INTEGER NOT NULL CHECK(active IN (0,1)), source TEXT NOT NULL,
+            changed_by TEXT NOT NULL, occurred_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_scs_jobs_customer_site ON scs_jobs(customer_id,site_id);
+        CREATE INDEX idx_scs_job_assignments_employee ON scs_job_assignments(employee_id,ended_at);
+    """,
 }
 
 
