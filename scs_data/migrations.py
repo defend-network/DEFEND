@@ -15,6 +15,74 @@ _MIGRATIONS = {
         INSERT OR IGNORE INTO scs_application_metadata(singleton, application_id)
         VALUES (1, 'scs');
     """,
+    2: """
+        CREATE TABLE scs_employees (
+            employee_id TEXT PRIMARY KEY,
+            email TEXT NOT NULL UNIQUE,
+            username TEXT UNIQUE,
+            display_name TEXT NOT NULL,
+            password_hash TEXT,
+            status TEXT NOT NULL CHECK(status IN ('invited','active','disabled')),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE scs_employee_roles (
+            employee_id TEXT NOT NULL REFERENCES scs_employees(employee_id),
+            role TEXT NOT NULL,
+            granted_by TEXT NOT NULL,
+            granted_at TEXT NOT NULL,
+            revoked_at TEXT,
+            PRIMARY KEY(employee_id, role, granted_at)
+        );
+        CREATE UNIQUE INDEX scs_one_active_owner
+            ON scs_employee_roles(role) WHERE role='owner' AND revoked_at IS NULL;
+        CREATE TABLE scs_invitations (
+            invitation_id TEXT PRIMARY KEY,
+            employee_id TEXT NOT NULL REFERENCES scs_employees(employee_id),
+            token_hash TEXT NOT NULL UNIQUE,
+            created_by TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            accepted_at TEXT,
+            revoked_at TEXT
+        );
+        CREATE TABLE scs_invitation_roles (
+            invitation_id TEXT NOT NULL REFERENCES scs_invitations(invitation_id),
+            role TEXT NOT NULL,
+            PRIMARY KEY(invitation_id, role)
+        );
+        CREATE TABLE scs_sessions (
+            session_hash TEXT PRIMARY KEY,
+            employee_id TEXT NOT NULL REFERENCES scs_employees(employee_id),
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            revoked_at TEXT
+        );
+        CREATE TABLE scs_function_history (
+            event_id TEXT PRIMARY KEY,
+            employee_id TEXT NOT NULL REFERENCES scs_employees(employee_id),
+            function_code TEXT NOT NULL,
+            assigned_by TEXT NOT NULL,
+            effective_at TEXT NOT NULL,
+            ended_at TEXT
+        );
+        CREATE TABLE scs_technician_level_history (
+            event_id TEXT PRIMARY KEY,
+            employee_id TEXT NOT NULL REFERENCES scs_employees(employee_id),
+            level_code TEXT NOT NULL,
+            changed_by TEXT NOT NULL,
+            effective_at TEXT NOT NULL
+        );
+        CREATE TABLE scs_audit_events (
+            event_id TEXT PRIMARY KEY,
+            actor_id TEXT,
+            event_type TEXT NOT NULL,
+            target_type TEXT NOT NULL,
+            target_id TEXT,
+            metadata_json TEXT NOT NULL,
+            occurred_at TEXT NOT NULL
+        );
+    """,
 }
 
 

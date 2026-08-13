@@ -37,10 +37,11 @@ def test_data_core_creates_only_scs_tree_and_migrates_once(tmp_path):
 
     with ScsDataCore(context(root)) as first:
         rows = first.conn.execute("SELECT version FROM scs_schema_migrations").fetchall()
-        assert [row[0] for row in rows] == [1]
-        assert first.health() == {"ok": True, "application_id": "scs", "schema_version": 1}
+        versions = [row[0] for row in rows]
+        assert versions == list(range(1, first.schema_version + 1))
+        assert first.health() == {"ok": True, "application_id": "scs", "schema_version": first.schema_version}
     with ScsDataCore(context(root)) as second:
-        assert second.conn.execute("SELECT COUNT(*) FROM scs_schema_migrations").fetchone()[0] == 1
+        assert second.conn.execute("SELECT COUNT(*) FROM scs_schema_migrations").fetchone()[0] == len(versions)
 
     assert root.is_dir()
     assert not defend_root.exists()
@@ -51,7 +52,7 @@ def test_backup_manifest_is_scs_scoped_and_rejects_other_application_root(tmp_pa
     with ScsDataCore(context(root)) as data:
         manifest = data.backup_manifest(root / "backups" / "snapshot-1")
         assert manifest["application_id"] == "scs"
-        assert manifest["schema_version"] == 1
+        assert manifest["schema_version"] == data.schema_version
         assert manifest["database"] == "db/scs.sqlite3"
         assert "DEFEND" not in repr(manifest)
         with pytest.raises(ValueError, match="SCS data root"):
