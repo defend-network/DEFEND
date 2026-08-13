@@ -9,6 +9,7 @@ from .auth_routes import build_auth_router
 from .customer_routes import build_customer_router
 from .membership_routes import build_membership_router
 from .job_routes import build_job_router
+from .import_routes import build_import_router
 
 
 def build_scs_app(context: ApplicationContext, identity: ScsIdentityStore, mailer: object, *, customers=None, memberships=None, jobs=None) -> FastAPI:
@@ -22,6 +23,8 @@ def build_scs_app(context: ApplicationContext, identity: ScsIdentityStore, maile
         app.include_router(build_membership_router(context, identity, memberships))
     if jobs is not None:
         app.include_router(build_job_router(context, identity, jobs))
+    if customers is not None:
+        app.include_router(build_import_router(context, identity, customers))
 
     @app.get("/health")
     def health():
