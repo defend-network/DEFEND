@@ -26,6 +26,7 @@ import {
   loadAdminSession,
 } from "@/lib/adminAuth";
 import { UsersRolesPanel } from "./admin/identity/UsersRolesPanel";
+import { KnowledgeRagPanel } from "./admin/KnowledgeRagPanel";
 
 type View =
   | "overview"
@@ -243,25 +244,11 @@ export function AdminWorkstation() {
           )}
 
           {view === "knowledge" && (
-            <>
-              <div className="page-heading">
-                <span className="eyebrow">Corpus</span>
-                <h1>Knowledge / RAG</h1>
-                <p>
-                  Permanent corpus is operator-controlled. Session uploads stay temporary unless you
-                  ingest them on purpose.
-                </p>
-              </div>
-              <div className="admin-card">
-                <p className="muted">
-                  Live ingest from this panel is next. For now, ingest via API tools / field scripts,
-                  then refresh Documents.
-                </p>
-                <p style={{ marginTop: 10 }}>
-                  Indexed documents reported: <strong>{stats.documents}</strong>
-                </p>
-              </div>
-            </>
+            <KnowledgeRagPanel
+              token={session.token}
+              documents={docs}
+              onDocumentsChanged={refresh}
+            />
           )}
 
           {view === "documents" && <DocumentsPanel docs={docs} />}

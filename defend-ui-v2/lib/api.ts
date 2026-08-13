@@ -250,10 +250,71 @@ export const adminHealth = (token: string) =>
     headers: { Authorization: `Bearer ${token}` },
   });
 
+export type PermanentRagDocument = {
+  document_id: string;
+  title: string;
+  content_hash: string;
+  chunk_count: number;
+  embedding_model: string;
+  ingested_at: string;
+  tags: string[];
+};
+
+export type RagJobFile = {
+  name: string;
+  document_id: string;
+  status: "queued" | "extracting" | "embedding" | "indexed" | "skipped" | "failed" | string;
+  chunks_added: number;
+  chunks_updated: number;
+  error?: string | null;
+};
+
+export type RagJob = {
+  job_id: string;
+  status: "queued" | "running" | "complete" | "failed" | string;
+  total: number;
+  indexed: number;
+  skipped: number;
+  failed: number;
+  files: RagJobFile[];
+  created_at?: string;
+  completed_at?: string | null;
+};
+
 export const adminDocuments = (token: string) =>
-  json<Record<string, unknown>>("/api/admin/rag/documents", {
+  json<{ documents: PermanentRagDocument[] }>("/api/admin/rag/documents", {
     headers: { Authorization: `Bearer ${token}` },
   });
+
+export async function adminRagIngest(token: string, files: File[]): Promise<RagJob> {
+  const form = new FormData();
+  for (const file of files) form.append("files", file);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), UPLOAD_TIMEOUT_MS);
+  try {
+    const response = await fetch(`${API_BASE}/api/admin/rag/ingest`, {
+      method: "POST",
+      body: form,
+      credentials: "include",
+      signal: controller.signal,
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!response.ok) throw new Error(`Request failed (${response.status})`);
+    return (await response.json()) as RagJob;
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error("Permanent RAG upload timed out.");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export const adminRagJob = (token: string, jobId: string) =>
+  json<RagJob>(`/api/admin/rag/jobs/${encodeURIComponent(jobId)}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  }, POLL_TIMEOUT_MS);
 
 export const adminResearch = (token: string, question: string) =>
   json<Record<string, unknown>>(
