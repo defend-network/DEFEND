@@ -83,6 +83,42 @@ _MIGRATIONS = {
             occurred_at TEXT NOT NULL
         );
     """,
+    3: """
+        CREATE TABLE scs_customers (
+            customer_id TEXT PRIMARY KEY, display_name TEXT NOT NULL,
+            legal_name TEXT, customer_type TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('prospect','active','inactive','archived')),
+            communication_preferences TEXT NOT NULL DEFAULT '{}', internal_notes TEXT,
+            created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        );
+        CREATE TABLE scs_contacts (
+            contact_id TEXT PRIMARY KEY, customer_id TEXT NOT NULL REFERENCES scs_customers(customer_id),
+            name TEXT NOT NULL, email TEXT, phone TEXT, purpose TEXT NOT NULL,
+            preferences TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL DEFAULT 'active',
+            created_by TEXT NOT NULL, created_at TEXT NOT NULL
+        );
+        CREATE TABLE scs_sites (
+            site_id TEXT PRIMARY KEY, customer_id TEXT NOT NULL REFERENCES scs_customers(customer_id),
+            name TEXT NOT NULL, service_address TEXT NOT NULL, billing_address TEXT,
+            timezone TEXT NOT NULL, access_instructions TEXT,
+            status TEXT NOT NULL DEFAULT 'active', created_by TEXT NOT NULL, created_at TEXT NOT NULL
+        );
+        CREATE TABLE scs_equipment (
+            equipment_id TEXT PRIMARY KEY, customer_id TEXT NOT NULL REFERENCES scs_customers(customer_id),
+            site_id TEXT NOT NULL REFERENCES scs_sites(site_id), equipment_type TEXT NOT NULL,
+            manufacturer TEXT, model TEXT, serial_number TEXT, install_date TEXT,
+            manufacture_date TEXT, status TEXT NOT NULL, location TEXT, notes TEXT,
+            created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        );
+        CREATE TABLE scs_equipment_history (
+            event_id TEXT PRIMARY KEY, equipment_id TEXT NOT NULL REFERENCES scs_equipment(equipment_id),
+            snapshot_json TEXT NOT NULL, changed_by TEXT NOT NULL, changed_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_scs_customers_name ON scs_customers(display_name);
+        CREATE INDEX idx_scs_contacts_customer ON scs_contacts(customer_id);
+        CREATE INDEX idx_scs_sites_customer ON scs_sites(customer_id);
+        CREATE INDEX idx_scs_equipment_customer_site ON scs_equipment(customer_id,site_id);
+    """,
 }
 
 
