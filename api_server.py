@@ -27,7 +27,9 @@ from api_admin_tt_routes import router as admin_tt_router
 from api_batch3_routes import router as batch3_router, ensure_visitor_session
 from api_identity_routes import SensitivePathRedactionMiddleware, router as identity_router
 from api_identity_admin_routes import router as identity_admin_router
+from api_admin_rag_routes import build_admin_rag_router
 from defend_data import DataCore
+from defend_data.admin_rag import PermanentRagService
 from defend_data.ingest_policy import AIIngestExcluded, assert_ai_ingest_allowed
 
 from production_policy import ProductionPolicy
@@ -383,6 +385,8 @@ app.include_router(admin_tt_router)
 app.include_router(batch3_router)
 app.include_router(identity_router)
 app.include_router(identity_admin_router)
+admin_rag_service = PermanentRagService(DATA_ROOT)
+app.include_router(build_admin_rag_router(admin_rag_service))
 
 
 async def _health_payload() -> dict[str, Any]:
@@ -689,11 +693,6 @@ async def upload_files(
             for x in saved
         ]
     }
-
-
-@app.get("/api/admin/rag/documents")
-async def admin_rag_documents(_admin: AdminPrincipal = Depends(require_admin)):
-    return {"documents": [], "note": "Connect to rag store metadata next"}
 
 
 @app.post("/api/admin/research/run")

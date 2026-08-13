@@ -2,12 +2,18 @@ from __future__ import annotations
 
 import json
 import hashlib
+import os
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Any
 
 
-STORE_ROOT = Path("artifacts/documents")
+STORE_ROOT = Path(
+    os.getenv(
+        "DEFEND_DOCUMENT_STORE_ROOT",
+        str(Path(os.getenv("DEFEND_DATA_ROOT", "artifacts")) / "documents"),
+    )
+)
 STORE_ROOT.mkdir(parents=True, exist_ok=True)
 
 
