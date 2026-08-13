@@ -122,7 +122,7 @@ def dependencies(tmp_path, *, health=None, external_tunnel_pid=None, ollama=None
     def health_probe(url, _timeout, **_kwargs):
         if url.endswith(":8000/health"):
             name = "api"
-        elif url.endswith(":3000/health"):
+        elif url == "http://127.0.0.1:3000/":
             name = "web"
         else:
             name = "public"
@@ -148,6 +148,7 @@ def dependencies(tmp_path, *, health=None, external_tunnel_pid=None, ollama=None
         "health_probe": health_probe,
         "external_tunnel_detector": tunnel_detector,
         "health_timeout_seconds": 0.05,
+        "public_health_timeout_seconds": 0.05,
         "poll_interval_seconds": 0,
     }, events, supervisor
 
@@ -182,35 +183,34 @@ def test_failed_web_health_rolls_back_only_new_processes(tmp_path):
     assert "external-cloudflare" not in supervisor.stopped
 
 
-def test_public_failure_rolls_back_owned_cloudflare_but_not_reused_tunnel(tmp_path):
+def test_public_failure_degrades_without_rolling_back_healthy_local_stack(tmp_path):
     kwargs, _events, supervisor = dependencies(
         tmp_path, health={"public": False}, external_tunnel_pid=None
     )
-    with pytest.raises(StartFailed, match="public"):
-        StackOrchestrator(**kwargs).start("ollama")
-    assert supervisor.stopped == ["cloudflare", "web", "api"]
+    result = StackOrchestrator(**kwargs).start("ollama")
+    assert result.state == "degraded"
+    assert {item.name: item.state for item in result.components}["cloudflare"] == "degraded"
+    assert supervisor.stopped == []
 
     kwargs, _events, supervisor = dependencies(
         tmp_path, health={"public": False}, external_tunnel_pid=7341
     )
-    with pytest.raises(StartFailed, match="public"):
-        StackOrchestrator(**kwargs).start("ollama")
-    assert supervisor.stopped == ["web", "api"]
+    result = StackOrchestrator(**kwargs).start("ollama")
+    assert result.state == "degraded"
+    assert supervisor.stopped == []
 
 
-def test_failed_rollback_stop_retains_owned_resource_for_later_cleanup(tmp_path):
+def test_degraded_public_route_retains_owned_resources_for_normal_cleanup(tmp_path):
     kwargs, _events, supervisor = dependencies(
         tmp_path, health={"public": False}, external_tunnel_pid=None
     )
-    supervisor.fail_stop_once.add("cloudflare")
     orchestrator = StackOrchestrator(**kwargs)
 
-    with pytest.raises(StartFailed, match="public"):
-        orchestrator.start("ollama")
-
-    assert [item.name for item in supervisor.snapshot()] == ["cloudflare"]
+    result = orchestrator.start("ollama")
+    assert result.state == "degraded"
+    assert [item.name for item in supervisor.snapshot()] == ["api", "web", "cloudflare"]
     orchestrator.stop_local()
-    assert supervisor.stopped == ["cloudflare", "web", "api", "cloudflare"]
+    assert supervisor.stopped == ["cloudflare", "web", "api"]
     assert supervisor.snapshot() == ()
 
 
@@ -337,9 +337,17 @@ def test_external_cloudflared_detector_requires_exact_exe_config_and_tunnel(tmp_
         {**exact, "argv": (*exact["argv"][:-1], "other-tunnel")},
         {**exact, "pid": 0},
     ):
-        assert ExternalCloudflaredDetector(query=lambda changed=changed: (changed,))(
+        detected = ExternalCloudflaredDetector(query=lambda changed=changed: (changed,))(
             configured
-        ) is None
+        )
+        if (
+            changed.get("pid") == 0
+            or changed.get("executable") != exact["executable"]
+            or changed.get("argv", ())[-1] == "other-tunnel"
+        ):
+            assert detected is None
+        else:
+            assert detected == 7341
 
 
 def test_per_attempt_cancellation_before_worker_entry_is_not_cleared(tmp_path):
@@ -442,9 +450,12 @@ class FakeVast:
         assert public_key.startswith("ssh-ed25519 ")
         return 44
 
-    def search_offers(self, max_hourly):
+    def search_offers(self, max_hourly, *, profile=None):
         self.events.append("vast:search")
         assert max_hourly == Decimal("3.00")
+        assert profile is not None
+        assert profile.min_gpu_ram_mb == 140_000
+        assert profile.num_gpus == 1
         return () if self.offer is None else (self.offer,)
 
     def list_labeled_instance_ids(self, label):

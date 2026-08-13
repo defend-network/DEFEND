@@ -92,7 +92,7 @@ def test_local_process_specs_keep_secrets_in_api_environment_only(tmp_path):
     assert specs.web.argv == ("npm.cmd", "run", "start")
     assert specs.web.cwd == tmp_path / "defend-ui-v2"
     assert dict(specs.web.env) == {"PORT": "3000", "HOSTNAME": "127.0.0.1"}
-    assert specs.web.health_url == "http://127.0.0.1:3000/health"
+    assert specs.web.health_url == "http://127.0.0.1:3000/"
     assert specs.cloudflare.argv == (
         str(configured.cloudflared_exe),
         "tunnel",
