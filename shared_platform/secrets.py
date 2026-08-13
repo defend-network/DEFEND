@@ -26,7 +26,12 @@ class NamespacedSecrets:
 
     @staticmethod
     def _logical_name(name: object) -> str:
-        if not isinstance(name, str) or not _LOGICAL_NAME.fullmatch(name):
+        if (
+            not isinstance(name, str)
+            or not _LOGICAL_NAME.fullmatch(name)
+            or name.startswith("DEFEND_")
+            or name.startswith("SCS_")
+        ):
             raise ValueError("logical secret name must use uppercase letters, digits, and underscores")
         return name
 
