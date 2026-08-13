@@ -113,6 +113,22 @@ Stop local DEFEND services and all identity database writers before backing up
 attachments. Verify the backup can be enumerated and restored to a separate test
 location. Do not copy a live SQLite main file while WAL/SHM writers are active.
 
+## Permanent Knowledge / RAG ingestion
+
+Keep DEFEND online and sign in to the Admin workspace. Open `Knowledge / RAG`,
+choose up to 20 PDF or DOCX files (25 MB maximum per file), and select `Index`.
+The panel processes files one at a time and reports extracting, embedding,
+indexed, skipped, or failed for every document. A failed document does not stop
+the rest of the batch. Re-uploading identical content reports `skipped` without
+embedding it again. Use the Documents view to confirm the permanent corpus and
+chunk counts after completion.
+
+The initial `C:\Users\thoma\Downloads\RAG` collection contains 13 eligible
+PDF/DOCX documents. Its 1,355 CSV files, 4 JSON files, and ZIP archive are not
+eligible for this workflow; they require a separate dataset-aware ingestion
+design. Permanent originals and metadata are stored under the configured DEFEND
+data root. Never add corpus documents to Git.
+
 ## Diagnostics
 
 The Control Center shows bounded status and safe exception types. Bounded logs
