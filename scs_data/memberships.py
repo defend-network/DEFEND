@@ -8,6 +8,7 @@ import uuid
 from defend_data.sqlite_utils import transaction
 
 from .audit import ScsAuditStore
+from .authorization import Permission, require_actor
 
 
 def _now() -> str: return datetime.now(timezone.utc).isoformat()
@@ -39,12 +40,14 @@ class ScsMembershipStore:
         return self._plan(row)
 
     def revise_plan(self, actor_id: str, plan_code: str, *, name: str, active: bool, effective_at: date | None = None) -> MembershipPlan:
+        require_actor(self.conn, actor_id, Permission.EDIT_CUSTOMERS)
         current = self.current_plan(plan_code); version = current.version + 1; now = _now()
         self.conn.execute("INSERT INTO scs_membership_plan_versions VALUES (?,?,?,?,?,?,?)", (plan_code, version, name, int(active), (effective_at or date.today()).isoformat(), actor_id, now))
         self.conn.commit(); self.audit.append(actor_id, "membership.plan_revised", "membership_plan", plan_code, {"version": version, "active": active})
         return self.plan_version(plan_code, version)
 
     def enroll(self, actor_id: str, customer_id: str, plan_code: str, *, start_date: date, end_date: date | None = None, covered_site_ids: tuple[str, ...] = (), covered_equipment_ids: tuple[str, ...] = ()) -> MembershipEnrollment:
+        require_actor(self.conn, actor_id, Permission.EDIT_CUSTOMERS)
         if end_date is not None and end_date < start_date: raise ValueError("membership end date must not precede start date")
         if self.conn.execute("SELECT 1 FROM scs_customers WHERE customer_id=?", (customer_id,)).fetchone() is None: raise KeyError("customer not found")
         plan = self.current_plan(plan_code)
@@ -64,6 +67,7 @@ class ScsMembershipStore:
         return self.current_enrollment(enrollment_id)
 
     def change_status(self, actor_id: str, enrollment_id: str, status: str) -> MembershipEnrollment:
+        require_actor(self.conn, actor_id, Permission.EDIT_CUSTOMERS)
         if status not in {"active", "paused", "expired", "cancelled"}: raise ValueError("invalid membership status")
         current = self.current_enrollment(enrollment_id)
         if current.status in {"expired", "cancelled"}: raise ValueError("terminal membership status cannot transition")

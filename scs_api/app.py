@@ -11,12 +11,14 @@ from .customer_routes import build_customer_router
 from .membership_routes import build_membership_router
 from .job_routes import build_job_router
 from .import_routes import build_import_router
+from .employee_routes import build_employee_router
 
 
 def build_scs_app(context: ApplicationContext, identity: ScsIdentityStore, mailer: object, *, customers=None, memberships=None, jobs=None) -> FastAPI:
     ScsPaths.from_context(context)
     app = FastAPI(title="Sunshine Climate Solutions Operations API", version="0.1.0")
     app.include_router(build_auth_router(context, identity, mailer))
+    app.include_router(build_employee_router(context, identity))
     if customers is not None:
         app.include_router(build_customer_router(context, identity, customers))
     if memberships is not None:

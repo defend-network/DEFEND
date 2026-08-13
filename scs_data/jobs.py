@@ -8,7 +8,7 @@ import uuid
 from defend_data.sqlite_utils import transaction
 
 from .audit import ScsAuditStore
-from .authorization import Permission, ScsAuthorizer, ScsPrincipal
+from .authorization import Permission, ScsAuthorizer, ScsPrincipal, require_actor
 
 
 JOB_TYPES = frozenset({
@@ -52,6 +52,7 @@ class ScsJobStore:
         self.audit = audit
 
     def create_job(self, actor_id: str, customer_id: str, site_id: str, job_type: str, *, job_date: date, priority: str = "normal", requested_scope: str | None = None, discipline: str | None = None) -> Job:
+        require_actor(self.conn, actor_id, Permission.MANAGE_JOBS)
         if job_type not in JOB_TYPES:
             raise ValueError("invalid job type")
         row = self.conn.execute("SELECT customer_id FROM scs_sites WHERE site_id=?", (site_id,)).fetchone()
@@ -73,6 +74,7 @@ class ScsJobStore:
         return Job(row["job_id"], row["customer_id"], row["site_id"], row["job_type"], row["job_date"], row["status"], row["priority"])
 
     def change_status(self, actor_id: str, job_id: str, status: str) -> Job:
+        self._require_job_worker(actor_id, job_id)
         self.get_job(job_id)
         if status not in JOB_STATUSES:
             raise ValueError("invalid job status")
@@ -86,6 +88,7 @@ class ScsJobStore:
         return tuple(row[0] for row in self.conn.execute("SELECT status FROM scs_job_status_events WHERE job_id=? ORDER BY occurred_at,rowid", (job_id,)))
 
     def add_visit(self, actor_id: str, job_id: str, *, work_performed: str, findings: str | None = None, recommendations: str | None = None, readings_summary: str | None = None) -> JobVisit:
+        self._require_job_worker(actor_id, job_id)
         self.get_job(job_id)
         visit_id = "scs_vis_" + uuid.uuid4().hex
         self.conn.execute("INSERT INTO scs_job_visits VALUES (?,?,?,?,?,?,?,?,?,?)", (visit_id, job_id, work_performed, findings, recommendations, readings_summary, None, None, actor_id, _now()))
@@ -94,6 +97,7 @@ class ScsJobStore:
         return JobVisit(visit_id, job_id, work_performed, findings, recommendations, readings_summary)
 
     def assign(self, actor_id: str, job_id: str, employee_id: str, assignment_role: str) -> JobAssignment:
+        require_actor(self.conn, actor_id, Permission.MANAGE_JOBS)
         self.get_job(job_id)
         if self.conn.execute("SELECT 1 FROM scs_employees WHERE employee_id=? AND status='active'", (employee_id,)).fetchone() is None:
             raise ValueError("active employee required")
@@ -105,6 +109,7 @@ class ScsJobStore:
         return JobAssignment(assignment_id, job_id, employee_id, assignment_role, now, None)
 
     def end_assignment(self, actor_id: str, assignment_id: str) -> None:
+        require_actor(self.conn, actor_id, Permission.MANAGE_JOBS)
         now = _now()
         result = self.conn.execute("UPDATE scs_job_assignments SET ended_at=? WHERE assignment_id=? AND ended_at IS NULL", (now, assignment_id))
         self.conn.commit()
@@ -126,6 +131,9 @@ class ScsJobStore:
         return self.get_job(job_id)
 
     def add_note(self, actor_id: str, job_id: str, body: str, visibility: str) -> JobNote:
+        principal = self._require_job_worker(actor_id, job_id)
+        if visibility in {"management-only", "billing-only"} and Permission.MANAGE_JOBS not in ScsAuthorizer().permissions(principal):
+            raise PermissionError("restricted note visibility")
         self.get_job(job_id)
         if visibility not in NOTE_VISIBILITIES:
             raise ValueError("invalid note visibility")
@@ -149,6 +157,7 @@ class ScsJobStore:
         return tuple(JobNote(row["note_id"], row["job_id"], row["body"], row["visibility"], row["author_id"], row["created_at"]) for row in rows)
 
     def classify(self, actor_id: str, job_id: str, code: str, *, source: str) -> None:
+        require_actor(self.conn, actor_id, Permission.MANAGE_JOBS)
         job = self.get_job(job_id)
         if code not in CLASSIFICATION_CODES:
             raise ValueError("invalid classification")
@@ -189,3 +198,13 @@ class ScsJobStore:
 
     def _classification_event(self, job_id: str, code: str, active: bool, source: str, actor_id: str, when: str) -> None:
         self.conn.execute("INSERT INTO scs_job_classification_events VALUES (?,?,?,?,?,?,?)", ("scs_jcl_" + uuid.uuid4().hex, job_id, code, int(active), source, actor_id, when))
+
+    def _require_job_worker(self, actor_id: str, job_id: str) -> ScsPrincipal:
+        principal = require_actor(self.conn, actor_id, Permission.WORK_ASSIGNED_JOBS) if actor_id else None
+        permissions = ScsAuthorizer().permissions(principal)
+        if Permission.MANAGE_JOBS in permissions:
+            return principal
+        assigned = self.conn.execute("SELECT 1 FROM scs_job_assignments WHERE job_id=? AND employee_id=? AND ended_at IS NULL", (job_id, actor_id)).fetchone()
+        if assigned is None:
+            raise PermissionError("active job assignment required")
+        return principal

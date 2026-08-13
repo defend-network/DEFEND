@@ -3,6 +3,10 @@ from dataclasses import replace
 import pytest
 
 from scs_data.authorization import Permission, ScsAuthorizer, ScsPrincipal
+from scs_data.config import ScsPaths
+from scs_data.customers import ScsCustomerStore
+from scs_data.identity import ScsIdentityStore
+from shared_platform.application import ApplicationContext
 
 
 def principal(*, roles=(), functions=()):
@@ -56,3 +60,12 @@ def test_inactive_principal_is_always_denied():
             replace(principal(roles=("owner",)), status="disabled"),
             Permission.VIEW_CUSTOMERS,
         )
+def test_domain_mutations_reject_bare_unauthorized_employee(tmp_path):
+    context = ApplicationContext("scs", (tmp_path / "SCS_DATA").resolve(), "SCS", "SCS", "scs_employee_session", "https://ai.sunshineclimatesolutions.com", 8100, 3100)
+    identity = ScsIdentityStore(ScsPaths.from_context(context).ensure().database)
+    owner = identity.bootstrap_owner("owner@example.com", "owner", "Owner", "owner-password")
+    customers = ScsCustomerStore(identity.conn, identity.audit)
+    reader = identity.create_active_employee_for_bootstrap(owner.employee_id, "reader2@example.com", "reader2", "Reader", "reader-password", ("read_only",))
+    with pytest.raises(PermissionError):
+        customers.create_customer(reader.employee_id, "Forbidden", "commercial")
+    identity.close()

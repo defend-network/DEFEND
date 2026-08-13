@@ -8,6 +8,7 @@ import uuid
 from defend_data.sqlite_utils import json_dumps
 
 from .audit import ScsAuditStore
+from .authorization import Permission, require_actor
 
 
 def _now() -> str:
@@ -49,6 +50,7 @@ class ScsCustomerStore:
         self.conn = conn; self.audit = audit
 
     def create_customer(self, actor_id: str, display_name: str, customer_type: str, *, legal_name: str | None = None, internal_notes: str | None = None) -> Customer:
+        require_actor(self.conn, actor_id, Permission.EDIT_CUSTOMERS)
         if customer_type not in {"residential", "commercial", "government", "internal"}:
             raise ValueError("invalid customer type")
         if not display_name.strip(): raise ValueError("display name is required")
@@ -60,6 +62,7 @@ class ScsCustomerStore:
         return Customer(customer_id, display_name.strip(), customer_type, "active")
 
     def add_contact(self, actor_id: str, customer_id: str, *, name: str, email: str | None, purpose: str, phone: str | None = None) -> Contact:
+        require_actor(self.conn, actor_id, Permission.EDIT_CUSTOMERS)
         self._customer_row(customer_id)
         contact_id = "scs_con_" + uuid.uuid4().hex
         self.conn.execute("INSERT INTO scs_contacts(contact_id,customer_id,name,email,phone,purpose,created_by,created_at) VALUES (?,?,?,?,?,?,?,?)", (contact_id, customer_id, name, email, phone, purpose, actor_id, _now()))
@@ -67,6 +70,7 @@ class ScsCustomerStore:
         return Contact(contact_id, customer_id, name, email, purpose)
 
     def add_site(self, actor_id: str, customer_id: str, name: str, service_address: str, billing_address: str | None, timezone: str, access_instructions: str | None = None) -> Site:
+        require_actor(self.conn, actor_id, Permission.EDIT_CUSTOMERS)
         self._customer_row(customer_id)
         site_id = "scs_site_" + uuid.uuid4().hex
         self.conn.execute("INSERT INTO scs_sites(site_id,customer_id,name,service_address,billing_address,timezone,access_instructions,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?)", (site_id, customer_id, name, service_address, billing_address, timezone, access_instructions, actor_id, _now()))
@@ -74,6 +78,7 @@ class ScsCustomerStore:
         return Site(site_id, customer_id, name, service_address, billing_address, timezone)
 
     def add_equipment(self, actor_id: str, customer_id: str, site_id: str, *, equipment_type: str, manufacturer: str | None = None, model: str | None = None, serial_number: str | None = None, status: str = "active", notes: str | None = None) -> Equipment:
+        require_actor(self.conn, actor_id, Permission.EDIT_CUSTOMERS)
         self._customer_row(customer_id)
         site = self.conn.execute("SELECT customer_id FROM scs_sites WHERE site_id=?", (site_id,)).fetchone()
         if site is None or site[0] != customer_id: raise ValueError("equipment and site must belong to the same customer")
@@ -85,6 +90,7 @@ class ScsCustomerStore:
         return item
 
     def update_equipment(self, actor_id: str, equipment_id: str, *, status: str, notes: str | None = None) -> Equipment:
+        require_actor(self.conn, actor_id, Permission.EDIT_CUSTOMERS)
         old = self.get_equipment(equipment_id); now = _now()
         self.conn.execute("UPDATE scs_equipment SET status=?,notes=?,updated_at=? WHERE equipment_id=?", (status, notes, now, equipment_id))
         item = Equipment(old.equipment_id, old.customer_id, old.site_id, old.equipment_type, old.manufacturer, old.model, old.serial_number, status, notes)
@@ -99,6 +105,7 @@ class ScsCustomerStore:
         return self.conn.execute("SELECT COUNT(*) FROM scs_equipment_history WHERE equipment_id=?", (equipment_id,)).fetchone()[0]
 
     def archive_customer(self, actor_id: str, customer_id: str) -> None:
+        require_actor(self.conn, actor_id, Permission.EDIT_CUSTOMERS)
         self._customer_row(customer_id); self.conn.execute("UPDATE scs_customers SET status='archived',updated_at=? WHERE customer_id=?", (_now(), customer_id)); self.conn.commit()
         self.audit.append(actor_id, "customer.archived", "customer", customer_id)
 

@@ -68,6 +68,19 @@ class ScsIdentityStore:
             raise KeyError("SCS employee not found")
         return EmployeeRecord(row["employee_id"], row["email"], row["username"], row["display_name"], row["status"], self._roles(employee_id))
 
+    def list_employees(self, actor_id: str) -> tuple[EmployeeRecord, ...]:
+        self._assert_actor(actor_id)
+        return tuple(self._record(row[0]) for row in self.conn.execute("SELECT employee_id FROM scs_employees ORDER BY display_name,email"))
+
+    def set_status(self, actor_id: str, employee_id: str, status: str) -> None:
+        actor = self._assert_actor(actor_id)
+        target = self._record(employee_id)
+        if status not in {"active", "disabled"}: raise ValueError("invalid employee status")
+        if "owner" in target.roles: raise PermissionError("owner status cannot be changed")
+        if "operations_admin" in target.roles and "owner" not in actor.roles: raise PermissionError("owner required for operations admin status")
+        self.conn.execute("UPDATE scs_employees SET status=?,updated_at=? WHERE employee_id=?", (status, _now().isoformat(), employee_id)); self.conn.commit()
+        self.audit.append(actor_id, "identity.status_changed", "employee", employee_id, {"status": status})
+
     def bootstrap_owner(self, email: str, username: str, display_name: str, password: str) -> EmployeeRecord:
         normalized = normalize_email(email)
         existing = self.conn.execute(
