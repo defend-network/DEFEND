@@ -21,6 +21,10 @@ class ScsPaths:
     def from_context(cls, context: ApplicationContext) -> "ScsPaths":
         if not isinstance(context, ApplicationContext) or context.application_id != "scs":
             raise ValueError("ScsPaths requires an explicit SCS context")
+        expected = ("SCS", "SCS", "scs_employee_session", "https://ai.sunshineclimatesolutions.com", 8100, 3100)
+        actual = (context.environment_prefix, context.secret_namespace, context.session_cookie, context.public_origin, context.api_port, context.web_port)
+        if actual != expected or context.data_root.name.casefold() != "scs_data":
+            raise ValueError("SCS context does not match the reserved isolation boundary")
         root = context.data_root.resolve(strict=False)
         db = root / "db"
         return cls(

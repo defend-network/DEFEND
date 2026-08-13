@@ -192,6 +192,9 @@ class ScsIdentityStore:
 
     def set_roles(self, actor_id: str, employee_id: str, roles: tuple[str, ...]) -> EmployeeRecord:
         actor = self._assert_actor(actor_id)
+        target = self._record(employee_id)
+        if "owner" in target.roles:
+            raise PermissionError("owner roles cannot be replaced")
         requested = tuple(sorted(set(roles)))
         if not requested or not set(requested) <= ROLES - {"owner"}:
             raise ValueError("invalid employee roles")

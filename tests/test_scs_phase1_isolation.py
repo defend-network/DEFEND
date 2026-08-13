@@ -29,6 +29,13 @@ def test_scs_backup_and_cookie_boundaries_reject_defend(tmp_path):
     core.close()
 
 
+def test_forged_scs_context_cannot_reuse_defend_boundary(tmp_path):
+    _defend, scs = phase0_contexts()
+    forged = type(scs)("scs", (tmp_path / "DEFEND_DATA").resolve(), "SCS", "SCS", "defend_account_session", scs.public_origin, 8100, 3100)
+    with pytest.raises(ValueError, match="isolation boundary"):
+        ScsPaths.from_context(forged)
+
+
 def test_scs_modules_do_not_import_defend_composition_or_identity():
     forbidden = ("defend_data.DataCore", "from defend_data.identity import", "api_identity_routes", "api_server")
     for path in (*Path("scs_data").glob("*.py"), *Path("scs_api").glob("*.py")):

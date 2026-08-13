@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import sqlite3
+from collections import defaultdict, deque
+from time import monotonic
 from typing import Any
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
 
 from scs_data.identity import EmployeeRecord, ScsIdentityStore
+from scs_data.authorization import ScsAuthorizer, ScsPrincipal
 from scs_data.mailer import invitation_activation_url
 from shared_platform.application import ApplicationContext
 
@@ -28,7 +31,8 @@ class InvitationInput(BaseModel):
     roles: list[str] = Field(min_length=1, max_length=6)
 
 
-def _employee(employee: EmployeeRecord) -> dict[str, Any]:
+def _employee(employee: EmployeeRecord, identity: ScsIdentityStore) -> dict[str, Any]:
+    principal = ScsPrincipal(employee.employee_id, employee.roles, identity.current_functions(employee.employee_id), employee.status)
     return {
         "employee_id": employee.employee_id,
         "email": employee.email,
@@ -36,6 +40,7 @@ def _employee(employee: EmployeeRecord) -> dict[str, Any]:
         "display_name": employee.display_name,
         "status": employee.status,
         "roles": list(employee.roles),
+        "permissions": sorted(value.value for value in ScsAuthorizer().permissions(principal)),
     }
 
 
@@ -44,6 +49,7 @@ def build_auth_router(context: ApplicationContext, identity: ScsIdentityStore, m
         raise ValueError("SCS auth router requires SCS context")
     router = APIRouter(prefix="/api/scs")
     cookie_name = context.session_cookie
+    attempts: dict[str, deque[float]] = defaultdict(deque)
 
     def current_employee(request: Request) -> EmployeeRecord:
         raw = request.cookies.get(cookie_name)
@@ -58,15 +64,22 @@ def build_auth_router(context: ApplicationContext, identity: ScsIdentityStore, m
         return employee
 
     @router.post("/auth/login")
-    def login(body: LoginInput, response: Response):
+    def login(body: LoginInput, response: Response, request: Request):
+        key = f"{request.client.host if request.client else 'unknown'}:{body.identifier.strip().casefold()}"
+        now = monotonic(); window = attempts[key]
+        while window and window[0] < now - 60: window.popleft()
+        if len(window) >= 10:
+            raise HTTPException(status_code=429, detail="Invalid credentials")
         employee = identity.authenticate(body.identifier, body.password)
         if employee is None:
+            window.append(now)
             identity.audit.append(None, "auth.login_failed", "employee", None)
             raise HTTPException(status_code=401, detail="Invalid credentials")
         raw = identity.create_session(employee.employee_id)
         response.set_cookie(cookie_name, raw, secure=True, httponly=True, samesite="lax", path="/")
         identity.audit.append(employee.employee_id, "auth.login_succeeded", "employee", employee.employee_id)
-        return {"employee": _employee(employee)}
+        attempts.pop(key, None)
+        return {"employee": _employee(employee, identity)}
 
     @router.post("/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
     def logout(request: Request, response: Response):
@@ -77,7 +90,7 @@ def build_auth_router(context: ApplicationContext, identity: ScsIdentityStore, m
 
     @router.get("/auth/session")
     def session(employee: EmployeeRecord = Depends(current_employee)):
-        return {"employee": _employee(employee)}
+        return {"employee": _employee(employee, identity)}
 
     @router.post("/auth/activate")
     def activate(body: ActivationInput):
@@ -85,7 +98,7 @@ def build_auth_router(context: ApplicationContext, identity: ScsIdentityStore, m
             employee = identity.activate_invitation(body.token, username=body.username, password=body.password)
         except (KeyError, ValueError, sqlite3.IntegrityError):
             raise HTTPException(status_code=400, detail="Invalid or expired invitation") from None
-        return {"employee": _employee(employee)}
+        return {"employee": _employee(employee, identity)}
 
     def deliver(invitation, raw_token: str) -> dict[str, Any]:
         url = invitation_activation_url(context.public_origin, raw_token)

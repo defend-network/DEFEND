@@ -6,6 +6,7 @@ from scs_data.audit import ScsAuditStore
 from scs_data.identity import ScsIdentityStore
 from scs_data.config import ScsPaths
 from shared_platform.phase0 import phase0_contexts
+from shared_platform.application import ApplicationContext
 
 
 @pytest.fixture
@@ -128,3 +129,12 @@ def test_audit_rejects_secret_shaped_payloads_and_never_represents_values(identi
     event = audit.append("actor", "safe.event", "employee", "target", {"role": "billing"})
     assert event.event_type == "safe.event"
     assert "private" not in repr(event)
+def test_operations_admin_cannot_replace_owner_roles(tmp_path):
+    context = ApplicationContext("scs", (tmp_path / "SCS_DATA").resolve(), "SCS", "SCS", "scs_employee_session", "https://ai.sunshineclimatesolutions.com", 8100, 3100)
+    identity = ScsIdentityStore(ScsPaths.from_context(context).ensure().database)
+    owner = identity.bootstrap_owner("owner@example.com", "owner", "Owner", "owner-password")
+    admin = identity.create_active_employee_for_bootstrap(owner.employee_id, "admin@example.com", "admin", "Admin", "admin-password", ("operations_admin",))
+    with pytest.raises(PermissionError, match="owner roles"):
+        identity.set_roles(admin.employee_id, owner.employee_id, ("read_only",))
+    assert identity._record(owner.employee_id).roles == ("owner",)
+    identity.close()
