@@ -221,6 +221,14 @@ The recommended initial Vast topology uses localhost-only services and distinct 
 
 Define application context, configuration, secret namespaces, independent data roots, service profiles, domain routing, and cross-application isolation tests without changing existing DEFEND behavior.
 
+Phase 0 implementation status (2026-08-13): the repository contains an
+additive, pure validation layer for explicit `defend` and `scs` application
+contexts, namespaced secret views, application-qualified service profiles,
+route ownership, reserved ports/origins/cookies, and cross-wiring rejection.
+The reservation performs no filesystem creation, process start, provider
+mutation, domain activation, or billing action. SCS remains inactive until the
+separately reviewed Phase 1 composition root and employee authentication exist.
+
 ### Phase 1: SCS foundation
 
 Branded login; owner/employee identities; customers, sites, jobs, visits, assignments, notes, permissions, and audit; mobile-friendly job capture.

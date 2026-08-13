@@ -194,3 +194,25 @@ must relocate the local application/data boundary as a separate migration with
 backups, TLS/proxy trust, shared rate limiting, secret management, monitoring, and
 rollback. Do not silently turn the current desktop Control Center into a VPS
 deployment.
+
+## Reserved SCS application boundary
+
+Phase 0 reserves Sunshine Climate Solutions as a separate application without
+starting it or activating its public route. The shared-platform contract uses:
+
+- DEFEND: `C:\DEFEND_DATA`, `DEFEND_*`, `defend_account_session`, API 8000,
+  web 3000, and `https://ai.defend-network.org`;
+- SCS: `C:\SCS_DATA`, `SCS_*`, `scs_employee_session`, API 8100, web 3100,
+  and `https://ai.sunshineclimatesolutions.com`.
+
+The data roots cannot be equal or nested. Environment prefixes, encrypted-secret
+namespaces, cookies, ports, origins, and application-qualified service names
+must be unique. Separate encrypted secret files and separate backup sets are
+required when the SCS runtime is introduced. Owner mapping never permits an SCS
+session credential to authenticate to DEFEND or a DEFEND session credential to
+authenticate to SCS.
+
+The SCS hostname must remain inactive until Phase 1 provides an authenticated
+SCS API, branded employee login, health checks, and rollback procedure. Phase 0
+does not create `C:\SCS_DATA`, change Cloudflare, start processes, or incur Vast
+billing.
