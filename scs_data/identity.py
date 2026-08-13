@@ -125,6 +125,37 @@ class ScsIdentityStore:
         self.audit.append(row["employee_id"], "identity.invitation_accepted", "employee", row["employee_id"])
         return self._record(row["employee_id"])
 
+    def regenerate_invitation(self, actor_id: str, invitation_id: str, *, expires_at: datetime | None = None) -> tuple[InvitationRecord, str]:
+        self._assert_actor(actor_id)
+        row = self.conn.execute(
+            """SELECT i.*,e.email FROM scs_invitations i
+               JOIN scs_employees e ON e.employee_id=i.employee_id
+               WHERE i.invitation_id=?""",
+            (invitation_id,),
+        ).fetchone()
+        if row is None or row["accepted_at"] or row["revoked_at"]:
+            raise ValueError("invitation is not retryable")
+        raw, hashed = new_token("scsinvite")
+        expiry = expires_at or _now() + timedelta(days=7)
+        self.conn.execute(
+            "UPDATE scs_invitations SET token_hash=?,expires_at=? WHERE invitation_id=?",
+            (hashed, expiry.astimezone(timezone.utc).isoformat(), invitation_id),
+        )
+        self.conn.commit()
+        self.audit.append(actor_id, "identity.invitation_regenerated", "employee", row["employee_id"])
+        return InvitationRecord(invitation_id, row["employee_id"], row["email"], expiry.isoformat()), raw
+
+    def revoke_invitation(self, actor_id: str, invitation_id: str) -> bool:
+        self._assert_actor(actor_id)
+        result = self.conn.execute(
+            "UPDATE scs_invitations SET revoked_at=? WHERE invitation_id=? AND accepted_at IS NULL AND revoked_at IS NULL",
+            (_now().isoformat(), invitation_id),
+        )
+        self.conn.commit()
+        if result.rowcount:
+            self.audit.append(actor_id, "identity.invitation_revoked", "invitation", invitation_id)
+        return result.rowcount == 1
+
     def create_active_employee_for_bootstrap(self, actor_id: str, email: str, username: str, display_name: str, password: str, roles: tuple[str, ...]) -> EmployeeRecord:
         invitation, token = self.invite_employee(actor_id, email, display_name, roles)
         return self.activate_invitation(token, username=username, password=password)
