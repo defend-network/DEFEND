@@ -24,6 +24,9 @@ class FakeService:
     def list_documents(self):
         return [{"document_id": "doc_perm_1", "title": "Report.pdf", "content_hash": "abc", "chunk_count": 2, "embedding_model": "embed", "ingested_at": "2026-08-13", "tags": []}]
 
+    async def embedding_status(self):
+        return {"ready": True, "provider": "vLLM - test-embedding"}
+
 
 def make_client(*, authenticated: bool):
     service = FakeService()
@@ -37,6 +40,7 @@ def make_client(*, authenticated: bool):
 def test_all_admin_rag_routes_require_auth():
     client, _service = make_client(authenticated=False)
     assert client.get("/api/admin/rag/documents").status_code == 401
+    assert client.get("/api/admin/rag/status").status_code == 401
     assert client.get("/api/admin/rag/jobs/ragjob_1").status_code == 401
     assert client.post("/api/admin/rag/ingest", files={"files": ("a.pdf", b"%PDF", "application/pdf")}).status_code == 401
 
@@ -58,6 +62,10 @@ def test_job_and_real_document_listing_contracts():
     response = client.get("/api/admin/rag/documents")
     assert response.status_code == 200
     assert response.json()["documents"][0]["chunk_count"] == 2
+    assert client.get("/api/admin/rag/status").json() == {
+        "ready": True,
+        "provider": "vLLM - test-embedding",
+    }
 
 
 def test_batch_limit_is_rejected_before_service_call():

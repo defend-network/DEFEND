@@ -1,10 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   adminRagIngest,
   adminRagJob,
+  adminRagStatus,
   PermanentRagDocument,
+  RagEmbeddingStatus,
   RagJob,
 } from "@/lib/api";
 
@@ -27,6 +29,15 @@ export function KnowledgeRagPanel({
   const [job, setJob] = useState<RagJob | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [embedding, setEmbedding] = useState<RagEmbeddingStatus | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    adminRagStatus(token)
+      .then((status) => { if (active) setEmbedding(status); })
+      .catch(() => { if (active) setEmbedding({ ready: false, provider: "Embedding service" }); });
+    return () => { active = false; };
+  }, [token]);
 
   function choose(input: FileList | null) {
     const selected = Array.from(input ?? []);
@@ -47,7 +58,7 @@ export function KnowledgeRagPanel({
   }
 
   async function start() {
-    if (!files.length || busy) return;
+    if (!files.length || busy || !embedding?.ready) return;
     setBusy(true);
     setError("");
     try {
@@ -79,6 +90,14 @@ export function KnowledgeRagPanel({
 
       <section className="admin-card rag-ingest-card" aria-labelledby="rag-ingest-heading">
         <h2 id="rag-ingest-heading">Add permanent documents</h2>
+        <p className="muted">
+          Embeddings: <strong>{embedding?.provider ?? "Checking service..."}</strong>
+        </p>
+        {embedding && !embedding.ready && (
+          <p className="admin-error" role="alert">
+            The embedding service is unavailable. Start it, then reload this panel before indexing.
+          </p>
+        )}
         <p className="muted">Up to 20 files per batch and 25 MB per file. Identical content is skipped.</p>
         <label className="rag-file-label">
           Choose PDF or DOCX files
@@ -86,7 +105,7 @@ export function KnowledgeRagPanel({
             type="file"
             multiple
             accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-            disabled={busy}
+            disabled={busy || !embedding?.ready}
             onChange={(event) => choose(event.target.files)}
           />
         </label>
@@ -95,7 +114,7 @@ export function KnowledgeRagPanel({
             {files.map((file) => <li key={`${file.name}-${file.size}`}>{file.name} · {(file.size / 1024).toFixed(1)} KB</li>)}
           </ul>
         )}
-        <button type="button" onClick={start} disabled={!files.length || busy}>
+        <button type="button" onClick={start} disabled={!files.length || busy || !embedding?.ready}>
           {busy ? "Indexing…" : `Index ${files.length} document${files.length === 1 ? "" : "s"}`}
         </button>
         {error && <p className="admin-error" role="alert">{error}</p>}

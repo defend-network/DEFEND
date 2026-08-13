@@ -16,6 +16,7 @@ from rag_store import (
     delete_document_chunks, ensure_fts_index, purge_expired,
 )
 from ollama_embedding_client import OllamaEmbeddingClient
+from embedding_client import EmbeddingClient
 
 DEFAULT_TTL_HOURS = 24 * 7
 
@@ -71,7 +72,7 @@ class ResearchCacheIngestTool(DefendTool[RagIngestInput, RagIngestOutput]):
     max_input_classification = DataClassification.PUBLIC
     max_output_classification = DataClassification.PUBLIC
 
-    def __init__(self, embedder=None, ttl_hours: int = DEFAULT_TTL_HOURS):
+    def __init__(self, embedder: EmbeddingClient | None = None, ttl_hours: int = DEFAULT_TTL_HOURS):
         self.embedder = embedder or OllamaEmbeddingClient()
         self.ttl_hours = ttl_hours
 

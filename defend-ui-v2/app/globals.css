@@ -1645,3 +1645,42 @@ body:before {
     flex: 1;
   }
 }
+.background-check-principles {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.background-check-principles strong {
+  display: block;
+  margin: 6px 0;
+}
+
+.background-check-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 14px;
+  margin: 16px 0;
+}
+
+.background-check-action {
+  display: flex;
+  min-height: 190px;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.background-check-action h2 {
+  margin: 14px 0 4px;
+  font-size: 1.05rem;
+}
+
+.background-check-action .ghost-btn {
+  margin-top: auto;
+}
+
+@media (max-width: 720px) {
+  .background-check-principles {
+    grid-template-columns: 1fr;
+  }
+}

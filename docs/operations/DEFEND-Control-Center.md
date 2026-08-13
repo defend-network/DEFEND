@@ -123,6 +123,37 @@ the rest of the batch. Re-uploading identical content reports `skipped` without
 embedding it again. Use the Documents view to confirm the permanent corpus and
 chunk counts after completion.
 
+The panel now displays the active embedding provider and checks it before a job
+is accepted. All permanent ingestion, semantic queries, and temporary research
+cache ingestion share that provider. The default remains the local Ollama model
+`qwen3-embedding:0.6b` for compatibility. This model creates search vectors; it
+does not replace, train, or fine-tune the primary DEFEND language model running
+under Ollama or vLLM.
+
+For an independently managed local vLLM embedding service, set these environment
+variables on the API process before launch:
+
+- `DEFEND_EMBEDDING_PROVIDER=vllm`
+- `DEFEND_EMBEDDING_MODEL=Qwen/Qwen3-Embedding-0.6B`
+- `DEFEND_EMBEDDING_BASE_URL=http://127.0.0.1:8002/v1`
+- `DEFEND_EMBEDDING_API_KEY` to a unique service key
+- `DEFEND_EMBEDDING_VECTOR_DIM=1024`
+- `DEFEND_EMBEDDING_BATCH_SIZE=32`
+- `DEFEND_EMBEDDING_TIMEOUT_SECONDS=120`
+
+Only loopback endpoints are accepted, and the API key is never included in the
+admin status response. The embedding vLLM service is separate from the main
+generative vLLM service because embedding and text generation have different
+models, endpoints, scaling, and failure modes. Until launcher orchestration for
+that second service is delivered, start it independently before indexing. Do not
+put its API key in Git, frontend environment variables, command arguments, or
+screenshots.
+
+Existing vectors must not be mixed across embedding models or dimensions. If the
+embedding model changes, create a backed-up replacement index and re-index the
+approved corpus before switching search traffic. The current index requires
+exactly 1,024 dimensions.
+
 The initial `C:\Users\thoma\Downloads\RAG` collection contains 13 eligible
 PDF/DOCX documents. Its 1,355 CSV files, 4 JSON files, and ZIP archive are not
 eligible for this workflow; they require a separate dataset-aware ingestion
@@ -163,3 +194,25 @@ must relocate the local application/data boundary as a separate migration with
 backups, TLS/proxy trust, shared rate limiting, secret management, monitoring, and
 rollback. Do not silently turn the current desktop Control Center into a VPS
 deployment.
+
+## Reserved SCS application boundary
+
+Phase 0 reserves Sunshine Climate Solutions as a separate application without
+starting it or activating its public route. The shared-platform contract uses:
+
+- DEFEND: `C:\DEFEND_DATA`, `DEFEND_*`, `defend_account_session`, API 8000,
+  web 3000, and `https://ai.defend-network.org`;
+- SCS: `C:\SCS_DATA`, `SCS_*`, `scs_employee_session`, API 8100, web 3100,
+  and `https://ai.sunshineclimatesolutions.com`.
+
+The data roots cannot be equal or nested. Environment prefixes, encrypted-secret
+namespaces, cookies, ports, origins, and application-qualified service names
+must be unique. Separate encrypted secret files and separate backup sets are
+required when the SCS runtime is introduced. Owner mapping never permits an SCS
+session credential to authenticate to DEFEND or a DEFEND session credential to
+authenticate to SCS.
+
+The SCS hostname must remain inactive until Phase 1 provides an authenticated
+SCS API, branded employee login, health checks, and rollback procedure. Phase 0
+does not create `C:\SCS_DATA`, change Cloudflare, start processes, or incur Vast
+billing.

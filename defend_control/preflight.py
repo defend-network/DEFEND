@@ -194,14 +194,12 @@ def _invitation_rollout_check(data_root: Path) -> CheckResult:
     if not database.is_file():
         return CheckResult("invitations", True, "No existing identity database")
 
-    # Immutable mode cannot create SQLite WAL/SHM sidecars. A non-empty WAL may
-    # contain newer invitations than the main file, so fail closed instead of
-    # inspecting a stale snapshot.
+    # Read through SQLite's WAL-aware read-only mode. A committed, non-empty WAL
+    # is normal after an interrupted or forced shutdown and is not by itself
+    # evidence of an active writer. Metadata is compared around the transaction
+    # below so a concurrent database change still fails closed.
     before = _database_metadata(database)
-    if _unsafe_invitation_sidecars(before):
-        return _unstable_invitation_result()
-
-    uri = f"{database.resolve().as_uri()}?mode=ro&immutable=1"
+    uri = f"{database.resolve().as_uri()}?mode=ro"
     connection = sqlite3.connect(uri, uri=True, timeout=2)
     try:
         columns = {
@@ -242,7 +240,7 @@ def _invitation_rollout_check(data_root: Path) -> CheckResult:
         connection.close()
 
     after = _database_metadata(database)
-    if after != before or _unsafe_invitation_sidecars(after):
+    if after != before:
         return _unstable_invitation_result()
 
     if pending:

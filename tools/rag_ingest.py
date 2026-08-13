@@ -18,6 +18,7 @@ from bootstrap_models import RagIngestInput, RagIngestOutput
 from defend_data.ingest_policy import AIIngestExcluded, assert_ai_ingest_allowed
 from tools.documents_store import load_raw, load_meta
 from rag_store import ChunkRow, get_or_create_table, delete_document_chunks, VECTOR_DIM
+from embedding_client import EmbeddingClient
 from ollama_embedding_client import OllamaEmbeddingClient
 
 
@@ -82,7 +83,7 @@ class RagIngestTool(DefendTool[RagIngestInput, RagIngestOutput]):
     max_input_classification = DataClassification.PUBLIC
     max_output_classification = DataClassification.PUBLIC
 
-    def __init__(self, embedder: OllamaEmbeddingClient | None = None):
+    def __init__(self, embedder: EmbeddingClient | None = None):
         self.embedder = embedder or OllamaEmbeddingClient()
 
     async def execute(self, args: RagIngestInput, context: ToolContext) -> ToolResult[RagIngestOutput]:
