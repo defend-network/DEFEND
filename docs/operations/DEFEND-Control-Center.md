@@ -216,3 +216,36 @@ The SCS hostname must remain inactive until Phase 1 provides an authenticated
 SCS API, branded employee login, health checks, and rollback procedure. Phase 0
 does not create `C:\SCS_DATA`, change Cloudflare, start processes, or incur Vast
 billing.
+
+## SCS Phase 1 local operations
+
+SCS is now available as a local, non-billable employee operations profile. It
+does not start Vast.ai, vLLM, Cloudflare, or any DEFEND process. Its API binds to
+`127.0.0.1:8100`; its web application binds to `127.0.0.1:3100`. Public route
+activation remains a separate production decision and is not enabled by Phase 1.
+
+Before first startup, create `C:\SCS_DATA` with access limited to the owner
+Windows account. Bootstrap exactly one owner through a one-time local Python
+session using `ScsIdentityStore.bootstrap_owner`; type the password at the
+prompt and never place it in source, command history, an environment file, or a
+screenshot. Subsequent accounts are invitation-only. If `SCS_GMAIL_USERNAME`,
+`SCS_GMAIL_APP_PASSWORD`, and `SCS_GMAIL_SENDER` are absent, invitation delivery
+reports `not_configured` and the authorized manual-copy retry flow remains
+available.
+
+Build the web application with `npm.cmd --prefix scs-ui run build`, then start
+the two process specs returned by `build_scs_process_specs`. Confirm API
+`/health` identifies application `scs`, the login page appears on port 3100,
+DEFEND cookies do not authenticate, and ordinary employees see only active
+assignments.
+
+SCS backup manifests and files remain below `C:\SCS_DATA\backups`; DEFEND and
+SCS backups are never combined. Test restoration into an empty, access-limited
+SCS staging root before relying on a backup. A restore must be refused if its
+manifest does not identify application `scs`.
+
+Before activating `ai.sunshineclimatesolutions.com`, rotate production
+credentials, configure TLS/tunnel routing only to port 3100, add proxy trust and
+rate-limit acceptance tests, test rollback to the local-only profile, verify
+backups, and obtain explicit owner approval. Public activation must not expose
+DEFEND routes, data, secrets, cookies, or model billing.
