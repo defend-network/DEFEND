@@ -119,6 +119,36 @@ _MIGRATIONS = {
         CREATE INDEX idx_scs_sites_customer ON scs_sites(customer_id);
         CREATE INDEX idx_scs_equipment_customer_site ON scs_equipment(customer_id,site_id);
     """,
+    4: """
+        CREATE TABLE scs_membership_plan_versions (
+            plan_code TEXT NOT NULL, version INTEGER NOT NULL, name TEXT NOT NULL,
+            active INTEGER NOT NULL CHECK(active IN (0,1)), effective_at TEXT NOT NULL,
+            created_by TEXT NOT NULL, created_at TEXT NOT NULL,
+            PRIMARY KEY(plan_code,version)
+        );
+        INSERT INTO scs_membership_plan_versions
+            (plan_code,version,name,active,effective_at,created_by,created_at)
+        VALUES ('maintenance-member',1,'Maintenance Member',1,'2026-08-13','system','2026-08-13T00:00:00+00:00');
+        CREATE TABLE scs_membership_enrollments (
+            enrollment_id TEXT PRIMARY KEY,
+            customer_id TEXT NOT NULL REFERENCES scs_customers(customer_id),
+            plan_code TEXT NOT NULL, plan_version INTEGER NOT NULL,
+            start_date TEXT NOT NULL, end_date TEXT, created_by TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(plan_code,plan_version) REFERENCES scs_membership_plan_versions(plan_code,version)
+        );
+        CREATE TABLE scs_membership_coverage (
+            enrollment_id TEXT NOT NULL REFERENCES scs_membership_enrollments(enrollment_id),
+            site_id TEXT REFERENCES scs_sites(site_id),
+            equipment_id TEXT REFERENCES scs_equipment(equipment_id)
+        );
+        CREATE TABLE scs_membership_enrollment_events (
+            event_id TEXT PRIMARY KEY,
+            enrollment_id TEXT NOT NULL REFERENCES scs_membership_enrollments(enrollment_id),
+            status TEXT NOT NULL CHECK(status IN ('active','paused','expired','cancelled')),
+            changed_by TEXT NOT NULL, occurred_at TEXT NOT NULL
+        );
+    """,
 }
 
 
