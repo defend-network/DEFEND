@@ -51,6 +51,12 @@ def build_admin_rag_router(service: PermanentRagService | Any) -> APIRouter:
             raise HTTPException(status_code=404, detail="RAG job not found")
         return result
 
+    @router.get("/status")
+    async def embedding_status(
+        _principal: AdminPrincipal = Depends(require_admin),
+    ):
+        return await service.embedding_status()
+
     @router.get("/documents")
     async def documents(
         _principal: AdminPrincipal = Depends(require_admin),

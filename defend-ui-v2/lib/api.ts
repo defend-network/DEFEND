@@ -281,8 +281,18 @@ export type RagJob = {
   completed_at?: string | null;
 };
 
+export type RagEmbeddingStatus = {
+  ready: boolean;
+  provider: string;
+};
+
 export const adminDocuments = (token: string) =>
   json<{ documents: PermanentRagDocument[] }>("/api/admin/rag/documents", {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+
+export const adminRagStatus = (token: string) =>
+  json<RagEmbeddingStatus>("/api/admin/rag/status", {
     headers: { Authorization: `Bearer ${token}` },
   });
 

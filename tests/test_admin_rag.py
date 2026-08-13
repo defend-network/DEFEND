@@ -69,6 +69,43 @@ def test_empty_file_is_rejected(tmp_path):
         )
 
 
+def test_ingestion_rejects_unavailable_embedding_provider_before_persistence(tmp_path):
+    async def unavailable():
+        return False
+
+    service = PermanentRagService(
+        tmp_path,
+        readiness_check=unavailable,
+        provider_label="vLLM - Qwen/Qwen3-Embedding-0.6B",
+    )
+
+    async def exercise():
+        with pytest.raises(PermanentRagValidationError, match="unavailable"):
+            await service.create_job(
+                [PermanentRagFile("one.pdf", b"%PDF", "application/pdf")],
+                requested_by="owner",
+            )
+
+    asyncio.run(exercise())
+    assert not list(tmp_path.rglob("original.bin"))
+
+
+def test_embedding_status_is_safe_and_actionable(tmp_path):
+    async def ready():
+        return True
+
+    service = PermanentRagService(
+        tmp_path,
+        readiness_check=ready,
+        provider_label="vLLM - Qwen/Qwen3-Embedding-0.6B",
+    )
+
+    assert asyncio.run(service.embedding_status()) == {
+        "ready": True,
+        "provider": "vLLM - Qwen/Qwen3-Embedding-0.6B",
+    }
+
+
 def test_job_runs_sequentially_continues_after_failure_and_skips_indexed_duplicate(tmp_path):
     active = 0
     max_active = 0

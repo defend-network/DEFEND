@@ -317,6 +317,7 @@ async def lifespan(app: FastAPI):
         embedding_settings = EmbeddingSettings.from_env(os.environ)
         embedding_client = build_embedding_client(embedding_settings)
         admin_rag_service.embedding_client = embedding_client
+        admin_rag_service.provider_label = embedding_settings.provider_label
         registry = build_default_registry(
             memory_manager=data.memory,
             embedding_client=embedding_client,
