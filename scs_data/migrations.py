@@ -1,0 +1,221 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+import sqlite3
+
+from defend_data.sqlite_utils import transaction
+
+
+_MIGRATIONS = {
+    1: """
+        CREATE TABLE IF NOT EXISTS scs_application_metadata (
+            singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+            application_id TEXT NOT NULL CHECK(application_id = 'scs')
+        );
+        INSERT OR IGNORE INTO scs_application_metadata(singleton, application_id)
+        VALUES (1, 'scs');
+    """,
+    2: """
+        CREATE TABLE scs_employees (
+            employee_id TEXT PRIMARY KEY,
+            email TEXT NOT NULL UNIQUE,
+            username TEXT UNIQUE,
+            display_name TEXT NOT NULL,
+            password_hash TEXT,
+            status TEXT NOT NULL CHECK(status IN ('invited','active','disabled')),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE scs_employee_roles (
+            employee_id TEXT NOT NULL REFERENCES scs_employees(employee_id),
+            role TEXT NOT NULL,
+            granted_by TEXT NOT NULL,
+            granted_at TEXT NOT NULL,
+            revoked_at TEXT,
+            PRIMARY KEY(employee_id, role, granted_at)
+        );
+        CREATE UNIQUE INDEX scs_one_active_owner
+            ON scs_employee_roles(role) WHERE role='owner' AND revoked_at IS NULL;
+        CREATE TABLE scs_invitations (
+            invitation_id TEXT PRIMARY KEY,
+            employee_id TEXT NOT NULL REFERENCES scs_employees(employee_id),
+            token_hash TEXT NOT NULL UNIQUE,
+            created_by TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            accepted_at TEXT,
+            revoked_at TEXT
+        );
+        CREATE TABLE scs_invitation_roles (
+            invitation_id TEXT NOT NULL REFERENCES scs_invitations(invitation_id),
+            role TEXT NOT NULL,
+            PRIMARY KEY(invitation_id, role)
+        );
+        CREATE TABLE scs_sessions (
+            session_hash TEXT PRIMARY KEY,
+            employee_id TEXT NOT NULL REFERENCES scs_employees(employee_id),
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            revoked_at TEXT
+        );
+        CREATE TABLE scs_function_history (
+            event_id TEXT PRIMARY KEY,
+            employee_id TEXT NOT NULL REFERENCES scs_employees(employee_id),
+            function_code TEXT NOT NULL,
+            assigned_by TEXT NOT NULL,
+            effective_at TEXT NOT NULL,
+            ended_at TEXT
+        );
+        CREATE TABLE scs_technician_level_history (
+            event_id TEXT PRIMARY KEY,
+            employee_id TEXT NOT NULL REFERENCES scs_employees(employee_id),
+            level_code TEXT NOT NULL,
+            changed_by TEXT NOT NULL,
+            effective_at TEXT NOT NULL
+        );
+        CREATE TABLE scs_audit_events (
+            event_id TEXT PRIMARY KEY,
+            actor_id TEXT,
+            event_type TEXT NOT NULL,
+            target_type TEXT NOT NULL,
+            target_id TEXT,
+            metadata_json TEXT NOT NULL,
+            occurred_at TEXT NOT NULL
+        );
+    """,
+    3: """
+        CREATE TABLE scs_customers (
+            customer_id TEXT PRIMARY KEY, display_name TEXT NOT NULL,
+            legal_name TEXT, customer_type TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('prospect','active','inactive','archived')),
+            communication_preferences TEXT NOT NULL DEFAULT '{}', internal_notes TEXT,
+            created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        );
+        CREATE TABLE scs_contacts (
+            contact_id TEXT PRIMARY KEY, customer_id TEXT NOT NULL REFERENCES scs_customers(customer_id),
+            name TEXT NOT NULL, email TEXT, phone TEXT, purpose TEXT NOT NULL,
+            preferences TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL DEFAULT 'active',
+            created_by TEXT NOT NULL, created_at TEXT NOT NULL
+        );
+        CREATE TABLE scs_sites (
+            site_id TEXT PRIMARY KEY, customer_id TEXT NOT NULL REFERENCES scs_customers(customer_id),
+            name TEXT NOT NULL, service_address TEXT NOT NULL, billing_address TEXT,
+            timezone TEXT NOT NULL, access_instructions TEXT,
+            status TEXT NOT NULL DEFAULT 'active', created_by TEXT NOT NULL, created_at TEXT NOT NULL
+        );
+        CREATE TABLE scs_equipment (
+            equipment_id TEXT PRIMARY KEY, customer_id TEXT NOT NULL REFERENCES scs_customers(customer_id),
+            site_id TEXT NOT NULL REFERENCES scs_sites(site_id), equipment_type TEXT NOT NULL,
+            manufacturer TEXT, model TEXT, serial_number TEXT, install_date TEXT,
+            manufacture_date TEXT, status TEXT NOT NULL, location TEXT, notes TEXT,
+            created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        );
+        CREATE TABLE scs_equipment_history (
+            event_id TEXT PRIMARY KEY, equipment_id TEXT NOT NULL REFERENCES scs_equipment(equipment_id),
+            snapshot_json TEXT NOT NULL, changed_by TEXT NOT NULL, changed_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_scs_customers_name ON scs_customers(display_name);
+        CREATE INDEX idx_scs_contacts_customer ON scs_contacts(customer_id);
+        CREATE INDEX idx_scs_sites_customer ON scs_sites(customer_id);
+        CREATE INDEX idx_scs_equipment_customer_site ON scs_equipment(customer_id,site_id);
+    """,
+    4: """
+        CREATE TABLE scs_membership_plan_versions (
+            plan_code TEXT NOT NULL, version INTEGER NOT NULL, name TEXT NOT NULL,
+            active INTEGER NOT NULL CHECK(active IN (0,1)), effective_at TEXT NOT NULL,
+            created_by TEXT NOT NULL, created_at TEXT NOT NULL,
+            PRIMARY KEY(plan_code,version)
+        );
+        INSERT INTO scs_membership_plan_versions
+            (plan_code,version,name,active,effective_at,created_by,created_at)
+        VALUES ('maintenance-member',1,'Maintenance Member',1,'2026-08-13','system','2026-08-13T00:00:00+00:00');
+        CREATE TABLE scs_membership_enrollments (
+            enrollment_id TEXT PRIMARY KEY,
+            customer_id TEXT NOT NULL REFERENCES scs_customers(customer_id),
+            plan_code TEXT NOT NULL, plan_version INTEGER NOT NULL,
+            start_date TEXT NOT NULL, end_date TEXT, created_by TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(plan_code,plan_version) REFERENCES scs_membership_plan_versions(plan_code,version)
+        );
+        CREATE TABLE scs_membership_coverage (
+            enrollment_id TEXT NOT NULL REFERENCES scs_membership_enrollments(enrollment_id),
+            site_id TEXT REFERENCES scs_sites(site_id),
+            equipment_id TEXT REFERENCES scs_equipment(equipment_id)
+        );
+        CREATE TABLE scs_membership_enrollment_events (
+            event_id TEXT PRIMARY KEY,
+            enrollment_id TEXT NOT NULL REFERENCES scs_membership_enrollments(enrollment_id),
+            status TEXT NOT NULL CHECK(status IN ('active','paused','expired','cancelled')),
+            changed_by TEXT NOT NULL, occurred_at TEXT NOT NULL
+        );
+    """,
+    5: """
+        CREATE TABLE scs_jobs (
+            job_id TEXT PRIMARY KEY, customer_id TEXT NOT NULL REFERENCES scs_customers(customer_id),
+            site_id TEXT NOT NULL REFERENCES scs_sites(site_id), job_type TEXT NOT NULL,
+            job_date TEXT NOT NULL, requested_scope TEXT, priority TEXT NOT NULL,
+            discipline TEXT, scheduled_start TEXT, scheduled_end TEXT,
+            created_by TEXT NOT NULL, created_at TEXT NOT NULL
+        );
+        CREATE TABLE scs_job_status_events (
+            event_id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES scs_jobs(job_id),
+            status TEXT NOT NULL, changed_by TEXT NOT NULL, occurred_at TEXT NOT NULL
+        );
+        CREATE TABLE scs_job_visits (
+            visit_id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES scs_jobs(job_id),
+            work_performed TEXT NOT NULL, findings TEXT, recommendations TEXT,
+            readings_summary TEXT, arrived_at TEXT, completed_at TEXT,
+            author_id TEXT NOT NULL, created_at TEXT NOT NULL
+        );
+        CREATE TABLE scs_job_assignments (
+            assignment_id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES scs_jobs(job_id),
+            employee_id TEXT NOT NULL REFERENCES scs_employees(employee_id), assignment_role TEXT NOT NULL,
+            assigned_by TEXT NOT NULL, effective_at TEXT NOT NULL, ended_at TEXT
+        );
+        CREATE TABLE scs_job_notes (
+            note_id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES scs_jobs(job_id),
+            body TEXT NOT NULL, visibility TEXT NOT NULL,
+            author_id TEXT NOT NULL, created_at TEXT NOT NULL
+        );
+        CREATE TABLE scs_job_classification_events (
+            event_id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES scs_jobs(job_id),
+            code TEXT NOT NULL, active INTEGER NOT NULL CHECK(active IN (0,1)), source TEXT NOT NULL,
+            changed_by TEXT NOT NULL, occurred_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_scs_jobs_customer_site ON scs_jobs(customer_id,site_id);
+        CREATE INDEX idx_scs_job_assignments_employee ON scs_job_assignments(employee_id,ended_at);
+    """,
+}
+
+
+class ScsMigrator:
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self.conn = conn
+
+    def apply(self) -> int:
+        self.conn.execute(
+            """CREATE TABLE IF NOT EXISTS scs_schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL
+            )"""
+        )
+        applied = {
+            int(row[0])
+            for row in self.conn.execute("SELECT version FROM scs_schema_migrations")
+        }
+        for version, script in sorted(_MIGRATIONS.items()):
+            if version in applied:
+                continue
+            with transaction(self.conn, immediate=True):
+                for statement in script.split(";"):
+                    if statement.strip():
+                        self.conn.execute(statement)
+                self.conn.execute(
+                    "INSERT INTO scs_schema_migrations(version, applied_at) VALUES (?, ?)",
+                    (version, datetime.now(timezone.utc).isoformat()),
+                )
+        return self.current_version()
+
+    def current_version(self) -> int:
+        row = self.conn.execute("SELECT COALESCE(MAX(version), 0) FROM scs_schema_migrations").fetchone()
+        return int(row[0])
