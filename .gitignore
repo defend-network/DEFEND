@@ -21,6 +21,7 @@ research.json
 .superpowers/
 .test-tmp/
 .pytest-tmp*/
+.verification-tmp-*/
 .worktrees/
 defend-ui-v2/.npm-cache/
 *.tsbuildinfo
