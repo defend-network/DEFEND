@@ -56,26 +56,34 @@ def build_job_router(context: ApplicationContext, identity: ScsIdentityStore, jo
     def change_status(job_id: str, body: StatusInput, request: Request):
         try: return asdict(jobs.change_status(principal(request).employee_id, job_id, body.status))
         except PermissionError: raise HTTPException(status_code=403, detail="Permission denied") from None
+        except KeyError: raise HTTPException(status_code=404, detail="Job not found") from None
+        except ValueError as error: raise HTTPException(status_code=400, detail=str(error)) from None
 
     @router.post("/{job_id}/visits", status_code=status.HTTP_201_CREATED)
     def visit(job_id: str, body: VisitInput, request: Request):
         try: return asdict(jobs.add_visit(principal(request).employee_id, job_id, work_performed=body.work_performed, findings=body.findings, recommendations=body.recommendations, readings_summary=body.readings_summary))
         except PermissionError: raise HTTPException(status_code=403, detail="Permission denied") from None
+        except KeyError: raise HTTPException(status_code=404, detail="Job not found") from None
 
     @router.post("/{job_id}/assignments", status_code=status.HTTP_201_CREATED)
     def assign(job_id: str, body: AssignmentInput, request: Request):
         try: return asdict(jobs.assign(principal(request).employee_id, job_id, body.employee_id, body.assignment_role))
         except PermissionError: raise HTTPException(status_code=403, detail="Permission denied") from None
+        except KeyError: raise HTTPException(status_code=404, detail="Job not found") from None
+        except ValueError as error: raise HTTPException(status_code=400, detail=str(error)) from None
 
     @router.post("/{job_id}/notes", status_code=status.HTTP_201_CREATED)
     def note(job_id: str, body: NoteInput, request: Request):
         try: return asdict(jobs.add_note(principal(request).employee_id, job_id, body.body, body.visibility))
         except PermissionError: raise HTTPException(status_code=403, detail="Permission denied") from None
+        except KeyError: raise HTTPException(status_code=404, detail="Job not found") from None
+        except ValueError as error: raise HTTPException(status_code=400, detail=str(error)) from None
 
     @router.post("/{job_id}/classifications", status_code=status.HTTP_204_NO_CONTENT)
     def classify(job_id: str, body: ClassificationInput, request: Request):
         try: jobs.classify(principal(request).employee_id, job_id, body.code, source=body.source)
         except PermissionError: raise HTTPException(status_code=403, detail="Permission denied") from None
+        except KeyError: raise HTTPException(status_code=404, detail="Job not found") from None
         except ValueError as error: raise HTTPException(status_code=400, detail=str(error)) from None
 
     return router

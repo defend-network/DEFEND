@@ -47,6 +47,8 @@ def test_owner_can_complete_customer_job_and_employee_admin_workflows(tmp_path):
         assert client.put(f"/api/scs/admin/employees/{tech.employee_id}/status", json={"status":"disabled"}).status_code == 204
         assert client.get(f"/api/scs/customers/{customer['customer_id']}/summary").json()["total_spend"]["state"] == "not_available"
         assert client.post(f"/api/scs/customers/{customer['customer_id']}/archive").status_code == 204
+        assert client.post("/api/scs/jobs/missing/status", json={"status":"scheduled"}).status_code == 404
+        assert client.post(f"/api/scs/jobs/{job['job_id']}/status", json={"status":"invalid"}).status_code == 400
     identity.close()
 
 
@@ -62,4 +64,5 @@ def test_ordinary_employee_cannot_use_manager_mutation_endpoints(tmp_path):
         assert client.post("/api/scs/customers",json={"display_name":"No","customer_type":"commercial"}).status_code==403
         assert client.post("/api/scs/jobs",json={"customer_id":"x","site_id":"x","job_type":"hvac-service","job_date":"2026-08-13"}).status_code==403
         assert client.get("/api/scs/admin/employees").status_code==403
+        assert client.post("/api/scs/jobs/missing/status",json={"status":"invalid"}).status_code==403
     identity.close()

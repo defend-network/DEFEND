@@ -15,9 +15,9 @@ export function Workspace({employee,jobs,summary,onRefresh=()=>{}}:{employee:Emp
     <nav aria-label="Primary"><a href="#jobs">Assigned jobs</a><a href="#customers">Customers</a>{canManage && <a href="#employees">Employee admin</a>}</nav>
     <section id="jobs"><div className="section-title"><div><p className="eyebrow">Today & upcoming</p><h2>Assigned jobs</h2></div><span>{jobs.length} active</span></div>
       {canManageJobs&&<JobCreator onCreated={onRefresh}/>}
-      <div className="job-grid">{jobs.length ? jobs.map(job=><article className="job-card" key={job.job_id}><span className="pill">{job.status}</span><h3>{jobNames[job.job_type] ?? job.job_type}</h3><p>{job.job_date} · {job.priority} priority</p><JobWorkspace jobId={job.job_id} onUpdated={onRefresh}/></article>) : <div className="empty">No assigned work right now.</div>}</div>
+      <div className="job-grid">{jobs.length ? jobs.map(job=><article className="job-card" key={job.job_id}><span className="pill">{job.status}</span><h3>{jobNames[job.job_type] ?? job.job_type}</h3><p>{job.job_date} · {job.priority} priority</p><JobWorkspace jobId={job.job_id} onUpdated={onRefresh} canManage={canManageJobs}/></article>) : <div className="empty">No assigned work right now.</div>}</div>
     </section>
     {summary && <section className="metrics"><article><span>Total spend</span><strong>{summary.total_spend.state === "not_available" ? "Not available" : summary.total_spend.value}</strong></article><article><span>Average payment time</span><strong>{summary.average_payment_days.state === "not_available" ? "Not available" : summary.average_payment_days.value}</strong></article></section>}
-    <CustomerWorkspace/>{canManage&&<EmployeeAdmin/>}
+    {employee.permissions.includes("view_customers")&&<CustomerWorkspace canEdit={employee.permissions.includes("edit_customers")}/>} {canManage&&<EmployeeAdmin/>}
   </div>;
 }
