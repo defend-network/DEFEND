@@ -31,6 +31,8 @@ from api_admin_rag_routes import build_admin_rag_router
 from defend_data import DataCore
 from defend_data.admin_rag import PermanentRagService
 from defend_data.ingest_policy import AIIngestExcluded, assert_ai_ingest_allowed
+from embedding_client import EmbeddingClient
+from embedding_provider import EmbeddingSettings, build_embedding_client
 
 from production_policy import ProductionPolicy
 
@@ -299,6 +301,7 @@ def _auth(authorization: str | None) -> None:
 async def lifespan(app: FastAPI):
     data: DataCore | None = None
     model: Any = None
+    embedding_client: EmbeddingClient | None = None
     model_needs_exit = False
     try:
         data = DataCore(DATA_ROOT)
@@ -311,7 +314,13 @@ async def lifespan(app: FastAPI):
         except Exception as error:
             _log_connection_cleanup_failure(error)
         configure_identity_store(data.identity)
-        registry = build_default_registry(memory_manager=data.memory)
+        embedding_settings = EmbeddingSettings.from_env(os.environ)
+        embedding_client = build_embedding_client(embedding_settings)
+        admin_rag_service.embedding_client = embedding_client
+        registry = build_default_registry(
+            memory_manager=data.memory,
+            embedding_client=embedding_client,
+        )
         model = build_model_client()
         if hasattr(model, "__aenter__"):
             await model.__aenter__()
@@ -341,13 +350,18 @@ async def lifespan(app: FastAPI):
                 await model.__aexit__(None, None, None)
         finally:
             try:
-                if data is not None:
-                    data.close()
+                if embedding_client is not None:
+                    await embedding_client.close()
             finally:
-                state.model = None
-                state.cp = None
-                state.data = None
-                app.state.defend_data = None
+                try:
+                    if data is not None:
+                        data.close()
+                finally:
+                    admin_rag_service.embedding_client = None
+                    state.model = None
+                    state.cp = None
+                    state.data = None
+                    app.state.defend_data = None
 
 
 app = FastAPI(title="DEFEND AI API", version="0.4.0", lifespan=lifespan)

@@ -10,13 +10,17 @@ from types import SimpleNamespace
 import pytest
 
 registry_stub = ModuleType("registry")
-registry_stub.build_default_registry = lambda memory_manager=None: {}
+registry_stub.build_default_registry = lambda memory_manager=None, embedding_client=None: {}
 previous_registry = sys.modules.get("registry")
 multipart_stub = ModuleType("python_multipart")
 multipart_stub.__version__ = "0.0.20"
+multipart_parser_stub = ModuleType("python_multipart.multipart")
+multipart_parser_stub.parse_options_header = lambda value: (value, {})
 previous_multipart = sys.modules.get("python_multipart")
+previous_multipart_parser = sys.modules.get("python_multipart.multipart")
 sys.modules["registry"] = registry_stub
 sys.modules["python_multipart"] = multipart_stub
+sys.modules["python_multipart.multipart"] = multipart_parser_stub
 try:
     import api_server
 finally:
@@ -28,6 +32,10 @@ finally:
         sys.modules.pop("python_multipart", None)
     else:
         sys.modules["python_multipart"] = previous_multipart
+    if previous_multipart_parser is None:
+        sys.modules.pop("python_multipart.multipart", None)
+    else:
+        sys.modules["python_multipart.multipart"] = previous_multipart_parser
 
 
 FROZEN_NOW = datetime(2026, 8, 10, 12, 0, tzinfo=timezone.utc)

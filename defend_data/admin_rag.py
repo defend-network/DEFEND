@@ -11,6 +11,7 @@ from pathlib import Path, PureWindowsPath
 import uuid
 
 from defend_data.ingest_policy import AIIngestExcluded, assert_ai_ingest_allowed
+from embedding_client import EmbeddingClient
 
 
 MAX_PERMANENT_FILE_BYTES = 25_000_000
@@ -93,6 +94,7 @@ class PermanentRagService:
         *,
         runner: Callable[[str, str], Awaitable[object]] | None = None,
         row_source: Callable[[], list[dict]] | None = None,
+        embedding_client: EmbeddingClient | None = None,
         max_jobs: int = 50,
         max_file_bytes: int = MAX_PERMANENT_FILE_BYTES,
     ) -> None:
@@ -102,6 +104,7 @@ class PermanentRagService:
         self.documents_root = self.data_root / "documents"
         self._runner = runner or self._run_ingest_tool
         self._row_source = row_source or self._load_permanent_rows
+        self.embedding_client = embedding_client
         self._max_jobs = max_jobs
         self._max_file_bytes = max_file_bytes
         self._jobs: OrderedDict[str, _RagJob] = OrderedDict()
@@ -239,7 +242,7 @@ class PermanentRagService:
         from tool_sdk import ToolContext
         from tools.rag_ingest import RagIngestTool
 
-        return await RagIngestTool().execute(
+        return await RagIngestTool(self.embedding_client).execute(
             RagIngestInput(document_id=document_id),
             ToolContext(
                 request_id="req_" + uuid.uuid4().hex,

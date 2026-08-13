@@ -13,24 +13,28 @@ from tools.documents_search import DocumentsSearchTool
 from tools.research_cache_ingest import ResearchCacheIngestTool
 from tools.memory_search import MemorySearchTool
 from tools.memory_propose import MemoryProposeTool
+from embedding_client import EmbeddingClient
 
 
-def build_default_registry(memory_manager=None) -> dict[str, DefendTool]:
+def build_default_registry(
+    memory_manager=None,
+    embedding_client: EmbeddingClient | None = None,
+) -> dict[str, DefendTool]:
     registry: dict[str, DefendTool] = {}
 
-    for tool_cls in (
-        DocumentsSearchTool,
-        RagQueryTool,
-        RagIngestTool,  # present for admin/dev; ProductionPolicy denies public use
-        ResearchCacheIngestTool,  # public research PDF path
-        CalculatorTool,
-        TimeNowTool,
-        WebSearchTool,
-        WebFetchTool,
-        DocumentsFetchTool,
-        DocumentsReadTool,
-    ):
-        instance = tool_cls()
+    instances = (
+        DocumentsSearchTool(),
+        RagQueryTool(embedding_client),
+        RagIngestTool(embedding_client),  # present for admin/dev; ProductionPolicy denies public use
+        ResearchCacheIngestTool(embedding_client),  # public research PDF path
+        CalculatorTool(),
+        TimeNowTool(),
+        WebSearchTool(),
+        WebFetchTool(),
+        DocumentsFetchTool(),
+        DocumentsReadTool(),
+    )
+    for instance in instances:
         if instance.name in registry:
             raise ValueError(f"Duplicate tool registration: {instance.name}")
         registry[instance.name] = instance

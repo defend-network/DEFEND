@@ -12,6 +12,7 @@ from tool_sdk import (
 )
 from bootstrap_models import RagQueryInput, RagQueryOutput, RagHit
 from rag_store import get_or_create_table, ensure_fts_index
+from embedding_client import EmbeddingClient
 from ollama_embedding_client import OllamaEmbeddingClient
 
 
@@ -137,7 +138,7 @@ class RagQueryTool(DefendTool[RagQueryInput, RagQueryOutput]):
     max_input_classification = DataClassification.PUBLIC
     max_output_classification = DataClassification.PUBLIC
 
-    def __init__(self, embedder: OllamaEmbeddingClient | None = None):
+    def __init__(self, embedder: EmbeddingClient | None = None):
         self.embedder = embedder or OllamaEmbeddingClient()
 
     async def execute(self, args: RagQueryInput, context: ToolContext) -> ToolResult[RagQueryOutput]:
