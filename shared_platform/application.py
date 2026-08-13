@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import os
 from pathlib import Path
 import re
+import ipaddress
 from typing import Literal
 from urllib.parse import urlsplit
 
@@ -20,7 +21,29 @@ def _port(value: object) -> int:
     return value
 
 
-def _origin(value: object) -> str:
+def _valid_hostname(hostname: str) -> bool:
+    try:
+        ipaddress.ip_address(hostname)
+        return True
+    except ValueError:
+        pass
+    try:
+        ascii_hostname = hostname.encode("idna").decode("ascii").rstrip(".")
+    except UnicodeError:
+        return False
+    if not ascii_hostname or len(ascii_hostname) > 253:
+        return False
+    return all(
+        label
+        and len(label) <= 63
+        and label[0].isalnum()
+        and label[-1].isalnum()
+        and all(character.isalnum() or character == "-" for character in label)
+        for label in ascii_hostname.split(".")
+    )
+
+
+def _canonical_origin(value: object) -> str:
     if not isinstance(value, str) or not value or any(char.isspace() for char in value):
         raise ValueError("public_origin must be an HTTPS origin")
     try:
@@ -39,6 +62,8 @@ def _origin(value: object) -> str:
     ):
         raise ValueError("public_origin must be an HTTPS origin without a path")
     hostname = parsed.hostname.rstrip(".").casefold()
+    if not _valid_hostname(hostname):
+        raise ValueError("public_origin must contain a valid hostname")
     netloc = hostname if port in {None, 443} else f"{hostname}:{port}"
     return f"https://{netloc}"
 
@@ -71,7 +96,7 @@ class ApplicationContext:
                 raise ValueError(f"{name} must be an uppercase namespace")
         if not isinstance(self.session_cookie, str) or not _COOKIE_NAME.fullmatch(self.session_cookie):
             raise ValueError("session_cookie must be a lowercase cookie name")
-        object.__setattr__(self, "public_origin", _origin(self.public_origin))
+        object.__setattr__(self, "public_origin", _canonical_origin(self.public_origin))
         object.__setattr__(self, "api_port", _port(self.api_port))
         object.__setattr__(self, "web_port", _port(self.web_port))
         if self.api_port == self.web_port:

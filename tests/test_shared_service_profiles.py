@@ -37,11 +37,17 @@ def routes():
         (("defend", "api", "defend:api", 0, "/health"), "port"),
         (("defend", "api", "defend:api", 8000, "health"), "health_path"),
         (("defend", "api", "defend:api", 8000, "/health?secret=x"), "health_path"),
+        (("defend", "api", "defend:api", 8000, "//other-host/health"), "health_path"),
     ],
 )
 def test_service_profile_is_qualified_and_safe(args, match):
     with pytest.raises(ValueError, match=match):
         ServiceProfile(*args)
+
+
+def test_route_profile_rejects_malformed_hostname():
+    with pytest.raises(ValueError, match="hostname"):
+        RouteProfile("scs", "https://bad_host.example", 3100)
 
 
 def test_valid_deployment_has_one_owned_route_per_application():

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from urllib.parse import urlsplit
-
-from .application import ApplicationContext, ApplicationId, validate_application_pair
+from .application import (
+    ApplicationContext,
+    ApplicationId,
+    _canonical_origin,
+    validate_application_pair,
+)
 
 
 _ROLES = frozenset({"api", "web", "language", "embedding", "vision", "coding"})
@@ -13,29 +16,6 @@ def _port(value: object) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 65_535:
         raise ValueError("service port must be an integer in 1..65535")
     return value
-
-
-def _origin(value: object) -> str:
-    if not isinstance(value, str) or not value or any(char.isspace() for char in value):
-        raise ValueError("route public_origin must be an HTTPS origin")
-    try:
-        parsed = urlsplit(value)
-        port = parsed.port
-    except ValueError:
-        raise ValueError("route public_origin must be an HTTPS origin") from None
-    if (
-        parsed.scheme != "https"
-        or not parsed.hostname
-        or parsed.username is not None
-        or parsed.password is not None
-        or parsed.path not in {"", "/"}
-        or parsed.query
-        or parsed.fragment
-    ):
-        raise ValueError("route public_origin must be an HTTPS origin without a path")
-    hostname = parsed.hostname.rstrip(".").casefold()
-    netloc = hostname if port in {None, 443} else f"{hostname}:{port}"
-    return f"https://{netloc}"
 
 
 @dataclass(frozen=True)
@@ -57,6 +37,7 @@ class ServiceProfile:
         if (
             not isinstance(self.health_path, str)
             or not self.health_path.startswith("/")
+            or self.health_path.startswith("//")
             or "?" in self.health_path
             or "#" in self.health_path
             or "\\" in self.health_path
@@ -74,7 +55,11 @@ class RouteProfile:
     def __post_init__(self) -> None:
         if self.application_id not in {"defend", "scs"}:
             raise ValueError("route application_id must be defend or scs")
-        object.__setattr__(self, "public_origin", _origin(self.public_origin))
+        try:
+            origin = _canonical_origin(self.public_origin)
+        except ValueError as error:
+            raise ValueError(str(error).replace("public_origin", "route public_origin")) from None
+        object.__setattr__(self, "public_origin", origin)
         object.__setattr__(self, "upstream_port", _port(self.upstream_port))
 
 

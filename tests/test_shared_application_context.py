@@ -35,6 +35,7 @@ def test_application_context_accepts_only_explicit_supported_ids(tmp_path):
         ({"data_root": Path("relative")}, "absolute"),
         ({"public_origin": "http://ai.example.com"}, "HTTPS"),
         ({"public_origin": "https://ai.example.com/path"}, "origin"),
+        ({"public_origin": "https://bad_host.example"}, "hostname"),
         ({"api_port": 0}, "port"),
         ({"api_port": 8000, "web_port": 8000}, "distinct"),
         ({"environment_prefix": "defend"}, "environment_prefix"),
