@@ -25,6 +25,12 @@ def test_pdf_identity_is_content_stable_and_name_is_safe(tmp_path):
     assert not list(tmp_path.rglob("original.bin"))
 
 
+def test_service_construction_does_not_create_data_directories(tmp_path):
+    root = tmp_path / "not-created"
+    PermanentRagService(root)
+    assert not root.exists()
+
+
 def test_docx_is_accepted(tmp_path):
     result = PermanentRagService(tmp_path).validate_file(
         PermanentRagFile("brief.docx", b"PK\x03\x04document", None)

@@ -100,7 +100,6 @@ class PermanentRagService:
             raise ValueError("RAG service limits must be positive")
         self.data_root = Path(data_root)
         self.documents_root = self.data_root / "documents"
-        self.documents_root.mkdir(parents=True, exist_ok=True)
         self._runner = runner or self._run_ingest_tool
         self._row_source = row_source or self._load_permanent_rows
         self._max_jobs = max_jobs
