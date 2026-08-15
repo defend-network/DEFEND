@@ -1,29 +1,27 @@
-# DEFENDcoder Architecture
-Date: 2026-08-14
-Status: BINDING (v0 implementation target)
-Amendments: configurable session budget; provider_run_id/instance_id in traces; immutable completed traces; generalized branch policy
+## North star
+DEFENDcoder is a general-purpose autonomous software-engineering platform. It should enable users ranging from non-programmers to experienced developers to design, build, debug, test, deploy, and maintain websites, applications, services, bots, automations, and technical infrastructure. DEFEND-specific repository expertise is a specialization of the platform, not its boundary.
 
-## Purpose
-DEFENDcoder is the owner-only coding product of the DEFEND platform. It is not the identity chat model. It is a coding agent runtime with interchangeable models, providers, and tool adapters, orchestrated by the DEFEND Control Center.
+### Capability layers
+- **General engineering core** — frontend, backend, full-stack, APIs, bots, automation, DevOps, Docker, cloud, deploy, debug, test, Git/GitHub, architecture
+- **Project intelligence** — repo map, conventions, docs, dependency graph, project memory (DEFEND/SCS and future member projects)
 
-## Non-negotiables
-- Identity ≠ coder
-- Agent Runtime is the product core
-- Aider / OpenHands are replaceable adapters only
-- Model and provider abstraction via registry + InferenceProvider
-- ControlPlane owns compute orchestration
-- Risk-tiered permissions (worktree is the security boundary)
-- Worktree isolation from production checkouts and data roots
-- Structured trace capture from day one
-- RepoContextManager preferred over dumping maximum context
-- Coding LoRA only after DEFEND-Bench and real traces justify it
-- Reviewer loop = V2; planner sophistication = V2; automated routing = V2; training flywheel = V3
+### Modes (M3+)
+- **OPEN PROJECT** — work on an existing repository
+- **NEW PROJECT** — interview → requirements → architecture → scaffold → implement → test → deploy
 
-## Platform placement
+### Public origin
+- Planned HTTPS origin: `https://defendcoder.defend-network.org`
+- Owner-only until M2/M5 gates pass
+- Must not share DEFEND public chat sessions, cookies, tools, or data roots
+- Cloudflare route inactive until authenticated coding workspace health checks pass
 
-```text
-DEFEND Control Center
-├── DEFEND        identity model, RAG/memory, public tools
-├── SCS           operational/business application
-└── DEFENDcoder   coding model, agent runtime, repo tools,
-                  isolated workspaces, git, test/lint/terminal, policy
+### Milestone roadmap
+| Milestone | Focus |
+|---|---|
+| M0 | Inference: GPU → model → smoke → stop |
+| M1 | Safe autonomous repo editing |
+| M2 | Control Center + usable coding workspace |
+| M3 | General agent: new projects + arbitrary repos |
+| M4 | Planner + reviewer + recovery + routing |
+| M5 | Member platform: accounts, sandboxes, quotas, deploy |
+| M6 | General bench + traces → training/LoRA |workspaces, git, test/lint/terminal, policy
