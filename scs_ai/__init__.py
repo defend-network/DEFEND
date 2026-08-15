@@ -1,0 +1,1 @@
+"""SCS AI service foundation (Phase SCS-AI-0)."""
