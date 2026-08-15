@@ -74,9 +74,9 @@ _CODER_DEFAULT_ARTIFACT = CoderDeploymentArtifact(
     image_tag="v0.10.0",
     tool_call_parser=None,
     enable_auto_tool_choice=False,
-    required_min_gpu_ram_mb=None,
+    required_min_gpu_ram_mb=81_920,
     requires_hf_token=False,
-    notes="Plain BF16 instruct serving, unchanged from runtime-v1 M0.1",
+    notes="Plain BF16 instruct serving on a single 80GB-class GPU",
 )
 
 _CODER_HEAVY_ARTIFACT = CoderDeploymentArtifact(
