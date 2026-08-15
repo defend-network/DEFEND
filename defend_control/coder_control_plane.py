@@ -16,10 +16,12 @@ inputs (provider hourly rate + measured active seconds).
 
 from __future__ import annotations
 
+import hashlib
+import json
 import socket
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any, Callable, Literal
@@ -35,11 +37,30 @@ from .coder_m0 import (
     parse_session_budget,
     resolve_alias,
 )
-from .types import ResourceProfile
+from .types import ResourceProfile, VastOffer
 
 CoderMode = Literal["AUTO", "FAST", "DEFAULT", "HEAVY", "MAXIMUM"]
 
 _HEAVY_ALIAS = "defendcoder-heavy"
+
+# Owner-visible manual live-smoke sequence (LIVE HEAVY SMOKE PREP).
+LIVE_SMOKE_SEQUENCE: tuple[str, ...] = (
+    "search qualifying Vast offers",
+    "select best qualifying offer",
+    "print safe public launch plan + exact $/hr",
+    "STOP for owner approval",
+    "create instance (only after explicit approval)",
+    "wait until running",
+    "bootstrap pinned FP8 artifact",
+    "wait for /v1/models",
+    "exact-response smoke: return DEFENDCODER_HEAVY_READY",
+    "tool-call smoke",
+    "route smoke through CoderControlPlane",
+    "capture real trace",
+    "verify actual provider hourly rate",
+    "stop/destroy instance",
+    "report total measured cost",
+)
 
 
 @dataclass(frozen=True)
@@ -56,6 +77,7 @@ class CoderPolicy:
     auto_escalation_eligible: bool = True
     default_min_gpu_ram_mb: int = 24_576
     heavy_min_gpu_ram_mb: int = 81_920
+    heavy_num_gpus: int = 2
     default_gpu_families: tuple[str, ...] = (
         "A100",
         "H100",
@@ -85,6 +107,8 @@ class CoderPolicy:
             raise ValueError("hourly/session budgets must be positive")
         if self.max_concurrent_instances < 1:
             raise ValueError("max_concurrent_instances must be >= 1")
+        if self.heavy_num_gpus < 1:
+            raise ValueError("heavy_num_gpus must be >= 1")
         if self.idle_shutdown_minutes < 0:
             raise ValueError("idle_shutdown_minutes must be >= 0")
         if self.heavy_escalation_after_failures < 1:
@@ -103,7 +127,7 @@ def resource_profile(alias: str, policy: CoderPolicy) -> ResourceProfile:
         return ResourceProfile(
             min_gpu_ram_mb=policy.heavy_min_gpu_ram_mb,
             allowed_gpu_families=policy.heavy_gpu_families,
-            num_gpus=1,
+            num_gpus=policy.heavy_num_gpus,
             min_reliability=policy.min_reliability,
             min_disk_gb=policy.min_disk_gb,
             max_model_len=policy.max_model_len,
@@ -236,7 +260,11 @@ class CoderPreflightReport:
 
 @dataclass(frozen=True)
 class CoderLiveSmokePlan:
-    """Exact expected configuration/cost for a live smoke — owner approval."""
+    """Exact expected live-smoke configuration/cost — owner approval basis.
+
+    Produced after offer selection so the owner sees the exact selected
+    GPU family, provider hourly rate, and estimated max hourly spend.
+    """
 
     alias: str
     logical_repo_id: str
@@ -244,16 +272,26 @@ class CoderLiveSmokePlan:
     deployment_repo_id: str
     deployment_revision: str
     precision: str
-    gpu_requirement_mb: int
+    provider: str
     gpu_families: tuple[str, ...]
+    gpu_family: str | None
+    gpu_count: int
+    vram_per_gpu_mb: int
+    provider_hourly_rate: Decimal | None
+    estimated_max_hourly_spend: Decimal
     max_hourly_price_usd: Decimal
     session_budget_usd: Decimal
     max_model_len: int
+    tensor_parallel_size: int
     serving_runtime: str
     minimum_vllm_version: str
     tool_call_parser: str | None
     auto_tool_choice: bool
     local_port: int
+    offer_id: int | None
+    status: str
+    plan_id: str
+    plan_hash: str
 
     def as_public_dict(self) -> dict[str, Any]:
         return {
@@ -263,17 +301,91 @@ class CoderLiveSmokePlan:
             "deployment_repo_id": self.deployment_repo_id,
             "deployment_revision": self.deployment_revision,
             "precision": self.precision,
-            "gpu_requirement_mb": self.gpu_requirement_mb,
+            "provider": self.provider,
             "gpu_families": list(self.gpu_families),
+            "gpu_family": self.gpu_family,
+            "gpu_count": self.gpu_count,
+            "vram_per_gpu_mb": self.vram_per_gpu_mb,
+            "provider_hourly_rate": (
+                format(self.provider_hourly_rate, "f")
+                if self.provider_hourly_rate is not None
+                else None
+            ),
+            "estimated_max_hourly_spend": format(
+                self.estimated_max_hourly_spend, "f"
+            ),
             "max_hourly_price_usd": format(self.max_hourly_price_usd, "f"),
             "session_budget_usd": format(self.session_budget_usd, "f"),
             "max_model_len": self.max_model_len,
+            "tensor_parallel_size": self.tensor_parallel_size,
             "serving_runtime": self.serving_runtime,
             "minimum_vllm_version": self.minimum_vllm_version,
             "tool_call_parser": self.tool_call_parser,
             "auto_tool_choice": self.auto_tool_choice,
             "local_port": self.local_port,
+            "offer_id": self.offer_id,
+            "status": self.status,
+            "plan_id": self.plan_id,
+            "plan_hash": self.plan_hash,
         }
+
+
+@dataclass(frozen=True)
+class CoderPreparedProvision:
+    """Offer-selected plan awaiting owner approval (or already approved)."""
+
+    plan: CoderLiveSmokePlan
+    offer: VastOffer | None
+    plan_hash: str
+
+
+@dataclass(frozen=True)
+class CoderProvisionApproval:
+    """Owner approval token bound to one exact plan hash — no substitutions."""
+
+    approval_id: str
+    plan_id: str
+    plan_hash: str
+    approved_at: datetime
+    approver: str = "owner"
+
+
+def _plan_fingerprint(plan: CoderLiveSmokePlan, offer: VastOffer | None) -> str:
+    """Deterministic hash of every cost/config-relevant plan + offer field."""
+    payload: dict[str, object] = {
+        "alias": plan.alias,
+        "logical_repo_id": plan.logical_repo_id,
+        "logical_revision": plan.logical_revision,
+        "deployment_repo_id": plan.deployment_repo_id,
+        "deployment_revision": plan.deployment_revision,
+        "precision": plan.precision,
+        "provider": plan.provider,
+        "gpu_count": plan.gpu_count,
+        "vram_per_gpu_mb": plan.vram_per_gpu_mb,
+        "gpu_family": plan.gpu_family,
+        "provider_hourly_rate": str(plan.provider_hourly_rate),
+        "estimated_max_hourly_spend": str(plan.estimated_max_hourly_spend),
+        "max_hourly_price_usd": str(plan.max_hourly_price_usd),
+        "session_budget_usd": str(plan.session_budget_usd),
+        "max_model_len": plan.max_model_len,
+        "tensor_parallel_size": plan.tensor_parallel_size,
+        "serving_runtime": plan.serving_runtime,
+        "minimum_vllm_version": plan.minimum_vllm_version,
+        "tool_call_parser": plan.tool_call_parser,
+        "local_port": plan.local_port,
+    }
+    if offer is not None:
+        payload.update(
+            {
+                "offer_id": offer.offer_id,
+                "offer_gpu_name": offer.gpu_name,
+                "offer_gpu_ram_mb": offer.gpu_ram_mb,
+                "offer_dph_total": str(offer.dph_total),
+                "offer_reliability": str(offer.reliability),
+            }
+        )
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _as_decimal(raw: object) -> Decimal | None:
@@ -314,6 +426,8 @@ class CoderControlPlane:
     run_store: RunTraceStore = field(default_factory=RunTraceStore)
     token_provider: Callable[[], str | None] | None = None
     port_available: Callable[[int], bool] | None = None
+    offer_provider: Callable[[str], tuple[VastOffer, ...]] | None = None
+    offer_chooser: Callable[[tuple[VastOffer, ...]], VastOffer] | None = None
     _active: dict[str, ActiveCoderEndpoint] = field(
         default_factory=dict, init=False
     )
@@ -372,20 +486,7 @@ class CoderControlPlane:
             local_port=local_port,
             session_budget_usd=self.session_budget_usd,
         )
-        state = str(result.get("state") or "ready")
-        endpoint = ActiveCoderEndpoint(
-            alias=alias,
-            provider=str(result.get("provider") or "backend"),
-            endpoint=str(result.get("endpoint") or ""),
-            state=state,
-            provisioned_at=now,
-            model_ready_at=now if state == "ready" else None,
-            last_used_at=now,
-            instance_id=result.get("instance_id"),
-            provider_run_id=result.get("provider_run_id"),
-            gpu_type=result.get("gpu_type"),
-            hourly_price=_as_decimal(result.get("hourly_price")),
-        )
+        endpoint = self._endpoint_from_result(alias, now, result)
         self._active[alias] = endpoint
         return EndpointLease(
             alias=alias,
@@ -529,11 +630,55 @@ class CoderControlPlane:
 
         return CoderPreflightReport(alias, tuple(checks))
 
-    def live_smoke_plan(self, alias: str) -> CoderLiveSmokePlan:
-        """Exact expected live-smoke configuration — inspect before approve."""
+    def prepared_provision(self, alias: str) -> CoderPreparedProvision:
+        """Search qualifying offers, select the best, produce the approval
+        basis. Zero provider create calls — inspection/approval only.
+        """
         model = resolve_alias(alias)
         artifact = resolve_deployment(alias)
         profile = resource_profile(alias, self.policy)
+
+        offers = self._search_offers(alias, model, profile)
+        offer = self._select_offer(offers) if offers else None
+        plan = self._build_plan(alias, model, artifact, profile, offer)
+        plan_hash = _plan_fingerprint(plan, offer)
+        plan = replace(plan, plan_hash=plan_hash)
+        return CoderPreparedProvision(
+            plan=plan, offer=offer, plan_hash=plan_hash
+        )
+
+    def live_smoke_plan(self, alias: str) -> CoderLiveSmokePlan:
+        """Convenience: the plan half of a prepared provision."""
+        return self.prepared_provision(alias).plan
+
+    def _search_offers(
+        self,
+        alias: str,
+        model: Any,
+        profile: ResourceProfile,
+    ) -> tuple[VastOffer, ...]:
+        if self.offer_provider is not None:
+            return tuple(self.offer_provider(alias))
+        provider = getattr(self.backend, "search_offers_for", None)
+        if provider is None:
+            return ()
+        return tuple(provider(model, profile))
+
+    def _select_offer(self, offers: tuple[VastOffer, ...]) -> VastOffer:
+        if self.offer_chooser is not None:
+            return self.offer_chooser(offers)
+        return min(offers, key=lambda offer: (offer.dph_total, offer.offer_id))
+
+    def _build_plan(
+        self,
+        alias: str,
+        model: Any,
+        artifact: Any,
+        profile: ResourceProfile,
+        offer: VastOffer | None,
+    ) -> CoderLiveSmokePlan:
+        rate = offer.dph_total if offer is not None else None
+        max_spend = rate if rate is not None else self.policy.max_hourly_usd
         return CoderLiveSmokePlan(
             alias=alias,
             logical_repo_id=model.repo_id,
@@ -541,16 +686,117 @@ class CoderControlPlane:
             deployment_repo_id=artifact.repo_id,
             deployment_revision=artifact.revision,
             precision=artifact.precision,
-            gpu_requirement_mb=profile.min_gpu_ram_mb,
+            provider="vast",
             gpu_families=profile.allowed_gpu_families,
+            gpu_family=offer.gpu_name if offer is not None else None,
+            gpu_count=profile.num_gpus,
+            vram_per_gpu_mb=profile.min_gpu_ram_mb,
+            provider_hourly_rate=rate,
+            estimated_max_hourly_spend=max_spend,
             max_hourly_price_usd=self.policy.max_hourly_usd,
             session_budget_usd=self.session_budget_usd,
             max_model_len=artifact.max_model_len,
+            tensor_parallel_size=artifact.tensor_parallel_size,
             serving_runtime=f"vllm/vllm-openai:{artifact.image_tag}",
             minimum_vllm_version=artifact.minimum_vllm_version,
             tool_call_parser=artifact.tool_call_parser,
             auto_tool_choice=artifact.enable_auto_tool_choice,
             local_port=self.base_port + len(self._active),
+            offer_id=offer.offer_id if offer is not None else None,
+            status="requires_approval",
+            plan_id=uuid.uuid4().hex,
+            plan_hash="",
+        )
+
+    def approve(self, prepared: CoderPreparedProvision) -> CoderProvisionApproval:
+        """Owner approval: binds to the exact plan hash; rejects over-budget."""
+        if prepared.plan.status != "requires_approval":
+            raise ValueError("plan is not awaiting approval")
+        if prepared.plan.estimated_max_hourly_spend > self.policy.max_hourly_usd:
+            raise ValueError(
+                f"offer exceeds max hourly budget "
+                f"{format(self.policy.max_hourly_usd, 'f')}"
+            )
+        if (
+            prepared.offer is not None
+            and prepared.offer.dph_total > self.policy.max_hourly_usd
+        ):
+            raise ValueError(
+                f"offer {prepared.offer.offer_id} hourly rate exceeds budget "
+                f"{format(self.policy.max_hourly_usd, 'f')}"
+            )
+        return CoderProvisionApproval(
+            approval_id=uuid.uuid4().hex,
+            plan_id=prepared.plan.plan_id,
+            plan_hash=prepared.plan_hash,
+            approved_at=self._now(),
+        )
+
+    def provision(
+        self,
+        prepared: CoderPreparedProvision,
+        approval: CoderProvisionApproval | None,
+    ) -> EndpointLease:
+        """Provision ONLY with a valid approval bound to this exact plan."""
+        if approval is None:
+            raise CoderProvisionBlocked(
+                "owner approval required before provisioning"
+            )
+        current_hash = _plan_fingerprint(prepared.plan, prepared.offer)
+        if current_hash != approval.plan_hash:
+            raise CoderProvisionBlocked(
+                "approval no longer matches the current plan; re-approve"
+            )
+        if approval.plan_id != prepared.plan.plan_id:
+            raise CoderProvisionBlocked("approval does not match the plan")
+
+        alias = prepared.plan.alias
+        report = self.preflight(alias)
+        if not report.all_ok:
+            failed = ", ".join(
+                check.name for check in report.checks if not check.ok
+            )
+            raise CoderProvisionBlocked(
+                f"preflight failed for {alias!r}: {failed}"
+            )
+        self._authorize_provisioning()
+
+        model = resolve_alias(alias)
+        profile = resource_profile(alias, self.policy)
+        now = self._now()
+        result = self.backend.start(
+            model,
+            local_port=prepared.plan.local_port,
+            session_budget_usd=self.session_budget_usd,
+            offer=prepared.offer,
+            profile=profile,
+        )
+        endpoint = self._endpoint_from_result(alias, now, result)
+        self._active[alias] = endpoint
+        return EndpointLease(
+            alias=alias,
+            endpoint=endpoint.endpoint,
+            instance_id=endpoint.instance_id,
+            provider_run_id=endpoint.provider_run_id,
+            reused=False,
+        )
+
+    def _endpoint_from_result(
+        self, alias: str, now: datetime, result: dict[str, Any]
+    ) -> ActiveCoderEndpoint:
+        state = str(result.get("state") or "ready")
+        return ActiveCoderEndpoint(
+            alias=alias,
+            provider=str(result.get("provider") or "backend"),
+            endpoint=str(result.get("endpoint") or ""),
+            state=state,
+            provisioned_at=now,
+            model_ready_at=now if state == "ready" else None,
+            last_used_at=now,
+            instance_id=result.get("instance_id"),
+            provider_run_id=result.get("provider_run_id"),
+            gpu_type=result.get("gpu_type"),
+            hourly_price=_as_decimal(result.get("hourly_price")),
         )
 
     def smoke(self, alias: str) -> CoderSmokeResult:

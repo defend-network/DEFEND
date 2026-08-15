@@ -50,21 +50,41 @@ class VastCoderBackend:
         if self.launch is None or self.launch.label != "defendcoder-vllm":
             raise ValueError("coder backend requires defendcoder-vllm launch label")
 
+    def search_offers_for(
+        self, model: CoderModelRef, profile: ResourceProfile
+    ) -> tuple[VastOffer, ...]:
+        """Qualifying offers only: profile num_gpus/VRAM/families/reliability
+        enforced by VastClient.search_offers under max_hourly. No creation.
+        """
+        del model
+        try:
+            return self.vast.search_offers(self.max_hourly, profile)
+        except VastError as exc:
+            raise CoderVastBackendError(str(exc)) from None
+
     def start(
         self,
         model: CoderModelRef,
         *,
         local_port: int,
         session_budget_usd: Decimal,
+        offer: VastOffer | None = None,
+        profile: ResourceProfile | None = None,
     ) -> dict[str, Any]:
         del session_budget_usd  # enforced by CoderM0Service / Control Center
         if type(local_port) is not int or not 1 <= local_port <= 65_535:
             raise CoderVastBackendError("local_port is invalid")
+        if offer is not None and not isinstance(offer, VastOffer):
+            raise CoderVastBackendError("offer must be a VastOffer")
 
-        try:
-            offers = self.vast.search_offers(self.max_hourly, self.profile)
-        except VastError as exc:
-            raise CoderVastBackendError(str(exc)) from None
+        if offer is not None:
+            offers: tuple[VastOffer, ...] = (offer,)
+        else:
+            resolved_profile = profile if profile is not None else self.profile
+            try:
+                offers = self.vast.search_offers(self.max_hourly, resolved_profile)
+            except VastError as exc:
+                raise CoderVastBackendError(str(exc)) from None
         if not offers:
             raise CoderVastBackendError("no eligible coder GPU offers under budget")
 

@@ -51,7 +51,8 @@ class NoOpBackend:
     def __init__(self) -> None:
         self.starts: list[str] = []
 
-    def start(self, model, *, local_port, session_budget_usd):
+    def start(self, model, *, local_port, session_budget_usd, offer=None, profile=None):
+        del offer, profile
         self.starts.append(model.alias)
         return {
             "state": "ready",
@@ -288,8 +289,10 @@ class TestLiveSmokePlan:
         assert plan.deployment_repo_id == "Qwen/Qwen3-Coder-Next-FP8"
         assert plan.deployment_revision == FP8_REVISION
         assert plan.precision == "FP8"
-        assert plan.gpu_requirement_mb == 81_920
         assert plan.gpu_families == ("A100", "H100")
+        assert plan.gpu_count == 2
+        assert plan.vram_per_gpu_mb == 81_920
+        assert plan.tensor_parallel_size == 2
         assert plan.max_hourly_price_usd == Decimal("2.00")
         assert plan.session_budget_usd == Decimal("5.00")
         assert plan.max_model_len == 32_768
@@ -298,12 +301,23 @@ class TestLiveSmokePlan:
         assert plan.tool_call_parser == "qwen3_coder"
         assert plan.auto_tool_choice is True
         assert plan.local_port == 8003
+        assert plan.provider == "vast"
+        assert plan.gpu_family is None
+        assert plan.provider_hourly_rate is None
+        assert plan.estimated_max_hourly_spend == Decimal("2.00")
+        assert plan.offer_id is None
+        assert plan.status == "requires_approval"
+        assert plan.plan_id
+        assert plan.plan_hash
 
     def test_live_smoke_plan_public_dict_has_no_secrets(self):
         plan = _plane().live_smoke_plan("defendcoder-heavy")
         public = plan.as_public_dict()
         assert public["alias"] == "defendcoder-heavy"
         assert public["deployment_revision"] == FP8_REVISION
+        assert public["gpu_count"] == 2
+        assert public["tensor_parallel_size"] == 2
+        assert public["status"] == "requires_approval"
         blob = " ".join(f"{key}={value}" for key, value in public.items())
         for banned in ("api_key", "password", "secret", "token"):
             assert banned not in blob.casefold()

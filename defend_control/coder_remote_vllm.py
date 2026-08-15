@@ -85,6 +85,11 @@ def _validate_artifact(artifact: CoderDeploymentArtifact) -> None:
         or not 1024 <= artifact.max_model_len <= 131072
     ):
         raise CoderRemoteVllmError("Coder deployment max_model_len is invalid")
+    if (
+        type(artifact.tensor_parallel_size) is not int
+        or not 1 <= artifact.tensor_parallel_size <= 16
+    ):
+        raise CoderRemoteVllmError("Coder deployment tensor_parallel_size is invalid")
 
 
 class CoderRemoteVllmBootstrap:
@@ -141,6 +146,10 @@ class CoderRemoteVllmBootstrap:
         if artifact.tool_call_parser:
             flag_lines.append(
                 f"  --tool-call-parser {shlex.quote(artifact.tool_call_parser)}"
+            )
+        if artifact.tensor_parallel_size > 1:
+            flag_lines.append(
+                f"  --tensor-parallel-size {int(artifact.tensor_parallel_size)}"
             )
         flag_lines.extend(
             ("  --disable-log-requests", "  --disable-uvicorn-access-log")

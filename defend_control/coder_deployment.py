@@ -37,6 +37,7 @@ class CoderDeploymentArtifact:
     image_tag: str
     tool_call_parser: str | None = None
     enable_auto_tool_choice: bool = False
+    tensor_parallel_size: int = 1
     required_min_gpu_ram_mb: int | None = None
     requires_hf_token: bool = False
     notes: str = ""
@@ -88,12 +89,13 @@ _CODER_HEAVY_ARTIFACT = CoderDeploymentArtifact(
     image_tag="v0.15.0",
     tool_call_parser="qwen3_coder",
     enable_auto_tool_choice=True,
+    tensor_parallel_size=2,
     required_min_gpu_ram_mb=81_920,
     requires_hf_token=False,
     notes=(
         "Official Qwen FP8 checkpoint (F8_E4M3); vLLM >= 0.15.0 with "
         "--enable-auto-tool-choice and --tool-call-parser qwen3_coder; "
-        "initial context 32768"
+        "initial context 32768; tensor-parallel-size 2 (2x80GB-class)"
     ),
 )
 

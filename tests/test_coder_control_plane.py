@@ -49,7 +49,10 @@ class RecordingBackend:
         *,
         local_port: int,
         session_budget_usd: Decimal,
+        offer=None,
+        profile=None,
     ) -> dict[str, object]:
+        del offer, profile
         self.starts.append((model.alias, local_port, session_budget_usd))
         self._instance += 1
         return {
@@ -166,7 +169,7 @@ class TestResourceProfiles:
         profile = resource_profile("defendcoder-heavy", CoderPolicy())
         assert profile.min_gpu_ram_mb == 81_920
         assert profile.allowed_gpu_families == ("A100", "H100")
-        assert profile.num_gpus == 1
+        assert profile.num_gpus == 2
 
     def test_identity_chat_profile_is_unchanged(self):
         assert ResourceProfile().min_gpu_ram_mb >= 140_000
