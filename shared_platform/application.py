@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from itertools import combinations
 import os
 from pathlib import Path
 import re
@@ -9,8 +10,8 @@ from typing import Literal
 from urllib.parse import urlsplit
 
 
-ApplicationId = Literal["defend", "scs"]
-_APPLICATION_IDS = frozenset({"defend", "scs"})
+ApplicationId = Literal["defend", "scs", "sports"]
+_APPLICATION_IDS = ("defend", "scs", "sports")
 _UPPER_NAMESPACE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 _COOKIE_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 
@@ -85,7 +86,7 @@ class ApplicationContext:
 
     def __post_init__(self) -> None:
         if self.application_id not in _APPLICATION_IDS:
-            raise ValueError("application_id must be exactly defend or scs")
+            raise ValueError("application_id must be defend, scs, or sports")
         root = Path(self.data_root).expanduser()
         if not root.is_absolute():
             raise ValueError("data_root must be absolute")
@@ -103,35 +104,60 @@ class ApplicationContext:
             raise ValueError("api_port and web_port must be distinct")
 
 
+def _roots_overlap(first: Path, second: Path) -> bool:
+    first_root = _root_key(first)
+    second_root = _root_key(second)
+    try:
+        common = os.path.commonpath((first_root, second_root))
+    except ValueError:
+        return False
+    return common in {first_root, second_root}
+
+
+def validate_applications(
+    contexts: tuple[ApplicationContext, ...],
+) -> tuple[ApplicationContext, ...]:
+    """Validate two or more registered applications with isolated resources."""
+    if len(contexts) < 2:
+        raise ValueError("deployment requires at least two application contexts")
+
+    by_id = {context.application_id: context for context in contexts}
+    if len(by_id) != len(contexts):
+        raise ValueError("deployment application ids must be unique")
+
+    for first, second in combinations(contexts, 2):
+        if _roots_overlap(first.data_root, second.data_root):
+            raise ValueError("application data roots overlap")
+
+        comparisons = {
+            "environment prefix": (first.environment_prefix, second.environment_prefix),
+            "secret namespace": (first.secret_namespace, second.secret_namespace),
+            "session cookie": (first.session_cookie, second.session_cookie),
+            "public origin": (first.public_origin, second.public_origin),
+        }
+        for label, (left, right) in comparisons.items():
+            if left.casefold() == right.casefold():
+                raise ValueError(f"cross-application {label} collision")
+
+        first_ports = {first.api_port, first.web_port}
+        second_ports = {second.api_port, second.web_port}
+        if first_ports & second_ports:
+            raise ValueError("cross-application port collision")
+
+    return tuple(sorted(contexts, key=lambda context: _APPLICATION_IDS.index(context.application_id)))
+
+
 def validate_application_pair(
     first: ApplicationContext,
     second: ApplicationContext,
 ) -> tuple[ApplicationContext, ApplicationContext]:
-    by_id = {first.application_id: first, second.application_id: second}
-    if set(by_id) != _APPLICATION_IDS or first.application_id == second.application_id:
+    """Compatibility validator for the established DEFEND/SCS deployment pair."""
+    if first.application_id == second.application_id:
         raise ValueError("deployment requires exactly one defend and one scs context")
-    defend, scs = by_id["defend"], by_id["scs"]
 
-    defend_root = _root_key(defend.data_root)
-    scs_root = _root_key(scs.data_root)
-    try:
-        common = os.path.commonpath((defend_root, scs_root))
-    except ValueError:
-        common = ""
-    if common in {defend_root, scs_root}:
-        raise ValueError("application data roots overlap")
+    validated = validate_applications((first, second))
+    if {context.application_id for context in validated} != {"defend", "scs"}:
+        raise ValueError("deployment requires exactly one defend and one scs context")
 
-    comparisons = {
-        "environment prefix": (defend.environment_prefix, scs.environment_prefix),
-        "secret namespace": (defend.secret_namespace, scs.secret_namespace),
-        "session cookie": (defend.session_cookie, scs.session_cookie),
-        "public origin": (defend.public_origin, scs.public_origin),
-    }
-    for label, (left, right) in comparisons.items():
-        if left.casefold() == right.casefold():
-            raise ValueError(f"cross-application {label} collision")
-    defend_ports = {defend.api_port, defend.web_port}
-    scs_ports = {scs.api_port, scs.web_port}
-    if defend_ports & scs_ports:
-        raise ValueError("cross-application port collision")
-    return defend, scs
+    by_id = {context.application_id: context for context in validated}
+    return by_id["defend"], by_id["scs"]
