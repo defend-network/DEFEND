@@ -195,6 +195,8 @@ class SetupDialog(tk.Toplevel):
 
 
 class ControlCenterUI:
+    """Four-product platform shell: DEFEND AI | Sports | SCS | DEFENDcoder."""
+
     def __init__(
         self,
         root: tk.Tk,
@@ -212,7 +214,6 @@ class ControlCenterUI:
         self._open_setup = open_setup
         self._submit_exit_cleanup = submit_exit_cleanup
         self._destroy_window = destroy_window or root.destroy
-        # Observation-only until live VastCoderBackend is wired in Control Center.
         self._coder = coder_service or CoderM0Service(
             backend=LocalFakeCoderBackend()
         )
@@ -220,7 +221,7 @@ class ControlCenterUI:
         self._exit_future: object | None = None
         self._last_log_render: tuple[object, ...] | None = None
         self._last_confirmation_signature: tuple[object, ...] | None = None
-        self._mode = tk.StringVar(root, value="")
+        self._mode = tk.StringVar(root, value="vast")
         self._state = tk.StringVar(root, value="stopped")
         self._component_states = {
             name: tk.StringVar(root, value="stopped") for name in _COMPONENT_LABELS
@@ -232,22 +233,16 @@ class ControlCenterUI:
         self._vast_reliability = tk.StringVar(root, value="—")
         self._vast_status = tk.StringVar(root, value="—")
         self._vast_billing = tk.StringVar(root, value="No active Vast billing")
-        self._coder_state = tk.StringVar(root, value="stopped")
-        self._coder_alias = tk.StringVar(root, value="—")
-        self._coder_model = tk.StringVar(root, value="—")
-        self._coder_revision = tk.StringVar(root, value="—")
-        self._coder_endpoint = tk.StringVar(root, value="—")
-        self._coder_instance = tk.StringVar(root, value="—")
-        self._coder_provider_run = tk.StringVar(root, value="—")
-        self._coder_price = tk.StringVar(root, value="—")
-        self._coder_budget = tk.StringVar(root, value="—")
-        self._coder_message = tk.StringVar(root, value="—")
-        self._coder_origin = tk.StringVar(
-            root, value="https://defendcoder.defend-network.org (inactive)"
-        )
+
+        # Product row status lines
+        self._prod_ai = tk.StringVar(root, value="○ OFFLINE")
+        self._prod_sports = tk.StringVar(root, value="○ OFFLINE — not wired")
+        self._prod_scs = tk.StringVar(root, value="○ OFFLINE — not wired")
+        self._prod_coder = tk.StringVar(root, value="○ OFFLINE")
+        self._coder_detail = tk.StringVar(root, value="")
 
         root.title("DEFEND Control Center")
-        root.minsize(720, 720)
+        root.minsize(780, 780)
         root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._build()
         self._render(self._controller.poll_state())
@@ -265,104 +260,157 @@ class ControlCenterUI:
         self._public_origin = public_origin
 
     def set_coder_service(self, coder_service: CoderM0Service) -> None:
-        """Swap observation source (e.g. live Vast backend later)."""
         self._coder = coder_service
-        self._render_coder()
+        self._render_coder_product()
+
+    def _product_row(
+        self,
+        parent: ttk.Frame,
+        *,
+        title: str,
+        status_var: tk.StringVar,
+        launch: Callable[[], None] | None,
+        stop: Callable[[], None] | None,
+        open_cmd: Callable[[], None] | None,
+        extra: str | None = None,
+    ) -> None:
+        frame = ttk.LabelFrame(parent, text=title, padding=8)
+        frame.pack(fill="x", pady=4)
+        top = ttk.Frame(frame)
+        top.pack(fill="x")
+        ttk.Label(top, textvariable=status_var, width=36).pack(side="left")
+        btn = ttk.Frame(top)
+        btn.pack(side="right")
+        for label, command in (
+            ("Launch", launch),
+            ("Stop", stop),
+            ("Open", open_cmd),
+            ("Logs", None),
+        ):
+            state = "normal" if command is not None else "disabled"
+            ttk.Button(
+                btn,
+                text=label,
+                command=command if command is not None else (lambda: None),
+                state=state,
+            ).pack(side="left", padx=2)
+        if extra:
+            ttk.Label(frame, text=extra, foreground="#555").pack(anchor="w", pady=(4, 0))
 
     def _build(self) -> None:
         outer = ttk.Frame(self.root, padding=12)
         outer.pack(fill="both", expand=True)
         outer.columnconfigure(0, weight=1)
-        outer.rowconfigure(6, weight=1)
+        outer.rowconfigure(4, weight=1)
 
-        mode_frame = ttk.LabelFrame(outer, text="Model backend", padding=8)
-        mode_frame.grid(row=0, column=0, sticky="ew")
+        header = ttk.Frame(outer)
+        header.grid(row=0, column=0, sticky="ew")
+        ttk.Label(
+            header,
+            text="DEFEND Platform — Control Center",
+            font=("", 12, "bold"),
+        ).pack(side="left")
+        ttk.Button(header, text="Setup", command=self._setup).pack(side="right")
+
+        products = ttk.Frame(outer)
+        products.grid(row=1, column=0, sticky="ew", pady=8)
+
+        self._product_row(
+            products,
+            title="DEFEND AI — identity / knowledge / RAG",
+            status_var=self._prod_ai,
+            launch=self._start_ai_prompt,
+            stop=self._stop_local,
+            open_cmd=self._open_defend,
+            extra="Origin: ai.defend-network.org · Start uses Vast or Local backend below",
+        )
+        self._product_row(
+            products,
+            title="DEFEND Sports — markets / TT intelligence / arbitrage",
+            status_var=self._prod_sports,
+            launch=None,
+            stop=None,
+            open_cmd=None,
+            extra="Origin: defendsports.defend-network.org (reserved) · owner-only V1",
+        )
+        self._product_row(
+            products,
+            title="Sunshine Climate Solutions — ops / CRM",
+            status_var=self._prod_scs,
+            launch=None,
+            stop=None,
+            open_cmd=None,
+            extra="Origin: ai.sunshineclimatesolutions.com (reserved)",
+        )
+        self._product_row(
+            products,
+            title="DEFENDcoder — software engineering platform",
+            status_var=self._prod_coder,
+            launch=None,
+            stop=None,
+            open_cmd=None,
+            extra="Origin: defendcoder.defend-network.org (reserved) · observation only",
+        )
+        ttk.Label(products, textvariable=self._coder_detail).pack(anchor="w")
+
+        backend = ttk.LabelFrame(
+            outer, text="DEFEND AI launch backend (identity stack)", padding=8
+        )
+        backend.grid(row=2, column=0, sticky="ew")
         ttk.Radiobutton(
-            mode_frame, text="Vast.ai", variable=self._mode, value="vast"
+            backend, text="Vast.ai", variable=self._mode, value="vast"
         ).pack(side="left", padx=(0, 16))
         ttk.Radiobutton(
-            mode_frame,
-            text="Local Ollama",
-            variable=self._mode,
-            value="ollama",
+            backend, text="Local Ollama", variable=self._mode, value="ollama"
+        ).pack(side="left")
+        ttk.Button(
+            backend, text="Restart AI", command=self._restart
+        ).pack(side="left", padx=12)
+        ttk.Button(
+            backend, text="Stop + Destroy Vast (AI)", command=self._destroy_vast
         ).pack(side="left")
 
-        actions = ttk.Frame(outer)
-        actions.grid(row=1, column=0, sticky="ew", pady=8)
-        for label, command in (
-            ("Start", self._start),
-            ("Stop Local", self._stop_local),
-            ("Restart", self._restart),
-            ("Open DEFEND", self._open_defend),
-            ("Setup", self._setup),
-            ("Stop + Destroy Vast", self._destroy_vast),
-        ):
-            ttk.Button(actions, text=label, command=command).pack(
-                side="left", padx=(0, 6)
-            )
+        detail = ttk.Frame(outer)
+        detail.grid(row=3, column=0, sticky="ew", pady=8)
+        detail.columnconfigure(0, weight=1)
+        detail.columnconfigure(1, weight=1)
 
-        status = ttk.LabelFrame(outer, text="Components (DEFEND identity)", padding=8)
-        status.grid(row=2, column=0, sticky="ew")
-        status.columnconfigure(1, weight=1)
+        comps = ttk.LabelFrame(detail, text="AI stack components", padding=6)
+        comps.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
         for row, (name, label) in enumerate(_COMPONENT_LABELS.items()):
-            ttk.Label(status, text=label).grid(row=row, column=0, sticky="w")
-            ttk.Label(status, textvariable=self._component_states[name]).grid(
-                row=row, column=1, sticky="w", padx=(18, 0)
+            ttk.Label(comps, text=label).grid(row=row, column=0, sticky="w")
+            ttk.Label(comps, textvariable=self._component_states[name]).grid(
+                row=row, column=1, sticky="w", padx=(12, 0)
             )
 
-        vast = ttk.LabelFrame(outer, text="Current Vast.ai (identity)", padding=8)
-        vast.grid(row=3, column=0, sticky="ew", pady=8)
+        vast = ttk.LabelFrame(detail, text="AI Vast instance", padding=6)
+        vast.grid(row=0, column=1, sticky="nsew")
         for row, (label, variable) in enumerate(
             (
                 ("GPU", self._vast_gpu),
                 ("GPU RAM", self._vast_ram),
                 ("Reliability", self._vast_reliability),
                 ("Instance ID", self._vast_instance),
-                ("Provider status", self._vast_status),
-                ("Exact hourly price", self._vast_price),
-                ("Billing warning", self._vast_billing),
+                ("Status", self._vast_status),
+                ("$/hour", self._vast_price),
+                ("Billing", self._vast_billing),
             )
         ):
             ttk.Label(vast, text=label).grid(row=row, column=0, sticky="w")
             ttk.Label(vast, textvariable=variable).grid(
-                row=row, column=1, sticky="w", padx=(18, 0)
-            )
-
-        coder = ttk.LabelFrame(
-            outer,
-            text="DEFENDcoder (observation — launch not wired)",
-            padding=8,
-        )
-        coder.grid(row=4, column=0, sticky="ew", pady=(0, 8))
-        coder.columnconfigure(1, weight=1)
-        for row, (label, variable) in enumerate(
-            (
-                ("State", self._coder_state),
-                ("Alias", self._coder_alias),
-                ("Model", self._coder_model),
-                ("Revision", self._coder_revision),
-                ("Endpoint", self._coder_endpoint),
-                ("Instance ID", self._coder_instance),
-                ("Provider run", self._coder_provider_run),
-                ("Hourly price", self._coder_price),
-                ("Session budget", self._coder_budget),
-                ("Message", self._coder_message),
-                ("Public origin", self._coder_origin),
-            )
-        ):
-            ttk.Label(coder, text=label).grid(row=row, column=0, sticky="w")
-            ttk.Label(coder, textvariable=variable).grid(
-                row=row, column=1, sticky="w", padx=(18, 0)
+                row=row, column=1, sticky="w", padx=(12, 0)
             )
 
         ttk.Label(outer, textvariable=self._state).grid(
-            row=5, column=0, sticky="w", pady=(0, 6)
+            row=4, column=0, sticky="w"
         )
+
         log_frame = ttk.LabelFrame(outer, text="Bounded service log", padding=6)
-        log_frame.grid(row=6, column=0, sticky="nsew")
+        log_frame.grid(row=5, column=0, sticky="nsew", pady=(6, 0))
+        outer.rowconfigure(5, weight=1)
         log_frame.columnconfigure(0, weight=1)
         log_frame.rowconfigure(0, weight=1)
-        self._log = ScrolledText(log_frame, height=12, wrap="word", state="disabled")
+        self._log = ScrolledText(log_frame, height=10, wrap="word", state="disabled")
         self._log.grid(row=0, column=0, sticky="nsew")
 
     def _show_error(self, error: BaseException) -> None:
@@ -372,19 +420,18 @@ class ControlCenterUI:
             parent=self.root,
         )
 
-    def _start(self) -> None:
+    def _start_ai_prompt(self) -> None:
         mode = self._mode.get()
         if mode not in ("vast", "ollama"):
             messagebox.showwarning(
                 "Choose a model backend",
-                "Select Vast.ai or Local Ollama for this launch.",
+                "Select Vast.ai or Local Ollama under DEFEND AI launch backend.",
                 parent=self.root,
             )
             return
         try:
             self._last_confirmation_signature = None
             state = self._controller.start(mode)
-            self._mode.set("")
             self._render(state)
         except Exception as error:
             self._show_error(error)
@@ -796,29 +843,37 @@ class ControlCenterUI:
         self._controller.shutdown()
         self._destroy_window()
 
-    def _render_coder(self) -> None:
+    def _render_coder_product(self) -> None:
         status = self._coder.status()
         public = status.as_public_dict()
-        self._coder_state.set(str(public.get("state") or "—"))
-        self._coder_alias.set(str(public.get("alias") or "—"))
-        self._coder_model.set(str(public.get("model_repo") or "—"))
-        revision = str(public.get("model_revision") or "")
-        self._coder_revision.set(revision[:12] + "…" if len(revision) > 12 else revision or "—")
-        self._coder_endpoint.set(str(public.get("endpoint") or "—"))
-        iid = public.get("instance_id")
-        self._coder_instance.set(str(iid) if iid is not None else "—")
-        self._coder_provider_run.set(str(public.get("provider_run_id") or "—"))
-        price = public.get("hourly_price")
-        self._coder_price.set(f"${price}/hour" if price else "—")
-        budget = public.get("session_budget_usd")
-        self._coder_budget.set(f"${budget}" if budget else "—")
-        self._coder_message.set(str(public.get("message") or "—"))
+        state = str(public.get("state") or "stopped")
+        if state == "ready":
+            self._prod_coder.set("● ONLINE")
+        elif state in ("starting", "provisioning", "validating"):
+            self._prod_coder.set(f"◌ {state.upper()}")
+        else:
+            self._prod_coder.set("○ OFFLINE")
+        rev = str(public.get("model_revision") or "")[:12]
+        self._coder_detail.set(
+            f"  alias={public.get('alias')}  model={public.get('model_repo')}  "
+            f"rev={rev}…  budget=${public.get('session_budget_usd')}"
+        )
 
     def _render(self, state: UIState) -> None:
-        message = f"State: {state.state}"
+        message = f"Platform state: {state.state}"
         if state.message:
             message += f" — {state.message}"
         self._state.set(message)
+
+        if state.state == "ready":
+            self._prod_ai.set("● ONLINE")
+        elif state.state in ("starting", "provisioning", "validating"):
+            self._prod_ai.set(f"◌ {state.state.upper()}")
+        elif state.state == "degraded":
+            self._prod_ai.set("● DEGRADED")
+        else:
+            self._prod_ai.set("○ OFFLINE")
+
         for component in state.components:
             variable = self._component_states.get(component.name)
             if variable is not None:
@@ -842,7 +897,8 @@ class ControlCenterUI:
         self._vast_billing.set(
             state.vast_billing_warning or "No active Vast billing"
         )
-        self._render_coder()
+        self._render_coder_product()
+
         if state.logs != self._last_log_render:
             self._log.configure(state="normal")
             self._log.delete("1.0", "end")
