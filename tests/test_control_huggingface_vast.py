@@ -348,6 +348,58 @@ def test_vast_create_has_no_hf_or_vllm_secret(fake_http: FakeHttp):
     assert instance.gpu_name == offer.gpu_name
 
 
+def test_vast_create_accepts_defendcoder_launch_and_rejects_other_launches(
+    fake_http: FakeHttp,
+):
+    offer = VastOffer(
+        202,
+        "A100 SXM4",
+        81920,
+        Decimal("2.60"),
+        Decimal("0.99"),
+    )
+    fake_http.add_response(
+        method="PUT",
+        url="https://console.vast.ai/api/v0/asks/202/",
+        json={"success": True, "new_contract": 6001},
+    )
+    client = VastClient("vast_synthetic_secret", transport=fake_http)
+
+    coder_launch = LaunchSpec(
+        "vllm/vllm-openai:v0.15.0",
+        160,
+        "ssh_direc ssh_proxy",
+        "defendcoder-vllm",
+    )
+    instance = client.create_instance(offer, coder_launch)
+
+    body = fake_http.last_request.json
+    assert body["label"] == "defendcoder-vllm"
+    assert body["image"] == "vllm/vllm-openai:v0.15.0"
+    assert instance.instance_id == 6001
+
+    rogue = LaunchSpec(
+        "example/unknown-image:latest",
+        999,
+        "ssh_direc",
+        "defendcoder-vllm",
+    )
+    with pytest.raises(ValueError, match="approved DEFEND or DEFENDcoder"):
+        client.create_instance(offer, rogue)
+    legacy = LaunchSpec(
+        "vllm/vllm-openai:v0.10.0",
+        160,
+        "ssh_direc ssh_proxy",
+        "defend-vllm",
+    )
+    fake_http.add_response(
+        method="PUT",
+        url="https://console.vast.ai/api/v0/asks/202/",
+        json={"success": True, "new_contract": 6002},
+    )
+    assert client.create_instance(offer, legacy).instance_id == 6002
+
+
 def test_task5_types_are_immutable_and_launch_default_is_exact():
     launch = LaunchSpec.default()
     assert launch == LaunchSpec(

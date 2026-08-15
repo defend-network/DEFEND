@@ -264,8 +264,16 @@ class VastClient:
     def create_instance(self, offer: VastOffer, launch: LaunchSpec) -> VastInstance:
         if not isinstance(offer, VastOffer):
             raise ValueError("offer must be a VastOffer")
-        if launch != LaunchSpec.default():
-            raise ValueError("only the approved DEFEND Vast launch is supported")
+        coder = LaunchSpec.coder_default()
+        is_coder_launch = (
+            launch.label == coder.label
+            and launch.disk_gb == coder.disk_gb
+            and launch.runtype == coder.runtype
+        )
+        if launch != LaunchSpec.default() and not is_coder_launch:
+            raise ValueError(
+                "only the approved DEFEND or DEFENDcoder Vast launch is supported"
+            )
         offer_id = _positive_int(offer.offer_id, "offer ID")
         document = self._request_json(
             "PUT",
