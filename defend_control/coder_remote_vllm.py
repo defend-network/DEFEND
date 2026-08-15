@@ -12,6 +12,11 @@ import re
 import shlex
 from typing import Protocol
 
+from .coder_deployment import (
+    CoderDeploymentArtifact,
+    is_exact_revision,
+    resolve_deployment,
+)
 from .coder_m0 import CoderModelRef
 from .ssh_tunnel import CommandResult, run_command
 from .types import VastInstance
@@ -65,6 +70,23 @@ def _validate_model(model: CoderModelRef) -> None:
         raise CoderRemoteVllmError("Coder max_model_len is invalid")
 
 
+def _validate_artifact(artifact: CoderDeploymentArtifact) -> None:
+    if not isinstance(artifact, CoderDeploymentArtifact):
+        raise ValueError("artifact must be a CoderDeploymentArtifact")
+    if (
+        not _REPOSITORY.fullmatch(artifact.repo_id)
+        or not is_exact_revision(artifact.revision)
+    ):
+        raise CoderRemoteVllmError(
+            "Coder deployment artifact repository/revision is invalid"
+        )
+    if (
+        type(artifact.max_model_len) is not int
+        or not 1024 <= artifact.max_model_len <= 131072
+    ):
+        raise CoderRemoteVllmError("Coder deployment max_model_len is invalid")
+
+
 class CoderRemoteVllmBootstrap:
     def __init__(
         self,
@@ -100,6 +122,7 @@ class CoderRemoteVllmBootstrap:
     def _script(
         self,
         model: CoderModelRef,
+        artifact: CoderDeploymentArtifact,
         hf_token: str,
         vllm_api_key: str,
         remote_port: int,
@@ -108,6 +131,21 @@ class CoderRemoteVllmBootstrap:
         vllm_encoded = base64.b64encode(vllm_api_key.encode("utf-8")).decode(
             "ascii"
         )
+        flag_lines: list[str] = [
+            "  --host 127.0.0.1",
+            f"  --port {int(remote_port)}",
+            f"  --max-model-len {int(artifact.max_model_len)}",
+        ]
+        if artifact.enable_auto_tool_choice:
+            flag_lines.append("  --enable-auto-tool-choice")
+        if artifact.tool_call_parser:
+            flag_lines.append(
+                f"  --tool-call-parser {shlex.quote(artifact.tool_call_parser)}"
+            )
+        flag_lines.extend(
+            ("  --disable-log-requests", "  --disable-uvicorn-access-log")
+        )
+        flags_block = " \\\n".join(flag_lines)
         script = f"""#!/usr/bin/env bash
 set -euo pipefail
 set +x
@@ -125,8 +163,8 @@ import os
 from huggingface_hub import snapshot_download
 
 snapshot_download(
-    repo_id={model.repo_id!r},
-    revision={model.revision!r},
+    repo_id={artifact.repo_id!r},
+    revision={artifact.revision!r},
     local_dir="/workspace/defendcoder/model",
     token=os.environ.get("HF_TOKEN"),
 )
@@ -145,11 +183,7 @@ else
 fi
 
 nohup "${{VLLM_CMD[@]}}" /workspace/defendcoder/model \\
-  --host 127.0.0.1 \\
-  --port {int(remote_port)} \\
-  --max-model-len {int(model.max_model_len)} \\
-  --disable-log-requests \\
-  --disable-uvicorn-access-log \\
+{flags_block} \\
   >/workspace/defendcoder/vllm.log 2>&1 </dev/null &
 printf '%s\\n' "$!" > /workspace/defendcoder/vllm.pid
 unset VLLM_API_KEY
@@ -170,9 +204,13 @@ rm -f -- /workspace/defendcoder/.hf_token
         secrets: Mapping[str, str],
         *,
         remote_port: int = 8000,
+        artifact: CoderDeploymentArtifact | None = None,
         cancelled: Callable[[], bool] | None = None,
     ) -> None:
         _validate_model(model)
+        if artifact is None:
+            artifact = resolve_deployment(model.alias)
+        _validate_artifact(artifact)
         if type(remote_port) is not int or not 1 <= remote_port <= 65_535:
             raise CoderRemoteVllmError("Remote coder port is invalid")
         hf_token = secrets.get("HF_TOKEN")
@@ -186,7 +224,7 @@ rm -f -- /workspace/defendcoder/.hf_token
             raise CoderRemoteVllmError("Remote coder required secret names are missing")
         if cancelled is not None and cancelled():
             raise CoderRemoteVllmError("Remote coder bootstrap was cancelled")
-        script = self._script(model, hf_token, vllm_api_key, remote_port)
+        script = self._script(model, artifact, hf_token, vllm_api_key, remote_port)
         try:
             result = self._run(
                 self._argv(instance),

@@ -97,6 +97,8 @@ def _plane(
         backend=backend,  # type: ignore[arg-type]
         policy=policy,
         clock=(lambda: clock[0]) if clock else None,
+        token_provider=lambda: "hf_fake_token",
+        port_available=lambda port: True,
     )
 
 

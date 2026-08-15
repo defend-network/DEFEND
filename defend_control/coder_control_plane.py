@@ -16,6 +16,7 @@ inputs (provider hourly rate + measured active seconds).
 
 from __future__ import annotations
 
+import socket
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -23,6 +24,11 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any, Callable, Literal
 
+from .coder_deployment import (
+    is_exact_revision,
+    meets_minimum_vllm_version,
+    resolve_deployment,
+)
 from .coder_m0 import (
     CoderInferenceBackend,
     CoderSmokeResult,
@@ -199,6 +205,77 @@ class RunTraceStore:
         return list(self._runs)
 
 
+@dataclass(frozen=True)
+class CoderPreflightCheck:
+    name: str
+    ok: bool
+    detail: str
+
+
+@dataclass(frozen=True)
+class CoderPreflightReport:
+    """Inspectable preflight result — public-safe, no secrets."""
+
+    alias: str
+    checks: tuple[CoderPreflightCheck, ...]
+
+    @property
+    def all_ok(self) -> bool:
+        return all(check.ok for check in self.checks)
+
+    def as_public_dict(self) -> dict[str, Any]:
+        return {
+            "alias": self.alias,
+            "all_ok": self.all_ok,
+            "checks": [
+                {"name": check.name, "ok": check.ok, "detail": check.detail}
+                for check in self.checks
+            ],
+        }
+
+
+@dataclass(frozen=True)
+class CoderLiveSmokePlan:
+    """Exact expected configuration/cost for a live smoke — owner approval."""
+
+    alias: str
+    logical_repo_id: str
+    logical_revision: str
+    deployment_repo_id: str
+    deployment_revision: str
+    precision: str
+    gpu_requirement_mb: int
+    gpu_families: tuple[str, ...]
+    max_hourly_price_usd: Decimal
+    session_budget_usd: Decimal
+    max_model_len: int
+    serving_runtime: str
+    minimum_vllm_version: str
+    tool_call_parser: str | None
+    auto_tool_choice: bool
+    local_port: int
+
+    def as_public_dict(self) -> dict[str, Any]:
+        return {
+            "alias": self.alias,
+            "logical_repo_id": self.logical_repo_id,
+            "logical_revision": self.logical_revision,
+            "deployment_repo_id": self.deployment_repo_id,
+            "deployment_revision": self.deployment_revision,
+            "precision": self.precision,
+            "gpu_requirement_mb": self.gpu_requirement_mb,
+            "gpu_families": list(self.gpu_families),
+            "max_hourly_price_usd": format(self.max_hourly_price_usd, "f"),
+            "session_budget_usd": format(self.session_budget_usd, "f"),
+            "max_model_len": self.max_model_len,
+            "serving_runtime": self.serving_runtime,
+            "minimum_vllm_version": self.minimum_vllm_version,
+            "tool_call_parser": self.tool_call_parser,
+            "auto_tool_choice": self.auto_tool_choice,
+            "local_port": self.local_port,
+        }
+
+
 def _as_decimal(raw: object) -> Decimal | None:
     if raw is None or raw == "":
         return None
@@ -210,6 +287,16 @@ def _as_decimal(raw: object) -> Decimal | None:
 
 def _default_clock() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _default_port_available(port: int) -> bool:
+    """Local-only probe: can 127.0.0.1:port be bound? No network egress."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(("127.0.0.1", port))
+        return True
+    except OSError:
+        return False
 
 
 @dataclass
@@ -225,6 +312,8 @@ class CoderControlPlane:
     base_port: int = 8003
     clock: Callable[[], datetime] | None = None
     run_store: RunTraceStore = field(default_factory=RunTraceStore)
+    token_provider: Callable[[], str | None] | None = None
+    port_available: Callable[[int], bool] | None = None
     _active: dict[str, ActiveCoderEndpoint] = field(
         default_factory=dict, init=False
     )
@@ -265,6 +354,15 @@ class CoderControlPlane:
             )
         if existing is not None:
             self._active.pop(alias, None)
+
+        report = self.preflight(alias)
+        if not report.all_ok:
+            failed = ", ".join(
+                check.name for check in report.checks if not check.ok
+            )
+            raise CoderProvisionBlocked(
+                f"preflight failed for {alias!r}: {failed}"
+            )
 
         self._authorize_provisioning()
 
@@ -312,6 +410,148 @@ class CoderControlPlane:
                 f"concurrent instance limit reached (max "
                 f"{self.policy.max_concurrent_instances})"
             )
+
+    def preflight(self, alias: str) -> CoderPreflightReport:
+        """Validate the whole Heavy (or default) serving contract before any
+        billable provisioning. Pure logic — no provider calls, no network.
+        """
+        checks: list[CoderPreflightCheck] = []
+
+        try:
+            resolve_alias(alias)
+        except ValueError as exc:
+            checks.append(
+                CoderPreflightCheck("deployment artifact", False, str(exc))
+            )
+            return CoderPreflightReport(alias, tuple(checks))
+
+        try:
+            artifact = resolve_deployment(alias)
+        except ValueError as exc:
+            checks.append(
+                CoderPreflightCheck("deployment artifact", False, str(exc))
+            )
+            return CoderPreflightReport(alias, tuple(checks))
+        checks.append(
+            CoderPreflightCheck(
+                "deployment artifact",
+                True,
+                f"{artifact.repo_id} @ {artifact.revision}",
+            )
+        )
+
+        checks.append(
+            CoderPreflightCheck(
+                "exact revision",
+                is_exact_revision(artifact.revision),
+                artifact.revision,
+            )
+        )
+
+        runtime_version = (
+            artifact.image_tag.removeprefix("v")
+            if artifact.image_tag
+            else artifact.minimum_vllm_version
+        )
+        version_ok = meets_minimum_vllm_version(
+            runtime_version, artifact.minimum_vllm_version
+        )
+        checks.append(
+            CoderPreflightCheck(
+                "supported vLLM version",
+                version_ok,
+                f"runtime {runtime_version} >= required "
+                f"{artifact.minimum_vllm_version}",
+            )
+        )
+
+        profile = resource_profile(alias, self.policy)
+        if artifact.required_min_gpu_ram_mb is None:
+            checks.append(
+                CoderPreflightCheck(
+                    "resource profile",
+                    True,
+                    f"profile {profile.min_gpu_ram_mb} MB (no artifact minimum)",
+                )
+            )
+        else:
+            compatible = (
+                profile.min_gpu_ram_mb >= artifact.required_min_gpu_ram_mb
+            )
+            checks.append(
+                CoderPreflightCheck(
+                    "resource profile",
+                    compatible,
+                    f"profile {profile.min_gpu_ram_mb} MB >= artifact "
+                    f"minimum {artifact.required_min_gpu_ram_mb} MB",
+                )
+            )
+
+        context_ok = (
+            type(artifact.max_model_len) is int
+            and 1 <= artifact.max_model_len <= 131_072
+        )
+        checks.append(
+            CoderPreflightCheck(
+                "model context", context_ok, str(artifact.max_model_len)
+            )
+        )
+
+        token = self.token_provider() if self.token_provider is not None else None
+        if artifact.requires_hf_token:
+            token_ok = isinstance(token, str) and bool(token)
+            checks.append(
+                CoderPreflightCheck(
+                    "HF token", token_ok, "available" if token_ok else "missing"
+                )
+            )
+        else:
+            checks.append(
+                CoderPreflightCheck("HF token", True, "not required (public artifact)")
+            )
+
+        port = self.base_port + len(self._active)
+        port_ok = (
+            self.port_available(port)
+            if self.port_available is not None
+            else _default_port_available(port)
+        )
+        checks.append(CoderPreflightCheck("local port", port_ok, str(port)))
+
+        budget_ok = self.session_budget_usd > 0
+        checks.append(
+            CoderPreflightCheck(
+                "session budget",
+                budget_ok,
+                format(self.session_budget_usd, "f"),
+            )
+        )
+
+        return CoderPreflightReport(alias, tuple(checks))
+
+    def live_smoke_plan(self, alias: str) -> CoderLiveSmokePlan:
+        """Exact expected live-smoke configuration — inspect before approve."""
+        model = resolve_alias(alias)
+        artifact = resolve_deployment(alias)
+        profile = resource_profile(alias, self.policy)
+        return CoderLiveSmokePlan(
+            alias=alias,
+            logical_repo_id=model.repo_id,
+            logical_revision=model.revision,
+            deployment_repo_id=artifact.repo_id,
+            deployment_revision=artifact.revision,
+            precision=artifact.precision,
+            gpu_requirement_mb=profile.min_gpu_ram_mb,
+            gpu_families=profile.allowed_gpu_families,
+            max_hourly_price_usd=self.policy.max_hourly_usd,
+            session_budget_usd=self.session_budget_usd,
+            max_model_len=artifact.max_model_len,
+            serving_runtime=f"vllm/vllm-openai:{artifact.image_tag}",
+            minimum_vllm_version=artifact.minimum_vllm_version,
+            tool_call_parser=artifact.tool_call_parser,
+            auto_tool_choice=artifact.enable_auto_tool_choice,
+            local_port=self.base_port + len(self._active),
+        )
 
     def smoke(self, alias: str) -> CoderSmokeResult:
         """Smoke the model behind the ready endpoint and record a run trace."""

@@ -83,10 +83,12 @@ class FakeVast:
 class FakeBootstrap:
     def __init__(self):
         self.starts = []
+        self.artifacts = []
 
     def start(self, instance, model, secrets, *,
- remote_port=8000, cancelled=None):
+ remote_port=8000, cancelled=None, artifact=None):
         self.starts.append((instance.instance_id, model.alias, remote_port))
+        self.artifacts.append(artifact.artifact_id if artifact is not None else None)
 
 
 def test_vast_coder_backend_start_smoke_destroy_with_fakes():
@@ -111,6 +113,7 @@ def test_vast_coder_backend_start_smoke_destroy_with_fakes():
     assert status.provider_run_id == "vast-555001"
     assert status.hourly_price == "1.10"
     assert bootstrap.starts == [(555001, "defendcoder-default", 8000)]
+    assert bootstrap.artifacts == ["qwen3-coder-30b-a3b-bf16"]
     assert vast.created == [(101, "defendcoder-vllm")]
 
     smoke = service.smoke()

@@ -15,6 +15,7 @@ import time
 import urllib.error
 import urllib.request
 
+from .coder_deployment import resolve_deployment
 from .coder_m0 import CoderModelRef
 from .coder_remote_vllm import CoderRemoteVllmBootstrap, CoderRemoteVllmError
 from .types import LaunchSpec, ResourceProfile, VastInstance, VastOffer
@@ -68,9 +69,15 @@ class VastCoderBackend:
             raise CoderVastBackendError("no eligible coder GPU offers under budget")
 
         offer = self.offer_chooser(offers) if self.offer_chooser else offers[0]
-        assert self.launch is not None
+        artifact = resolve_deployment(model.alias)
+        launch = LaunchSpec(
+            image=f"vllm/vllm-openai:{artifact.image_tag}",
+            disk_gb=160,
+            runtype="ssh_direc ssh_proxy",
+            label="defendcoder-vllm",
+        )
         try:
-            instance = self.vast.create_instance(offer, self.launch)
+            instance = self.vast.create_instance(offer, launch)
             instance = self.vast.wait_until_running(instance.instance_id)
         except VastError as exc:
             raise CoderVastBackendError(str(exc)) from None
@@ -81,6 +88,7 @@ class VastCoderBackend:
                 model,
                 self.secrets,
                 remote_port=self.remote_port,
+                artifact=artifact,
             )
         except CoderRemoteVllmError as exc:
             try:
