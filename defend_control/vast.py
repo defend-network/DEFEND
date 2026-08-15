@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+import ipaddress
 import json
 import random
 import re
@@ -145,6 +146,47 @@ def _gpu_name_matches(gpu_name: str, families: tuple[str, ...]) -> bool:
     return False
 
 
+def _direct_ssh_endpoint(raw: Mapping[str, object]) -> tuple[str, int] | None:
+    """Best-effort direct SSH endpoint from a Vast instance payload."""
+    host = raw.get("direct_ssh_host")
+    port = raw.get("direct_ssh_port")
+    if isinstance(host, str) and host:
+        try:
+            port = _positive_int(port, "direct SSH port")
+        except ValueError:
+            port = None
+        if port is not None:
+            return host, port
+    public_ip = raw.get("public_ipaddr")
+    ports = raw.get("ports")
+    if isinstance(public_ip, str) and public_ip and isinstance(ports, Mapping):
+        entry = ports.get("22/tcp")
+        if isinstance(entry, list) and entry:
+            first = entry[0]
+            if isinstance(first, Mapping):
+                host_port = first.get("HostPort")
+                if host_port is not None:
+                    try:
+                        host_port = _positive_int(host_port, "direct SSH port")
+                    except ValueError:
+                        host_port = None
+                    if host_port is not None:
+                        return public_ip, host_port
+    ssh_host = raw.get("ssh_host")
+    ssh_port = raw.get("ssh_port")
+    if isinstance(ssh_host, str) and ssh_host:
+        try:
+            ipaddress.ip_address(ssh_host)
+        except ValueError:
+            return None
+        try:
+            ssh_port = _positive_int(ssh_port, "SSH port")
+        except ValueError:
+            return None
+        return ssh_host, ssh_port
+    return None
+
+
 class VastClient:
     def __init__(
         self,
@@ -261,34 +303,58 @@ class VastClient:
             raise VastError("Vast.ai instance list response is invalid")
         return tuple(instance_ids)
 
-    def create_instance(self, offer: VastOffer, launch: LaunchSpec) -> VastInstance:
+    def build_create_payload(self, offer: VastOffer, launch: LaunchSpec) -> dict:
+        """The exact serialized create-instance request body for an offer.
+
+        Validation runs here so the documented-launch contract is enforced
+        before any HTTP request is made. Raises before returning a payload.
+        """
         if not isinstance(offer, VastOffer):
             raise ValueError("offer must be a VastOffer")
-        if launch != LaunchSpec.default():
-            raise ValueError("only the approved DEFEND Vast launch is supported")
+        if "ssh_direc" in launch.runtype.split():
+            raise ValueError(
+                "undocumented Vast runtype token ssh_direc is rejected; "
+                "use the documented ssh_direct or ssh_proxy"
+            )
+        coder = LaunchSpec.coder_default()
+        coder_heavy = LaunchSpec.coder_heavy_direct()
+        is_coder_launch = (
+            launch.label == coder.label
+            and launch.disk_gb == coder.disk_gb
+            and launch.runtype in (coder.runtype, coder_heavy.runtype)
+        )
+        if launch != LaunchSpec.default() and not is_coder_launch:
+            raise ValueError(
+                "only the approved DEFEND or DEFENDcoder Vast launch is supported"
+            )
+        offer_id = _positive_int(offer.offer_id, "offer ID")
+        return {
+            "client_id": "me",
+            "image": launch.image,
+            "env": {},
+            "disk": launch.disk_gb,
+            "runtype": launch.runtype,
+            "target_state": "running",
+            "cancel_unavail": True,
+            "label": launch.label,
+            "onstart": None,
+            "image_login": None,
+            "python_utf8": False,
+            "lang_utf8": False,
+            "use_jupyter_lab": False,
+            "jupyter_dir": None,
+            "force": False,
+            "template_hash_id": None,
+            "user": None,
+        }
+
+    def create_instance(self, offer: VastOffer, launch: LaunchSpec) -> VastInstance:
+        payload = self.build_create_payload(offer, launch)
         offer_id = _positive_int(offer.offer_id, "offer ID")
         document = self._request_json(
             "PUT",
             f"{_API_ROOT}/asks/{offer_id}/",
-            {
-                "client_id": "me",
-                "image": launch.image,
-                "env": {},
-                "disk": launch.disk_gb,
-                "runtype": launch.runtype,
-                "target_state": "running",
-                "cancel_unavail": True,
-                "label": launch.label,
-                "onstart": None,
-                "image_login": None,
-                "python_utf8": False,
-                "lang_utf8": False,
-                "use_jupyter_lab": False,
-                "jupyter_dir": None,
-                "force": False,
-                "template_hash_id": None,
-                "user": None,
-            },
+            payload,
             offer_race=True,
             retry_429=False,
         )
@@ -734,6 +800,15 @@ class VastClient:
         dph_total = _decimal(raw.get("dph_total"), "hourly price")
         if dph_total < 0:
             raise ValueError("hourly price is invalid")
+        machine_id = raw.get("machine_id")
+        if machine_id is not None:
+            machine_id = _positive_int(machine_id, "machine ID")
+        direct = _direct_ssh_endpoint(raw)
+        direct_host = direct[0] if direct is not None else None
+        direct_port = direct[1] if direct is not None else None
+        image_runtype = raw.get("image_runtype")
+        if image_runtype is not None and not isinstance(image_runtype, str):
+            raise ValueError("image runtype is invalid")
         return VastInstance(
             instance_id,
             status,
@@ -742,6 +817,10 @@ class VastClient:
             gpu_name,
             gpu_ram,
             dph_total,
+            machine_id,
+            direct_host,
+            direct_port,
+            image_runtype,
         )
 
     def _request(

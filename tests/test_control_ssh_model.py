@@ -126,6 +126,148 @@ def running_instance() -> VastInstance:
     )
 
 
+def direct_instance() -> VastInstance:
+    return VastInstance(
+        instance_id=4815,
+        actual_status="running",
+        ssh_host="ssh.example.test",
+        ssh_port=2222,
+        gpu_name="A100 SXM4",
+        gpu_ram_mb=81920,
+        dph_total=Decimal("1.75"),
+        machine_id=5908,
+        direct_ssh_host="203.0.113.10",
+        direct_ssh_port=30220,
+    )
+
+
+def make_tunnel_with_commands(tmp_path: Path, commands):
+    key_path = tmp_path / "vast_ed25519"
+    key_path.write_text("synthetic private key", encoding="utf-8")
+    key_path.with_suffix(".pub").write_text(
+        "ssh-ed25519 AAAAC3NzaSyntheticKey defend-control\n",
+        encoding="utf-8",
+    )
+    supervisor = RecordingSupervisor()
+    tunnel = SshTunnel(
+        supervisor,
+        known_hosts=tmp_path / "known_hosts",
+        key_path=key_path,
+        command_runner=commands,
+        acl=lambda _path: None,
+        ssh_exe=Path("C:/Windows/System32/OpenSSH/ssh.exe"),
+        ssh_keyscan_exe=Path("C:/Windows/System32/OpenSSH/ssh-keyscan.exe"),
+        ssh_keygen_exe=Path("C:/Windows/System32/OpenSSH/ssh-keygen.exe"),
+    )
+    return tunnel, supervisor
+
+
+def test_direct_endpoint_is_preferred_when_prefer_direct(tmp_path: Path):
+    commands = FakeSshCommands(
+        "[203.0.113.10]:30220 ssh-ed25519 AAAAC3NzaDirectHostKey"
+    )
+    tunnel, _supervisor = make_tunnel_with_commands(tmp_path, commands)
+
+    with pytest.raises(HostFingerprintConfirmation) as pending:
+        tunnel.prepare_host(
+            direct_instance(), confirm_fingerprint=None, prefer_direct=True
+        )
+
+    assert pending.value.fingerprint == "SHA256:syntheticFingerprint"
+    assert tunnel.last_transport == "direct"
+    keyscan = next(
+        call
+        for call in commands.calls
+        if Path(call[0][0]).name.casefold() == "ssh-keyscan.exe"
+    )
+    assert "-p" in keyscan[0]
+    assert keyscan[0][keyscan[0].index("-p") + 1] == "30220"
+    assert keyscan[0][-1] == "203.0.113.10"
+
+
+def test_proxy_is_fallback_only_when_direct_endpoint_absent(tmp_path: Path):
+    commands = FakeSshCommands(
+        "[ssh.example.test]:2222 ssh-ed25519 AAAAC3NzaProxyHostKey"
+    )
+    tunnel, _supervisor = make_tunnel_with_commands(tmp_path, commands)
+
+    with pytest.raises(HostFingerprintConfirmation):
+        tunnel.prepare_host(
+            running_instance(), confirm_fingerprint=None, prefer_direct=True
+        )
+
+    assert tunnel.last_transport == "proxy"
+    keyscan = next(
+        call
+        for call in commands.calls
+        if Path(call[0][0]).name.casefold() == "ssh-keyscan.exe"
+    )
+    assert keyscan[0][-1] == "ssh.example.test"
+
+
+def test_proxy_failure_does_not_imply_instance_death_when_direct_exists(
+    tmp_path: Path,
+):
+    commands = FakeSshCommands(
+        "[203.0.113.10]:30220 ssh-ed25519 AAAAC3NzaDirectHostKey"
+    )
+    tunnel, _supervisor = make_tunnel_with_commands(tmp_path, commands)
+
+    with pytest.raises(HostFingerprintConfirmation) as pending:
+        tunnel.prepare_host(
+            direct_instance(), confirm_fingerprint=None, prefer_direct=True
+        )
+
+    assert pending.value.fingerprint == "SHA256:syntheticFingerprint"
+    assert tunnel.last_transport == "direct"
+    keyscans = [
+        call
+        for call in commands.calls
+        if Path(call[0][0]).name.casefold() == "ssh-keyscan.exe"
+    ]
+    assert len(keyscans) == 1
+    assert keyscans[0][0][-1] == "203.0.113.10"
+
+
+def test_default_connection_keeps_proxy_behavior_even_when_direct_exists(
+    tmp_path: Path,
+):
+    commands = FakeSshCommands(
+        "[ssh.example.test]:2222 ssh-ed25519 AAAAC3NzaProxyHostKey"
+    )
+    tunnel, _supervisor = make_tunnel_with_commands(tmp_path, commands)
+
+    with pytest.raises(HostFingerprintConfirmation):
+        tunnel.prepare_host(direct_instance(), confirm_fingerprint=None)
+
+    assert tunnel.last_transport == "proxy"
+    keyscan = next(
+        call
+        for call in commands.calls
+        if Path(call[0][0]).name.casefold() == "ssh-keyscan.exe"
+    )
+    assert keyscan[0][-1] == "ssh.example.test"
+
+
+def test_tunnel_start_uses_selected_direct_endpoint(tmp_path: Path):
+    commands = FakeSshCommands(
+        "[203.0.113.10]:30220 ssh-ed25519 AAAAC3NzaDirectHostKey"
+    )
+    tunnel, supervisor = make_tunnel_with_commands(tmp_path, commands)
+    tunnel.prepare_host(
+        direct_instance(),
+        confirm_fingerprint="SHA256:syntheticFingerprint",
+        prefer_direct=True,
+    )
+    tunnel.start(direct_instance(), prefer_direct=True)
+
+    spec = supervisor.specs[0]
+    assert "-p" in spec.argv
+    assert spec.argv[spec.argv.index("-p") + 1] == "30220"
+    assert spec.argv[-1] == "root@203.0.113.10"
+    assert tunnel.last_transport == "direct"
+
+
 def make_tunnel(tmp_path: Path):
     key_path = tmp_path / "vast_ed25519"
     key_path.write_text("synthetic private key", encoding="utf-8")
