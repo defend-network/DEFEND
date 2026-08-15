@@ -543,6 +543,12 @@ git commit -m "feat: add independent DEFEND Sports API service"
 - Commands: `sports.start`, `sports.stop`, `sports.status`, `sports.smoke`.
 - Sports service is CPU/API infrastructure in DS0/DS1; it does not request the DEFEND chat GPU or coder GPU.
 
+**Deferred Control Center UI requirement (recorded):** Redesign the existing
+single-service Tkinter Control Center into a multi-product Control Center with
+independent cards and lifecycle, status, open, and log actions for DEFEND AI,
+DEFEND Sports, Sunshine Climate Solutions, and DEFENDcoder. This is a Task 7
+requirement only; do not implement the UI during Tasks 3–6.
+
 - [ ] **Step 1: Write control regression tests before modifying control code**
 
 Tests must prove:
