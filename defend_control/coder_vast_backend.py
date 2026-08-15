@@ -94,7 +94,7 @@ class VastCoderBackend:
         launch = LaunchSpec(
             image=f"vllm/vllm-openai:{artifact.image_tag}",
             disk_gb=160,
-            runtype="ssh_direc" if prefer_direct else "ssh_direc ssh_proxy",
+            runtype="ssh_direct" if prefer_direct else "ssh_proxy",
             label="defendcoder-vllm",
         )
         try:

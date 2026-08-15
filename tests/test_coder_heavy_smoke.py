@@ -264,7 +264,7 @@ class TestUnchanged:
         assert LaunchSpec.default() == LaunchSpec(
             "vllm/vllm-openai:v0.10.0",
             160,
-            "ssh_direc ssh_proxy",
+            "ssh_proxy",
             "defend-vllm",
         )
 
@@ -326,7 +326,7 @@ class TestHeavyDirectSshLane:
             offer=_OFFERS[0],
         )
         assert len(vast.created) == 1
-        assert vast.created[0].runtype == "ssh_direc"
+        assert vast.created[0].runtype == "ssh_direct"
         assert vast.created[0].label == "defendcoder-vllm"
         assert vast.created[0].image == "vllm/vllm-openai:v0.15.0"
 
@@ -340,7 +340,7 @@ class TestHeavyDirectSshLane:
             offer=_OFFERS[0],
         )
         assert len(vast.created) == 1
-        assert vast.created[0].runtype == "ssh_direc ssh_proxy"
+        assert vast.created[0].runtype == "ssh_proxy"
         assert vast.created[0].label == "defendcoder-vllm"
 
 

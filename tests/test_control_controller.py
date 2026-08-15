@@ -749,7 +749,7 @@ def test_ui_price_prompt_is_prominent_exact_and_queues_resume(monkeypatch):
         "$0.15/GB/month",
         "$0.032/hour",
         "vllm/vllm-openai:v0.10.0",
-        "ssh_direc ssh_proxy",
+        "ssh_proxy",
         "BILLABLE",
     ):
         assert expected in prompt

@@ -724,7 +724,7 @@ class ControlCenterUI:
                     f"Disk: {state.vast_disk_gb} GB\n"
                     f"{storage_price}"
                     "Launch body: image=vllm/vllm-openai:v0.10.0, "
-                    "runtype=ssh_direc ssh_proxy, target_state=running\n\n"
+                    "runtype=ssh_proxy, target_state=running\n\n"
                     "Charges begin only after you confirm."
                 ),
                 parent=self.root,

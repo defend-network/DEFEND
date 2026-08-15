@@ -45,7 +45,7 @@ class LaunchSpec:
         return cls(
             "vllm/vllm-openai:v0.10.0",
             160,
-            "ssh_direc ssh_proxy",
+            "ssh_proxy",
             "defend-vllm",
         )
 
@@ -55,19 +55,19 @@ class LaunchSpec:
         return cls(
             "vllm/vllm-openai:v0.10.0",
             160,
-            "ssh_direc ssh_proxy",
+            "ssh_proxy",
             "defendcoder-vllm",
         )
 
     @classmethod
     def coder_heavy_direct(cls) -> "LaunchSpec":
-        """DEFENDcoder Heavy diagnostic launch — direct SSH requested at
-        creation (runtype ssh_direc only; no proxy hop).
+        """DEFENDcoder Heavy diagnostic launch — documented direct SSH
+        runtype (ssh_direct) requested at creation; no proxy hop.
         """
         return cls(
             "vllm/vllm-openai:v0.10.0",
             160,
-            "ssh_direc",
+            "ssh_direct",
             "defendcoder-vllm",
         )
 
@@ -124,3 +124,4 @@ class VastInstance:
     machine_id: int | None = None
     direct_ssh_host: str | None = None
     direct_ssh_port: int | None = None
+    image_runtype: str | None = None

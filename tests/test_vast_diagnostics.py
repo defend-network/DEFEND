@@ -25,6 +25,7 @@ def _instance(**overrides) -> VastInstance:
         machine_id=28415,
         direct_ssh_host="203.0.113.50",
         direct_ssh_port=33544,
+        image_runtype="ssh_direct",
     )
     fields.update(overrides)
     return VastInstance(**fields)
@@ -73,7 +74,8 @@ class TestInstanceDiagnosticRecord:
         assert record["machine_id"] == 28415
         assert record["actual_status"] == "running"
         assert record["image"] == "vllm/vllm-openai:v0.10.0"
-        assert record["runtype"] == "ssh_direc"
+        assert record["requested_runtype"] == "ssh_direct"
+        assert record["provider_image_runtype"] == "ssh_direct"
         assert record["ssh_direct_host_present"] is True
         assert record["ssh_direct_port_present"] is True
         assert record["ssh_proxy_host_present"] is True
@@ -112,3 +114,15 @@ class TestInstanceDiagnosticRecord:
         blob = json.dumps(record)
         assert "vllm_synthetic" not in blob
         assert "hf_synthetic" not in blob
+
+    def test_record_distinguishes_requested_from_provider_runtype(self):
+        record = build_instance_diagnostic(
+            instance=_instance(image_runtype="ssh_proxy"),
+            offer=_offer(),
+            launch=LaunchSpec.coder_heavy_direct(),
+            transport="direct",
+            failure_category="ssh_unreachable",
+            timestamps={},
+        )
+        assert record["requested_runtype"] == "ssh_direct"
+        assert record["provider_image_runtype"] == "ssh_proxy"

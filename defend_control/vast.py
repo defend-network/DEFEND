@@ -306,6 +306,11 @@ class VastClient:
     def create_instance(self, offer: VastOffer, launch: LaunchSpec) -> VastInstance:
         if not isinstance(offer, VastOffer):
             raise ValueError("offer must be a VastOffer")
+        if "ssh_direc" in launch.runtype.split():
+            raise ValueError(
+                "undocumented Vast runtype token ssh_direc is rejected; "
+                "use the documented ssh_direct or ssh_proxy"
+            )
         coder = LaunchSpec.coder_default()
         coder_heavy = LaunchSpec.coder_heavy_direct()
         is_coder_launch = (
@@ -791,6 +796,9 @@ class VastClient:
         direct = _direct_ssh_endpoint(raw)
         direct_host = direct[0] if direct is not None else None
         direct_port = direct[1] if direct is not None else None
+        image_runtype = raw.get("image_runtype")
+        if image_runtype is not None and not isinstance(image_runtype, str):
+            raise ValueError("image runtype is invalid")
         return VastInstance(
             instance_id,
             status,
@@ -802,6 +810,7 @@ class VastClient:
             machine_id,
             direct_host,
             direct_port,
+            image_runtype,
         )
 
     def _request(

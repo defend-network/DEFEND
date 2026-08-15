@@ -178,7 +178,7 @@ class TestDefaultUnchanged:
         assert LaunchSpec.default() == LaunchSpec(
             "vllm/vllm-openai:v0.10.0",
             160,
-            "ssh_direc ssh_proxy",
+            "ssh_proxy",
             "defend-vllm",
         )
         assert ResourceProfile().min_gpu_ram_mb >= 140_000

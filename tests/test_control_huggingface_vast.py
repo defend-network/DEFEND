@@ -368,7 +368,7 @@ def test_vast_create_accepts_defendcoder_launch_and_rejects_other_launches(
     coder_launch = LaunchSpec(
         "vllm/vllm-openai:v0.15.0",
         160,
-        "ssh_direc ssh_proxy",
+        "ssh_proxy",
         "defendcoder-vllm",
     )
     instance = client.create_instance(offer, coder_launch)
@@ -376,12 +376,13 @@ def test_vast_create_accepts_defendcoder_launch_and_rejects_other_launches(
     body = fake_http.last_request.json
     assert body["label"] == "defendcoder-vllm"
     assert body["image"] == "vllm/vllm-openai:v0.15.0"
+    assert body["runtype"] == "ssh_proxy"
     assert instance.instance_id == 6001
 
     rogue = LaunchSpec(
         "example/unknown-image:latest",
         999,
-        "ssh_direc",
+        "args",
         "defendcoder-vllm",
     )
     with pytest.raises(ValueError, match="approved DEFEND or DEFENDcoder"):
@@ -389,7 +390,7 @@ def test_vast_create_accepts_defendcoder_launch_and_rejects_other_launches(
     legacy = LaunchSpec(
         "vllm/vllm-openai:v0.10.0",
         160,
-        "ssh_direc ssh_proxy",
+        "ssh_proxy",
         "defend-vllm",
     )
     fake_http.add_response(
@@ -400,12 +401,33 @@ def test_vast_create_accepts_defendcoder_launch_and_rejects_other_launches(
     assert client.create_instance(offer, legacy).instance_id == 6002
 
 
+def test_vast_create_rejects_undocumented_ssh_direc_token(fake_http: FakeHttp):
+    offer = VastOffer(
+        205,
+        "A100 SXM4",
+        81920,
+        Decimal("2.60"),
+        Decimal("0.9991"),
+    )
+    client = VastClient("vast_synthetic_secret", transport=fake_http)
+    for runtype in ("ssh_direc", "ssh_direc ssh_proxy", "ssh_proxy ssh_direc"):
+        launch = LaunchSpec(
+            "vllm/vllm-openai:v0.15.0",
+            160,
+            runtype,
+            "defendcoder-vllm",
+        )
+        with pytest.raises(ValueError, match="ssh_direc is rejected"):
+            client.create_instance(offer, launch)
+    assert fake_http.requests == []
+
+
 def test_task5_types_are_immutable_and_launch_default_is_exact():
     launch = LaunchSpec.default()
     assert launch == LaunchSpec(
         "vllm/vllm-openai:v0.10.0",
         160,
-        "ssh_direc ssh_proxy",
+        "ssh_proxy",
         "defend-vllm",
     )
     with pytest.raises(FrozenInstanceError):
@@ -417,7 +439,7 @@ def test_task5_types_are_immutable_and_launch_default_is_exact():
     assert "B200" in profile.allowed_gpu_families
 
 
-def test_vast_heavy_create_requests_direct_ssh_only(fake_http: FakeHttp):
+def test_vast_heavy_create_requests_documented_direct_ssh(fake_http: FakeHttp):
     offer = VastOffer(
         303,
         "A100 SXM4",
@@ -436,7 +458,7 @@ def test_vast_heavy_create_requests_direct_ssh_only(fake_http: FakeHttp):
     instance = client.create_instance(offer, heavy)
 
     body = fake_http.last_request.json
-    assert body["runtype"] == "ssh_direc"
+    assert body["runtype"] == "ssh_direct"
     assert body["label"] == "defendcoder-vllm"
     assert body["image"] == heavy.image
     assert body["disk"] == 160
@@ -458,6 +480,24 @@ def test_vast_default_defend_lane_payload_is_unchanged(fake_http: FakeHttp):
     client.create_instance(offer, LaunchSpec.default())
 
     body = fake_http.last_request.json
-    assert body["runtype"] == "ssh_direc ssh_proxy"
+    assert body["runtype"] == "ssh_proxy"
     assert body["label"] == "defend-vllm"
     assert body["image"] == "vllm/vllm-openai:v0.10.0"
+
+
+def test_vast_parse_instance_captures_provider_image_runtype():
+    raw = {
+        "id": 7005,
+        "actual_status": "running",
+        "ssh_host": "ssh5.vast.ai",
+        "ssh_port": 37462,
+        "gpu_name": "A100 SXM4",
+        "gpu_ram": 81920,
+        "dph_total": "2.617777777777777",
+        "machine_id": 5908,
+        "image_runtype": "ssh_direct",
+    }
+    instance = VastClient._parse_instance(raw, 7005)
+    assert instance.image_runtype == "ssh_direct"
+    assert instance.machine_id == 5908
+    assert instance.ssh_host == "ssh5.vast.ai"

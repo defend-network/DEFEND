@@ -44,7 +44,8 @@ def build_instance_diagnostic(
         "machine_id": instance.machine_id,
         "actual_status": instance.actual_status,
         "image": launch.image if launch is not None else None,
-        "runtype": launch.runtype if launch is not None else None,
+        "requested_runtype": launch.runtype if launch is not None else None,
+        "provider_image_runtype": instance.image_runtype,
         "ssh_direct_host_present": isinstance(
             instance.direct_ssh_host, str
         ) and bool(instance.direct_ssh_host),
