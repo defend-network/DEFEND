@@ -54,6 +54,9 @@ class OfficeToolkit:
         if PureWindowsPath(raw).is_absolute() or PurePosixPath(raw).is_absolute() or raw.startswith(("//", "\\\\")):
             raise OfficePathError("absolute paths are not allowed")
         normalized = raw.replace("\\", "/")
+        raw_parts = normalized.split("/")
+        if any(part in {".", ".."} for part in raw_parts):
+            raise OfficePathError("path traversal is not allowed")
         parts = PurePosixPath(normalized).parts
         if any(part in {".", ".."} for part in parts):
             raise OfficePathError("path traversal is not allowed")
