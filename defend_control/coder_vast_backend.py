@@ -8,9 +8,8 @@ the Control Center layer when wiring UI (M0.1 core stays injectable).
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
-from pathlib import Path
 from typing import Any
 import time
 import urllib.error
@@ -33,22 +32,21 @@ class VastCoderBackend:
     vast: VastClient
     secrets: Mapping[str, str]
     bootstrap: CoderRemoteVllmBootstrap
-    *,
-    max_hourly: Decimal,
-    profile: ResourceProfile | None = None,
-    launch: LaunchSpec | None = None,
+    max_hourly: Decimal
+    profile: ResourceProfile | None = None
+    launch: LaunchSpec | None = None
     remote_port: int = 8000
     tunnel_start: Callable[[VastInstance, int], str] | None = None
-    # tunnel_start(instance, local_port) -> local endpoint base e.g. http://127.0.0.1:8003/v1
+    # tunnel_start(instance, local_port) -> local endpoint e.g. http://127.0.0.1:8003/v1
     smoke_http: Callable[[str, str, CoderModelRef], dict[str, Any]] | None = None
     offer_chooser: Callable[[tuple[VastOffer, ...]], VastOffer] | None = None
 
     def __post_init__(self) -> None:
         if self.profile is None:
-            self.profile = ResourceProfile.coder_default()
+            object.__setattr__(self, "profile", ResourceProfile.coder_default())
         if self.launch is None:
-            self.launch = LaunchSpec.coder_default()
-        if self.launch.label != "defendcoder-vllm":
+            object.__setattr__(self, "launch", LaunchSpec.coder_default())
+        if self.launch is None or self.launch.label != "defendcoder-vllm":
             raise ValueError("coder backend requires defendcoder-vllm launch label")
 
     def start(
@@ -70,6 +68,7 @@ class VastCoderBackend:
             raise CoderVastBackendError("no eligible coder GPU offers under budget")
 
         offer = self.offer_chooser(offers) if self.offer_chooser else offers[0]
+        assert self.launch is not None
         try:
             instance = self.vast.create_instance(offer, self.launch)
             instance = self.vast.wait_until_running(instance.instance_id)
@@ -84,7 +83,6 @@ class VastCoderBackend:
                 remote_port=self.remote_port,
             )
         except CoderRemoteVllmError as exc:
-            # Best-effort destroy on bootstrap failure to limit orphan billing
             try:
                 self.vast.destroy_instance(
                     instance.instance_id,
@@ -97,7 +95,6 @@ class VastCoderBackend:
         if self.tunnel_start is not None:
             endpoint = self.tunnel_start(instance, local_port)
         else:
-            # Caller must establish SSH -L; document expected loopback path
             endpoint = f"http://127.0.0.1:{local_port}/v1"
 
         return {
