@@ -7,7 +7,7 @@ planner, or reviewer behavior.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from typing import Any, Literal, Protocol
 import time
@@ -25,6 +25,10 @@ CoderModelAlias = Literal[
 _DEFAULT_BUDGET = Decimal("5.00")
 _DEFAULT_ALIAS: CoderModelAlias = "defendcoder-default"
 
+# Pinned 2026-08-14 from HfApi().model_info(...).sha
+_CODER_DEFAULT_REPO = "Qwen/Qwen3-Coder-30B-A3B-Instruct"
+_CODER_DEFAULT_REVISION = "b2cff646eb4bb1d68355c01b18ae02e7cf42d120"
+
 
 @dataclass(frozen=True)
 class CoderModelRef:
@@ -40,29 +44,29 @@ class CoderModelRef:
 CODER_MODEL_REGISTRY: dict[str, CoderModelRef] = {
     "defendcoder-fast": CoderModelRef(
         alias="defendcoder-fast",
-        repo_id="Qwen/Qwen3-Coder-30B-A3B-Instruct",
-        revision="main",
+        repo_id=_CODER_DEFAULT_REPO,
+        revision=_CODER_DEFAULT_REVISION,
         max_model_len=8192,
         notes="Fast/cheap lane; may share weights with default until differentiated",
     ),
     "defendcoder-default": CoderModelRef(
         alias="defendcoder-default",
-        repo_id="Qwen/Qwen3-Coder-30B-A3B-Instruct",
-        revision="main",
+        repo_id=_CODER_DEFAULT_REPO,
+        revision=_CODER_DEFAULT_REVISION,
         max_model_len=8192,
         notes="Standard quality/$ target for single A100-class GPU",
     ),
     "defendcoder-heavy": CoderModelRef(
         alias="defendcoder-heavy",
-        repo_id="Qwen/Qwen3-Coder-30B-A3B-Instruct",
-        revision="main",
+        repo_id=_CODER_DEFAULT_REPO,
+        revision=_CODER_DEFAULT_REVISION,
         max_model_len=8192,
         notes="Placeholder heavy lane; swap repo/revision when budget allows",
     ),
     "defendcoder-eval": CoderModelRef(
         alias="defendcoder-eval",
-        repo_id="Qwen/Qwen3-Coder-30B-A3B-Instruct",
-        revision="main",
+        repo_id=_CODER_DEFAULT_REPO,
+        revision=_CODER_DEFAULT_REVISION,
         max_model_len=8192,
         notes="Eval/reviewer lane placeholder",
     ),
@@ -146,10 +150,13 @@ class CoderInferenceBackend(Protocol):
     def smoke(self, endpoint: str, model: CoderModelRef) -> dict[str, Any]:
         """Return ok, latency_ms, detail."""
 
-    def stop(self, *,
-             instance_id: int | None,
-             provider_run_id: str | None,
-             destroy: bool) -> dict[str, Any]:
+    def stop(
+        self,
+        *,
+        instance_id: int | None,
+        provider_run_id: str | None,
+        destroy: bool,
+    ) -> dict[str, Any]:
         """Return state and message."""
 
 
@@ -242,7 +249,6 @@ class CoderM0Service:
     _message: str | None = None
 
     def __post_init__(self) -> None:
-        # Validate alias and budget early
         resolve_alias(self.alias)
         self.session_budget_usd = parse_session_budget(self.session_budget_usd)
         if not (1 <= int(self.local_port) <= 65_535):
@@ -344,9 +350,12 @@ class CoderM0Service:
             provider_run_id=self._provider_run_id,
         )
 
-    def stop(self, *,
-             destroy: bool = False,
-             confirmed_instance_id: int | None = None) -> CoderSessionStatus:
+    def stop(
+        self,
+        *,
+        destroy: bool = False,
+        confirmed_instance_id: int | None = None,
+    ) -> CoderSessionStatus:
         if destroy:
             if (
                 self._instance_id is not None
