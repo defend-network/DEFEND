@@ -146,6 +146,98 @@ def _gpu_name_matches(gpu_name: str, families: tuple[str, ...]) -> bool:
     return False
 
 
+_RAW_SAFE_FIELDS = frozenset(
+    {
+        "id",
+        "success",
+        "new_contract",
+        "msg",
+        "actual_status",
+        "cur_state",
+        "status_msg",
+        "ssh_host",
+        "ssh_port",
+        "direct_ssh_host",
+        "direct_ssh_port",
+        "public_ipaddr",
+        "ports",
+        "image_runtype",
+        "machine_id",
+        "gpu_name",
+        "gpu_ram",
+        "dph_total",
+        "num_gpus",
+        "num_ports",
+        "billing",
+        "rented",
+        "verified",
+        "label",
+        "start_date",
+        "duration",
+    }
+)
+
+
+def _sanitize_raw(raw: object) -> dict[str, object] | None:
+    """Sanitized diagnostic copy of a raw Vast payload (never credentials).
+
+    Whitelist-only: env, image_login, onstart, and other secret-bearing keys
+    are dropped. The 22/tcp port mapping is retained (direct-SSH diagnosis);
+    all other port mappings are dropped to keep the record small.
+    """
+    if not isinstance(raw, Mapping):
+        return None
+    safe: dict[str, object] = {}
+    for key in _RAW_SAFE_FIELDS:
+        if key in raw:
+            safe[key] = raw[key]
+    ports = raw.get("ports")
+    if isinstance(ports, Mapping):
+        tcp22 = ports.get("22/tcp")
+        if tcp22 is not None:
+            safe["ports"] = {"22/tcp": tcp22}
+    return safe
+
+
+def direct_endpoint_sources(raw: Mapping[str, object]) -> dict[str, object]:
+    """Which direct-SSH source fields a raw Vast payload exposes.
+
+    Presence/absence facts for the endpoint publication wait — the ssh_host
+    hostname is not a secret. Never includes key material.
+    """
+    host = raw.get("direct_ssh_host")
+    port = raw.get("direct_ssh_port")
+    public_ip = raw.get("public_ipaddr")
+    ports = raw.get("ports")
+    ssh_host = raw.get("ssh_host")
+    ssh_port = raw.get("ssh_port")
+    tcp22: object = None
+    if isinstance(ports, Mapping):
+        tcp22 = ports.get("22/tcp")
+    is_ip = False
+    if isinstance(ssh_host, str) and ssh_host:
+        try:
+            ipaddress.ip_address(ssh_host)
+            is_ip = True
+        except ValueError:
+            is_ip = False
+    host_port_present = False
+    if isinstance(tcp22, list) and tcp22 and isinstance(tcp22[0], Mapping):
+        host_port_present = tcp22[0].get("HostPort") is not None
+    return {
+        "direct_ssh_host_present": isinstance(host, str) and bool(host),
+        "direct_ssh_port_present": type(port) is int and port is not None,
+        "public_ipaddr_present": isinstance(public_ip, str) and bool(public_ip),
+        "public_ipaddr": public_ip if isinstance(public_ip, str) else None,
+        "ports_22_tcp_present": isinstance(tcp22, list) and bool(tcp22),
+        "ports_22_tcp_host_port_present": host_port_present,
+        "ssh_host_present": isinstance(ssh_host, str) and bool(ssh_host),
+        "ssh_host_is_ip": is_ip,
+        "ssh_host": ssh_host if isinstance(ssh_host, str) else None,
+        "ssh_port_present": type(ssh_port) is int and ssh_port is not None,
+    }
+
+
 def _direct_ssh_endpoint(raw: Mapping[str, object]) -> tuple[str, int] | None:
     """Best-effort direct SSH endpoint from a Vast instance payload."""
     host = raw.get("direct_ssh_host")
@@ -205,9 +297,23 @@ class VastClient:
         self._jitter = jitter
         self._monotonic = monotonic
         self._offer_search_summary = "search not run"
+        self._last_raw_create: Mapping[str, object] | None = None
+        self._last_raw_show: Mapping[str, object] | None = None
 
     def __repr__(self) -> str:
         return "VastClient()"
+
+    def last_raw_payload(self, kind: str) -> Mapping[str, object] | None:
+        """Sanitized raw payload of the last create or show call, if any.
+
+        Retention is for diagnosis before cleanup: the instance ID and the
+        direct-SSH endpoint publication fields (whitelist only, no secrets).
+        """
+        if kind not in ("create", "show"):
+            raise ValueError("raw payload kind must be 'create' or 'show'")
+        if kind == "create":
+            return self._last_raw_create
+        return self._last_raw_show
 
     @property
     def offer_search_summary(self) -> str:
@@ -358,6 +464,7 @@ class VastClient:
             offer_race=True,
             retry_429=False,
         )
+        self._last_raw_create = _sanitize_raw(document)
         instance_id = None
         if isinstance(document, Mapping):
             if document.get("success") is not True:
@@ -434,6 +541,7 @@ class VastClient:
                 raise VastError("Vast.ai instance response is invalid")
         if not isinstance(raw, Mapping):
             raise VastError("Vast.ai instance response is invalid") from None
+        self._last_raw_show = _sanitize_raw(raw)
         raw_id = raw.get("id")
         if raw_id is not None:
             try:
