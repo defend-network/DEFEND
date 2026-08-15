@@ -90,10 +90,11 @@ class VastCoderBackend:
 
         offer = self.offer_chooser(offers) if self.offer_chooser else offers[0]
         artifact = resolve_deployment(model.alias)
+        prefer_direct = model.alias == "defendcoder-heavy"
         launch = LaunchSpec(
             image=f"vllm/vllm-openai:{artifact.image_tag}",
             disk_gb=160,
-            runtype="ssh_direc ssh_proxy",
+            runtype="ssh_direc" if prefer_direct else "ssh_direc ssh_proxy",
             label="defendcoder-vllm",
         )
         try:
@@ -109,6 +110,7 @@ class VastCoderBackend:
                 self.secrets,
                 remote_port=self.remote_port,
                 artifact=artifact,
+                prefer_direct=prefer_direct,
             )
         except CoderRemoteVllmError as exc:
             try:

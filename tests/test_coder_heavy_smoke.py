@@ -21,6 +21,7 @@ from defend_control.coder_control_plane import (
 from defend_control.coder_deployment import resolve_deployment
 from defend_control.coder_m0 import resolve_alias
 from defend_control.coder_remote_vllm import CoderRemoteVllmBootstrap
+from defend_control.coder_vast_backend import VastCoderBackend
 from defend_control.ssh_tunnel import CommandResult
 from defend_control.types import (
     LaunchSpec,
@@ -273,6 +274,74 @@ class TestUnchanged:
         assert artifact.max_model_len == 32_768
         assert artifact.tool_call_parser == "qwen3_coder"
         assert artifact.enable_auto_tool_choice is True
+
+
+class RecordingHeavyVast:
+    def __init__(self) -> None:
+        self.created: list[LaunchSpec] = []
+
+    def search_offers(self, max_hourly, profile):
+        return _OFFERS
+
+    def create_instance(self, offer, launch):
+        self.created.append(launch)
+        return VastInstance(
+            555, None, "ssh.example", 2222, offer.gpu_name, offer.gpu_ram_mb, offer.dph_total
+        )
+
+    def wait_until_running(self, instance_id):
+        return VastInstance(
+            555, "running", "ssh.example", 2222, "A100 SXM4 80GB", 81920, Decimal("1.65")
+        )
+
+    def destroy_instance(self, instance_id, *, confirmed_instance_id=None):
+        return True
+
+
+def _heavy_backend(vast: RecordingHeavyVast) -> VastCoderBackend:
+    return VastCoderBackend(
+        vast=vast,  # type: ignore[arg-type]
+        secrets={
+            "HF_TOKEN": "hf_synthetic",
+            "CODER_VLLM_API_KEY": "vllm_synthetic",
+        },
+        bootstrap=CoderRemoteVllmBootstrap(
+            command_runner=RecordingCoderRunner(),
+            ssh_exe=Path("ssh"),
+            known_hosts=Path("known_hosts"),
+            key_path=Path("key"),
+        ),
+        max_hourly=Decimal("2.00"),
+    )
+
+
+class TestHeavyDirectSshLane:
+    def test_heavy_lane_requests_direct_ssh_runtype_at_creation(self):
+        vast = RecordingHeavyVast()
+        backend = _heavy_backend(vast)
+        backend.start(
+            resolve_alias("defendcoder-heavy"),
+            local_port=8003,
+            session_budget_usd=Decimal("5.00"),
+            offer=_OFFERS[0],
+        )
+        assert len(vast.created) == 1
+        assert vast.created[0].runtype == "ssh_direc"
+        assert vast.created[0].label == "defendcoder-vllm"
+        assert vast.created[0].image == "vllm/vllm-openai:v0.15.0"
+
+    def test_default_coder_lane_keeps_proxy_ssh_runtype(self):
+        vast = RecordingHeavyVast()
+        backend = _heavy_backend(vast)
+        backend.start(
+            resolve_alias("defendcoder-default"),
+            local_port=8003,
+            session_budget_usd=Decimal("5.00"),
+            offer=_OFFERS[0],
+        )
+        assert len(vast.created) == 1
+        assert vast.created[0].runtype == "ssh_direc ssh_proxy"
+        assert vast.created[0].label == "defendcoder-vllm"
 
 
 class TestSmokeSequence:

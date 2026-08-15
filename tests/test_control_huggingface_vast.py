@@ -415,3 +415,49 @@ def test_task5_types_are_immutable_and_launch_default_is_exact():
     assert profile.min_gpu_ram_mb == 140_000
     assert "H200" in profile.allowed_gpu_families
     assert "B200" in profile.allowed_gpu_families
+
+
+def test_vast_heavy_create_requests_direct_ssh_only(fake_http: FakeHttp):
+    offer = VastOffer(
+        303,
+        "A100 SXM4",
+        81920,
+        Decimal("2.70"),
+        Decimal("0.9995"),
+    )
+    fake_http.add_response(
+        method="PUT",
+        url="https://console.vast.ai/api/v0/asks/303/",
+        json={"success": True, "new_contract": 7001},
+    )
+    client = VastClient("vast_synthetic_secret", transport=fake_http)
+
+    heavy = LaunchSpec.coder_heavy_direct()
+    instance = client.create_instance(offer, heavy)
+
+    body = fake_http.last_request.json
+    assert body["runtype"] == "ssh_direc"
+    assert body["label"] == "defendcoder-vllm"
+    assert body["image"] == heavy.image
+    assert body["disk"] == 160
+    assert body["onstart"] is None
+    assert body["env"] == {}
+    assert instance.instance_id == 7001
+    assert len(fake_http.requests) == 1
+
+
+def test_vast_default_defend_lane_payload_is_unchanged(fake_http: FakeHttp):
+    offer = VastOffer(304, "H100 SXM", 81920, Decimal("2.50"), Decimal("0.99"))
+    fake_http.add_response(
+        method="PUT",
+        url="https://console.vast.ai/api/v0/asks/304/",
+        json={"success": True, "new_contract": 7002},
+    )
+    client = VastClient("vast_synthetic_secret", transport=fake_http)
+
+    client.create_instance(offer, LaunchSpec.default())
+
+    body = fake_http.last_request.json
+    assert body["runtype"] == "ssh_direc ssh_proxy"
+    assert body["label"] == "defend-vllm"
+    assert body["image"] == "vllm/vllm-openai:v0.10.0"

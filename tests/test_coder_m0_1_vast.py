@@ -86,7 +86,7 @@ class FakeBootstrap:
         self.artifacts = []
 
     def start(self, instance, model, secrets, *,
- remote_port=8000, cancelled=None, artifact=None):
+ remote_port=8000, prefer_direct=False, cancelled=None, artifact=None):
         self.starts.append((instance.instance_id, model.alias, remote_port))
         self.artifacts.append(artifact.artifact_id if artifact is not None else None)
 

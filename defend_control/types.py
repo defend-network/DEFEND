@@ -59,6 +59,18 @@ class LaunchSpec:
             "defendcoder-vllm",
         )
 
+    @classmethod
+    def coder_heavy_direct(cls) -> "LaunchSpec":
+        """DEFENDcoder Heavy diagnostic launch — direct SSH requested at
+        creation (runtype ssh_direc only; no proxy hop).
+        """
+        return cls(
+            "vllm/vllm-openai:v0.10.0",
+            160,
+            "ssh_direc",
+            "defendcoder-vllm",
+        )
+
 
 @dataclass(frozen=True)
 class ResourceProfile:
@@ -109,3 +121,6 @@ class VastInstance:
     gpu_name: str
     gpu_ram_mb: int
     dph_total: Decimal
+    machine_id: int | None = None
+    direct_ssh_host: str | None = None
+    direct_ssh_port: int | None = None

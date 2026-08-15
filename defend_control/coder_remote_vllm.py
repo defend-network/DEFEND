@@ -18,7 +18,7 @@ from .coder_deployment import (
     resolve_deployment,
 )
 from .coder_m0 import CoderModelRef
-from .ssh_tunnel import CommandResult, run_command
+from .ssh_tunnel import CommandResult, resolve_endpoint, run_command
 from .types import VastInstance
 
 _MAX_STDIN_BYTES = 64 * 1024
@@ -43,19 +43,13 @@ class CoderRemoteVllmError(RuntimeError):
     """Bounded remote coder launch error — no remote body or secrets."""
 
 
-def _endpoint(instance: VastInstance) -> tuple[str, int]:
-    if not isinstance(instance, VastInstance):
-        raise ValueError("instance must be a VastInstance")
-    host = instance.ssh_host
-    port = instance.ssh_port
-    if (
-        not isinstance(host, str)
-        or not host
-        or any(character.isspace() or ord(character) < 0x21 for character in host)
-        or type(port) is not int
-        or not 1 <= port <= 65_535
-    ):
-        raise CoderRemoteVllmError("Vast.ai SSH endpoint is invalid")
+def _endpoint(
+    instance: VastInstance, *, prefer_direct: bool = False
+) -> tuple[str, int]:
+    try:
+        host, port, _transport = resolve_endpoint(instance, prefer_direct=prefer_direct)
+    except RuntimeError:
+        raise CoderRemoteVllmError("Vast.ai SSH endpoint is invalid") from None
     return host, port
 
 
@@ -106,8 +100,10 @@ class CoderRemoteVllmBootstrap:
         self._known_hosts = Path(known_hosts)
         self._key_path = Path(key_path)
 
-    def _argv(self, instance: VastInstance) -> tuple[str, ...]:
-        host, port = _endpoint(instance)
+    def _argv(
+        self, instance: VastInstance, *, prefer_direct: bool = False
+    ) -> tuple[str, ...]:
+        host, port = _endpoint(instance, prefer_direct=prefer_direct)
         return (
             str(self._ssh_exe),
             "-p",
@@ -214,6 +210,7 @@ rm -f -- /workspace/defendcoder/.hf_token
         *,
         remote_port: int = 8000,
         artifact: CoderDeploymentArtifact | None = None,
+        prefer_direct: bool = False,
         cancelled: Callable[[], bool] | None = None,
     ) -> None:
         _validate_model(model)
@@ -236,7 +233,7 @@ rm -f -- /workspace/defendcoder/.hf_token
         script = self._script(model, artifact, hf_token, vllm_api_key, remote_port)
         try:
             result = self._run(
-                self._argv(instance),
+                self._argv(instance, prefer_direct=prefer_direct),
                 stdin=script,
                 timeout=900.0,
                 cancelled=cancelled,
