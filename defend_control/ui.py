@@ -8,10 +8,28 @@ from tkinter.scrolledtext import ScrolledText
 
 from .coder_m0 import CoderM0Service, LocalFakeCoderBackend
 from .controller import ConfirmationRequired, ControlController, UIState
+from .products import ProductStatus
 from .settings import ControlSettings
 
 
 _POLL_MILLISECONDS = 250
+_STATE_COLORS = {
+    "running": "green",
+    "ready": "green",
+    "starting": "blue",
+    "provisioning": "blue",
+    "stopping": "orange",
+    "stopped": "gray",
+    "failed": "red",
+    "not configured": "orange",
+    "unavailable": "orange",
+}
+_PRODUCT_ACTIONS = (
+    ("Launch", "launch"),
+    ("Stop", "stop"),
+    ("Open", "open"),
+    ("Logs", "logs"),
+)
 _COMPONENT_LABELS = {
     "model": "Model",
     "ssh tunnel": "SSH tunnel",
@@ -204,6 +222,7 @@ class ControlCenterUI:
         open_setup: Callable[[], None],
         submit_exit_cleanup: Callable[[], object],
         destroy_window: Callable[[], None] | None = None,
+        products: tuple[object, ...] = (),
         coder_service: CoderM0Service | None = None,
     ) -> None:
         self.root = root
@@ -212,6 +231,11 @@ class ControlCenterUI:
         self._open_setup = open_setup
         self._submit_exit_cleanup = submit_exit_cleanup
         self._destroy_window = destroy_window or root.destroy
+        self._products = tuple(products)
+        self._product_states: dict[str, tk.StringVar] = {}
+        self._product_text: dict[str, tk.StringVar] = {}
+        self._product_state_labels: dict[str, ttk.Label] = {}
+        self._product_buttons: dict[str, dict[str, ttk.Button]] = {}
         # Observation-only until live VastCoderBackend is wired in Control Center.
         self._coder = coder_service or CoderM0Service(
             backend=LocalFakeCoderBackend()
@@ -264,6 +288,8 @@ class ControlCenterUI:
         self._controller = controller
         self._public_origin = public_origin
 
+    def set_products(self, products: tuple[object, ...]) -> None:
+        self._products = tuple(products)
     def set_coder_service(self, coder_service: CoderM0Service) -> None:
         """Swap observation source (e.g. live Vast backend later)."""
         self._coder = coder_service
@@ -275,8 +301,10 @@ class ControlCenterUI:
         outer.columnconfigure(0, weight=1)
         outer.rowconfigure(6, weight=1)
 
+        self._build_products(outer)
+
         mode_frame = ttk.LabelFrame(outer, text="Model backend", padding=8)
-        mode_frame.grid(row=0, column=0, sticky="ew")
+        mode_frame.grid(row=1, column=0, sticky="ew")
         ttk.Radiobutton(
             mode_frame, text="Vast.ai", variable=self._mode, value="vast"
         ).pack(side="left", padx=(0, 16))
@@ -288,7 +316,7 @@ class ControlCenterUI:
         ).pack(side="left")
 
         actions = ttk.Frame(outer)
-        actions.grid(row=1, column=0, sticky="ew", pady=8)
+        actions.grid(row=2, column=0, sticky="ew", pady=8)
         for label, command in (
             ("Start", self._start),
             ("Stop Local", self._stop_local),
@@ -364,6 +392,100 @@ class ControlCenterUI:
         log_frame.rowconfigure(0, weight=1)
         self._log = ScrolledText(log_frame, height=12, wrap="word", state="disabled")
         self._log.grid(row=0, column=0, sticky="nsew")
+
+    def _build_products(self, outer: ttk.Frame) -> None:
+        products = ttk.LabelFrame(outer, text="Products", padding=8)
+        products.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        for row, product in enumerate(self._products):
+            application_id = getattr(product, "application_id", "unknown")
+            display_name = getattr(product, "display_name", application_id)
+            state_var = tk.StringVar(self.root, value="—")
+            text_var = tk.StringVar(self.root, value="")
+            self._product_states[application_id] = state_var
+            self._product_text[application_id] = text_var
+            state_label = ttk.Label(products, textvariable=state_var, width=16)
+            state_label.grid(row=row, column=0, sticky="w")
+            self._product_state_labels[application_id] = state_label
+            ttk.Label(products, text=display_name).grid(
+                row=row, column=1, sticky="w", padx=(0, 12)
+            )
+            ttk.Label(products, textvariable=text_var).grid(
+                row=row, column=2, sticky="w"
+            )
+            buttons: dict[str, ttk.Button] = {}
+            for column, (label, action) in enumerate(_PRODUCT_ACTIONS):
+                button = ttk.Button(
+                    products,
+                    text=label,
+                    command=lambda p=product, a=action: self._product_action(
+                        p, a
+                    ),
+                )
+                button.grid(row=row, column=3 + column, padx=(4, 0))
+                buttons[action] = button
+            self._product_buttons[application_id] = buttons
+
+    def _product_action(self, product: object, action: str) -> None:
+        application_id = getattr(product, "application_id", "")
+        if application_id == "defend":
+            if action == "launch":
+                self._start()
+            elif action == "stop":
+                self._stop_local()
+            elif action == "open":
+                self._open_defend()
+            else:
+                self._focus_log()
+            return
+        try:
+            if action == "launch":
+                self._controller.submit_work(getattr(product, "start"))
+            elif action == "stop":
+                self._controller.submit_work(getattr(product, "stop"))
+            elif action == "open":
+                self._controller.submit_work(getattr(product, "open_url"))
+            else:
+                self._focus_log()
+        except Exception as error:
+            self._show_error(error)
+
+    def _focus_log(self) -> None:
+        self._log.see("end")
+
+    def _render_products(self) -> None:
+        for product in self._products:
+            application_id = getattr(product, "application_id", "")
+            state_var = self._product_states.get(application_id)
+            if state_var is None:
+                continue
+            try:
+                status = product.status()
+            except Exception as error:
+                status = ProductStatus(
+                    application_id,
+                    getattr(product, "display_name", application_id),
+                    "failed",
+                    f"Status unavailable ({type(error).__name__})",
+                )
+            state_var.set(status.state)
+            self._product_text[application_id].set(status.status_text)
+            state_label = self._product_state_labels.get(application_id)
+            if state_label is not None:
+                state_label.configure(
+                    foreground=_STATE_COLORS.get(status.state, "gray")
+                )
+            buttons = self._product_buttons.get(application_id, {})
+            for action, available in (
+                ("launch", status.launch_available),
+                ("stop", status.stop_available),
+                ("open", status.open_available),
+                ("logs", status.logs_available),
+            ):
+                button = buttons.get(action)
+                if button is not None:
+                    button.configure(
+                        state="normal" if available else "disabled"
+                    )
 
     def _show_error(self, error: BaseException) -> None:
         messagebox.showerror(
@@ -853,6 +975,7 @@ class ControlCenterUI:
             self._log.configure(state="disabled")
             self._log.see("end")
             self._last_log_render = state.logs
+        self._render_products()
 
     def _on_close(self) -> None:
         state = self._controller.poll_state()

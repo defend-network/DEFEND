@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 import os
 from pathlib import Path
+import sys
 import threading
 import tkinter as tk
 from tkinter import messagebox
@@ -17,6 +18,7 @@ from defend_control.local_model import LocalOllamaBackend
 from defend_control.orchestrator import StackOrchestrator
 from defend_control.preflight import CheckResult, PreflightRunner
 from defend_control.processes import ProcessSupervisor
+from defend_control.products import ProductsSettings, build_products
 from defend_control.secrets import DpapiSecretStore
 from defend_control.settings import ControlSettings, JsonSettingsStore
 from defend_control.ui import ControlCenterUI, SetupDialog
@@ -26,6 +28,7 @@ from defend_control.ui import ControlCenterUI, SetupDialog
 class _Runtime:
     controller: ControlController
     supervisor: ProcessSupervisor
+    products: tuple[object, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -433,7 +436,17 @@ def _build_runtime(
             supervisor=supervisor,
             local_backend=LocalOllamaBackend(),
         )
-        return _Runtime(ControlController(orchestrator), supervisor)
+        controller = ControlController(orchestrator)
+        repository = Path(__file__).resolve().parents[1]
+        products = build_products(
+            controller=controller,
+            supervisor=supervisor,
+            repository=repository,
+            python_executable=sys.executable,
+            public_origin=settings.public_web_origin,
+            settings=ProductsSettings.from_env(),
+        )
+        return _Runtime(controller, supervisor, products)
     except Exception:
         try:
             supervisor.close()
@@ -497,8 +510,9 @@ def run_control_center() -> None:
     def settings_saved(result: object):
         return coordinator.activate(
             result,
-            lambda controller, origin: app.set_controller(
-                controller, public_origin=origin
+            lambda controller, origin: (
+                app.set_controller(controller, public_origin=origin),
+                app.set_products(result.candidate_runtime.products),
             ),
         )
 
@@ -514,6 +528,7 @@ def run_control_center() -> None:
         root,
         coordinator.runtime.controller,
         public_origin=settings.public_web_origin,
+        products=coordinator.runtime.products,
         open_setup=open_setup,
         submit_exit_cleanup=submit_exit_cleanup,
         destroy_window=destroy_window,

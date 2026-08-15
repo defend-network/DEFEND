@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import ipaddress
+import json
 import threading
 import time
 from urllib.error import HTTPError
@@ -20,6 +21,15 @@ class HealthResult:
     status_code: int | None
     latency_ms: int
     error_type: str | None
+
+
+@dataclass(frozen=True)
+class JsonResult:
+    ok: bool
+    status_code: int | None
+    latency_ms: int
+    error_type: str | None
+    data: object | None = None
 
 
 class _NoRedirectHandler(HTTPRedirectHandler):
@@ -162,3 +172,81 @@ def probe_http(
 
     latency_ms = max(0, int((time.monotonic() - started) * 1000))
     return HealthResult(ok, status_code, latency_ms, error_type)
+
+
+def fetch_http_json(
+    url: str,
+    timeout_seconds: float,
+    *,
+    public_origin: str | None = None,
+) -> JsonResult:
+    started = time.monotonic()
+    if (
+        isinstance(timeout_seconds, bool)
+        or not isinstance(timeout_seconds, (int, float))
+        or not 0 < float(timeout_seconds) <= _MAX_TIMEOUT_SECONDS
+    ):
+        return JsonResult(False, None, 0, "InvalidTimeout", None)
+    if not _url_allowed(url, public_origin):
+        return JsonResult(False, None, 0, "UnsafeUrl", None)
+
+    if not _PROBE_CAPACITY.acquire(blocking=False):
+        return JsonResult(False, None, 0, "ProbeCapacityExceeded", None)
+
+    completed = threading.Event()
+    outcome: list[tuple[bool, int | None, str | None, object | None]] = []
+
+    def run_probe() -> None:
+        status_code: int | None = None
+        data: object | None = None
+        try:
+            request = Request(
+                url, method="GET", headers={"Accept": "application/json"}
+            )
+            opener = build_opener(_NoRedirectHandler())
+            with opener.open(
+                request, timeout=float(timeout_seconds)
+            ) as response:
+                raw_status = getattr(response, "status", None)
+                status_code = int(raw_status) if raw_status is not None else None
+                body = response.read(_MAX_RESPONSE_BYTES)
+            ok = status_code is not None and 200 <= status_code < 300
+            error_type = None
+            if ok:
+                try:
+                    data = json.loads(body.decode("utf-8", errors="replace"))
+                except (ValueError, UnicodeDecodeError):
+                    ok = False
+                    error_type = "InvalidJson"
+        except HTTPError as error:
+            status_code = error.code if isinstance(error.code, int) else None
+            ok = False
+            error_type = "HTTPError"
+        except Exception as error:
+            ok = False
+            error_type = _safe_error_type(error)
+        finally:
+            outcome.append((ok, status_code, error_type, data))
+            _PROBE_CAPACITY.release()
+            completed.set()
+
+    try:
+        threading.Thread(
+            target=run_probe,
+            daemon=True,
+            name="defend-json-probe",
+        ).start()
+    except Exception as error:
+        _PROBE_CAPACITY.release()
+        return JsonResult(False, None, 0, _safe_error_type(error), None)
+
+    elapsed = time.monotonic() - started
+    remaining = max(0.0, float(timeout_seconds) - elapsed)
+    if not completed.wait(remaining):
+        latency_ms = max(0, int((time.monotonic() - started) * 1000))
+        return JsonResult(False, None, latency_ms, "TimeoutError", None)
+
+    ok, status_code, error_type, data = outcome[0]
+
+    latency_ms = max(0, int((time.monotonic() - started) * 1000))
+    return JsonResult(ok, status_code, latency_ms, error_type, data)
