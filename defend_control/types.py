@@ -45,8 +45,30 @@ class LaunchSpec:
         return cls(
             "vllm/vllm-openai:v0.10.0",
             160,
-            "ssh_direc ssh_proxy",
+            "ssh_proxy",
             "defend-vllm",
+        )
+
+    @classmethod
+    def coder_default(cls) -> "LaunchSpec":
+        """DEFENDcoder M0.1 launch — separate label from identity chat."""
+        return cls(
+            "vllm/vllm-openai:v0.10.0",
+            160,
+            "ssh_proxy",
+            "defendcoder-vllm",
+        )
+
+    @classmethod
+    def coder_heavy_direct(cls) -> "LaunchSpec":
+        """DEFENDcoder Heavy diagnostic launch — documented direct SSH
+        runtype (ssh_direct) requested at creation; no proxy hop.
+        """
+        return cls(
+            "vllm/vllm-openai:v0.10.0",
+            160,
+            "ssh_direct",
+            "defendcoder-vllm",
         )
 
 
@@ -65,6 +87,18 @@ class ResourceProfile:
     min_reliability: Decimal = Decimal("0.98")
     min_disk_gb: int = 160
     max_model_len: int = 8192
+
+    @classmethod
+    def coder_default(cls) -> "ResourceProfile":
+        """Coder lane: single A100 80GB-class is acceptable (not 140GB chat floor)."""
+        return cls(
+            min_gpu_ram_mb=80_000,
+            allowed_gpu_families=("A100", "H100", "H200", "B200"),
+            num_gpus=1,
+            min_reliability=Decimal("0.98"),
+            min_disk_gb=160,
+            max_model_len=8192,
+        )
 
 
 @dataclass(frozen=True)
@@ -87,3 +121,7 @@ class VastInstance:
     gpu_name: str
     gpu_ram_mb: int
     dph_total: Decimal
+    machine_id: int | None = None
+    direct_ssh_host: str | None = None
+    direct_ssh_port: int | None = None
+    image_runtype: str | None = None

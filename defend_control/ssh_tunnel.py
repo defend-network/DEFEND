@@ -225,16 +225,31 @@ def _valid_host(host: object) -> str:
     return ascii_host
 
 
-def _endpoint(instance: VastInstance) -> tuple[str, int]:
+def resolve_endpoint(
+    instance: VastInstance, *, prefer_direct: bool = False
+) -> tuple[str, int, str]:
+    """Select the SSH endpoint: direct preferred, proxy fallback.
+
+    Returns (host, port, transport) where transport is "direct" or "proxy".
+    """
     if not isinstance(instance, VastInstance):
         raise ValueError("instance must be a VastInstance")
     if type(instance.instance_id) is not int or instance.instance_id <= 0:
         raise SshTunnelError("Vast.ai instance identity is invalid")
+    if prefer_direct:
+        direct_host = instance.direct_ssh_host
+        direct_port = instance.direct_ssh_port
+        if isinstance(direct_host, str) and direct_host:
+            host = _valid_host(direct_host)
+            port = direct_port
+            if type(port) is not int or not 1 <= port <= 65_535:
+                raise SshTunnelError("Vast.ai direct SSH endpoint is invalid")
+            return host, port, "direct"
     host = _valid_host(instance.ssh_host)
     port = instance.ssh_port
     if type(port) is not int or not 1 <= port <= 65_535:
         raise SshTunnelError("Vast.ai SSH endpoint is invalid")
-    return host, port
+    return host, port, "proxy"
 
 
 def _key_parts(line: str) -> tuple[str, str] | None:
@@ -295,10 +310,15 @@ class SshTunnel:
         self._scan_attempts = scan_attempts
         self._scan_retry_seconds = float(scan_retry_seconds)
         self._sleep = sleep
+        self._transport_used: str | None = None
 
     @property
     def key_path(self) -> Path:
         return self._key_path
+
+    @property
+    def last_transport(self) -> str | None:
+        return self._transport_used
 
     @property
     def known_hosts(self) -> Path:
@@ -567,8 +587,11 @@ class SshTunnel:
         self,
         instance: VastInstance,
         confirm_fingerprint: str | None,
+        *,
+        prefer_direct: bool = False,
     ) -> str:
-        host, port = _endpoint(instance)
+        host, port, transport = resolve_endpoint(instance, prefer_direct=prefer_direct)
+        self._transport_used = transport
         identity, fingerprint = self._scan(host, port)
         marker = f"[{host}]:{port}"
         if self._is_pinned(marker, identity, instance.instance_id):
@@ -578,8 +601,9 @@ class SshTunnel:
         self._pin(marker, identity, instance.instance_id)
         return fingerprint
 
-    def start(self, instance: VastInstance):
-        host, port = _endpoint(instance)
+    def start(self, instance: VastInstance, *, prefer_direct: bool = False):
+        host, port, transport = resolve_endpoint(instance, prefer_direct=prefer_direct)
+        self._transport_used = transport
         marker = f"[{host}]:{port}"
         try:
             known_hosts = self._known_hosts.read_text("ascii")
