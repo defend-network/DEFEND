@@ -75,7 +75,7 @@ class CoderPolicy:
     idle_shutdown_minutes: int = 10
     heavy_escalation_after_failures: int = 2
     auto_escalation_eligible: bool = True
-    default_min_gpu_ram_mb: int = 24_576
+    default_min_gpu_ram_mb: int = 81_920
     heavy_min_gpu_ram_mb: int = 81_920
     heavy_num_gpus: int = 2
     default_gpu_families: tuple[str, ...] = (
@@ -83,8 +83,6 @@ class CoderPolicy:
         "H100",
         "H200",
         "B200",
-        "RTX 4090",
-        "L40S",
     )
     heavy_gpu_families: tuple[str, ...] = ("A100", "H100")
     min_reliability: Decimal = Decimal("0.98")
@@ -355,12 +353,16 @@ class CoderProvisionApproval:
 def _launch_runtype_for(alias: str) -> str:
     """The documented Vast runtype used at create time for an alias.
 
-    The heavy diagnostic lane requests the documented direct-SSH runtype;
-    every other DEFEND / DEFENDcoder lane uses the documented proxy runtype.
+    Default and Heavy coder lanes request the documented direct-SSH runtype.
+    Other DEFENDcoder lanes retain the documented proxy runtype.
     Binding this into the approval fingerprint means changing the launch
     transport invalidates prior owner approvals.
     """
-    return "ssh_direct" if alias == "defendcoder-heavy" else "ssh_proxy"
+    return (
+        "ssh_direct"
+        if alias in ("defendcoder-default", "defendcoder-heavy")
+        else "ssh_proxy"
+    )
 
 
 def _plan_fingerprint(plan: CoderLiveSmokePlan, offer: VastOffer | None) -> str:

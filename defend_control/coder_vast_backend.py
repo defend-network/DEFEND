@@ -90,7 +90,10 @@ class VastCoderBackend:
 
         offer = self.offer_chooser(offers) if self.offer_chooser else offers[0]
         artifact = resolve_deployment(model.alias)
-        prefer_direct = model.alias == "defendcoder-heavy"
+        prefer_direct = model.alias in (
+            "defendcoder-default",
+            "defendcoder-heavy",
+        )
         launch = LaunchSpec(
             image=f"vllm/vllm-openai:{artifact.image_tag}",
             disk_gb=160,

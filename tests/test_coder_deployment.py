@@ -145,19 +145,19 @@ class TestHeavyIdentityAndArtifact:
         assert artifact.enable_auto_tool_choice is True
 
 
-class TestDefaultUnchanged:
-    def test_default_artifact_preserves_old_behavior(self):
+class TestDefaultDeployment:
+    def test_default_artifact_is_agentic_bf16(self):
         artifact = resolve_deployment("defendcoder-default")
         assert artifact.repo_id == "Qwen/Qwen3-Coder-30B-A3B-Instruct"
         assert artifact.revision == "b2cff646eb4bb1d68355c01b18ae02e7cf42d120"
         assert artifact.precision == "BF16"
         assert artifact.minimum_vllm_version == "0.10.0"
         assert artifact.max_model_len == 8192
-        assert artifact.tool_call_parser is None
-        assert artifact.enable_auto_tool_choice is False
+        assert artifact.tool_call_parser == "qwen3_coder"
+        assert artifact.enable_auto_tool_choice is True
         assert artifact.image_tag == "v0.10.0"
 
-    def test_default_bootstrap_script_is_unchanged(self):
+    def test_default_bootstrap_script_enables_agentic_tools(self):
         runner = RecordingCoderRunner()
         boot = _bootstrap(runner)
         boot.start(
@@ -169,8 +169,8 @@ class TestDefaultUnchanged:
         rendered = runner.calls[0][1].decode("ascii")
         assert "Qwen/Qwen3-Coder-30B-A3B-Instruct" in rendered
         assert "--max-model-len 8192" in rendered
-        assert "--tool-call-parser" not in rendered
-        assert "--enable-auto-tool-choice" not in rendered
+        assert "--tool-call-parser qwen3_coder" in rendered
+        assert "--enable-auto-tool-choice" in rendered
         assert "hf_synthetic" not in rendered
         assert "vllm_synthetic" not in rendered
 

@@ -160,10 +160,12 @@ class TestCoderPolicy:
 
 
 class TestResourceProfiles:
-    def test_default_profile_targets_inexpensive_24gb_class(self):
+    def test_default_profile_targets_single_80gb_class(self):
         profile = resource_profile("defendcoder-default", CoderPolicy())
-        assert profile.min_gpu_ram_mb == 24_576
+        assert profile.min_gpu_ram_mb == 81_920
         assert profile.num_gpus == 1
+        assert "RTX 4090" not in profile.allowed_gpu_families
+        assert "L40S" not in profile.allowed_gpu_families
 
     def test_heavy_profile_prefers_a100_80gb_class(self):
         profile = resource_profile("defendcoder-heavy", CoderPolicy())

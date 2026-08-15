@@ -72,11 +72,11 @@ _CODER_DEFAULT_ARTIFACT = CoderDeploymentArtifact(
     minimum_vllm_version="0.10.0",
     max_model_len=8192,
     image_tag="v0.10.0",
-    tool_call_parser=None,
-    enable_auto_tool_choice=False,
-    required_min_gpu_ram_mb=None,
+    tool_call_parser="qwen3_coder",
+    enable_auto_tool_choice=True,
+    required_min_gpu_ram_mb=81_920,
     requires_hf_token=False,
-    notes="Plain BF16 instruct serving, unchanged from runtime-v1 M0.1",
+    notes="BF16 instruct serving on a single 80GB-class GPU with Qwen3-Coder automatic tool calling",
 )
 
 _CODER_HEAVY_ARTIFACT = CoderDeploymentArtifact(
