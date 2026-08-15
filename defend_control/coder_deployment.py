@@ -69,14 +69,18 @@ _CODER_DEFAULT_ARTIFACT = CoderDeploymentArtifact(
     repo_id=_DEFAULT_MODEL.repo_id,
     revision=_DEFAULT_MODEL.revision,
     precision="BF16",
-    minimum_vllm_version="0.10.0",
+    minimum_vllm_version="0.27.1",
     max_model_len=8192,
-    image_tag="v0.10.0",
-    tool_call_parser="qwen3_coder",
+    image_tag="v0.27.1",
+    tool_call_parser="qwen3_xml",
     enable_auto_tool_choice=True,
     required_min_gpu_ram_mb=81_920,
     requires_hf_token=False,
-    notes="BF16 instruct serving on a single 80GB-class GPU with Qwen3-Coder automatic tool calling",
+    notes=(
+        "Proven live baseline: Qwen3-Coder-30B-A3B-Instruct BF16 on "
+        "vLLM 0.27.1 with qwen3_xml automatic tool calling, "
+        "single 80GB-class-or-better GPU, initial context 8192"
+    ),
 )
 
 _CODER_HEAVY_ARTIFACT = CoderDeploymentArtifact(
