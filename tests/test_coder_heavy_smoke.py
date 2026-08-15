@@ -1,4 +1,4 @@
-"""DEFENDcoder owner-approved Heavy smoke prep tests (LIVE HEAVY SMOKE PREP).
+﻿"""DEFENDcoder owner-approved Heavy smoke prep tests (LIVE HEAVY SMOKE PREP).
 
 Zero provider create calls anywhere in this file. All offers are fakes.
 """
@@ -175,12 +175,12 @@ class TestPlanAndApproval:
         assert plan.plan_id
         assert plan.plan_hash
 
-    def test_default_coder_lane_plan_uses_documented_proxy_runtype(self):
+    def test_default_coder_lane_plan_uses_documented_direct_runtype(self):
         backend = RecordingHeavyBackend()
         plane = _plane(backend)
         plan = plane.live_smoke_plan("defendcoder-default")
-        assert plan.launch_runtype == "ssh_proxy"
-        assert plan.as_public_dict()["launch_runtype"] == "ssh_proxy"
+        assert plan.launch_runtype == "ssh_direct"
+        assert plan.as_public_dict()["launch_runtype"] == "ssh_direct"
 
     def test_changed_launch_transport_invalidates_approval(self):
         plane = _plane()
@@ -355,7 +355,7 @@ class TestHeavyDirectSshLane:
         assert vast.created[0].label == "defendcoder-vllm"
         assert vast.created[0].image == "vllm/vllm-openai:v0.15.0"
 
-    def test_default_coder_lane_keeps_proxy_ssh_runtype(self):
+    def test_default_coder_lane_uses_direct_ssh_runtype(self):
         vast = RecordingHeavyVast()
         backend = _heavy_backend(vast)
         backend.start(
@@ -365,7 +365,7 @@ class TestHeavyDirectSshLane:
             offer=_OFFERS[0],
         )
         assert len(vast.created) == 1
-        assert vast.created[0].runtype == "ssh_proxy"
+        assert vast.created[0].runtype == "ssh_direct"
         assert vast.created[0].label == "defendcoder-vllm"
 
 
@@ -376,3 +376,4 @@ class TestSmokeSequence:
         assert "return DEFENDCODER_HEAVY_READY" in LIVE_SMOKE_SEQUENCE[8]
         assert len(LIVE_SMOKE_SEQUENCE) == 15
         assert LIVE_SMOKE_SEQUENCE[-1] == "report total measured cost"
+
