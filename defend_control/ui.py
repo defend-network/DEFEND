@@ -6,6 +6,7 @@ import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
 from tkinter.scrolledtext import ScrolledText
 
+from .coder_m0 import CoderM0Service, LocalFakeCoderBackend
 from .controller import ConfirmationRequired, ControlController, UIState
 from .settings import ControlSettings
 
@@ -203,6 +204,7 @@ class ControlCenterUI:
         open_setup: Callable[[], None],
         submit_exit_cleanup: Callable[[], object],
         destroy_window: Callable[[], None] | None = None,
+        coder_service: CoderM0Service | None = None,
     ) -> None:
         self.root = root
         self._controller = controller
@@ -210,6 +212,10 @@ class ControlCenterUI:
         self._open_setup = open_setup
         self._submit_exit_cleanup = submit_exit_cleanup
         self._destroy_window = destroy_window or root.destroy
+        # Observation-only until live VastCoderBackend is wired in Control Center.
+        self._coder = coder_service or CoderM0Service(
+            backend=LocalFakeCoderBackend()
+        )
         self._closing_after_stop = False
         self._exit_future: object | None = None
         self._last_log_render: tuple[object, ...] | None = None
@@ -226,9 +232,22 @@ class ControlCenterUI:
         self._vast_reliability = tk.StringVar(root, value="—")
         self._vast_status = tk.StringVar(root, value="—")
         self._vast_billing = tk.StringVar(root, value="No active Vast billing")
+        self._coder_state = tk.StringVar(root, value="stopped")
+        self._coder_alias = tk.StringVar(root, value="—")
+        self._coder_model = tk.StringVar(root, value="—")
+        self._coder_revision = tk.StringVar(root, value="—")
+        self._coder_endpoint = tk.StringVar(root, value="—")
+        self._coder_instance = tk.StringVar(root, value="—")
+        self._coder_provider_run = tk.StringVar(root, value="—")
+        self._coder_price = tk.StringVar(root, value="—")
+        self._coder_budget = tk.StringVar(root, value="—")
+        self._coder_message = tk.StringVar(root, value="—")
+        self._coder_origin = tk.StringVar(
+            root, value="https://defendcoder.defend-network.org (inactive)"
+        )
 
         root.title("DEFEND Control Center")
-        root.minsize(720, 600)
+        root.minsize(720, 720)
         root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._build()
         self._render(self._controller.poll_state())
@@ -245,11 +264,16 @@ class ControlCenterUI:
         self._controller = controller
         self._public_origin = public_origin
 
+    def set_coder_service(self, coder_service: CoderM0Service) -> None:
+        """Swap observation source (e.g. live Vast backend later)."""
+        self._coder = coder_service
+        self._render_coder()
+
     def _build(self) -> None:
         outer = ttk.Frame(self.root, padding=12)
         outer.pack(fill="both", expand=True)
         outer.columnconfigure(0, weight=1)
-        outer.rowconfigure(5, weight=1)
+        outer.rowconfigure(6, weight=1)
 
         mode_frame = ttk.LabelFrame(outer, text="Model backend", padding=8)
         mode_frame.grid(row=0, column=0, sticky="ew")
@@ -277,7 +301,7 @@ class ControlCenterUI:
                 side="left", padx=(0, 6)
             )
 
-        status = ttk.LabelFrame(outer, text="Components", padding=8)
+        status = ttk.LabelFrame(outer, text="Components (DEFEND identity)", padding=8)
         status.grid(row=2, column=0, sticky="ew")
         status.columnconfigure(1, weight=1)
         for row, (name, label) in enumerate(_COMPONENT_LABELS.items()):
@@ -286,7 +310,7 @@ class ControlCenterUI:
                 row=row, column=1, sticky="w", padx=(18, 0)
             )
 
-        vast = ttk.LabelFrame(outer, text="Current Vast.ai", padding=8)
+        vast = ttk.LabelFrame(outer, text="Current Vast.ai (identity)", padding=8)
         vast.grid(row=3, column=0, sticky="ew", pady=8)
         for row, (label, variable) in enumerate(
             (
@@ -304,14 +328,41 @@ class ControlCenterUI:
                 row=row, column=1, sticky="w", padx=(18, 0)
             )
 
+        coder = ttk.LabelFrame(
+            outer,
+            text="DEFENDcoder (observation — launch not wired)",
+            padding=8,
+        )
+        coder.grid(row=4, column=0, sticky="ew", pady=(0, 8))
+        coder.columnconfigure(1, weight=1)
+        for row, (label, variable) in enumerate(
+            (
+                ("State", self._coder_state),
+                ("Alias", self._coder_alias),
+                ("Model", self._coder_model),
+                ("Revision", self._coder_revision),
+                ("Endpoint", self._coder_endpoint),
+                ("Instance ID", self._coder_instance),
+                ("Provider run", self._coder_provider_run),
+                ("Hourly price", self._coder_price),
+                ("Session budget", self._coder_budget),
+                ("Message", self._coder_message),
+                ("Public origin", self._coder_origin),
+            )
+        ):
+            ttk.Label(coder, text=label).grid(row=row, column=0, sticky="w")
+            ttk.Label(coder, textvariable=variable).grid(
+                row=row, column=1, sticky="w", padx=(18, 0)
+            )
+
         ttk.Label(outer, textvariable=self._state).grid(
-            row=4, column=0, sticky="w", pady=(0, 6)
+            row=5, column=0, sticky="w", pady=(0, 6)
         )
         log_frame = ttk.LabelFrame(outer, text="Bounded service log", padding=6)
-        log_frame.grid(row=5, column=0, sticky="nsew")
+        log_frame.grid(row=6, column=0, sticky="nsew")
         log_frame.columnconfigure(0, weight=1)
         log_frame.rowconfigure(0, weight=1)
-        self._log = ScrolledText(log_frame, height=15, wrap="word", state="disabled")
+        self._log = ScrolledText(log_frame, height=12, wrap="word", state="disabled")
         self._log.grid(row=0, column=0, sticky="nsew")
 
     def _show_error(self, error: BaseException) -> None:
@@ -745,6 +796,24 @@ class ControlCenterUI:
         self._controller.shutdown()
         self._destroy_window()
 
+    def _render_coder(self) -> None:
+        status = self._coder.status()
+        public = status.as_public_dict()
+        self._coder_state.set(str(public.get("state") or "—"))
+        self._coder_alias.set(str(public.get("alias") or "—"))
+        self._coder_model.set(str(public.get("model_repo") or "—"))
+        revision = str(public.get("model_revision") or "")
+        self._coder_revision.set(revision[:12] + "…" if len(revision) > 12 else revision or "—")
+        self._coder_endpoint.set(str(public.get("endpoint") or "—"))
+        iid = public.get("instance_id")
+        self._coder_instance.set(str(iid) if iid is not None else "—")
+        self._coder_provider_run.set(str(public.get("provider_run_id") or "—"))
+        price = public.get("hourly_price")
+        self._coder_price.set(f"${price}/hour" if price else "—")
+        budget = public.get("session_budget_usd")
+        self._coder_budget.set(f"${budget}" if budget else "—")
+        self._coder_message.set(str(public.get("message") or "—"))
+
     def _render(self, state: UIState) -> None:
         message = f"State: {state.state}"
         if state.message:
@@ -773,6 +842,7 @@ class ControlCenterUI:
         self._vast_billing.set(
             state.vast_billing_warning or "No active Vast billing"
         )
+        self._render_coder()
         if state.logs != self._last_log_render:
             self._log.configure(state="normal")
             self._log.delete("1.0", "end")
