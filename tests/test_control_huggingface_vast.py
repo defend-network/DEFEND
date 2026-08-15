@@ -468,6 +468,50 @@ def test_vast_heavy_create_requests_documented_direct_ssh(fake_http: FakeHttp):
     assert len(fake_http.requests) == 1
 
 
+def test_vast_build_create_payload_returns_exact_serialized_request(fake_http: FakeHttp):
+    offer = VastOffer(305, "A100 SXM4", 81920, Decimal("2.60"), Decimal("0.999"))
+    client = VastClient("vast_synthetic_secret", transport=fake_http)
+
+    payload = client.build_create_payload(offer, LaunchSpec.coder_heavy_direct())
+
+    assert payload["runtype"] == "ssh_direct"
+    assert payload["client_id"] == "me"
+    assert payload["target_state"] == "running"
+    assert payload["cancel_unavail"] is True
+    assert payload["template_hash_id"] is None
+    assert payload["image"] == "vllm/vllm-openai:v0.10.0"
+    assert fake_http.requests == []
+    with pytest.raises(ValueError, match="ssh_direc is rejected"):
+        client.build_create_payload(
+            offer,
+            LaunchSpec(
+                "vllm/vllm-openai:v0.15.0",
+                160,
+                "ssh_direc ssh_proxy",
+                "defendcoder-vllm",
+            ),
+        )
+    assert fake_http.requests == []
+
+
+def test_create_instance_sends_exactly_build_create_payload(fake_http: FakeHttp):
+    offer = VastOffer(306, "A100 SXM4", 81920, Decimal("2.60"), Decimal("0.999"))
+    fake_http.add_response(
+        method="PUT",
+        url="https://console.vast.ai/api/v0/asks/306/",
+        json={"success": True, "new_contract": 7003},
+    )
+    client = VastClient("vast_synthetic_secret", transport=fake_http)
+
+    heavy = LaunchSpec.coder_heavy_direct()
+    expected = client.build_create_payload(offer, heavy)
+
+    client.create_instance(offer, heavy)
+
+    assert fake_http.last_request.json == expected
+    assert expected["runtype"] == "ssh_direct"
+
+
 def test_vast_default_defend_lane_payload_is_unchanged(fake_http: FakeHttp):
     offer = VastOffer(304, "H100 SXM", 81920, Decimal("2.50"), Decimal("0.99"))
     fake_http.add_response(

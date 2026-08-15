@@ -3,6 +3,7 @@
 Zero provider create calls anywhere in this file. All offers are fakes.
 """
 
+from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from defend_control.coder_control_plane import (
     CoderProvisionApproval,
     CoderProvisionBlocked,
     LIVE_SMOKE_SEQUENCE,
+    _plan_fingerprint,
     resource_profile,
 )
 from defend_control.coder_deployment import resolve_deployment
@@ -167,10 +169,33 @@ class TestPlanAndApproval:
         assert plan.tensor_parallel_size == 2
         assert plan.serving_runtime == "vllm/vllm-openai:v0.15.0"
         assert plan.tool_call_parser == "qwen3_coder"
+        assert plan.launch_runtype == "ssh_direct"
         assert plan.local_port == 8003
         assert plan.status == "requires_approval"
         assert plan.plan_id
         assert plan.plan_hash
+
+    def test_default_coder_lane_plan_uses_documented_proxy_runtype(self):
+        backend = RecordingHeavyBackend()
+        plane = _plane(backend)
+        plan = plane.live_smoke_plan("defendcoder-default")
+        assert plan.launch_runtype == "ssh_proxy"
+        assert plan.as_public_dict()["launch_runtype"] == "ssh_proxy"
+
+    def test_changed_launch_transport_invalidates_approval(self):
+        plane = _plane()
+        prepared = plane.prepared_provision("defendcoder-heavy")
+        assert prepared.plan.launch_runtype == "ssh_direct"
+        approval = plane.approve(prepared)
+        direct_hash = _plan_fingerprint(prepared.plan, prepared.offer)
+        proxy_plan = replace(prepared.plan, launch_runtype="ssh_proxy")
+        proxy_hash = _plan_fingerprint(proxy_plan, prepared.offer)
+        assert proxy_hash != direct_hash
+        reoffered = CoderPreparedProvision(
+            plan=proxy_plan, offer=prepared.offer, plan_hash=proxy_hash
+        )
+        with pytest.raises(CoderProvisionBlocked, match="no longer matches"):
+            plane.provision(reoffered, approval)
 
     def test_plan_and_search_make_no_provider_calls(self):
         backend = RecordingHeavyBackend()

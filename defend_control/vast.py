@@ -303,7 +303,12 @@ class VastClient:
             raise VastError("Vast.ai instance list response is invalid")
         return tuple(instance_ids)
 
-    def create_instance(self, offer: VastOffer, launch: LaunchSpec) -> VastInstance:
+    def build_create_payload(self, offer: VastOffer, launch: LaunchSpec) -> dict:
+        """The exact serialized create-instance request body for an offer.
+
+        Validation runs here so the documented-launch contract is enforced
+        before any HTTP request is made. Raises before returning a payload.
+        """
         if not isinstance(offer, VastOffer):
             raise ValueError("offer must be a VastOffer")
         if "ssh_direc" in launch.runtype.split():
@@ -323,28 +328,33 @@ class VastClient:
                 "only the approved DEFEND or DEFENDcoder Vast launch is supported"
             )
         offer_id = _positive_int(offer.offer_id, "offer ID")
+        return {
+            "client_id": "me",
+            "image": launch.image,
+            "env": {},
+            "disk": launch.disk_gb,
+            "runtype": launch.runtype,
+            "target_state": "running",
+            "cancel_unavail": True,
+            "label": launch.label,
+            "onstart": None,
+            "image_login": None,
+            "python_utf8": False,
+            "lang_utf8": False,
+            "use_jupyter_lab": False,
+            "jupyter_dir": None,
+            "force": False,
+            "template_hash_id": None,
+            "user": None,
+        }
+
+    def create_instance(self, offer: VastOffer, launch: LaunchSpec) -> VastInstance:
+        payload = self.build_create_payload(offer, launch)
+        offer_id = _positive_int(offer.offer_id, "offer ID")
         document = self._request_json(
             "PUT",
             f"{_API_ROOT}/asks/{offer_id}/",
-            {
-                "client_id": "me",
-                "image": launch.image,
-                "env": {},
-                "disk": launch.disk_gb,
-                "runtype": launch.runtype,
-                "target_state": "running",
-                "cancel_unavail": True,
-                "label": launch.label,
-                "onstart": None,
-                "image_login": None,
-                "python_utf8": False,
-                "lang_utf8": False,
-                "use_jupyter_lab": False,
-                "jupyter_dir": None,
-                "force": False,
-                "template_hash_id": None,
-                "user": None,
-            },
+            payload,
             offer_race=True,
             retry_429=False,
         )

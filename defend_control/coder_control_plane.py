@@ -287,6 +287,7 @@ class CoderLiveSmokePlan:
     minimum_vllm_version: str
     tool_call_parser: str | None
     auto_tool_choice: bool
+    launch_runtype: str
     local_port: int
     offer_id: int | None
     status: str
@@ -322,6 +323,7 @@ class CoderLiveSmokePlan:
             "minimum_vllm_version": self.minimum_vllm_version,
             "tool_call_parser": self.tool_call_parser,
             "auto_tool_choice": self.auto_tool_choice,
+            "launch_runtype": self.launch_runtype,
             "local_port": self.local_port,
             "offer_id": self.offer_id,
             "status": self.status,
@@ -350,6 +352,17 @@ class CoderProvisionApproval:
     approver: str = "owner"
 
 
+def _launch_runtype_for(alias: str) -> str:
+    """The documented Vast runtype used at create time for an alias.
+
+    The heavy diagnostic lane requests the documented direct-SSH runtype;
+    every other DEFEND / DEFENDcoder lane uses the documented proxy runtype.
+    Binding this into the approval fingerprint means changing the launch
+    transport invalidates prior owner approvals.
+    """
+    return "ssh_direct" if alias == "defendcoder-heavy" else "ssh_proxy"
+
+
 def _plan_fingerprint(plan: CoderLiveSmokePlan, offer: VastOffer | None) -> str:
     """Deterministic hash of every cost/config-relevant plan + offer field."""
     payload: dict[str, object] = {
@@ -372,6 +385,7 @@ def _plan_fingerprint(plan: CoderLiveSmokePlan, offer: VastOffer | None) -> str:
         "serving_runtime": plan.serving_runtime,
         "minimum_vllm_version": plan.minimum_vllm_version,
         "tool_call_parser": plan.tool_call_parser,
+        "launch_runtype": plan.launch_runtype,
         "local_port": plan.local_port,
     }
     if offer is not None:
@@ -701,6 +715,7 @@ class CoderControlPlane:
             minimum_vllm_version=artifact.minimum_vllm_version,
             tool_call_parser=artifact.tool_call_parser,
             auto_tool_choice=artifact.enable_auto_tool_choice,
+            launch_runtype=_launch_runtype_for(alias),
             local_port=self.base_port + len(self._active),
             offer_id=offer.offer_id if offer is not None else None,
             status="requires_approval",
