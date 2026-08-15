@@ -28,6 +28,8 @@ _DEFAULT_ALIAS: CoderModelAlias = "defendcoder-default"
 # Pinned 2026-08-14 from HfApi().model_info(...).sha
 _CODER_DEFAULT_REPO = "Qwen/Qwen3-Coder-30B-A3B-Instruct"
 _CODER_DEFAULT_REVISION = "b2cff646eb4bb1d68355c01b18ae02e7cf42d120"
+_CODER_HEAVY_REPO = "Qwen/Qwen3-Coder-Next"
+_CODER_HEAVY_REVISION = "a7fbcb5c0e12d62a448eaa0e260346bf5dcc0feb"
 
 
 @dataclass(frozen=True)
@@ -40,7 +42,7 @@ class CoderModelRef:
 
 
 # Registry maps product aliases → concrete checkpoints.
-# V0 pins a practical single-GPU coder target; heavy/eval may share until filled.
+# V0 pins practical single-GPU coder targets; fast/eval may share until filled.
 CODER_MODEL_REGISTRY: dict[str, CoderModelRef] = {
     "defendcoder-fast": CoderModelRef(
         alias="defendcoder-fast",
@@ -58,10 +60,10 @@ CODER_MODEL_REGISTRY: dict[str, CoderModelRef] = {
     ),
     "defendcoder-heavy": CoderModelRef(
         alias="defendcoder-heavy",
-        repo_id=_CODER_DEFAULT_REPO,
-        revision=_CODER_DEFAULT_REVISION,
+        repo_id=_CODER_HEAVY_REPO,
+        revision=_CODER_HEAVY_REVISION,
         max_model_len=8192,
-        notes="Placeholder heavy lane; swap repo/revision when budget allows",
+        notes="Heavy lane: Qwen3-Coder-Next on A100/H100 80GB-class",
     ),
     "defendcoder-eval": CoderModelRef(
         alias="defendcoder-eval",
