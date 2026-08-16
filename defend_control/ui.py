@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import asdict
+import os
+from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
 from tkinter.scrolledtext import ScrolledText
@@ -236,6 +238,33 @@ class ControlCenterUI:
         self._product_text: dict[str, tk.StringVar] = {}
         self._product_state_labels: dict[str, ttk.Label] = {}
         self._product_buttons: dict[str, dict[str, ttk.Button]] = {}
+
+        # Dedicated per-product presentation surfaces.
+        self._product_tabs: dict[str, ttk.Frame] = {}
+        self._product_detail: dict[
+            str,
+            dict[str, tk.StringVar],
+        ] = {}
+        self._product_logs: dict[str, ScrolledText] = {}
+        self._product_tab_states: dict[str, tk.StringVar] = {}
+        self._product_tab_text: dict[str, tk.StringVar] = {}
+
+        self._home_cards: dict[str, ttk.LabelFrame] = {}
+        self._home_card_states: dict[str, tk.StringVar] = {}
+        self._home_card_text: dict[str, tk.StringVar] = {}
+        self._home_buttons: dict[
+            str,
+            dict[str, ttk.Button],
+        ] = {}
+        self._tab_buttons: dict[
+            str,
+            dict[str, ttk.Button],
+        ] = {}
+
+        self._platform_posture = tk.StringVar(
+            root,
+            value="4 products registered",
+        )
         # Observation-only until live VastCoderBackend is wired in Control Center.
         self._coder = coder_service or CoderM0Service(
             backend=LocalFakeCoderBackend()
@@ -271,7 +300,8 @@ class ControlCenterUI:
         )
 
         root.title("DEFEND Control Center")
-        root.minsize(720, 720)
+        self._set_window_icon()
+        root.minsize(860, 720)
         root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._build()
         self._render(self._controller.poll_state())
@@ -295,103 +325,914 @@ class ControlCenterUI:
         self._coder = coder_service
         self._render_coder()
 
-    def _build(self) -> None:
-        outer = ttk.Frame(self.root, padding=12)
-        outer.pack(fill="both", expand=True)
-        outer.columnconfigure(0, weight=1)
-        outer.rowconfigure(6, weight=1)
+    def _set_window_icon(self) -> None:
+        """Apply the DEFEND logo when the local icon asset is available."""
 
-        self._build_products(outer)
+        configured = os.environ.get("DEFEND_CONTROL_ICON")
 
-        mode_frame = ttk.LabelFrame(outer, text="Model backend", padding=8)
-        mode_frame.grid(row=1, column=0, sticky="ew")
-        ttk.Radiobutton(
-            mode_frame, text="Vast.ai", variable=self._mode, value="vast"
-        ).pack(side="left", padx=(0, 16))
-        ttk.Radiobutton(
-            mode_frame,
-            text="Local Ollama",
-            variable=self._mode,
-            value="ollama",
-        ).pack(side="left")
+        candidates = (
+            Path(configured) if configured else None,
+            Path.home() / "Downloads" / "DEFEND_LOGO.ico",
+        )
 
-        actions = ttk.Frame(outer)
-        actions.grid(row=2, column=0, sticky="ew", pady=8)
-        for label, command in (
-            ("Start", self._start),
-            ("Stop Local", self._stop_local),
-            ("Restart", self._restart),
-            ("Open DEFEND", self._open_defend),
-            ("Setup", self._setup),
-            ("Stop + Destroy Vast", self._destroy_vast),
-        ):
-            ttk.Button(actions, text=label, command=command).pack(
-                side="left", padx=(0, 6)
+        for candidate in candidates:
+            if candidate is None or not candidate.is_file():
+                continue
+
+            try:
+                self.root.iconbitmap(str(candidate))
+            except tk.TclError:
+                continue
+
+            break
+
+    @staticmethod
+    def _product_tab_title(application_id: str, display_name: str) -> str:
+        names = {
+            "defend": "DEFEND AI",
+            "sports": "DEFEND Sports",
+            "scs": "SCS AI",
+            "coder": "DEFENDcoder",
+        }
+
+        return names.get(application_id, display_name)
+
+    def _build_product_detail_tab(
+        self,
+        notebook: ttk.Notebook,
+        product: object,
+    ) -> None:
+        application_id = getattr(
+            product,
+            "application_id",
+            "unknown",
+        )
+        display_name = getattr(
+            product,
+            "display_name",
+            application_id,
+        )
+
+        tab = ttk.Frame(notebook, padding=12)
+        notebook.add(
+            tab,
+            text=self._product_tab_title(
+                application_id,
+                display_name,
+            ),
+        )
+
+        tab.columnconfigure(0, weight=1)
+        tab.rowconfigure(3, weight=1)
+
+        self._product_tabs[application_id] = tab
+
+        header = ttk.Frame(tab)
+        header.grid(
+            row=0,
+            column=0,
+            sticky="ew",
+            pady=(0, 8),
+        )
+        header.columnconfigure(1, weight=1)
+
+        ttk.Label(
+            header,
+            text=self._product_tab_title(
+                application_id,
+                display_name,
+            ),
+            font=("Segoe UI", 12, "bold"),
+        ).grid(
+            row=0,
+            column=0,
+            sticky="w",
+        )
+
+        state_var = tk.StringVar(
+            self.root,
+            value="\\u2014",
+        )
+        text_var = tk.StringVar(
+            self.root,
+            value="",
+        )
+
+        self._product_tab_states[application_id] = state_var
+        self._product_tab_text[application_id] = text_var
+
+        ttk.Label(
+            header,
+            textvariable=state_var,
+        ).grid(
+            row=0,
+            column=1,
+            sticky="w",
+            padx=(16, 0),
+        )
+
+        ttk.Label(
+            header,
+            textvariable=text_var,
+        ).grid(
+            row=1,
+            column=0,
+            columnspan=2,
+            sticky="w",
+            pady=(3, 0),
+        )
+
+        actions = ttk.Frame(tab)
+        actions.grid(
+            row=1,
+            column=0,
+            sticky="ew",
+            pady=(0, 8),
+        )
+
+        tab_buttons: dict[str, ttk.Button] = {}
+
+        for label, action in _PRODUCT_ACTIONS:
+            button = ttk.Button(
+                actions,
+                text=label,
+                command=lambda p=product, a=action: (
+                    self._product_action(p, a)
+                ),
             )
-
-        status = ttk.LabelFrame(outer, text="Components (DEFEND identity)", padding=8)
-        status.grid(row=2, column=0, sticky="ew")
-        status.columnconfigure(1, weight=1)
-        for row, (name, label) in enumerate(_COMPONENT_LABELS.items()):
-            ttk.Label(status, text=label).grid(row=row, column=0, sticky="w")
-            ttk.Label(status, textvariable=self._component_states[name]).grid(
-                row=row, column=1, sticky="w", padx=(18, 0)
+            button.pack(
+                side="left",
+                padx=(0, 6),
             )
+            tab_buttons[action] = button
 
-        vast = ttk.LabelFrame(outer, text="Current Vast.ai (identity)", padding=8)
-        vast.grid(row=3, column=0, sticky="ew", pady=8)
-        for row, (label, variable) in enumerate(
-            (
-                ("GPU", self._vast_gpu),
-                ("GPU RAM", self._vast_ram),
-                ("Reliability", self._vast_reliability),
-                ("Instance ID", self._vast_instance),
-                ("Provider status", self._vast_status),
-                ("Exact hourly price", self._vast_price),
-                ("Billing warning", self._vast_billing),
-            )
-        ):
-            ttk.Label(vast, text=label).grid(row=row, column=0, sticky="w")
-            ttk.Label(vast, textvariable=variable).grid(
-                row=row, column=1, sticky="w", padx=(18, 0)
-            )
+        self._tab_buttons[
+            application_id
+        ] = tab_buttons
 
-        coder = ttk.LabelFrame(
-            outer,
-            text="DEFENDcoder (observation — launch not wired)",
+        detail_frame = ttk.LabelFrame(
+            tab,
+            text="Identifiers / health",
             padding=8,
         )
-        coder.grid(row=4, column=0, sticky="ew", pady=(0, 8))
-        coder.columnconfigure(1, weight=1)
-        for row, (label, variable) in enumerate(
-            (
-                ("State", self._coder_state),
-                ("Alias", self._coder_alias),
-                ("Model", self._coder_model),
-                ("Revision", self._coder_revision),
-                ("Endpoint", self._coder_endpoint),
-                ("Instance ID", self._coder_instance),
-                ("Provider run", self._coder_provider_run),
-                ("Hourly price", self._coder_price),
-                ("Session budget", self._coder_budget),
-                ("Message", self._coder_message),
-                ("Public origin", self._coder_origin),
-            )
-        ):
-            ttk.Label(coder, text=label).grid(row=row, column=0, sticky="w")
-            ttk.Label(coder, textvariable=variable).grid(
-                row=row, column=1, sticky="w", padx=(18, 0)
-            )
-
-        ttk.Label(outer, textvariable=self._state).grid(
-            row=5, column=0, sticky="w", pady=(0, 6)
+        detail_frame.grid(
+            row=2,
+            column=0,
+            sticky="ew",
+            pady=(0, 8),
         )
-        log_frame = ttk.LabelFrame(outer, text="Bounded service log", padding=6)
-        log_frame.grid(row=6, column=0, sticky="nsew")
+        detail_frame.columnconfigure(1, weight=1)
+
+        self._product_detail[application_id] = {}
+
+        log_frame = ttk.LabelFrame(
+            tab,
+            text=f"{display_name} logs",
+            padding=6,
+        )
+        log_frame.grid(
+            row=3,
+            column=0,
+            sticky="nsew",
+        )
         log_frame.columnconfigure(0, weight=1)
         log_frame.rowconfigure(0, weight=1)
-        self._log = ScrolledText(log_frame, height=12, wrap="word", state="disabled")
-        self._log.grid(row=0, column=0, sticky="nsew")
+
+        log = ScrolledText(
+            log_frame,
+            height=16,
+            wrap="word",
+            state="disabled",
+        )
+        log.grid(
+            row=0,
+            column=0,
+            sticky="nsew",
+        )
+
+        self._product_logs[application_id] = log
+
+        # Store frame so detail fields can be built dynamically from
+        # ProductStatus.details without hard-coding product-specific keys.
+        setattr(
+            detail_frame,
+            "_defend_application_id",
+            application_id,
+        )
+
+    def _render_product_details(
+        self,
+        application_id: str,
+        status: ProductStatus,
+    ) -> None:
+        tab = self._product_tabs.get(application_id)
+
+        if tab is None:
+            return
+
+        detail_frame = None
+
+        for child in tab.winfo_children():
+            if (
+                isinstance(child, ttk.LabelFrame)
+                and getattr(
+                    child,
+                    "_defend_application_id",
+                    None,
+                )
+                == application_id
+            ):
+                detail_frame = child
+                break
+
+        if detail_frame is None:
+            return
+
+        variables = self._product_detail.setdefault(
+            application_id,
+            {},
+        )
+
+        incoming = tuple(status.details)
+
+        # Product detail keys are stable enough to preserve rows between
+        # polls; only rebuild if the backend changes the schema.
+        incoming_keys = tuple(
+            key
+            for key, _value in incoming
+        )
+
+        if tuple(variables.keys()) != incoming_keys:
+            for child in detail_frame.winfo_children():
+                child.destroy()
+
+            variables.clear()
+
+            for row, (key, value) in enumerate(incoming):
+                ttk.Label(
+                    detail_frame,
+                    text=key,
+                ).grid(
+                    row=row,
+                    column=0,
+                    sticky="w",
+                    pady=1,
+                )
+
+                variable = tk.StringVar(
+                    self.root,
+                    value=str(value),
+                )
+                variables[key] = variable
+
+                ttk.Label(
+                    detail_frame,
+                    textvariable=variable,
+                ).grid(
+                    row=row,
+                    column=1,
+                    sticky="w",
+                    padx=(18, 0),
+                    pady=1,
+                )
+        else:
+            for key, value in incoming:
+                variables[key].set(str(value))
+
+    def _render_product_logs(
+        self,
+        product: object,
+    ) -> None:
+        application_id = getattr(
+            product,
+            "application_id",
+            "",
+        )
+
+        widget = self._product_logs.get(
+            application_id
+        )
+
+        if widget is None:
+            return
+
+        try:
+            entries = tuple(
+                getattr(product, "logs")()
+            )
+        except Exception as error:
+            lines = (
+                f"Logs unavailable ({type(error).__name__})",
+            )
+        else:
+            lines_list: list[str] = []
+
+            for entry in entries:
+                service = getattr(
+                    entry,
+                    "service",
+                    application_id,
+                )
+                text = getattr(
+                    entry,
+                    "text",
+                    str(entry),
+                )
+                lines_list.append(
+                    f"[{service}] {text}"
+                )
+
+            lines = tuple(lines_list)
+
+        rendered = "\n".join(lines)
+
+        current = widget.get(
+            "1.0",
+            "end-1c",
+        )
+
+        if current == rendered:
+            return
+
+        widget.configure(state="normal")
+        widget.delete("1.0", "end")
+
+        if rendered:
+            widget.insert(
+                "end",
+                rendered,
+            )
+
+        widget.configure(state="disabled")
+        widget.see("end")
+
+    def _ordered_products(self) -> tuple[object, ...]:
+        order = {
+            "defend": 0,
+            "sports": 1,
+            "coder": 2,
+            "scs": 3,
+        }
+
+        return tuple(
+            sorted(
+                self._products,
+                key=lambda product: order.get(
+                    getattr(
+                        product,
+                        "application_id",
+                        "",
+                    ),
+                    99,
+                ),
+            )
+        )
+
+    def _resize_notebook_tabs(self, _event=None) -> None:
+        if not hasattr(self, "_notebook"):
+            return
+
+        tabs = self._notebook.tabs()
+
+        if not tabs:
+            return
+
+        width = max(
+            self._notebook.winfo_width(),
+            860,
+        )
+
+        # ttk tab width is character-based rather than pixel-based.
+        # 8 pixels per character is a practical Segoe UI approximation.
+        characters = max(
+            12,
+            int((width / len(tabs)) / 8),
+        )
+
+        style = ttk.Style(self.root)
+
+        style.configure(
+            "Defend.TNotebook.Tab",
+            width=characters,
+            anchor="center",
+            padding=(6, 7),
+        )
+
+    def _build_home_card(
+        self,
+        parent: ttk.Frame,
+        product: object,
+        *,
+        row: int,
+        column: int,
+    ) -> None:
+        application_id = getattr(
+            product,
+            "application_id",
+            "unknown",
+        )
+
+        display_name = self._product_tab_title(
+            application_id,
+            getattr(
+                product,
+                "display_name",
+                application_id,
+            ),
+        )
+
+        card = ttk.LabelFrame(
+            parent,
+            text=display_name,
+            padding=12,
+        )
+        card.grid(
+            row=row,
+            column=column,
+            sticky="nsew",
+            padx=6,
+            pady=6,
+        )
+        card.columnconfigure(0, weight=1)
+
+        self._home_cards[application_id] = card
+
+        state = tk.StringVar(
+            self.root,
+            value="\\u2014",
+        )
+        text = tk.StringVar(
+            self.root,
+            value="Waiting for status...",
+        )
+
+        self._home_card_states[
+            application_id
+        ] = state
+        self._home_card_text[
+            application_id
+        ] = text
+
+        ttk.Label(
+            card,
+            textvariable=state,
+            font=("Segoe UI", 11, "bold"),
+        ).grid(
+            row=0,
+            column=0,
+            sticky="w",
+        )
+
+        ttk.Label(
+            card,
+            textvariable=text,
+            wraplength=330,
+            justify="left",
+        ).grid(
+            row=1,
+            column=0,
+            sticky="nw",
+            pady=(6, 14),
+        )
+
+        actions = ttk.Frame(card)
+        actions.grid(
+            row=2,
+            column=0,
+            sticky="ew",
+        )
+
+        home_buttons: dict[str, ttk.Button] = {}
+
+        for label, action in _PRODUCT_ACTIONS:
+            button = ttk.Button(
+                actions,
+                text=label,
+                command=lambda p=product, a=action: (
+                    self._product_action(p, a)
+                ),
+                width=8,
+            )
+            button.pack(
+                side="left",
+                padx=(0, 5),
+            )
+            home_buttons[action] = button
+
+        self._home_buttons[
+            application_id
+        ] = home_buttons
+
+    def _render_platform_posture(
+        self,
+        statuses: tuple[ProductStatus, ...],
+    ) -> None:
+        total = len(statuses)
+
+        healthy_states = {
+            "running",
+            "ready",
+        }
+
+        attention_states = {
+            "failed",
+            "degraded",
+            "unavailable",
+            "not configured",
+        }
+
+        active = sum(
+            status.state in healthy_states
+            for status in statuses
+        )
+
+        attention = sum(
+            status.state in attention_states
+            for status in statuses
+        )
+
+        stopped = sum(
+            status.state == "stopped"
+            for status in statuses
+        )
+
+        self._platform_posture.set(
+            f"Products: {total}     "
+            f"Active: {active}     "
+            f"Stopped: {stopped}     "
+            f"Attention: {attention}"
+        )
+
+    def _build(self) -> None:
+        outer = ttk.Frame(
+            self.root,
+            padding=8,
+        )
+        outer.pack(
+            fill="both",
+            expand=True,
+        )
+        outer.columnconfigure(0, weight=1)
+        outer.rowconfigure(0, weight=1)
+
+        style = ttk.Style(self.root)
+
+        style.configure(
+            "Defend.TNotebook",
+            tabposition="n",
+        )
+
+        style.configure(
+            "Defend.TNotebook.Tab",
+            anchor="center",
+            padding=(6, 7),
+        )
+
+        self._notebook = ttk.Notebook(
+            outer,
+            style="Defend.TNotebook",
+        )
+        self._notebook.grid(
+            row=0,
+            column=0,
+            sticky="nsew",
+        )
+
+        self._notebook.bind(
+            "<Configure>",
+            self._resize_notebook_tabs,
+        )
+
+        # ==========================================================
+        # HOME
+        # ==========================================================
+
+        home = ttk.Frame(
+            self._notebook,
+            padding=16,
+        )
+
+        self._notebook.add(
+            home,
+            text="Home",
+        )
+
+        home.columnconfigure(0, weight=1)
+        home.rowconfigure(2, weight=1)
+
+        header = ttk.Frame(home)
+        header.grid(
+            row=0,
+            column=0,
+            sticky="ew",
+            pady=(0, 10),
+        )
+        header.columnconfigure(0, weight=1)
+
+        ttk.Label(
+            header,
+            text="DEFEND CONTROL CENTER",
+            font=("Segoe UI", 18, "bold"),
+        ).grid(
+            row=0,
+            column=0,
+            sticky="w",
+        )
+
+        ttk.Label(
+            header,
+            text=(
+                "Unified operations console for DEFEND AI, "
+                "DEFEND Sports, DEFENDcoder, and SCS AI."
+            ),
+            font=("Segoe UI", 9),
+        ).grid(
+            row=1,
+            column=0,
+            sticky="w",
+            pady=(3, 0),
+        )
+
+        posture = ttk.LabelFrame(
+            home,
+            text="Platform posture",
+            padding=(12, 8),
+        )
+        posture.grid(
+            row=1,
+            column=0,
+            sticky="ew",
+            pady=(0, 8),
+        )
+
+        ttk.Label(
+            posture,
+            textvariable=self._platform_posture,
+            font=("Segoe UI", 10, "bold"),
+        ).pack(
+            anchor="w",
+        )
+
+        cards = ttk.Frame(home)
+        cards.grid(
+            row=2,
+            column=0,
+            sticky="nsew",
+        )
+
+        cards.columnconfigure(0, weight=1)
+        cards.columnconfigure(1, weight=1)
+        cards.rowconfigure(0, weight=1)
+        cards.rowconfigure(1, weight=1)
+
+        ordered_products = self._ordered_products()
+
+        for index, product in enumerate(
+            ordered_products
+        ):
+            self._build_home_card(
+                cards,
+                product,
+                row=index // 2,
+                column=index % 2,
+            )
+
+        footer = ttk.LabelFrame(
+            home,
+            text="Operations",
+            padding=10,
+        )
+        footer.grid(
+            row=3,
+            column=0,
+            sticky="ew",
+            pady=(10, 0),
+        )
+
+        ttk.Label(
+            footer,
+            text=(
+                "Each product is independently controlled. "
+                "Open its tab for identifiers, runtime details, "
+                "health information, and isolated logs."
+            ),
+            wraplength=780,
+            justify="left",
+        ).pack(
+            side="left",
+            anchor="w",
+        )
+
+        ttk.Button(
+            footer,
+            text="Setup",
+            command=self._setup,
+        ).pack(
+            side="right",
+            padx=(8, 0),
+        )
+
+        # ==========================================================
+        # PRODUCT TABS
+        #
+        # Exact requested order:
+        # DEFEND AI -> Sports -> DEFENDcoder -> SCS AI
+        # ==========================================================
+
+        for product in ordered_products:
+            self._build_product_detail_tab(
+                self._notebook,
+                product,
+            )
+
+        # ==========================================================
+        # DEFEND AI identity/runtime-specific controls
+        # ==========================================================
+
+        defend_tab = self._product_tabs.get(
+            "defend"
+        )
+
+        if defend_tab is not None:
+            identity = ttk.LabelFrame(
+                defend_tab,
+                text="DEFEND identity runtime",
+                padding=8,
+            )
+            identity.grid(
+                row=4,
+                column=0,
+                sticky="ew",
+                pady=(8, 0),
+            )
+
+            mode_frame = ttk.Frame(identity)
+            mode_frame.pack(
+                fill="x",
+                pady=(0, 8),
+            )
+
+            ttk.Label(
+                mode_frame,
+                text="Model backend:",
+            ).pack(
+                side="left",
+                padx=(0, 10),
+            )
+
+            ttk.Radiobutton(
+                mode_frame,
+                text="Vast.ai",
+                variable=self._mode,
+                value="vast",
+            ).pack(
+                side="left",
+                padx=(0, 16),
+            )
+
+            ttk.Radiobutton(
+                mode_frame,
+                text="Local Ollama",
+                variable=self._mode,
+                value="ollama",
+            ).pack(
+                side="left",
+            )
+
+            identity_actions = ttk.Frame(
+                identity
+            )
+            identity_actions.pack(
+                fill="x",
+                pady=(0, 8),
+            )
+
+            for label, command in (
+                ("Start", self._start),
+                ("Stop Local", self._stop_local),
+                ("Restart", self._restart),
+                ("Open DEFEND", self._open_defend),
+                (
+                    "Stop + Destroy Vast",
+                    self._destroy_vast,
+                ),
+            ):
+                ttk.Button(
+                    identity_actions,
+                    text=label,
+                    command=command,
+                ).pack(
+                    side="left",
+                    padx=(0, 6),
+                )
+
+            component_frame = ttk.LabelFrame(
+                identity,
+                text="Components",
+                padding=8,
+            )
+            component_frame.pack(
+                fill="x",
+                pady=(0, 8),
+            )
+
+            for row, (
+                name,
+                label,
+            ) in enumerate(
+                _COMPONENT_LABELS.items()
+            ):
+                ttk.Label(
+                    component_frame,
+                    text=label,
+                ).grid(
+                    row=row,
+                    column=0,
+                    sticky="w",
+                )
+
+                ttk.Label(
+                    component_frame,
+                    textvariable=(
+                        self._component_states[name]
+                    ),
+                ).grid(
+                    row=row,
+                    column=1,
+                    sticky="w",
+                    padx=(18, 0),
+                )
+
+            vast = ttk.LabelFrame(
+                identity,
+                text="Current Vast.ai",
+                padding=8,
+            )
+            vast.pack(
+                fill="x",
+            )
+
+            for row, (
+                label,
+                variable,
+            ) in enumerate(
+                (
+                    ("GPU", self._vast_gpu),
+                    ("GPU RAM", self._vast_ram),
+                    (
+                        "Reliability",
+                        self._vast_reliability,
+                    ),
+                    (
+                        "Instance ID",
+                        self._vast_instance,
+                    ),
+                    (
+                        "Provider status",
+                        self._vast_status,
+                    ),
+                    (
+                        "Exact hourly price",
+                        self._vast_price,
+                    ),
+                    (
+                        "Billing warning",
+                        self._vast_billing,
+                    ),
+                )
+            ):
+                ttk.Label(
+                    vast,
+                    text=label,
+                ).grid(
+                    row=row,
+                    column=0,
+                    sticky="w",
+                )
+
+                ttk.Label(
+                    vast,
+                    textvariable=variable,
+                ).grid(
+                    row=row,
+                    column=1,
+                    sticky="w",
+                    padx=(18, 0),
+                )
+
+        # Legacy controller log sink. Product logs have their own visible
+        # per-product widgets.
+        self._log = ScrolledText(
+            home,
+            height=1,
+            state="disabled",
+        )
+        self._log.grid_remove()
+
+        self.root.after(
+            50,
+            self._resize_notebook_tabs,
+        )
 
     def _build_products(self, outer: ttk.Frame) -> None:
         products = ttk.LabelFrame(outer, text="Products", padding=8)
@@ -435,7 +1276,9 @@ class ControlCenterUI:
             elif action == "open":
                 self._open_defend()
             else:
-                self._focus_log()
+                self._focus_product_log(
+                    application_id
+                )
             return
         try:
             if action == "launch":
@@ -445,19 +1288,43 @@ class ControlCenterUI:
             elif action == "open":
                 self._controller.submit_work(getattr(product, "open_url"))
             else:
-                self._focus_log()
+                self._focus_product_log(
+                    application_id
+                )
         except Exception as error:
             self._show_error(error)
 
     def _focus_log(self) -> None:
         self._log.see("end")
 
+    def _focus_product_log(
+        self,
+        application_id: str,
+    ) -> None:
+        tab = self._product_tabs.get(
+            application_id
+        )
+
+        if tab is not None:
+            self._notebook.select(tab)
+
+        log = self._product_logs.get(
+            application_id
+        )
+
+        if log is not None:
+            log.see("end")
+            log.focus_set()
+
     def _render_products(self) -> None:
+        rendered_statuses: list[ProductStatus] = []
+
         for product in self._products:
             application_id = getattr(product, "application_id", "")
-            state_var = self._product_states.get(application_id)
-            if state_var is None:
-                continue
+            state_var = self._product_states.get(
+                application_id
+            )
+
             try:
                 status = product.status()
             except Exception as error:
@@ -467,25 +1334,94 @@ class ControlCenterUI:
                     "failed",
                     f"Status unavailable ({type(error).__name__})",
                 )
-            state_var.set(status.state)
-            self._product_text[application_id].set(status.status_text)
+            rendered_statuses.append(status)
+
+            if state_var is not None:
+                state_var.set(status.state)
+
+            legacy_text = self._product_text.get(
+                application_id
+            )
+            if legacy_text is not None:
+                legacy_text.set(
+                    status.status_text
+                )
+
+            home_state = self._home_card_states.get(
+                application_id
+            )
+            if home_state is not None:
+                home_state.set(status.state)
+
+            home_text = self._home_card_text.get(
+                application_id
+            )
+            if home_text is not None:
+                home_text.set(status.status_text)
+
+            tab_state = self._product_tab_states.get(
+                application_id
+            )
+            if tab_state is not None:
+                tab_state.set(status.state)
+
+            tab_text = self._product_tab_text.get(
+                application_id
+            )
+            if tab_text is not None:
+                tab_text.set(status.status_text)
+
+            self._render_product_details(
+                application_id,
+                status,
+            )
+            self._render_product_logs(
+                product,
+            )
+
             state_label = self._product_state_labels.get(application_id)
             if state_label is not None:
                 state_label.configure(
                     foreground=_STATE_COLORS.get(status.state, "gray")
                 )
-            buttons = self._product_buttons.get(application_id, {})
-            for action, available in (
+            availability = (
                 ("launch", status.launch_available),
                 ("stop", status.stop_available),
                 ("open", status.open_available),
                 ("logs", status.logs_available),
-            ):
-                button = buttons.get(action)
-                if button is not None:
-                    button.configure(
-                        state="normal" if available else "disabled"
-                    )
+            )
+
+            button_groups = (
+                self._product_buttons.get(
+                    application_id,
+                    {},
+                ),
+                self._home_buttons.get(
+                    application_id,
+                    {},
+                ),
+                self._tab_buttons.get(
+                    application_id,
+                    {},
+                ),
+            )
+
+            for action, available in availability:
+                for buttons in button_groups:
+                    button = buttons.get(action)
+
+                    if button is not None:
+                        button.configure(
+                            state=(
+                                "normal"
+                                if available
+                                else "disabled"
+                            )
+                        )
+
+        self._render_platform_posture(
+            tuple(rendered_statuses)
+        )
 
     def _show_error(self, error: BaseException) -> None:
         messagebox.showerror(
