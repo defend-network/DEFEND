@@ -4,13 +4,14 @@ from collections.abc import Callable
 from dataclasses import asdict
 import os
 from pathlib import Path
+import threading
 import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
 from tkinter.scrolledtext import ScrolledText
 
 from .coder_m0 import CoderM0Service, LocalFakeCoderBackend
 from .controller import ConfirmationRequired, ControlController, UIState
-from .products import ProductStatus
+from .products import ProductStatus, coder_plan_rows
 from .settings import ControlSettings
 from .integration_catalog import (
     SECRET_CATALOG,
@@ -492,6 +493,191 @@ class SetupDialog(tk.Toplevel):
         self.destroy()
 
 
+class _ThreadedTkConfirmation:
+    """Marshal an owner SSH-fingerprint prompt onto the Tk thread.
+
+    The tunnel setup runs on the controller worker thread; Tk widgets are
+    only touched here via event_generate, which is safe cross-thread.
+    """
+
+    _EVENT = "<<DefendCoderFingerprintPrompt>>"
+
+    def __init__(
+        self,
+        root: tk.Tk,
+        title: str,
+        template: str,
+    ) -> None:
+        self._root = root
+        self._title = title
+        self._template = template
+        self._pending: dict[str, object] | None = None
+        self._event = threading.Event()
+        self._root.bind(self._EVENT, self._handle_event)
+
+    def __call__(
+        self,
+        instance_id: int,
+        fingerprint: str,
+    ) -> bool:
+        if self._root.winfo_exists() is False:
+            return False
+        pending = {
+            "instance_id": instance_id,
+            "fingerprint": fingerprint,
+            "decision": [False],
+        }
+        self._pending = pending
+        self._event.clear()
+        try:
+            self._root.event_generate(
+                self._EVENT,
+                when="tail",
+            )
+        except Exception:
+            return False
+        self._event.wait(timeout=300)
+        decision = pending["decision"]
+        return bool(decision and decision[0])
+
+    def _handle_event(self, _event=None) -> None:
+        pending = self._pending
+        if pending is None:
+            return
+        try:
+            pending["decision"][0] = bool(
+                messagebox.askyesno(
+                    self._title,
+                    self._template.format(
+                        instance_id=pending["instance_id"],
+                        fingerprint=pending["fingerprint"],
+                    ),
+                    parent=self._root,
+                )
+            )
+        except Exception:
+            pending["decision"][0] = False
+        finally:
+            self._event.set()
+
+
+class CoderApprovalDialog(tk.Toplevel):
+    """Exact-plan owner approval before any DEFENDcoder provider spend.
+
+    Renders only the prepared plan fields; no auto-approval and no
+    fallback. Approving or cancelling invokes the injected callbacks.
+    """
+
+    APPROVE_LABEL = "APPROVE & LAUNCH"
+    CANCEL_LABEL = "CANCEL"
+    TITLE = "Approve DEFENDcoder NEXT plan"
+
+    def __init__(
+        self,
+        parent: tk.Misc,
+        prepared,
+        *,
+        on_approve: Callable[[], None] | None = None,
+        on_cancel: Callable[[], None] | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._on_approve = on_approve
+        self._on_cancel = on_cancel
+        self._decided: str | None = None
+        self.title(self.TITLE)
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+
+        body = ttk.Frame(self, padding=12)
+        body.grid(sticky="nsew")
+
+        ttk.Label(
+            body,
+            text=(
+                "Approve this exact plan before any provider spend:"
+            ),
+            font=("Segoe UI", 10, "bold"),
+        ).grid(
+            row=0,
+            column=0,
+            columnspan=2,
+            sticky="w",
+            pady=(0, 8),
+        )
+
+        for row, (label, value) in enumerate(
+            coder_plan_rows(prepared),
+            start=1,
+        ):
+            ttk.Label(body, text=label).grid(
+                row=row,
+                column=0,
+                sticky="w",
+                padx=(0, 16),
+            )
+            ttk.Label(body, text=value).grid(
+                row=row,
+                column=1,
+                sticky="w",
+            )
+
+        buttons = ttk.Frame(body)
+        buttons.grid(
+            row=len(coder_plan_rows(prepared)) + 1,
+            column=0,
+            columnspan=2,
+            sticky="e",
+            pady=(12, 0),
+        )
+        ttk.Button(
+            buttons,
+            text=self.APPROVE_LABEL,
+            command=self._approve,
+        ).pack(side="left", padx=(0, 8))
+        ttk.Button(
+            buttons,
+            text=self.CANCEL_LABEL,
+            command=self._cancel,
+        ).pack(side="left")
+
+        self.protocol("WM_DELETE_WINDOW", self._cancel)
+        self.update_idletasks()
+        self._center_over(parent)
+        self.wait_visibility()
+
+    def _center_over(self, parent: tk.Misc) -> None:
+        self.update_idletasks()
+        try:
+            parent_x = parent.winfo_rootx()
+            parent_y = parent.winfo_rooty()
+            parent_width = parent.winfo_width()
+            parent_height = parent.winfo_height()
+        except Exception:
+            return
+        width = self.winfo_reqwidth()
+        height = self.winfo_reqheight()
+        x = parent_x + (parent_width - width) // 2
+        y = parent_y + (parent_height - height) // 3
+        self.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+
+    def _approve(self) -> None:
+        self._decided = "approve"
+        self.destroy()
+        if self._on_approve is not None:
+            self._on_approve()
+
+    def _cancel(self) -> None:
+        self._decided = "cancel"
+        self.destroy()
+        if self._on_cancel is not None:
+            self._on_cancel()
+
+    @property
+    def decided(self) -> str | None:
+        return self._decided
+
+
 class ControlCenterUI:
     def __init__(
         self,
@@ -549,6 +735,7 @@ class ControlCenterUI:
         )
         self._closing_after_stop = False
         self._exit_future: object | None = None
+        self._coder_fingerprint_confirmation: _ThreadedTkConfirmation | None = None
         self._last_log_render: tuple[object, ...] | None = None
         self._last_confirmation_signature: tuple[object, ...] | None = None
         self._mode = tk.StringVar(root, value="")
@@ -602,6 +789,28 @@ class ControlCenterUI:
         """Swap observation source (e.g. live Vast backend later)."""
         self._coder = coder_service
         self._render_coder()
+
+    def wire_coder_fingerprint_confirmer(self, holder: object | None) -> None:
+        """Connect the runtime's fingerprint holder to an owner prompt.
+
+        The holder is the tools-layer _CoderFingerprintConfirmer; its
+        confirm() runs on the worker thread and delegates here.
+        """
+        if holder is None:
+            return
+        if self._coder_fingerprint_confirmation is None:
+            self._coder_fingerprint_confirmation = _ThreadedTkConfirmation(
+                self.root,
+                "Approve DEFENDcoder SSH fingerprint",
+                (
+                    "Vast instance {instance_id} is not yet pinned in the "
+                    "known-hosts file.\n\nFingerprint:\n{fingerprint}\n\n"
+                    "Approve this host?"
+                ),
+            )
+        setter = getattr(holder, "set", None)
+        if callable(setter):
+            setter(self._coder_fingerprint_confirmation)
 
     def _set_window_icon(self) -> None:
         """Apply the DEFEND logo when the local icon asset is available."""
@@ -1558,6 +1767,9 @@ class ControlCenterUI:
                     application_id
                 )
             return
+        if application_id == "coder" and action == "launch":
+            self._coder_launch(product)
+            return
         try:
             if action == "launch":
                 self._controller.submit_work(getattr(product, "start"))
@@ -1571,6 +1783,72 @@ class ControlCenterUI:
                 )
         except Exception as error:
             self._show_error(error)
+
+    def _coder_launch(self, product: object) -> None:
+        try:
+            future = self._controller.submit_work(
+                getattr(product, "start")
+            )
+        except Exception as error:
+            self._show_error(error)
+            return
+
+        done = getattr(future, "add_done_callback", None)
+        if callable(done):
+            done(
+                lambda completed: self._after_coder_launch(
+                    product, completed
+                )
+            )
+
+    def _after_coder_launch(
+        self,
+        product: object,
+        completed: object,
+    ) -> None:
+        try:
+            status = completed.result()
+        except Exception as error:
+            self.root.after(
+                0,
+                lambda: self._show_error(error),
+            )
+            return
+        if getattr(status, "state", "") != "approval_required":
+            return
+        self.root.after(
+            0,
+            lambda: self._show_coder_approval(product),
+        )
+
+    def _show_coder_approval(self, product: object) -> None:
+        pending = getattr(product, "pending_plan", None)
+        prepared = pending() if callable(pending) else None
+        if prepared is None:
+            return
+
+        def on_approve() -> None:
+            try:
+                self._controller.submit_work(
+                    getattr(product, "approve")
+                )
+            except Exception as error:
+                self._show_error(error)
+
+        def on_cancel() -> None:
+            try:
+                self._controller.submit_work(
+                    getattr(product, "cancel")
+                )
+            except Exception as error:
+                self._show_error(error)
+
+        CoderApprovalDialog(
+            self.root,
+            prepared,
+            on_approve=on_approve,
+            on_cancel=on_cancel,
+        )
 
     def _focus_log(self) -> None:
         self._log.see("end")

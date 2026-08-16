@@ -9,6 +9,7 @@ import webbrowser
 
 from .health import JsonResult, fetch_http_json
 from .processes import LogEntry, ProcessSpec
+from .coder_control_plane import CoderProvisionBlocked
 
 
 @dataclass(frozen=True)
@@ -715,9 +716,76 @@ class ScsService:
         return tuple(entries)
 
 
+def coder_plan_rows(prepared) -> tuple[tuple[str, str], ...]:
+    """Owner-visible plan rows for the approval dialog and status detail."""
+    plan = prepared.plan
+    offer = prepared.offer
+    public = plan.as_public_dict()
+    offer_id = public.get("offer_id")
+    hourly = public.get("provider_hourly_rate")
+    gpu_name = (
+        offer.gpu_name
+        if offer is not None
+        else None
+    ) or public.get("gpu_family") or "\u2014"
+    reliability = (
+        str(offer.reliability)
+        if offer is not None
+        else "\u2014"
+    )
+    return (
+        ("Logical model", public["logical_repo_id"]),
+        ("Deployment", public["deployment_repo_id"]),
+        ("Pinned revision", str(public["deployment_revision"])),
+        ("Precision", str(public["precision"])),
+        ("GPU", str(gpu_name)),
+        ("GPU count", str(public["gpu_count"])),
+        ("VRAM per GPU", f'{public["vram_per_gpu_mb"]} MB'),
+        ("Reliability", reliability),
+        (
+            "Offer ID",
+            str(offer_id) if offer_id is not None else "\u2014",
+        ),
+        (
+            "Exact $/hr",
+            f"${hourly}" if hourly is not None else "\u2014",
+        ),
+        (
+            "Configured max $/hr",
+            f"${public['max_hourly_price_usd']}",
+        ),
+        (
+            "Session budget",
+            f"${public['session_budget_usd']}",
+        ),
+        ("vLLM image", str(public["serving_runtime"])),
+        ("Max model length", str(public["max_model_len"])),
+        (
+            "Tensor parallel",
+            str(public["tensor_parallel_size"]),
+        ),
+        ("Tool parser", str(public["tool_call_parser"])),
+        ("Launch runtype", str(public["launch_runtype"])),
+        ("Plan ID", str(public["plan_id"])),
+        ("Plan hash", str(public["plan_hash"])),
+    )
+
+
 class CoderService:
     application_id = "coder"
     display_name = "DEFENDcoder"
+
+    # Typed lifecycle states (plane-wired builds). "running" is only reported
+    # after remote compute readiness AND local API/UI are genuinely up.
+    _LIFECYCLE_STATES = (
+        "stopped",
+        "preparing",
+        "approval_required",
+        "provisioning",
+        "starting_local",
+        "running",
+        "failed",
+    )
 
     def __init__(
         self,
@@ -727,7 +795,9 @@ class CoderService:
         repository: Path | None = None,
         python_executable: str | None = None,
         observation: object | None = None,
+        plane: object | None = None,
         probe=fetch_http_json,
+        destroy_runtime_on_stop: bool = True,
     ) -> None:
         self._settings = settings
         self._supervisor = supervisor
@@ -742,8 +812,13 @@ class CoderService:
             else None
         )
         self._observation = observation
+        self._plane = plane
         self._probe = probe
         self._last_error: str | None = None
+        self._prepared: object | None = None
+        self._approval: object | None = None
+        self._coder_state: str = "stopped"
+        self._destroy_runtime_on_stop = bool(destroy_runtime_on_stop)
 
     @property
     def _lifecycle_enabled(self) -> bool:
@@ -764,6 +839,11 @@ class CoderService:
 
     @property
     def state(self) -> str:
+        if self._plane is not None:
+            if self._coder_state in self._LIFECYCLE_STATES:
+                return self._coder_state
+            return "stopped"
+
         if not self._lifecycle_enabled:
             public = self._observation_public()
 
@@ -825,6 +905,112 @@ class CoderService:
         return value
 
     def start(self) -> ProductStatus:
+        if self._plane is None:
+            return self._start_local_only()
+
+        if self._coder_state in (
+            "preparing",
+            "provisioning",
+            "starting_local",
+        ):
+            return self.status()
+
+        alias = str(self._settings.coder_model_alias)
+
+        try:
+            endpoint = self._plane.status(alias)
+        except Exception as error:
+            self._coder_state = "failed"
+            self._last_error = (
+                "runtime status unavailable "
+                f"({type(error).__name__})"
+            )
+            return self.status()
+
+        if endpoint.get("state") == "ready":
+            return self._start_local_and_finish()
+
+        self._coder_state = "preparing"
+        self._last_error = None
+
+        try:
+            prepared = self._plane.prepared_provision(alias)
+        except Exception as error:
+            self._coder_state = "failed"
+            self._last_error = (
+                "plan preparation failed "
+                f"({type(error).__name__})"
+            )
+            return self.status()
+
+        self._prepared = prepared
+        self._approval = None
+        self._coder_state = "approval_required"
+
+        return self.status()
+
+    def approve(self) -> ProductStatus:
+        if self._plane is None or self._prepared is None:
+            self._last_error = "no pending coder plan to approve"
+            return self.status()
+
+        if self._coder_state != "approval_required":
+            self._last_error = (
+                "no pending coder plan to approve"
+            )
+            return self.status()
+
+        prepared = self._prepared
+        alias = str(prepared.plan.alias)
+        self._coder_state = "provisioning"
+
+        try:
+            approval = self._plane.approve(prepared)
+            self._approval = approval
+            self._plane.provision(prepared, approval)
+            smoke = self._plane.smoke(alias)
+        except CoderProvisionBlocked as error:
+            self._fail_after_remote_error(
+                alias,
+                f"provisioning blocked: {error}",
+            )
+            return self.status()
+        except Exception as error:
+            self._fail_after_remote_error(
+                alias,
+                f"provisioning failed ({type(error).__name__})",
+            )
+            return self.status()
+
+        if not smoke.ok:
+            self._fail_after_remote_error(
+                alias,
+                f"remote readiness failed: {smoke.detail}",
+            )
+            return self.status()
+
+        self._prepared = None
+        self._approval = None
+
+        return self._start_local_and_finish()
+
+    def cancel(self) -> ProductStatus:
+        if self._plane is None:
+            self._last_error = "no pending coder plan to cancel"
+            return self.status()
+
+        if self._coder_state == "approval_required":
+            self._prepared = None
+            self._approval = None
+            self._coder_state = "stopped"
+            self._last_error = None
+
+        return self.status()
+
+    def pending_plan(self):
+        return self._prepared
+
+    def _start_local_only(self) -> ProductStatus:
         if not self._lifecycle_enabled:
             return self.status()
 
@@ -865,6 +1051,84 @@ class CoderService:
 
         return self.status()
 
+    def _start_local_and_finish(self) -> ProductStatus:
+        if not self._lifecycle_enabled:
+            self._coder_state = "running"
+            self._last_error = None
+            return self.status()
+
+        if not self._settings.coder_database_url:
+            self._coder_state = "failed"
+            self._last_error = (
+                "CODER_DATABASE_URL is not configured; "
+                "local API/UI cannot start"
+            )
+            return self.status()
+
+        self._coder_state = "starting_local"
+
+        try:
+            self._supervisor.logs.add_known_secrets(
+                [self._settings.coder_database_url]
+            )
+
+            if not self._service_running("coder:api"):
+                self._supervisor.start(
+                    build_coder_api_process_spec(
+                        self._settings,
+                        self._repository,
+                        self._python_executable,
+                    )
+                )
+
+            if not self._service_running("coder:web"):
+                self._supervisor.start(
+                    build_coder_web_process_spec(
+                        self._settings,
+                        self._repository,
+                    )
+                )
+
+            self._last_error = None
+            self._coder_state = "running"
+
+        except Exception as error:
+            self._coder_state = "failed"
+            self._last_error = (
+                f"local start failed ({type(error).__name__})"
+            )
+
+        return self.status()
+
+    def _fail_after_remote_error(
+        self,
+        alias: str,
+        message: str,
+    ) -> None:
+        try:
+            self._plane.release(alias, destroy=True)
+        except Exception:
+            pass
+        try:
+            self._stop_coder_tunnels()
+        except Exception:
+            pass
+        self._prepared = None
+        self._approval = None
+        self._coder_state = "failed"
+        self._last_error = message
+
+    def _stop_coder_tunnels(self) -> None:
+        if not self._lifecycle_enabled:
+            return
+        for snapshot in self._supervisor.snapshot():
+            if not snapshot.name.startswith("coder ssh tunnel"):
+                continue
+            try:
+                self._supervisor.stop(snapshot.name)
+            except Exception:
+                pass
+
     def stop(self) -> ProductStatus:
         if not self._lifecycle_enabled:
             return self.status()
@@ -883,6 +1147,30 @@ class CoderService:
                     f"({type(error).__name__})"
                 )
 
+        try:
+            self._stop_coder_tunnels()
+        except Exception as error:
+            errors.append(
+                f"coder ssh tunnel stop failed "
+                f"({type(error).__name__})"
+            )
+
+        if self._plane is not None:
+            alias = str(self._settings.coder_model_alias)
+            try:
+                self._plane.release(
+                    alias,
+                    destroy=self._destroy_runtime_on_stop,
+                )
+            except Exception as error:
+                errors.append(
+                    f"runtime teardown failed "
+                    f"({type(error).__name__})"
+                )
+
+        self._prepared = None
+        self._approval = None
+        self._coder_state = "stopped"
         self._last_error = (
             "; ".join(errors)
             if errors
@@ -921,6 +1209,22 @@ class CoderService:
             if raw_budget is not None:
                 budget = f"${raw_budget}"
 
+        if self._plane is not None:
+            try:
+                endpoint = self._plane.status(
+                    str(self._settings.coder_model_alias)
+                )
+            except Exception:
+                endpoint = {}
+            if endpoint.get("alias"):
+                alias = str(endpoint["alias"])
+            if endpoint.get("gpu_type"):
+                gpu = str(endpoint["gpu_type"])
+            if endpoint.get("instance_id") is not None:
+                instance = str(endpoint["instance_id"])
+            if endpoint.get("hourly_price") is not None:
+                hourly = f"${endpoint['hourly_price']}"
+
         api = (
             "running"
             if self._service_running("coder:api")
@@ -934,6 +1238,13 @@ class CoderService:
         )
 
         state = self.state
+
+        plan_rows: tuple[tuple[str, str], ...] = ()
+        if (
+            state == "approval_required"
+            and self._prepared is not None
+        ):
+            plan_rows = coder_plan_rows(self._prepared)
 
         if not self._lifecycle_enabled:
             return ProductStatus(
@@ -960,6 +1271,19 @@ class CoderService:
 
         if self._last_error:
             status_text = self._last_error
+        elif state == "approval_required":
+            status_text = (
+                "Plan ready \u2014 owner approval required "
+                "before any spend"
+            )
+        elif state == "preparing":
+            status_text = "Preparing NEXT deployment plan\u2026"
+        elif state == "provisioning":
+            status_text = (
+                "Provisioning approved NEXT runtime\u2026"
+            )
+        elif state == "starting_local":
+            status_text = "Starting local API and UI\u2026"
         elif state == "running":
             status_text = "DEFENDcoder API and UI running"
         elif state == "degraded":
@@ -984,6 +1308,7 @@ class CoderService:
                 ("Instance", instance),
                 ("$/hr", hourly),
                 ("Session cost", budget),
+                *plan_rows,
                 (
                     "Public origin",
                     self._settings.coder_public_origin,
@@ -1039,6 +1364,7 @@ def build_products(
     public_origin: str,
     settings: ProductsSettings | None = None,
     scs_tunnel=None,
+    coder_plane=None,
     probe=fetch_http_json,
     clock=time.monotonic,
 ) -> tuple[ProductService, ...]:
@@ -1070,6 +1396,7 @@ def build_products(
             supervisor=supervisor,
             repository=repository,
             python_executable=python_executable,
+            plane=coder_plane,
             probe=probe,
         ),
     )

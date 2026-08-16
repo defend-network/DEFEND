@@ -35,6 +35,128 @@ class _Runtime:
     controller: ControlController
     supervisor: ProcessSupervisor
     products: tuple[object, ...] = ()
+    coder_plane: object | None = None
+    coder_fingerprint_confirmer: object | None = None
+
+
+class _CoderFingerprintConfirmer:
+    """Indirection so the UI can supply an interactive SSH confirmation."""
+
+    def __init__(self) -> None:
+        self.callback = None
+
+    def set(self, callback) -> None:
+        self.callback = callback
+
+    def confirm(self, instance_id: int, fingerprint: str) -> bool:
+        if self.callback is None:
+            return False
+        return bool(self.callback(instance_id, fingerprint))
+
+
+def _load_coder_secrets(secret_source) -> dict[str, str]:
+    loader = getattr(secret_source, "load", None)
+    if loader is None:
+        return dict(secret_source)
+    loaded = loader()
+    if not isinstance(loaded, dict):
+        raise TypeError("secret store returned invalid state")
+    return dict(loaded)
+
+
+def _build_coder_plane(
+    *,
+    products_settings,
+    secret_source,
+    supervisor,
+    confirmer: _CoderFingerprintConfirmer | None = None,
+):
+    """Build the DEFENDcoder control plane; None when Vast is not configured.
+
+    The plane performs zero billable calls on construction; launch flows
+    reach approval_required before any create_instance call.
+    """
+    from defend_control.coder_control_plane import (
+        CoderControlPlane,
+        CoderPolicy,
+    )
+    from defend_control.coder_remote_vllm import CoderRemoteVllmBootstrap
+    from defend_control.coder_vast_backend import VastCoderBackend
+    from defend_control.ssh_tunnel import (
+        HostFingerprintConfirmation,
+        SshTunnel,
+    )
+    from defend_control.types import ResourceProfile
+    from defend_control.vast import VastClient
+
+    secrets = _load_coder_secrets(secret_source)
+    if not secrets.get("VAST_API_KEY"):
+        return None
+
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if not local_app_data:
+        return None
+    ssh_root = Path(local_app_data) / "DEFEND" / "ssh"
+    known_hosts = ssh_root / "known_hosts"
+    key_path = ssh_root / "vast_ed25519"
+
+    active_confirmer = (
+        confirmer if confirmer is not None else _CoderFingerprintConfirmer()
+    )
+
+    def tunnel_start(instance, local_port):
+        tunnel = SshTunnel(
+            supervisor,
+            known_hosts=known_hosts,
+            key_path=key_path,
+            local_port=local_port,
+            name=f"coder ssh tunnel:{local_port}",
+        )
+        try:
+            fingerprint = tunnel.prepare_host(
+                instance,
+                confirm_fingerprint=None,
+                prefer_direct=True,
+            )
+        except HostFingerprintConfirmation as pending:
+            if not active_confirmer.confirm(
+                pending.instance_id,
+                pending.fingerprint,
+            ):
+                raise
+            fingerprint = tunnel.prepare_host(
+                instance,
+                confirm_fingerprint=pending.fingerprint,
+                prefer_direct=True,
+            )
+        tunnel.start(instance, prefer_direct=True)
+        return f"http://127.0.0.1:{local_port}/v1"
+
+    template = SshTunnel(
+        supervisor,
+        known_hosts=known_hosts,
+        key_path=key_path,
+    )
+    bootstrap = CoderRemoteVllmBootstrap(
+        ssh_exe=template.ssh_exe,
+        known_hosts=known_hosts,
+        key_path=key_path,
+    )
+    policy = CoderPolicy()
+    backend = VastCoderBackend(
+        vast=VastClient(secrets["VAST_API_KEY"]),
+        secrets=secrets,
+        bootstrap=bootstrap,
+        max_hourly=policy.max_hourly_usd,
+        profile=ResourceProfile.coder_default(),
+        tunnel_start=tunnel_start,
+    )
+    plane = CoderControlPlane(
+        backend=backend,
+        token_provider=lambda: secrets.get("HF_TOKEN"),
+    )
+    plane.fingerprint_confirmer = active_confirmer.confirm
+    return plane
 
 
 @dataclass(frozen=True)
@@ -475,6 +597,14 @@ def _build_runtime(
             ).ok,
         )
 
+        confirmer = _CoderFingerprintConfirmer()
+        coder_plane = _build_coder_plane(
+            products_settings=products_settings,
+            secret_source=secret_source,
+            supervisor=supervisor,
+            confirmer=confirmer,
+        )
+
         products = build_products(
             controller=controller,
             supervisor=supervisor,
@@ -483,8 +613,15 @@ def _build_runtime(
             public_origin=settings.public_web_origin,
             settings=products_settings,
             scs_tunnel=scs_tunnel,
+            coder_plane=coder_plane,
         )
-        return _Runtime(controller, supervisor, products)
+        return _Runtime(
+            controller,
+            supervisor,
+            products,
+            coder_plane=coder_plane,
+            coder_fingerprint_confirmer=confirmer,
+        )
     except Exception:
         try:
             supervisor.close()
@@ -551,6 +688,9 @@ def run_control_center() -> None:
             lambda controller, origin: (
                 app.set_controller(controller, public_origin=origin),
                 app.set_products(result.candidate_runtime.products),
+                app.wire_coder_fingerprint_confirmer(
+                    result.candidate_runtime.coder_fingerprint_confirmer
+                ),
             ),
         )
 
@@ -570,6 +710,9 @@ def run_control_center() -> None:
         open_setup=open_setup,
         submit_exit_cleanup=submit_exit_cleanup,
         destroy_window=destroy_window,
+    )
+    app.wire_coder_fingerprint_confirmer(
+        coordinator.runtime.coder_fingerprint_confirmer
     )
     root.mainloop()
 

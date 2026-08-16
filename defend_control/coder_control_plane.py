@@ -132,7 +132,7 @@ def resource_profile(alias: str, policy: CoderPolicy) -> ResourceProfile:
             num_gpus=policy.heavy_num_gpus,
             min_reliability=policy.min_reliability,
             min_disk_gb=policy.min_disk_gb,
-            max_model_len=policy.max_model_len,
+            max_model_len=resolve_deployment(alias).max_model_len,
         )
     return ResourceProfile(
         min_gpu_ram_mb=policy.default_min_gpu_ram_mb,
@@ -445,6 +445,7 @@ class CoderControlPlane:
     clock: Callable[[], datetime] | None = None
     run_store: RunTraceStore = field(default_factory=RunTraceStore)
     token_provider: Callable[[], str | None] | None = None
+    fingerprint_confirmer: Callable[[int, str], bool] | None = None
     port_available: Callable[[int], bool] | None = None
     offer_provider: Callable[[str], tuple[VastOffer, ...]] | None = None
     offer_chooser: Callable[[tuple[VastOffer, ...]], VastOffer] | None = None
@@ -918,6 +919,26 @@ class CoderControlPlane:
             charged_credits=None,
         )
         self.run_store.record(trace)
+
+    def release(self, alias: str, *, destroy: bool = False) -> dict[str, Any]:
+        """Explicit owner teardown of the endpoint for an alias.
+
+        Removes the endpoint from the active set and stops it (or destroys
+        the provider instance when destroy=True). Safe to call when nothing
+        is active. Returns the backend stop result.
+        """
+        resolve_alias(alias)
+        endpoint = self._active.pop(alias, None)
+        if endpoint is None:
+            return {
+                "state": "stopped",
+                "message": f"no active coder endpoint for {alias!r}",
+            }
+        return self.backend.stop(
+            instance_id=endpoint.instance_id,
+            provider_run_id=endpoint.provider_run_id,
+            destroy=destroy,
+        )
 
     def maybe_reap_idle(self) -> tuple[str, ...]:
         """Stop endpoints idle past the configured timeout (never destroys).

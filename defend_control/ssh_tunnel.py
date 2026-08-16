@@ -283,6 +283,7 @@ class SshTunnel:
         scan_attempts: int = 6,
         scan_retry_seconds: float = 5.0,
         sleep: Callable[[float], None] = time.sleep,
+        name: str = "ssh tunnel",
     ) -> None:
         if type(local_port) is not int or not 1 <= local_port <= 65_535:
             raise ValueError("local SSH forward port is invalid")
@@ -294,6 +295,8 @@ class SshTunnel:
             or not 0 <= float(scan_retry_seconds) <= 30
         ):
             raise ValueError("SSH scan retry interval is invalid")
+        if not isinstance(name, str) or not name or len(name) > 64:
+            raise ValueError("SSH tunnel name is invalid")
         self._supervisor = supervisor
         self._known_hosts = Path(known_hosts)
         self._key_path = Path(key_path)
@@ -311,6 +314,7 @@ class SshTunnel:
         self._scan_retry_seconds = float(scan_retry_seconds)
         self._sleep = sleep
         self._transport_used: str | None = None
+        self._name = name
 
     @property
     def key_path(self) -> Path:
@@ -618,7 +622,7 @@ class SshTunnel:
         ):
             raise SshTunnelError("Vast.ai SSH host is not pinned")
         spec = ProcessSpec(
-            "ssh tunnel",
+            self._name,
             (
                 str(self._ssh_exe),
                 "-N",
