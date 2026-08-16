@@ -22,6 +22,12 @@ from defend_control.products import ProductsSettings, build_products
 from defend_control.secrets import DpapiSecretStore
 from defend_control.settings import ControlSettings, JsonSettingsStore
 from defend_control.ui import ControlCenterUI, SetupDialog
+from scs_ai.config import ScsAiSettings
+from scs_ai.tunnel import (
+    EnvTokenSource,
+    FileTokenSource,
+    TunnelController,
+)
 
 
 @dataclass
@@ -438,13 +444,45 @@ def _build_runtime(
         )
         controller = ControlController(orchestrator)
         repository = Path(__file__).resolve().parents[1]
+
+        products_settings = ProductsSettings.from_env()
+        scs_settings = ScsAiSettings.from_env()
+
+        token_file = os.environ.get(
+            "SCS_AI_TUNNEL_TOKEN_FILE"
+        )
+
+        if token_file:
+            scs_token_source = FileTokenSource(
+                Path(token_file)
+            )
+        else:
+            scs_token_source = EnvTokenSource()
+
+        scs_tunnel = TunnelController(
+            scs_settings,
+            executable=os.environ.get(
+                "SCS_AI_CLOUDFLARED_EXE",
+                str(settings.cloudflared_exe),
+            ),
+            token_source=scs_token_source,
+            probe=lambda: probe_http(
+                (
+                    f"http://127.0.0.1:"
+                    f"{products_settings.scs_ai_api_port}/health"
+                ),
+                2.0,
+            ).ok,
+        )
+
         products = build_products(
             controller=controller,
             supervisor=supervisor,
             repository=repository,
             python_executable=sys.executable,
             public_origin=settings.public_web_origin,
-            settings=ProductsSettings.from_env(),
+            settings=products_settings,
+            scs_tunnel=scs_tunnel,
         )
         return _Runtime(controller, supervisor, products)
     except Exception:

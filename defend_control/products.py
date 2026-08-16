@@ -63,6 +63,10 @@ class ProductsSettings:
     scs_api_port: int = 8100
     scs_web_port: int = 3100
     scs_public_origin: str = "https://ai.sunshineclimatesolutions.com"
+
+    scs_ai_api_port: int = 8300
+    scs_ai_web_port: int = 3300
+    scs_ai_public_origin: str = "https://ai.sunshineclimatesolutions.com"
     coder_api_port: int = 8301
     coder_web_port: int = 3301
     coder_public_origin: str = "https://defendcoder.defend-network.org"
@@ -101,6 +105,12 @@ class ProductsSettings:
             scs_web_port=port("SCS_WEB_PORT", 3100),
             scs_public_origin=text(
                 "SCS_PUBLIC_ORIGIN",
+                "https://ai.sunshineclimatesolutions.com",
+            ),
+            scs_ai_api_port=port("SCS_AI_API_PORT", 8300),
+            scs_ai_web_port=port("SCS_AI_WEB_PORT", 3300),
+            scs_ai_public_origin=text(
+                "SCS_AI_PUBLIC_ORIGIN",
                 "https://ai.sunshineclimatesolutions.com",
             ),
             coder_api_port=port("CODER_API_PORT", 8301),
@@ -197,6 +207,40 @@ def build_coder_web_process_spec(
         health_url=(
             f"http://127.0.0.1:"
             f"{settings.coder_web_port}/"
+        ),
+    )
+
+
+def build_scs_ai_process_spec(
+    settings: ProductsSettings,
+    repository: Path,
+    python_executable: str,
+) -> ProcessSpec:
+    return ProcessSpec(
+        name="scs-ai:api",
+        argv=(
+            str(python_executable),
+            "-m",
+            "uvicorn",
+            "scs_ai.runtime:app",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(settings.scs_ai_api_port),
+        ),
+        cwd=Path(repository),
+        env={
+            "SCS_AI_PUBLIC_ORIGIN": settings.scs_ai_public_origin,
+            "SCS_AI_API_PORT": str(settings.scs_ai_api_port),
+            "SCS_AI_WEB_PORT": str(settings.scs_ai_web_port),
+
+            # Control Center owns the tunnel separately.
+            # runtime.py must therefore construct it disabled in this child.
+            "SCS_AI_TUNNEL_ENABLED": "false",
+        },
+        health_url=(
+            f"http://127.0.0.1:"
+            f"{settings.scs_ai_api_port}/health"
         ),
     )
 
@@ -432,78 +476,238 @@ class SportsService:
 
 class ScsService:
     application_id = "scs"
-    display_name = "SCS"
+    display_name = "SCS AI"
 
     def __init__(
         self,
         settings: ProductsSettings,
         *,
+        supervisor=None,
+        repository: Path | None = None,
+        python_executable: str | None = None,
+        tunnel=None,
         probe=fetch_http_json,
-        clock=time.monotonic,
-        probe_ttl_seconds: float = 5.0,
     ) -> None:
         self._settings = settings
+        self._supervisor = supervisor
+        self._repository = (
+            Path(repository)
+            if repository is not None
+            else None
+        )
+        self._python_executable = (
+            str(python_executable)
+            if python_executable is not None
+            else None
+        )
+        self._tunnel = tunnel
         self._probe = probe
-        self._clock = clock
-        self._probe_ttl = float(probe_ttl_seconds)
-        self._health_cache: tuple[float, JsonResult] | None = None
+        self._last_error: str | None = None
+
+    @property
+    def _lifecycle_enabled(self) -> bool:
+        return (
+            self._supervisor is not None
+            and self._repository is not None
+            and self._python_executable is not None
+            and self._tunnel is not None
+        )
+
+    def _api_running(self) -> bool:
+        if not self._lifecycle_enabled:
+            return False
+
+        for snapshot in self._supervisor.snapshot():
+            if snapshot.name == "scs-ai:api":
+                return bool(snapshot.running)
+
+        return False
 
     @property
     def state(self) -> str:
-        return "running" if self._cached_health().ok else "not configured"
+        if not self._lifecycle_enabled:
+            result = self._probe(
+                (
+                    f"http://127.0.0.1:"
+                    f"{self._settings.scs_api_port}/health"
+                ),
+                2.0,
+            )
+            return "running" if result.ok else "not configured"
 
-    def _cached_health(self) -> JsonResult:
-        now = self._clock()
-        if (
-            self._health_cache is not None
-            and now - self._health_cache[0] < self._probe_ttl
-        ):
-            return self._health_cache[1]
-        result = self._probe(
-            f"http://127.0.0.1:{self._settings.scs_api_port}/health", 2.0
-        )
-        self._health_cache = (now, result)
-        return result
+        api = self._api_running()
+        tunnel_state = self._tunnel.status().state
+
+        if api and tunnel_state == "connected":
+            return "running"
+
+        if api or tunnel_state in {"starting", "connected"}:
+            return "degraded"
+
+        return "stopped"
 
     def start(self) -> ProductStatus:
+        if not self._lifecycle_enabled:
+            return self.status()
+
+        try:
+            if not self._api_running():
+                self._supervisor.start(
+                    build_scs_ai_process_spec(
+                        self._settings,
+                        self._repository,
+                        self._python_executable,
+                    )
+                )
+
+            tunnel_state = self._tunnel.status().state
+
+            if tunnel_state == "stopped":
+                self._tunnel.start()
+
+            self._last_error = None
+
+        except Exception as error:
+            self._last_error = (
+                f"start failed ({type(error).__name__})"
+            )
+
         return self.status()
 
     def stop(self) -> ProductStatus:
+        if not self._lifecycle_enabled:
+            return self.status()
+
+        errors: list[str] = []
+
+        try:
+            self._tunnel.stop()
+        except Exception as error:
+            errors.append(
+                f"tunnel stop failed ({type(error).__name__})"
+            )
+
+        if self._api_running():
+            try:
+                self._supervisor.stop("scs-ai:api")
+            except Exception as error:
+                errors.append(
+                    f"api stop failed ({type(error).__name__})"
+                )
+
+        self._last_error = (
+            "; ".join(errors)
+            if errors
+            else None
+        )
+
         return self.status()
 
     def status(self) -> ProductStatus:
-        health = self._cached_health()
-        state = "running" if health.ok else "not configured"
-        status_text = (
-            "SCS API reachable"
-            if health.ok
-            else "Lifecycle not managed from Control Center"
-        )
+        if not self._lifecycle_enabled:
+            health = self._probe(
+                (
+                    f"http://127.0.0.1:"
+                    f"{self._settings.scs_api_port}/health"
+                ),
+                2.0,
+            )
+
+            state = "running" if health.ok else "not configured"
+
+            return ProductStatus(
+                application_id=self.application_id,
+                display_name=self.display_name,
+                state=state,
+                status_text=(
+                    "SCS API reachable"
+                    if health.ok
+                    else "Lifecycle not managed from Control Center"
+                ),
+                details=(
+                    ("Public origin", self._settings.scs_public_origin),
+                    ("API port", str(self._settings.scs_api_port)),
+                    ("Web port", str(self._settings.scs_web_port)),
+                    ("Health", "reachable" if health.ok else "unreachable"),
+                ),
+                open_url=self._settings.scs_public_origin,
+                launch_available=False,
+                stop_available=False,
+                logs_available=False,
+            )
+
+        api = "running" if self._api_running() else "stopped"
+        tunnel = self._tunnel.status()
+
+        state = self.state
+
+        if self._last_error:
+            status_text = self._last_error
+        elif state == "running":
+            status_text = "SCS AI API and tunnel running"
+        elif state == "degraded":
+            status_text = "SCS AI partially running"
+        else:
+            status_text = "SCS AI stopped"
+
         return ProductStatus(
             application_id=self.application_id,
             display_name=self.display_name,
             state=state,
             status_text=status_text,
             details=(
-                ("Public origin", self._settings.scs_public_origin),
-                ("API port", str(self._settings.scs_api_port)),
-                ("Web port", str(self._settings.scs_web_port)),
-                ("Health", "reachable" if health.ok else "unreachable"),
+                ("API", api),
+                ("Tunnel", str(tunnel.state)),
+                ("API port", str(self._settings.scs_ai_api_port)),
+                ("Web port", str(self._settings.scs_ai_web_port)),
+                ("Public origin", self._settings.scs_ai_public_origin),
             ),
-            open_url=self._settings.scs_public_origin,
-            launch_available=False,
-            stop_available=False,
-            logs_available=False,
+            open_url=self._settings.scs_ai_public_origin,
+            launch_available=True,
+            stop_available=True,
+            open_available=True,
+            logs_available=True,
+            last_error=self._last_error,
         )
 
     def health(self) -> bool:
-        return self._cached_health().ok
+        api_port = (
+            self._settings.scs_ai_api_port
+            if self._lifecycle_enabled
+            else self._settings.scs_api_port
+        )
+
+        result = self._probe(
+            f"http://127.0.0.1:{api_port}/health",
+            2.0,
+        )
+
+        return bool(result.ok)
 
     def open_url(self) -> bool:
-        return webbrowser.open(self._settings.scs_public_origin)
+        return webbrowser.open(
+            self._settings.scs_ai_public_origin
+        )
 
     def logs(self) -> tuple[LogEntry, ...]:
-        return ()
+        if not self._lifecycle_enabled:
+            return ()
+
+        entries = [
+            entry
+            for entry in self._supervisor.logs.snapshot()
+            if entry.service.startswith("scs-ai:")
+        ]
+
+        for service, text in self._tunnel.logs():
+            entries.append(
+                LogEntry(
+                    service=f"scs-ai:{service}",
+                    text=text,
+                )
+            )
+
+        return tuple(entries)
 
 
 class CoderService:
@@ -829,6 +1033,7 @@ def build_products(
     python_executable: str,
     public_origin: str,
     settings: ProductsSettings | None = None,
+    scs_tunnel=None,
     probe=fetch_http_json,
     clock=time.monotonic,
 ) -> tuple[ProductService, ...]:
@@ -843,7 +1048,18 @@ def build_products(
             probe=probe,
             clock=clock,
         ),
-        ScsService(products_settings, probe=probe, clock=clock),
+        ScsService(
+            products_settings,
+            supervisor=supervisor if scs_tunnel is not None else None,
+            repository=repository if scs_tunnel is not None else None,
+            python_executable=(
+                python_executable
+                if scs_tunnel is not None
+                else None
+            ),
+            tunnel=scs_tunnel,
+            probe=probe,
+        ),
         CoderService(
             products_settings,
             supervisor=supervisor,
