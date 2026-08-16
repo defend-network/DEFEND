@@ -63,7 +63,11 @@ class ProductsSettings:
     scs_api_port: int = 8100
     scs_web_port: int = 3100
     scs_public_origin: str = "https://ai.sunshineclimatesolutions.com"
+    coder_api_port: int = 8301
+    coder_web_port: int = 3301
     coder_public_origin: str = "https://defendcoder.defend-network.org"
+    coder_workspace_root: Path = Path(r"C:\DEFEND_CODER_DATA")
+    coder_database_url: str | None = field(default=None, repr=False)
     sports_database_url: str | None = field(default=None, repr=False)
 
     @classmethod
@@ -99,10 +103,19 @@ class ProductsSettings:
                 "SCS_PUBLIC_ORIGIN",
                 "https://ai.sunshineclimatesolutions.com",
             ),
+            coder_api_port=port("CODER_API_PORT", 8301),
+            coder_web_port=port("CODER_WEB_PORT", 3301),
             coder_public_origin=text(
                 "CODER_PUBLIC_ORIGIN",
                 "https://defendcoder.defend-network.org",
             ),
+            coder_workspace_root=Path(
+                text(
+                    "CODER_WORKSPACE_ROOT",
+                    str(Path(r"C:\DEFEND_CODER_DATA")),
+                )
+            ),
+            coder_database_url=os.environ.get("CODER_DATABASE_URL"),
             sports_database_url=os.environ.get("SPORTS_DATABASE_URL"),
         )
 
@@ -127,6 +140,64 @@ def build_sports_process_spec(
             "SPORTS_DATABASE_URL": settings.sports_database_url,
         },
         health_url=f"http://127.0.0.1:{settings.sports_api_port}/health",
+    )
+
+
+def build_coder_api_process_spec(
+    settings: ProductsSettings,
+    repository: Path,
+    python_executable: str,
+) -> ProcessSpec:
+    if not settings.coder_database_url:
+        raise ValueError("CODER_DATABASE_URL is not configured")
+
+    return ProcessSpec(
+        name="coder:api",
+        argv=(
+            str(python_executable),
+            "-m",
+            "tools.defend_coder_server",
+        ),
+        cwd=Path(repository),
+        env={
+            "CODER_DATABASE_URL": settings.coder_database_url,
+            "CODER_HOST": "127.0.0.1",
+            "CODER_PORT": str(settings.coder_api_port),
+            "CODER_PUBLIC_HTTPS": "true",
+            "CODER_WORKSPACE_ROOT": str(
+                settings.coder_workspace_root
+            ),
+        },
+        health_url=(
+            f"http://127.0.0.1:"
+            f"{settings.coder_api_port}/health"
+        ),
+    )
+
+
+def build_coder_web_process_spec(
+    settings: ProductsSettings,
+    repository: Path,
+) -> ProcessSpec:
+    return ProcessSpec(
+        name="coder:web",
+        argv=(
+            "npm.cmd",
+            "run",
+            "start",
+        ),
+        cwd=Path(repository) / "defendcoder-ui",
+        env={
+            "PORT": str(settings.coder_web_port),
+            "DEFENDCODER_INTERNAL_API_URL": (
+                f"http://127.0.0.1:"
+                f"{settings.coder_api_port}"
+            ),
+        },
+        health_url=(
+            f"http://127.0.0.1:"
+            f"{settings.coder_web_port}/"
+        ),
     )
 
 
@@ -442,23 +513,87 @@ class CoderService:
     def __init__(
         self,
         settings: ProductsSettings,
+        *,
+        supervisor=None,
+        repository: Path | None = None,
+        python_executable: str | None = None,
         observation: object | None = None,
+        probe=fetch_http_json,
     ) -> None:
         self._settings = settings
+        self._supervisor = supervisor
+        self._repository = (
+            Path(repository)
+            if repository is not None
+            else None
+        )
+        self._python_executable = (
+            str(python_executable)
+            if python_executable is not None
+            else None
+        )
         self._observation = observation
+        self._probe = probe
+        self._last_error: str | None = None
+
+    @property
+    def _lifecycle_enabled(self) -> bool:
+        return (
+            self._supervisor is not None
+            and self._repository is not None
+            and self._python_executable is not None
+        )
+
+    def _service_running(self, name: str) -> bool:
+        if not self._lifecycle_enabled:
+            return False
+
+        for snapshot in self._supervisor.snapshot():
+            if snapshot.name == name:
+                return bool(snapshot.running)
+        return False
 
     @property
     def state(self) -> str:
+        if not self._lifecycle_enabled:
+            public = self._observation_public()
+
+            if public is None:
+                return "not configured"
+
+            return str(
+                public.get("state") or "unavailable"
+            )
+
+        api = self._service_running("coder:api")
+        web = self._service_running("coder:web")
+
+        if api and web:
+            return "running"
+
+        if api or web:
+            return "degraded"
+
         public = self._observation_public()
-        if public is None:
-            return "not configured"
-        return str(public.get("state") or "unavailable")
+
+        if public is not None:
+            remote_state = str(
+                public.get("state") or "unavailable"
+            )
+
+            if remote_state == "ready":
+                return "runtime ready"
+
+        return "stopped"
 
     def _observation_public(self) -> dict[str, object] | None:
         observation = self._observation
+
         if observation is None:
             return None
+
         status = getattr(observation, "status", None)
+
         if callable(status):
             try:
                 value = status()
@@ -466,62 +601,224 @@ class CoderService:
                 return None
         else:
             value = observation
+
         as_public = getattr(value, "as_public_dict", None)
+
         if callable(as_public):
             try:
                 value = as_public()
             except Exception:
                 value = None
+
         if not isinstance(value, dict):
             return None
+
         return value
+
+    def start(self) -> ProductStatus:
+        if not self._lifecycle_enabled:
+            return self.status()
+
+        if not self._settings.coder_database_url:
+            self._last_error = (
+                "CODER_DATABASE_URL is not configured"
+            )
+            return self.status()
+
+        try:
+            self._supervisor.logs.add_known_secrets(
+                [self._settings.coder_database_url]
+            )
+
+            if not self._service_running("coder:api"):
+                self._supervisor.start(
+                    build_coder_api_process_spec(
+                        self._settings,
+                        self._repository,
+                        self._python_executable,
+                    )
+                )
+
+            if not self._service_running("coder:web"):
+                self._supervisor.start(
+                    build_coder_web_process_spec(
+                        self._settings,
+                        self._repository,
+                    )
+                )
+
+            self._last_error = None
+
+        except Exception as error:
+            self._last_error = (
+                f"start failed ({type(error).__name__})"
+            )
+
+        return self.status()
+
+    def stop(self) -> ProductStatus:
+        if not self._lifecycle_enabled:
+            return self.status()
+
+        errors: list[str] = []
+
+        for name in ("coder:web", "coder:api"):
+            if not self._service_running(name):
+                continue
+
+            try:
+                self._supervisor.stop(name)
+            except Exception as error:
+                errors.append(
+                    f"{name} stop failed "
+                    f"({type(error).__name__})"
+                )
+
+        self._last_error = (
+            "; ".join(errors)
+            if errors
+            else None
+        )
+
+        return self.status()
 
     def status(self) -> ProductStatus:
         public = self._observation_public()
-        alias = gpu = instance = hourly = budget = "—"
+
+        alias = "\u2014"
+        gpu = "\u2014"
+        instance = "\u2014"
+        hourly = "\u2014"
+        budget = "\u2014"
+
         if public is not None:
-            alias = str(public.get("alias") or "—")
-            gpu = str(public.get("gpu_name") or public.get("gpu") or "—")
-            instance = str(public.get("instance_id") or "—")
-            hourly = str(public.get("hourly_price") or "—")
-            budget = str(public.get("session_budget_usd") or "—")
+            alias = str(public.get("alias") or "\u2014")
+            gpu = str(
+                public.get("gpu_name")
+                or public.get("gpu")
+                or "\u2014"
+            )
+            instance = str(
+                public.get("instance_id") or "\u2014"
+            )
+
+            raw_hourly = public.get("hourly_price")
+            if raw_hourly is not None:
+                hourly = f"${raw_hourly}"
+
+            raw_budget = public.get(
+                "session_budget_usd"
+            )
+            if raw_budget is not None:
+                budget = f"${raw_budget}"
+
+        api = (
+            "running"
+            if self._service_running("coder:api")
+            else "stopped"
+        )
+
+        web = (
+            "running"
+            if self._service_running("coder:web")
+            else "stopped"
+        )
+
         state = self.state
+
+        if not self._lifecycle_enabled:
+            return ProductStatus(
+                application_id=self.application_id,
+                display_name=self.display_name,
+                state=state,
+                status_text=(
+                    "Observation-only (read-only)"
+                    if public is not None
+                    else "Observation not wired in this build"
+                ),
+                details=(
+                    ("Alias", alias),
+                    ("GPU", gpu),
+                    ("Instance", instance),
+                    ("$/hr", hourly),
+                    ("Session cost", budget),
+                ),
+                open_url=self._settings.coder_public_origin,
+                launch_available=False,
+                stop_available=False,
+                logs_available=False,
+            )
+
+        if self._last_error:
+            status_text = self._last_error
+        elif state == "running":
+            status_text = "DEFENDcoder API and UI running"
+        elif state == "degraded":
+            status_text = "DEFENDcoder partially running"
+        elif state == "runtime ready":
+            status_text = (
+                "Runtime observed; local API/UI stopped"
+            )
+        else:
+            status_text = "DEFENDcoder stopped"
+
         return ProductStatus(
             application_id=self.application_id,
             display_name=self.display_name,
             state=state,
-            status_text=(
-                "Observation-only (read-only)"
-                if public is not None
-                else "Observation not wired in this build"
-            ),
+            status_text=status_text,
             details=(
+                ("API", api),
+                ("Web", web),
                 ("Alias", alias),
                 ("GPU", gpu),
                 ("Instance", instance),
-                ("$/hr", f"${hourly}" if public is not None else hourly),
-                ("Session cost", f"${budget}" if public is not None else budget),
+                ("$/hr", hourly),
+                ("Session cost", budget),
+                (
+                    "Public origin",
+                    self._settings.coder_public_origin,
+                ),
             ),
             open_url=self._settings.coder_public_origin,
-            launch_available=False,
-            stop_available=False,
-            logs_available=False,
+            launch_available=True,
+            stop_available=True,
+            open_available=True,
+            logs_available=True,
+            last_error=self._last_error,
         )
 
-    def start(self) -> ProductStatus:
-        return self.status()
-
-    def stop(self) -> ProductStatus:
-        return self.status()
-
     def health(self) -> bool:
-        return self.state == "ready"
+        if not self._lifecycle_enabled:
+            return self.state == "ready"
+
+        if not self._service_running("coder:api"):
+            return False
+
+        result = self._probe(
+            (
+                f"http://127.0.0.1:"
+                f"{self._settings.coder_api_port}/health"
+            ),
+            2.0,
+        )
+
+        return bool(result.ok)
 
     def open_url(self) -> bool:
-        return webbrowser.open(self._settings.coder_public_origin)
+        return webbrowser.open(
+            self._settings.coder_public_origin
+        )
 
     def logs(self) -> tuple[LogEntry, ...]:
-        return ()
+        if not self._lifecycle_enabled:
+            return ()
+
+        return tuple(
+            entry
+            for entry in self._supervisor.logs.snapshot()
+            if entry.service.startswith("coder:")
+        )
 
 
 def build_products(
@@ -547,7 +844,13 @@ def build_products(
             clock=clock,
         ),
         ScsService(products_settings, probe=probe, clock=clock),
-        CoderService(products_settings),
+        CoderService(
+            products_settings,
+            supervisor=supervisor,
+            repository=repository,
+            python_executable=python_executable,
+            probe=probe,
+        ),
     )
 
 
