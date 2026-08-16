@@ -84,7 +84,11 @@ class CoderPolicy:
         "H200",
         "B200",
     )
-    heavy_gpu_families: tuple[str, ...] = ("A100", "H100")
+    heavy_gpu_families: tuple[str, ...] = (
+        "H100",
+        "H200",
+        "B200",
+    )
     min_reliability: Decimal = Decimal("0.98")
     min_disk_gb: int = 160
     max_model_len: int = 8192

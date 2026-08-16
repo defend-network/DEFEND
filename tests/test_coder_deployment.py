@@ -289,7 +289,11 @@ class TestLiveSmokePlan:
         assert plan.deployment_repo_id == "Qwen/Qwen3-Coder-Next-FP8"
         assert plan.deployment_revision == FP8_REVISION
         assert plan.precision == "FP8"
-        assert plan.gpu_families == ("A100", "H100")
+        assert plan.gpu_families == (
+            "H100",
+            "H200",
+            "B200",
+        )
         assert plan.gpu_count == 2
         assert plan.vram_per_gpu_mb == 81_920
         assert plan.tensor_parallel_size == 2

@@ -167,10 +167,14 @@ class TestResourceProfiles:
         assert "RTX 4090" not in profile.allowed_gpu_families
         assert "L40S" not in profile.allowed_gpu_families
 
-    def test_heavy_profile_prefers_a100_80gb_class(self):
+    def test_heavy_profile_targets_fp8_capable_gpu_families(self):
         profile = resource_profile("defendcoder-heavy", CoderPolicy())
         assert profile.min_gpu_ram_mb == 81_920
-        assert profile.allowed_gpu_families == ("A100", "H100")
+        assert profile.allowed_gpu_families == (
+            "H100",
+            "H200",
+            "B200",
+        )
         assert profile.num_gpus == 2
 
     def test_identity_chat_profile_is_unchanged(self):

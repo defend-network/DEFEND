@@ -69,6 +69,7 @@ class ProductsSettings:
     scs_ai_public_origin: str = "https://ai.sunshineclimatesolutions.com"
     coder_api_port: int = 8301
     coder_web_port: int = 3301
+    coder_model_alias: str = "defendcoder-heavy"
     coder_public_origin: str = "https://defendcoder.defend-network.org"
     coder_workspace_root: Path = Path(r"C:\DEFEND_CODER_DATA")
     coder_database_url: str | None = field(default=None, repr=False)
@@ -115,6 +116,10 @@ class ProductsSettings:
             ),
             coder_api_port=port("CODER_API_PORT", 8301),
             coder_web_port=port("CODER_WEB_PORT", 3301),
+            coder_model_alias=text(
+                "CODER_MODEL_ALIAS",
+                "defendcoder-heavy",
+            ),
             coder_public_origin=text(
                 "CODER_PUBLIC_ORIGIN",
                 "https://defendcoder.defend-network.org",

@@ -35,8 +35,8 @@ from defend_control.types import (
 FP8_REVISION = "da6e2ed27304dd39abadd9c82ef50e8de67bdd4c"
 
 _OFFERS = (
-    VastOffer(601, "A100 SXM4 80GB", 81920, Decimal("1.65"), Decimal("0.99")),
-    VastOffer(602, "H100 SXM 80GB", 81920, Decimal("2.00"), Decimal("0.99")),
+    VastOffer(601, "H100 SXM 80GB", 81920, Decimal("1.65"), Decimal("0.99")),
+    VastOffer(602, "H200 SXM 141GB", 144384, Decimal("2.00"), Decimal("0.99")),
 )
 
 
@@ -120,7 +120,11 @@ class TestHeavyProfile:
         profile = resource_profile("defendcoder-heavy", CoderPolicy())
         assert profile.num_gpus == 2
         assert profile.min_gpu_ram_mb == 81_920
-        assert profile.allowed_gpu_families == ("A100", "H100")
+        assert profile.allowed_gpu_families == (
+            "H100",
+            "H200",
+            "B200",
+        )
 
     def test_single_gpu_heavy_profile_remains_available(self):
         profile = resource_profile(
@@ -159,7 +163,7 @@ class TestPlanAndApproval:
         assert plan.precision == "FP8"
         assert plan.gpu_count == 2
         assert plan.vram_per_gpu_mb == 81_920
-        assert plan.gpu_family == "A100 SXM4 80GB"
+        assert plan.gpu_family == "H100 SXM 80GB"
         assert plan.provider_hourly_rate == Decimal("1.65")
         assert plan.estimated_max_hourly_spend == Decimal("1.65")
         assert plan.offer_id == 601

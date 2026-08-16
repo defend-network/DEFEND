@@ -63,7 +63,7 @@ CODER_MODEL_REGISTRY: dict[str, CoderModelRef] = {
         repo_id=_CODER_HEAVY_REPO,
         revision=_CODER_HEAVY_REVISION,
         max_model_len=8192,
-        notes="Heavy lane: Qwen3-Coder-Next on A100/H100 80GB-class",
+        notes="Heavy lane: Qwen3-Coder-Next FP8 on H100/H200/B200-class compute",
     ),
     "defendcoder-eval": CoderModelRef(
         alias="defendcoder-eval",

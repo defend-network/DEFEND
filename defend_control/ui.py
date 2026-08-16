@@ -12,6 +12,10 @@ from .coder_m0 import CoderM0Service, LocalFakeCoderBackend
 from .controller import ConfirmationRequired, ControlController, UIState
 from .products import ProductStatus
 from .settings import ControlSettings
+from .integration_catalog import (
+    SECRET_CATALOG,
+    IntegrationOwner,
+)
 
 
 _POLL_MILLISECONDS = 250
@@ -50,21 +54,36 @@ _SETTING_FIELDS = (
     ("local_model", "Local Ollama model"),
     ("vast_max_hourly", "Maximum Vast hourly price"),
 )
-_SECRET_FIELDS = (
-    ("VAST_API_KEY", "Vast.ai API key"),
-    ("HF_TOKEN", "Hugging Face token"),
-    ("VLLM_API_KEY", "vLLM API key"),
-    ("DEFEND_OWNER_USER", "Owner username"),
-    ("DEFEND_OWNER_EMAIL", "Owner email"),
-    ("DEFEND_OWNER_PASS", "Owner password"),
-    ("DEFEND_VISITOR_HMAC_KEY", "Visitor HMAC key"),
-    ("DEFEND_GMAIL_SMTP_USERNAME", "Gmail SMTP username"),
-    ("DEFEND_GMAIL_APP_PASSWORD", "Gmail app password"),
-    ("TAVILY_API_KEY", "Search API key (optional)"),
-)
-
 
 class SetupDialog(tk.Toplevel):
+    _secret_groups = (
+        (
+            IntegrationOwner.PLATFORM,
+            "Platform / Operations",
+            "Compute, networking, observability, alerts, and shared infrastructure.",
+        ),
+        (
+            IntegrationOwner.DEFEND,
+            "DEFEND AI",
+            "Identity, research, authentication, and communications.",
+        ),
+        (
+            IntegrationOwner.CODER,
+            "DEFENDcoder",
+            "Repository access and isolated coding-model credentials.",
+        ),
+        (
+            IntegrationOwner.SPORTS,
+            "DEFEND Sports",
+            "Odds, statistics, exchanges, and table-tennis data providers.",
+        ),
+        (
+            IntegrationOwner.SCS,
+            "SCS AI",
+            "Payments, office integrations, address services, and business operations.",
+        ),
+    )
+
     def __init__(
         self,
         parent: tk.Misc,
@@ -73,68 +92,327 @@ class SetupDialog(tk.Toplevel):
         on_saved: Callable[[object], object],
     ) -> None:
         super().__init__(parent)
+
         self.title("DEFEND Setup")
         self.transient(parent)
         self.resizable(True, True)
+        self.geometry("900x760")
+        self.minsize(760, 620)
+
         self._settings = settings
         self._submit_save = submit_save
         self._on_saved = on_saved
         self._setting_values: dict[str, tk.StringVar] = {}
         self._secret_values: dict[str, tk.StringVar] = {}
 
-        frame = ttk.Frame(self, padding=12)
-        frame.grid(sticky="nsew")
+        outer = ttk.Frame(
+            self,
+            padding=12,
+        )
+        outer.grid(
+            row=0,
+            column=0,
+            sticky="nsew",
+        )
+
         self.columnconfigure(0, weight=1)
         self.rowconfigure(0, weight=1)
-        frame.columnconfigure(1, weight=1)
 
-        row = 0
-        ttk.Label(frame, text="Non-secret settings").grid(
-            row=row, column=0, columnspan=2, sticky="w", pady=(0, 6)
-        )
-        row += 1
-        raw_settings = asdict(settings)
-        for name, label in _SETTING_FIELDS:
-            value = str(raw_settings[name])
-            variable = tk.StringVar(self, value=value)
-            self._setting_values[name] = variable
-            ttk.Label(frame, text=label).grid(row=row, column=0, sticky="w")
-            ttk.Entry(frame, textvariable=variable, width=64).grid(
-                row=row, column=1, sticky="ew", pady=2
-            )
-            row += 1
+        outer.columnconfigure(0, weight=1)
+        outer.rowconfigure(2, weight=1)
 
-        ttk.Separator(frame).grid(
-            row=row, column=0, columnspan=2, sticky="ew", pady=8
+        # ------------------------------------------------------
+        # Header
+        # ------------------------------------------------------
+
+        header = ttk.Frame(outer)
+        header.grid(
+            row=0,
+            column=0,
+            sticky="ew",
+            pady=(0, 10),
         )
-        row += 1
+        header.columnconfigure(0, weight=1)
+
         ttk.Label(
-            frame,
-            text=(
-                "Secrets (leave blank to retain the current value). DPAPI protects "
-                "files at rest, not a compromised signed-in Windows account."
-            ),
-            wraplength=620,
-        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 6))
-        row += 1
-        for name, label in _SECRET_FIELDS:
-            variable = tk.StringVar(self, value="")
-            self._secret_values[name] = variable
-            ttk.Label(frame, text=label).grid(row=row, column=0, sticky="w")
-            ttk.Entry(frame, textvariable=variable, show="*", width=64).grid(
-                row=row, column=1, sticky="ew", pady=2
-            )
-            row += 1
-
-        buttons = ttk.Frame(frame)
-        buttons.grid(row=row, column=0, columnspan=2, sticky="e", pady=(10, 0))
-        self._cancel_button = ttk.Button(
-            buttons, text="Cancel", command=self.destroy
+            header,
+            text="DEFEND Setup",
+            font=("Segoe UI", 16, "bold"),
+        ).grid(
+            row=0,
+            column=0,
+            sticky="w",
         )
-        self._cancel_button.pack(side="right", padx=(6, 0))
-        self._save_button = ttk.Button(buttons, text="Save", command=self._save)
-        self._save_button.pack(side="right")
-        self.protocol("WM_DELETE_WINDOW", self.destroy)
+
+        ttk.Label(
+            header,
+            text=(
+                "Configure platform settings and integration credentials. "
+                "Existing saved values are never displayed; leave a secret "
+                "blank to retain its current encrypted value."
+            ),
+            wraplength=820,
+            justify="left",
+        ).grid(
+            row=1,
+            column=0,
+            sticky="w",
+            pady=(4, 0),
+        )
+
+        # ------------------------------------------------------
+        # Non-secret settings
+        # ------------------------------------------------------
+
+        settings_frame = ttk.LabelFrame(
+            outer,
+            text="Core settings",
+            padding=10,
+        )
+        settings_frame.grid(
+            row=1,
+            column=0,
+            sticky="ew",
+            pady=(0, 10),
+        )
+        settings_frame.columnconfigure(1, weight=1)
+
+        raw_settings = asdict(settings)
+
+        for row, (name, label) in enumerate(
+            _SETTING_FIELDS
+        ):
+            value = str(raw_settings[name])
+
+            variable = tk.StringVar(
+                self,
+                value=value,
+            )
+            self._setting_values[name] = variable
+
+            ttk.Label(
+                settings_frame,
+                text=label,
+            ).grid(
+                row=row,
+                column=0,
+                sticky="w",
+                padx=(0, 12),
+                pady=2,
+            )
+
+            ttk.Entry(
+                settings_frame,
+                textvariable=variable,
+            ).grid(
+                row=row,
+                column=1,
+                sticky="ew",
+                pady=2,
+            )
+
+        # ------------------------------------------------------
+        # Scrollable integration credential area
+        # ------------------------------------------------------
+
+        credential_frame = ttk.LabelFrame(
+            outer,
+            text="Integrations & credentials",
+            padding=6,
+        )
+        credential_frame.grid(
+            row=2,
+            column=0,
+            sticky="nsew",
+        )
+        credential_frame.columnconfigure(0, weight=1)
+        credential_frame.rowconfigure(0, weight=1)
+
+        canvas = tk.Canvas(
+            credential_frame,
+            highlightthickness=0,
+        )
+        canvas.grid(
+            row=0,
+            column=0,
+            sticky="nsew",
+        )
+
+        scrollbar = ttk.Scrollbar(
+            credential_frame,
+            orient="vertical",
+            command=canvas.yview,
+        )
+        scrollbar.grid(
+            row=0,
+            column=1,
+            sticky="ns",
+        )
+
+        canvas.configure(
+            yscrollcommand=scrollbar.set,
+        )
+
+        secret_body = ttk.Frame(
+            canvas,
+            padding=(4, 4, 8, 4),
+        )
+
+        window_id = canvas.create_window(
+            (0, 0),
+            window=secret_body,
+            anchor="nw",
+        )
+
+        def resize_scroll_region(_event=None) -> None:
+            canvas.configure(
+                scrollregion=canvas.bbox("all")
+            )
+
+        def resize_inner(event) -> None:
+            canvas.itemconfigure(
+                window_id,
+                width=event.width,
+            )
+
+        secret_body.bind(
+            "<Configure>",
+            resize_scroll_region,
+        )
+
+        canvas.bind(
+            "<Configure>",
+            resize_inner,
+        )
+
+        secret_body.columnconfigure(0, weight=1)
+
+        definitions_by_owner = {
+            owner: tuple(
+                definition
+                for definition in SECRET_CATALOG
+                if definition.owner == owner
+            )
+            for owner, _label, _description
+            in self._secret_groups
+        }
+
+        body_row = 0
+
+        for owner, group_label, description in self._secret_groups:
+            group = ttk.LabelFrame(
+                secret_body,
+                text=group_label,
+                padding=10,
+            )
+            group.grid(
+                row=body_row,
+                column=0,
+                sticky="ew",
+                pady=(0, 10),
+            )
+            group.columnconfigure(1, weight=1)
+            body_row += 1
+
+            ttk.Label(
+                group,
+                text=description,
+                wraplength=760,
+                justify="left",
+            ).grid(
+                row=0,
+                column=0,
+                columnspan=2,
+                sticky="w",
+                pady=(0, 8),
+            )
+
+            definitions = definitions_by_owner[
+                owner
+            ]
+
+            for row, definition in enumerate(
+                definitions,
+                start=1,
+            ):
+                variable = tk.StringVar(
+                    self,
+                    value="",
+                )
+
+                self._secret_values[
+                    definition.key
+                ] = variable
+
+                requirement = (
+                    "required"
+                    if definition.requirement.value
+                    == "required"
+                    else "optional"
+                )
+
+                label = (
+                    f"{definition.display_name} "
+                    f"({requirement})"
+                )
+
+                ttk.Label(
+                    group,
+                    text=label,
+                ).grid(
+                    row=row,
+                    column=0,
+                    sticky="w",
+                    padx=(0, 12),
+                    pady=2,
+                )
+
+                ttk.Entry(
+                    group,
+                    textvariable=variable,
+                    show="*",
+                ).grid(
+                    row=row,
+                    column=1,
+                    sticky="ew",
+                    pady=2,
+                )
+
+        # ------------------------------------------------------
+        # Footer actions
+        # ------------------------------------------------------
+
+        buttons = ttk.Frame(outer)
+        buttons.grid(
+            row=3,
+            column=0,
+            sticky="e",
+            pady=(10, 0),
+        )
+
+        self._cancel_button = ttk.Button(
+            buttons,
+            text="Cancel",
+            command=self.destroy,
+        )
+        self._cancel_button.pack(
+            side="right",
+            padx=(6, 0),
+        )
+
+        self._save_button = ttk.Button(
+            buttons,
+            text="Save",
+            command=self._save,
+        )
+        self._save_button.pack(
+            side="right",
+        )
+
+        self.protocol(
+            "WM_DELETE_WINDOW",
+            self.destroy,
+        )
         self.grab_set()
 
     def _save(self) -> None:
