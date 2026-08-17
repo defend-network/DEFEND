@@ -45,6 +45,24 @@ def build_job_router(context: ApplicationContext, identity: ScsIdentityStore, jo
         identity.audit.append(actor.employee_id, "job.read", "job", job_id)
         return asdict(item)
 
+    @router.get("/{job_id}/visits")
+    def visits(job_id: str, request: Request):
+        actor = principal(request)
+        try:
+            items = jobs.visible_visits(actor, job_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Job not found") from None
+        return {"visits": [asdict(item) for item in items]}
+
+    @router.get("/{job_id}/notes")
+    def notes(job_id: str, request: Request):
+        actor = principal(request)
+        try:
+            items = jobs.visible_notes(actor, job_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Job not found") from None
+        return {"notes": [asdict(item) for item in items]}
+
     @router.post("", status_code=status.HTTP_201_CREATED)
     def create(body: JobInput, request: Request):
         actor = principal(request)

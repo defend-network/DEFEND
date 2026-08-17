@@ -156,6 +156,19 @@ class ScsJobStore:
         rows = self.conn.execute(f"SELECT * FROM scs_job_notes WHERE job_id=? AND visibility IN ({placeholders}) ORDER BY created_at,rowid", (job_id, *sorted(allowed))).fetchall()
         return tuple(JobNote(row["note_id"], row["job_id"], row["body"], row["visibility"], row["author_id"], row["created_at"]) for row in rows)
 
+    def visible_visits(self, principal: ScsPrincipal, job_id: str) -> tuple[JobVisit, ...]:
+        self.visible_job(principal, job_id)
+        rows = self.conn.execute(
+            "SELECT * FROM scs_job_visits WHERE job_id=? ORDER BY rowid", (job_id,)
+        ).fetchall()
+        return tuple(
+            JobVisit(
+                row["visit_id"], row["job_id"], row["work_performed"],
+                row["findings"], row["recommendations"], row["readings_summary"],
+            )
+            for row in rows
+        )
+
     def classify(self, actor_id: str, job_id: str, code: str, *, source: str) -> None:
         require_actor(self.conn, actor_id, Permission.MANAGE_JOBS)
         job = self.get_job(job_id)

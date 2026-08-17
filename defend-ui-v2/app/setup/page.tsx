@@ -21,7 +21,18 @@ export default function SetupPage() {
     return <p className="admin-loading">Checking access…</p>;
   }
   if (!session) {
-    return <AdminLogin onSuccess={setSession} />;
+    return (
+      <AdminLogin
+        onSuccess={setSession}
+        eyebrow="Platform administration"
+        title="ADMIN SETUP"
+        description="Platform administration & integrations"
+        headerLabel="DEFEND PLATFORM"
+        headerHref={null}
+        backHref={null}
+        backLabel={null}
+      />
+    );
   }
   return <SetupIntegrationsPanel session={session} />;
 }

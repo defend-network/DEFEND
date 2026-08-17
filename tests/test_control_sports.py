@@ -441,7 +441,7 @@ def test_scs_service_is_honest_when_unreachable():
     assert not status.launch_available
     assert not status.stop_available
     assert not status.logs_available
-    assert status.open_url == "https://ai.sunshineclimatesolutions.com"
+    assert status.open_url == "http://127.0.0.1:3100"
     assert status.open_available
 
 

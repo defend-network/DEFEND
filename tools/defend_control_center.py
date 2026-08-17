@@ -13,8 +13,12 @@ import tkinter as tk
 from tkinter import messagebox
 import webbrowser
 
+from defend_control.admin_surface import (
+    AdminSurfaceController,
+    resolve_setup_target,
+)
 from defend_control.controller import ControlController
-from defend_control.health import fetch_http_json, probe_http
+from defend_control.health import probe_http
 from defend_control.local_model import LocalOllamaBackend
 from defend_control.orchestrator import StackOrchestrator
 from defend_control.preflight import CheckResult, PreflightRunner
@@ -38,6 +42,7 @@ class _Runtime:
     products: tuple[object, ...] = ()
     coder_plane: object | None = None
     coder_fingerprint_confirmer: object | None = None
+    admin_surface: AdminSurfaceController | None = None
 
 
 class _CoderFingerprintConfirmer:
@@ -592,6 +597,7 @@ def _build_runtime(
             preflight=PreflightRunner(),
             supervisor=supervisor,
             local_backend=LocalOllamaBackend(),
+            adopt_shared_surface=True,
         )
         controller = ControlController(orchestrator)
         repository = Path(__file__).resolve().parents[1]
@@ -644,12 +650,19 @@ def _build_runtime(
             scs_tunnel=scs_tunnel,
             coder_plane=coder_plane,
         )
+        admin_surface = AdminSurfaceController(
+            supervisor=supervisor,
+            settings=settings,
+            secrets=secret_source,
+            python_executable=sys.executable,
+        )
         return _Runtime(
             controller,
             supervisor,
             products,
             coder_plane=coder_plane,
             coder_fingerprint_confirmer=confirmer,
+            admin_surface=admin_surface,
         )
     except Exception:
         try:
@@ -694,6 +707,21 @@ def run_control_center() -> None:
         secret_store=secret_store,
         build_runtime=_build_runtime,
     )
+
+    def surface_warning(error: Exception) -> None:
+        messagebox.showwarning(
+            "DEFEND shared admin surface",
+            "The local admin surface could not be started "
+            f"({error}).\n\n"
+            "Setup will retry when opened.",
+            parent=root,
+        )
+
+    try:
+        coordinator.runtime.admin_surface.ensure_ready()
+    except Exception as error:
+        root.after(0, lambda error=error: surface_warning(error))
+
     app: ControlCenterUI
 
     def submit_exit_cleanup():
@@ -712,7 +740,7 @@ def run_control_center() -> None:
         )
 
     def settings_saved(result: object):
-        return coordinator.activate(
+        completion = coordinator.activate(
             result,
             lambda controller, origin: (
                 app.set_controller(controller, public_origin=origin),
@@ -725,27 +753,42 @@ def run_control_center() -> None:
                 ),
             ),
         )
+        try:
+            coordinator.runtime.controller.submit_work(
+                coordinator.runtime.admin_surface.ensure_ready
+            )
+        except Exception as error:
+            root.after(0, lambda error=error: surface_warning(error))
+        return completion
 
     def open_setup() -> None:
         """Open the web Setup/Integrations control plane locally.
 
-        Prefers the local admin surface (usable even when the public
-        Cloudflare route is unavailable); falls back to the public origin and
+        Verifies the shared admin surface (api + web), starts it if needed,
+        then opens the local Setup page. Falls back to the public origin and
         explains why when neither is reachable.
         """
-        local_url = f"http://127.0.0.1:{settings.web_port}/setup"
-        probe = fetch_http_json(
-            f"http://127.0.0.1:{settings.web_port}/health", 2.0
-        )
-        if probe.ok:
+        local_url, public_url, local_ok = resolve_setup_target(settings)
+        detail = None
+        if not local_ok:
+            try:
+                coordinator.runtime.admin_surface.ensure_ready()
+                local_url, public_url, local_ok = resolve_setup_target(settings)
+            except Exception as error:
+                detail = str(error)
+        if local_ok:
             webbrowser.open(local_url)
             return
-        public_url = f"{settings.public_web_origin}/setup"
-        messagebox.showwarning(
-            "DEFEND Setup",
+        message = (
             "The local admin surface is not reachable "
             f"(http://127.0.0.1:{settings.web_port}).\n\n"
-            "Start DEFEND and try again, or open the public Setup page.",
+        )
+        if detail:
+            message += f"{detail}\n\n"
+        message += "Start DEFEND and try again, or open the public Setup page."
+        messagebox.showwarning(
+            "DEFEND Setup",
+            message,
             parent=root,
         )
         webbrowser.open(public_url)

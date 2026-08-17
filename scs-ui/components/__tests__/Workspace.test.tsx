@@ -1,8 +1,12 @@
 import { render, screen } from "@testing-library/react";
-import { expect, test } from "vitest";
+import { beforeEach, expect, test, vi } from "vitest";
 import { Workspace } from "../Workspace";
 
 const employee = {display_name:"Taylor", roles:["read_only"], permissions:[]};
+
+beforeEach(() => {
+  vi.stubGlobal("fetch", vi.fn(async () => ({ok:false,status:503,json:async()=>({})})));
+});
 
 test("ordinary employee sees assigned work on a compact workspace without technician levels", () => {
   render(<Workspace employee={employee} jobs={[{job_id:"scs_job_1",job_type:"hvac-service",status:"scheduled",job_date:"2026-08-13",priority:"normal",customer_id:"c",site_id:"s"}]} />);

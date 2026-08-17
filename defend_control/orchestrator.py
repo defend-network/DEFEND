@@ -343,6 +343,7 @@ class StackOrchestrator:
         ssh_tunnel: Any | None = None,
         remote_bootstrap: Any | None = None,
         model_probe: Any | None = None,
+        adopt_shared_surface: bool = False,
     ) -> None:
         if health_timeout_seconds <= 0 or poll_interval_seconds < 0:
             raise ValueError("health timing values are invalid")
@@ -390,6 +391,35 @@ class StackOrchestrator:
         self._replacement_offer: VastOffer | None = None
         self._confirmed_replacement: tuple[int, int, Decimal] | None = None
         self._ssh_key_registered = False
+        self._adopt_shared_surface = bool(adopt_shared_surface)
+
+    def _shared_surface_ports(self) -> frozenset[int]:
+        """Ports already served by a healthy shared admin surface.
+
+        The Control Center owns the web/admin surface (api + web); when both
+        are healthy the DEFEND AI stack adopts them instead of starting
+        duplicates and instead of failing the port-availability preflight.
+        """
+        if not self._adopt_shared_surface:
+            return frozenset()
+        probe_timeout = min(2.0, self._health_timeout_seconds)
+        api_ok = bool(
+            self._health_probe(
+                f"http://127.0.0.1:{self._settings.api_port}/health",
+                probe_timeout,
+            ).ok
+        )
+        web_ok = bool(
+            self._health_probe(
+                f"http://127.0.0.1:{self._settings.web_port}/",
+                probe_timeout,
+            ).ok
+        )
+        if api_ok and web_ok:
+            return frozenset(
+                {self._settings.api_port, self._settings.web_port}
+            )
+        return frozenset()
 
     def _clear_replacement(self) -> None:
         self._replacement_instance = None
@@ -801,7 +831,14 @@ class StackOrchestrator:
 
             secrets = self._load_secrets()
             self._check_cancelled(attempt_cancellation)
-            checks = self._preflight.run(mode, self._settings, secrets)
+            adopted = self._shared_surface_ports()
+            checks = (
+                self._preflight.run(
+                    mode, self._settings, secrets, adopted_ports=adopted
+                )
+                if adopted
+                else self._preflight.run(mode, self._settings, secrets)
+            )
             failed_checks = tuple(check for check in checks if not check.ok)
             if failed_checks:
                 first_failure = failed_checks[0]
@@ -827,24 +864,30 @@ class StackOrchestrator:
 
             self._set_state("starting")
 
-            self._set_component("api", "starting")
-            self._check_cancelled(attempt_cancellation)
-            self._supervisor.start(specs.api)
-            self._remember_owned("api", attempt)
-            self._wait_healthy(
-                "API", specs.api.health_url or "", attempt_cancellation
-            )
-            self._set_component("api", "ready")
+            if self._settings.api_port in adopted:
+                self._set_component("api", "ready (shared)")
+            else:
+                self._set_component("api", "starting")
+                self._check_cancelled(attempt_cancellation)
+                self._supervisor.start(specs.api)
+                self._remember_owned("api", attempt)
+                self._wait_healthy(
+                    "API", specs.api.health_url or "", attempt_cancellation
+                )
+                self._set_component("api", "ready")
             self._check_cancelled(attempt_cancellation)
 
-            self._set_component("frontend", "starting")
-            self._check_cancelled(attempt_cancellation)
-            self._supervisor.start(specs.web)
-            self._remember_owned("web", attempt)
-            self._wait_healthy(
-                "frontend", specs.web.health_url or "", attempt_cancellation
-            )
-            self._set_component("frontend", "ready")
+            if self._settings.web_port in adopted:
+                self._set_component("frontend", "ready (shared)")
+            else:
+                self._set_component("frontend", "starting")
+                self._check_cancelled(attempt_cancellation)
+                self._supervisor.start(specs.web)
+                self._remember_owned("web", attempt)
+                self._wait_healthy(
+                    "frontend", specs.web.health_url or "", attempt_cancellation
+                )
+                self._set_component("frontend", "ready")
             self._check_cancelled(attempt_cancellation)
 
             self._set_component("cloudflare", "starting")

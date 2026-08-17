@@ -82,7 +82,7 @@ class SetupDialog(tk.Toplevel):
         ),
         (
             IntegrationOwner.SPORTS,
-            "DEFEND Sports",
+            "DEFENDmarkets",
             "Odds, statistics, exchanges, and table-tennis data providers.",
         ),
         (
@@ -1068,7 +1068,7 @@ class ControlCenterUI:
     def _product_tab_title(application_id: str, display_name: str) -> str:
         names = {
             "defend": "DEFEND AI",
-            "sports": "DEFEND Sports",
+            "sports": "DEFENDmarkets",
             "scs": "SCS AI",
             "coder": "DEFENDcoder",
         }
@@ -1727,7 +1727,7 @@ class ControlCenterUI:
             header,
             text=(
                 "Unified operations console for DEFEND AI, "
-                "DEFEND Sports, DEFENDcoder, and SCS AI."
+                "DEFENDmarkets, DEFENDcoder, and SCS AI."
             ),
             font=("Segoe UI", 9),
         ).grid(
@@ -1820,7 +1820,7 @@ class ControlCenterUI:
         # PRODUCT TABS
         #
         # Exact requested order:
-        # DEFEND AI -> Sports -> DEFENDcoder -> SCS AI
+        # DEFEND AI -> DEFENDmarkets -> DEFENDcoder -> SCS AI
         # ==========================================================
 
         for product in ordered_products:
@@ -2351,14 +2351,6 @@ class ControlCenterUI:
             self._show_error(error)
 
     def _setup(self) -> None:
-        state = self._controller.poll_state()
-        if state.services_running:
-            messagebox.showwarning(
-                "Stop local services first",
-                "Setup can be changed after local services are stopped.",
-                parent=self.root,
-            )
-            return
         self._open_setup()
 
     def _destroy_vast(self) -> None:

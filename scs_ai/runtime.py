@@ -4,8 +4,12 @@ import os
 from pathlib import Path
 
 from .app import build_scs_ai_app
+from .chat import ScsAssistant
+from .client import OpenAiCompatibleChatClient
 from .config import ScsAiSettings
 from .model_gateway import ModelGateway
+from .office.toolkit import OfficeToolkit
+from .providers import load_model_config
 from .tools import ToolRegistry
 from .tunnel import EnvTokenSource, FileTokenSource, TunnelController
 
@@ -17,7 +21,19 @@ if token_file:
 else:
     token_source = EnvTokenSource()
 
-gateway = ModelGateway(alias=context.model_alias)
+model_config = load_model_config()
+client_factory = (
+    (lambda profile, *, api_key: OpenAiCompatibleChatClient(profile, api_key=api_key))
+    if model_config.base_url
+    else None
+)
+gateway = ModelGateway(
+    alias=model_config.alias,
+    providers=model_config.providers(),
+    api_key=model_config.api_key,
+    client_factory=client_factory,
+)
+assistant = ScsAssistant(gateway)
 tools = ToolRegistry.default()
 tunnel = TunnelController(
     context,
@@ -27,4 +43,14 @@ tunnel = TunnelController(
     token_source=token_source,
 )
 
-app = build_scs_ai_app(context, gateway=gateway, tunnel=tunnel, tools=tools)
+office_root = os.environ.get("SCS_AI_OFFICE_ROOT")
+office_toolkit = OfficeToolkit(office_root) if office_root else None
+
+app = build_scs_ai_app(
+    context,
+    gateway=gateway,
+    tunnel=tunnel,
+    tools=tools,
+    assistant=assistant,
+    office_toolkit=office_toolkit,
+)
