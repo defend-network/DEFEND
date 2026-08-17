@@ -25,7 +25,7 @@ _MAX_RESPONSE_BYTES = 64 * 1024
 _SEARCH_MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 _TIMEOUT_SECONDS = 30.0
 _MAX_ATTEMPTS = 3
-_PROVISIONING_TIMEOUT_SECONDS = 300.0
+_PROVISIONING_TIMEOUT_SECONDS = 1200.0
 _DESTRUCTION_VERIFY_SECONDS = 30.0
 _DESTRUCTION_POLL_SECONDS = 2.0
 _PENDING_STATUSES = frozenset(
@@ -1224,7 +1224,7 @@ class VastClient:
             or not isinstance(timeout_seconds, (int, float))
             or float(timeout_seconds) != _PROVISIONING_TIMEOUT_SECONDS
         ):
-            raise ValueError("Vast.ai provisioning timeout must be 300 seconds")
+            raise ValueError("Vast.ai provisioning timeout must be 1200 seconds")
         if (
             isinstance(poll_interval_seconds, bool)
             or not isinstance(poll_interval_seconds, (int, float))
@@ -1247,7 +1247,7 @@ class VastClient:
         while True:
             remaining = deadline - self._monotonic()
             if remaining <= 0:
-                raise VastError("Vast.ai provisioning timed out after 300 seconds")
+                raise VastError("Vast.ai provisioning timed out after 1200 seconds")
             try:
                 raw = self._instance_payload(
                     parsed_id,
@@ -1256,11 +1256,11 @@ class VastClient:
                 )
             except _DeadlineExceeded:
                 raise VastError(
-                    "Vast.ai provisioning timed out after 300 seconds"
+                    "Vast.ai provisioning timed out after 1200 seconds"
                 ) from None
             after_response = self._monotonic()
             if after_response >= deadline:
-                raise VastError("Vast.ai provisioning timed out after 300 seconds")
+                raise VastError("Vast.ai provisioning timed out after 1200 seconds")
             status = raw.get("actual_status")
             if status is not None and not isinstance(status, str):
                 raise VastError("Vast.ai instance response is invalid")

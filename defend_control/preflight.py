@@ -375,9 +375,20 @@ class PreflightRunner:
         mode: ModelMode,
         settings: ControlSettings,
         secrets: Mapping[str, str] | DpapiSecretStore | _LoadsSecrets,
+        *,
+        adopted_ports: frozenset[int] = frozenset(),
     ) -> tuple[CheckResult, ...]:
         if mode not in ("vast", "ollama"):
             raise ValueError("mode must be vast or ollama")
+        if adopted_ports is None or isinstance(adopted_ports, (str, bytes)):
+            raise TypeError("adopted_ports must be a collection of service ports")
+        adopted = frozenset(adopted_ports)
+        unknown = adopted - set(_SERVICE_PORTS)
+        if unknown:
+            raise ValueError(
+                "adopted_ports must be service ports, "
+                f"got {sorted(unknown)}"
+            )
 
         results: list[CheckResult] = []
         results.append(
@@ -493,6 +504,15 @@ class PreflightRunner:
             )
         )
         for port in _SERVICE_PORTS:
+            if port in adopted:
+                results.append(
+                    CheckResult(
+                        f"port:{port}",
+                        True,
+                        f"Port {port} adopted by the shared admin surface",
+                    )
+                )
+                continue
             results.append(
                 self._result(
                     f"port:{port}",
