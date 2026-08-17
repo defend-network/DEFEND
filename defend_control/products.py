@@ -410,7 +410,7 @@ class DefendService:
 
 class SportsService:
     application_id = "sports"
-    display_name = "DEFEND Sports"
+    display_name = "DEFENDmarkets"
 
     def __init__(
         self,
@@ -959,6 +959,23 @@ class CoderService:
         self._coder_state: str = "stopped"
         self._destroy_runtime_on_stop = bool(destroy_runtime_on_stop)
         self._lifecycle_log = LogBuffer(max_entries=400, max_line_chars=240)
+
+        # Wire every remote provisioning layer into the owner-visible
+        # DEFENDcoder lifecycle log.
+        if self._plane is not None:
+            try:
+                self._plane.lifecycle_log = self.lifecycle_emit
+            except Exception:
+                pass
+            try:
+                backend = getattr(self._plane, "backend", None)
+                if backend is not None:
+                    backend.log = self.lifecycle_emit
+                    bootstrap = getattr(backend, "bootstrap", None)
+                    if bootstrap is not None:
+                        bootstrap.log = self.lifecycle_emit
+            except Exception:
+                pass
 
     def lifecycle_emit(self, line: str) -> None:
         """Timestamped, owner-visible provisioning transition."""

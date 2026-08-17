@@ -1,4 +1,4 @@
-﻿"""Remote vLLM bootstrap for DEFENDcoder â€” plain instruct model, no LoRA.
+﻿"""Remote vLLM bootstrap for DEFENDcoder Ã¢â‚¬â€ plain instruct model, no LoRA.
 
 Separated from identity RemoteVllmBootstrap which pins the chat adapter.
 """
@@ -26,7 +26,9 @@ from .ssh_tunnel import CommandResult, resolve_endpoint, run_command
 from .types import VastInstance
 
 _MAX_STDIN_BYTES = 64 * 1024
-_MODEL_READY_WAIT_SECONDS = 900.0
+_MODEL_DOWNLOAD_WAIT_SECONDS = 1200.0
+_MODEL_READY_WAIT_SECONDS = 480.0
+_REMOTE_BOOTSTRAP_TIMEOUT_SECONDS = 1800.0
 _REVISION = re.compile(r"^(main|[0-9a-f]{7,64})$")
 _REPOSITORY = re.compile(
     r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$"
@@ -45,7 +47,7 @@ class _CommandRunner(Protocol):
 
 
 class CoderRemoteVllmError(RuntimeError):
-    """Bounded remote coder launch error â€” no remote body or secrets.
+    """Bounded remote coder launch error Ã¢â‚¬â€ no remote body or secrets.
 
     phase names the bootstrap stage that failed (ssh_connect when the
     SSH session itself could not be established); remote_tail is a
@@ -115,13 +117,45 @@ class CoderRemoteVllmBootstrap:
         ssh_exe: Path,
         known_hosts: Path,
         key_path: Path,
+        log: Callable[[str], None] | None = None,
     ) -> None:
         self._run = command_runner
         self._ssh_exe = Path(ssh_exe)
         self._known_hosts = Path(known_hosts)
         self._key_path = Path(key_path)
+        self.log = log
         self.last_stages: tuple[str, ...] = ()
         self.last_tail: str | None = None
+        self._live_buffers: dict[str, str] = {"stdout": "", "stderr": ""}
+
+    def _emit_live_output(self, stream_name: str, chunk: bytes) -> None:
+        if self.log is None:
+            return
+        decoded = chunk.decode("utf-8", errors="replace")
+        pending = self._live_buffers.get(stream_name, "") + decoded
+        lines = pending.splitlines(keepends=True)
+        remainder = ""
+        if lines and not lines[-1].endswith(("\n", "\r")):
+            remainder = lines.pop()
+        self._live_buffers[stream_name] = remainder
+
+        for raw in lines:
+            line = raw.strip()
+            if not line:
+                continue
+            if (
+                line.startswith("CODER_STAGE ")
+                or line.startswith("CODER_PROGRESS ")
+                or line.startswith("CODER_GPU_PREFLIGHT ")
+                or line == "coder download complete"
+                or line == "coder ready"
+                or "model readiness timed out" in line
+                or "vllm process exited" in line
+            ):
+                try:
+                    self.log(line[:240])
+                except Exception:
+                    pass
 
     def _argv(
         self, instance: VastInstance, *, prefer_direct: bool = False
@@ -197,8 +231,24 @@ export HUGGING_FACE_HUB_TOKEN="$HF_TOKEN"
 VLLM_API_KEY="$(printf '%s' {shlex.quote(vllm_encoded)} | base64 --decode)"
 export VLLM_API_KEY
 
+# DeepGEMM JIT warmup can take tens of minutes on a cold H100 launch.
+# DEFENDcoder favors predictable startup; vLLM falls back to supported kernels.
+export VLLM_USE_DEEP_GEMM=0
+export VLLM_MOE_USE_DEEP_GEMM=0
+
 stage bootstrap_upload
-python3 - <<'PY'
+(
+  while true; do
+    completed="$(find /workspace/defendcoder/model -maxdepth 1 -type f -name 'model-*-of-*.safetensors' 2>/dev/null | wc -l | tr -d ' ')"
+    size="$(du -sh /workspace/defendcoder/model 2>/dev/null | awk '{{print $1}}' || true)"
+    [ -n "$size" ] || size="0"
+    echo "CODER_PROGRESS download shards=$completed size=$size"
+    sleep 15
+  done
+) &
+CODER_PROGRESS_PID=$!
+
+timeout --signal=TERM {int(_MODEL_DOWNLOAD_WAIT_SECONDS)}s python3 - <<'PY'
 import os
 from huggingface_hub import snapshot_download
 
@@ -210,6 +260,13 @@ snapshot_download(
 )
 print("coder download complete", flush=True)
 PY
+download_rc=$?
+kill "$CODER_PROGRESS_PID" 2>/dev/null || true
+wait "$CODER_PROGRESS_PID" 2>/dev/null || true
+if [ $download_rc -ne 0 ]; then
+  echo "CODER_STAGE bootstrap_upload"
+  exit $download_rc
+fi
 
 unset HF_TOKEN HUGGING_FACE_HUB_TOKEN
 
@@ -240,11 +297,14 @@ try:
     print("CODER_GPU_PREFLIGHT torch_cuda=" + str(torch.version.cuda))
 
     count = torch.cuda.device_count()
-    print("CODER_GPU_PREFLIGHT device_count=" + str(count))
+    required = {int(artifact.tensor_parallel_size or 1)}
 
-    if count < 2:
+    print("CODER_GPU_PREFLIGHT device_count=" + str(count))
+    print("CODER_GPU_PREFLIGHT required_devices=" + str(required))
+
+    if count < required:
         raise RuntimeError(
-            f"expected at least 2 CUDA devices for NEXT, found {{count}}"
+            f"expected at least {{required}} CUDA device(s), found {{count}}"
         )
 
     for i in range(count):
@@ -253,15 +313,12 @@ try:
             f"device={{i}} name={{torch.cuda.get_device_name(i)}}"
         )
 
-    # Force real CUDA initialization; device_count alone may not surface
-    # driver/runtime mismatches.
-    torch.cuda.set_device(0)
-    x = torch.zeros(1, device="cuda:0")
-    del x
-
-    torch.cuda.set_device(1)
-    x = torch.zeros(1, device="cuda:1")
-    del x
+    # Force real CUDA initialization on every device actually required by
+    # this deployment artifact. Default=1 GPU; Heavy currently=2 GPUs.
+    for i in range(required):
+        torch.cuda.set_device(i)
+        x = torch.zeros(1, device=f"cuda:{{i}}")
+        del x
 
     print("CODER_GPU_PREFLIGHT OK")
 
@@ -373,16 +430,26 @@ rm -f -- /workspace/defendcoder/.hf_token
             raise CoderRemoteVllmError("Remote coder bootstrap was cancelled")
         script = self._script(model, artifact, hf_token, vllm_api_key, remote_port)
         try:
-            result = self._run(
-                self._argv(instance, prefer_direct=prefer_direct),
+            run_kwargs = dict(
                 stdin=script,
-                timeout=1200.0,
+                timeout=_REMOTE_BOOTSTRAP_TIMEOUT_SECONDS,
                 cancelled=cancelled,
             )
+            if self.log is not None:
+                run_kwargs["on_output"] = self._emit_live_output
+            result = self._run(
+                self._argv(instance, prefer_direct=prefer_direct),
+                **run_kwargs,
+            )
         except Exception as error:
+            error_type = type(error).__name__
+            if isinstance(error, TimeoutError) or "timeout" in error_type.casefold():
+                raise CoderRemoteVllmError(
+                    f"Remote coder bootstrap safety timeout ({error_type})",
+                    phase="remote_preflight",
+                ) from error
             raise CoderRemoteVllmError(
-                f"Remote coder SSH connection failed "
-                f"({type(error).__name__})",
+                f"Remote coder SSH connection failed ({error_type})",
                 phase="ssh_connect",
             ) from error
         output = (
@@ -405,3 +472,5 @@ rm -f -- /workspace/defendcoder/.hf_token
             phase=phase,
             remote_tail=self.last_tail,
         )
+
+
