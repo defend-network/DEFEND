@@ -99,7 +99,7 @@ class FakeHttp:
     ) -> FakeResponse:
         request = FakeRequest(method, url, dict(headers), json, timeout)
         self.requests.append(request)
-        assert max_response_bytes == 64 * 1024
+        assert max_response_bytes in (64 * 1024, 4 * 1024 * 1024)
         for index, (expected_method, expected_url, response) in enumerate(
             self._responses
         ):
@@ -148,7 +148,7 @@ class DeadlineTransport:
         max_response_bytes: int,
     ) -> FakeResponse:
         self.requests.append(FakeRequest(method, url, dict(headers), json, timeout))
-        assert max_response_bytes == 64 * 1024
+        assert max_response_bytes in (64 * 1024, 4 * 1024 * 1024)
         self.clock.current = 300.25
         if self.error is not None:
             raise self.error

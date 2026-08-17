@@ -1,0 +1,279 @@
+from __future__ import annotations
+
+from pathlib import Path
+from types import SimpleNamespace
+
+from defend_control.products import (
+    ProductsSettings,
+    ScsService,
+    build_scs_ai_process_spec,
+)
+
+
+class FakeLogs:
+    def __init__(self):
+        self.entries = []
+
+    def snapshot(self):
+        return tuple(self.entries)
+
+
+class FakeSupervisor:
+    def __init__(self):
+        self.started = []
+        self.stopped = []
+        self._running = set()
+        self.logs = FakeLogs()
+
+    def start(self, spec):
+        self.started.append(spec)
+        self._running.add(spec.name)
+
+    def stop(self, name):
+        self.stopped.append(name)
+        self._running.discard(name)
+
+    def snapshot(self):
+        return tuple(
+            SimpleNamespace(
+                name=name,
+                running=True,
+            )
+            for name in sorted(self._running)
+        )
+
+
+class FakeTunnel:
+    def __init__(self):
+        self.started = 0
+        self.stopped = 0
+        self.state = "stopped"
+
+    def start(self):
+        self.started += 1
+        self.state = "connected"
+        return SimpleNamespace(
+            state="connected",
+            enabled=True,
+            pid=123,
+            returncode=None,
+            detail="",
+        )
+
+    def stop(self):
+        self.stopped += 1
+        self.state = "stopped"
+        return SimpleNamespace(
+            state="stopped",
+            enabled=True,
+            pid=None,
+            returncode=0,
+            detail="",
+        )
+
+    def status(self):
+        return SimpleNamespace(
+            state=self.state,
+            enabled=True,
+            pid=123 if self.state == "connected" else None,
+            returncode=None,
+            detail="",
+        )
+
+    def logs(self):
+        return (("tunnel", "safe tunnel log"),)
+
+
+class ReadyProbe:
+    def __call__(self, url, timeout):
+        return SimpleNamespace(
+            ok=True,
+            data={
+                "ok": True,
+                "application_id": "scs-ai",
+            },
+            latency_ms=1,
+            error_type=None,
+        )
+
+
+def settings():
+    return ProductsSettings(
+        scs_ai_api_port=8300,
+        scs_ai_web_port=3300,
+        scs_ai_public_origin="https://ai.sunshineclimatesolutions.com",
+    )
+
+
+def test_scs_ai_process_spec_uses_dedicated_8300_lane(tmp_path):
+    spec = build_scs_ai_process_spec(
+        settings(),
+        tmp_path,
+        r"C:\Python\python.exe",
+    )
+
+    assert spec.name == "scs-ai:api"
+    assert spec.argv == (
+        r"C:\Python\python.exe",
+        "-m",
+        "uvicorn",
+        "scs_ai.runtime:app",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8300",
+    )
+    assert spec.env["SCS_AI_API_PORT"] == "8300"
+    assert spec.env["SCS_AI_WEB_PORT"] == "3300"
+
+
+def test_start_starts_only_scs_ai_api_and_its_tunnel(tmp_path):
+    supervisor = FakeSupervisor()
+    tunnel = FakeTunnel()
+
+    service = ScsService(
+        settings(),
+        supervisor=supervisor,
+        repository=tmp_path,
+        python_executable=r"C:\Python\python.exe",
+        tunnel=tunnel,
+        probe=ReadyProbe(),
+    )
+
+    result = service.start()
+
+    assert [spec.name for spec in supervisor.started] == [
+        "scs-ai:api",
+    ]
+    assert tunnel.started == 1
+    assert result.launch_available is True
+    assert result.stop_available is True
+
+
+def test_start_is_idempotent(tmp_path):
+    supervisor = FakeSupervisor()
+    tunnel = FakeTunnel()
+
+    service = ScsService(
+        settings(),
+        supervisor=supervisor,
+        repository=tmp_path,
+        python_executable=r"C:\Python\python.exe",
+        tunnel=tunnel,
+        probe=ReadyProbe(),
+    )
+
+    service.start()
+    service.start()
+
+    assert [spec.name for spec in supervisor.started] == [
+        "scs-ai:api",
+    ]
+    assert tunnel.started == 1
+
+
+def test_stop_stops_only_scs_ai_owned_resources(tmp_path):
+    supervisor = FakeSupervisor()
+    tunnel = FakeTunnel()
+
+    service = ScsService(
+        settings(),
+        supervisor=supervisor,
+        repository=tmp_path,
+        python_executable=r"C:\Python\python.exe",
+        tunnel=tunnel,
+        probe=ReadyProbe(),
+    )
+
+    service.start()
+    service.stop()
+
+    assert supervisor.stopped == ["scs-ai:api"]
+    assert tunnel.stopped == 1
+
+
+def test_status_reports_api_and_tunnel_truthfully(tmp_path):
+    supervisor = FakeSupervisor()
+    tunnel = FakeTunnel()
+
+    service = ScsService(
+        settings(),
+        supervisor=supervisor,
+        repository=tmp_path,
+        python_executable=r"C:\Python\python.exe",
+        tunnel=tunnel,
+        probe=ReadyProbe(),
+    )
+
+    service.start()
+    status = service.status()
+    details = dict(status.details)
+
+    assert details["API"] == "running"
+    assert details["Tunnel"] == "connected"
+    assert details["API port"] == "8300"
+    assert details["Web port"] == "3300"
+
+
+def test_logs_include_only_scs_ai_and_owned_tunnel_logs(tmp_path):
+    supervisor = FakeSupervisor()
+    supervisor.logs.entries = [
+        SimpleNamespace(service="scs-ai:api:stdout", text="scs"),
+        SimpleNamespace(service="coder:api:stdout", text="coder"),
+    ]
+
+    tunnel = FakeTunnel()
+
+    service = ScsService(
+        settings(),
+        supervisor=supervisor,
+        repository=tmp_path,
+        python_executable=r"C:\Python\python.exe",
+        tunnel=tunnel,
+        probe=ReadyProbe(),
+    )
+
+    texts = [entry.text for entry in service.logs()]
+
+    assert "scs" in texts
+    assert "safe tunnel log" in texts
+    assert "coder" not in texts
+
+def test_build_products_wires_operational_scs_ai_when_tunnel_supplied(tmp_path):
+    from defend_control.products import build_products
+
+    supervisor = FakeSupervisor()
+    tunnel = FakeTunnel()
+
+    class FakeController:
+        def poll_state(self):
+            return SimpleNamespace(
+                state="stopped",
+                selected_mode=None,
+                owned_services=(),
+                message=None,
+                logs=(),
+            )
+
+    products = build_products(
+        controller=FakeController(),
+        supervisor=supervisor,
+        repository=tmp_path,
+        python_executable=r"C:\Python\python.exe",
+        public_origin="https://ai.defend-network.org",
+        settings=settings(),
+        scs_tunnel=tunnel,
+        probe=ReadyProbe(),
+    )
+
+    scs = next(
+        product
+        for product in products
+        if product.application_id == "scs"
+    )
+
+    status = scs.status()
+
+    assert status.launch_available is True
+    assert status.stop_available is True
+    assert status.logs_available is True

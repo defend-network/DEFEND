@@ -103,12 +103,14 @@ def wait_for_direct_endpoint(
     budget_seconds: float | None = None,
     poll_interval_seconds: float = 10.0,
     monotonic: Callable[[], float] = time.monotonic,
+    cancelled: Callable[[], bool] | None = None,
 ) -> DirectEndpointProbe:
     """Bounded wait for the provider to publish the direct SSH endpoint.
 
     Terminal states: ENDPOINT_AVAILABLE (published within the window) or
     ENDPOINT_PERMANENTLY_UNAVAILABLE (instance running but never published
-    before the min(max_wait_seconds, budget_seconds) deadline).
+    before the min(max_wait_seconds, budget_seconds) deadline, or the caller
+    cancelled the wait).
 
     This never mutates the instance and never destroys anything — the caller
     decides what to do with the terminal state. The client is duck-typed to
@@ -127,6 +129,8 @@ def wait_for_direct_endpoint(
     start = monotonic()
     attempt = 0
     while True:
+        if cancelled is not None and cancelled():
+            break
         attempt += 1
         elapsed = monotonic() - start
         instance = client.show_instance(instance_id)

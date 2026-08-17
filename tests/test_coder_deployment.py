@@ -31,7 +31,12 @@ from defend_control.coder_remote_vllm import (
     CoderRemoteVllmError,
 )
 from defend_control.ssh_tunnel import CommandResult
-from defend_control.types import LaunchSpec, ResourceProfile, VastInstance
+from defend_control.types import (
+    LaunchSpec,
+    ResourceProfile,
+    VastInstance,
+    VastOffer,
+)
 
 FP8_REVISION = "da6e2ed27304dd39abadd9c82ef50e8de67bdd4c"
 LOGICAL_HEAVY_REVISION = "a7fbcb5c0e12d62a448eaa0e260346bf5dcc0feb"
@@ -51,8 +56,20 @@ class NoOpBackend:
     def __init__(self) -> None:
         self.starts: list[str] = []
 
-    def start(self, model, *, local_port, session_budget_usd, offer=None, profile=None):
-        del offer, profile
+    def search_offers_for(self, model, profile, *, launch_runtype=None):
+        del model, profile, launch_runtype
+        return (
+            VastOffer(
+                601,
+                "H100 SXM 80GB",
+                81_920,
+                Decimal("1.65"),
+                Decimal("0.99"),
+            ),
+        )
+
+    def start(self, model, *, local_port, session_budget_usd, offer=None, profile=None, launch_runtype=None):
+        del offer, profile, launch_runtype
         self.starts.append(model.alias)
         return {
             "state": "ready",
@@ -145,19 +162,19 @@ class TestHeavyIdentityAndArtifact:
         assert artifact.enable_auto_tool_choice is True
 
 
-class TestDefaultUnchanged:
-    def test_default_artifact_preserves_old_behavior(self):
+class TestDefaultDeployment:
+    def test_default_artifact_is_agentic_bf16(self):
         artifact = resolve_deployment("defendcoder-default")
         assert artifact.repo_id == "Qwen/Qwen3-Coder-30B-A3B-Instruct"
         assert artifact.revision == "b2cff646eb4bb1d68355c01b18ae02e7cf42d120"
         assert artifact.precision == "BF16"
-        assert artifact.minimum_vllm_version == "0.10.0"
+        assert artifact.minimum_vllm_version == "0.27.1"
         assert artifact.max_model_len == 8192
-        assert artifact.tool_call_parser is None
-        assert artifact.enable_auto_tool_choice is False
-        assert artifact.image_tag == "v0.10.0"
+        assert artifact.tool_call_parser == "qwen3_xml"
+        assert artifact.enable_auto_tool_choice is True
+        assert artifact.image_tag == "v0.27.1"
 
-    def test_default_bootstrap_script_is_unchanged(self):
+    def test_default_bootstrap_script_enables_agentic_tools(self):
         runner = RecordingCoderRunner()
         boot = _bootstrap(runner)
         boot.start(
@@ -169,8 +186,8 @@ class TestDefaultUnchanged:
         rendered = runner.calls[0][1].decode("ascii")
         assert "Qwen/Qwen3-Coder-30B-A3B-Instruct" in rendered
         assert "--max-model-len 8192" in rendered
-        assert "--tool-call-parser" not in rendered
-        assert "--enable-auto-tool-choice" not in rendered
+        assert "--tool-call-parser qwen3_xml" in rendered
+        assert "--enable-auto-tool-choice" in rendered
         assert "hf_synthetic" not in rendered
         assert "vllm_synthetic" not in rendered
 
@@ -289,11 +306,15 @@ class TestLiveSmokePlan:
         assert plan.deployment_repo_id == "Qwen/Qwen3-Coder-Next-FP8"
         assert plan.deployment_revision == FP8_REVISION
         assert plan.precision == "FP8"
-        assert plan.gpu_families == ("A100", "H100")
+        assert plan.gpu_families == (
+            "H100",
+            "H200",
+            "B200",
+        )
         assert plan.gpu_count == 2
         assert plan.vram_per_gpu_mb == 81_920
         assert plan.tensor_parallel_size == 2
-        assert plan.max_hourly_price_usd == Decimal("2.00")
+        assert plan.max_hourly_price_usd == Decimal("4.50")
         assert plan.session_budget_usd == Decimal("5.00")
         assert plan.max_model_len == 32_768
         assert plan.serving_runtime == "vllm/vllm-openai:v0.15.0"
@@ -302,10 +323,10 @@ class TestLiveSmokePlan:
         assert plan.auto_tool_choice is True
         assert plan.local_port == 8003
         assert plan.provider == "vast"
-        assert plan.gpu_family is None
-        assert plan.provider_hourly_rate is None
-        assert plan.estimated_max_hourly_spend == Decimal("2.00")
-        assert plan.offer_id is None
+        assert plan.gpu_family == "H100 SXM 80GB"
+        assert plan.provider_hourly_rate == Decimal("1.65")
+        assert plan.estimated_max_hourly_spend == Decimal("1.65")
+        assert plan.offer_id == 601
         assert plan.status == "requires_approval"
         assert plan.plan_id
         assert plan.plan_hash

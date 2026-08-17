@@ -1,14 +1,31 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from decimal import Decimal
 import os
 from pathlib import Path
+import shutil
 import time
 from typing import Protocol
 import webbrowser
 
 from .health import JsonResult, fetch_http_json
-from .processes import LogEntry, ProcessSpec
+from .processes import LogBuffer, LogEntry, ProcessSpec
+from .coder_control_plane import (
+    CoderNoQualifyingOffer,
+    CoderProvisionBlocked,
+)
+from .coder_m0 import (
+    CODER_MAX_HOURLY_UPPER_USD,
+    parse_max_hourly_budget,
+)
+from .coder_provisioning import (
+    CoderProvisionFailure,
+    format_elapsed,
+    wall_clock,
+)
+from .coder_vast_backend import CoderVastBackendError
+from .vast import vast_gpu_ram_floor
 
 
 @dataclass(frozen=True)
@@ -24,6 +41,8 @@ class ProductStatus:
     open_available: bool = True
     logs_available: bool = True
     last_error: str | None = None
+    error_category: str | None = None
+    diagnostics: str | None = None
 
 
 class ProductService(Protocol):
@@ -63,7 +82,18 @@ class ProductsSettings:
     scs_api_port: int = 8100
     scs_web_port: int = 3100
     scs_public_origin: str = "https://ai.sunshineclimatesolutions.com"
+
+    scs_ai_api_port: int = 8300
+    scs_ai_web_port: int = 3300
+    scs_ai_public_origin: str = "https://ai.sunshineclimatesolutions.com"
+    coder_api_port: int = 8301
+    coder_web_port: int = 3301
+    coder_model_alias: str = "defendcoder-heavy"
     coder_public_origin: str = "https://defendcoder.defend-network.org"
+    coder_workspace_root: Path = Path(r"C:\DEFEND_CODER_DATA")
+    coder_database_url: str | None = field(default=None, repr=False)
+    coder_max_hourly_usd: Decimal = Decimal("4.50")
+    coder_config_errors: tuple[str, ...] = ()
     sports_database_url: str | None = field(default=None, repr=False)
 
     @classmethod
@@ -83,6 +113,22 @@ class ProductsSettings:
                 return default
             return value
 
+        coder_config_errors: list[str] = []
+
+        raw_max_hourly = os.environ.get("CODER_MAX_HOURLY_USD")
+        if raw_max_hourly is None or not raw_max_hourly.strip():
+            coder_max_hourly_usd = Decimal("4.50")
+        else:
+            try:
+                coder_max_hourly_usd = parse_max_hourly_budget(
+                    raw_max_hourly
+                )
+            except ValueError as error:
+                coder_max_hourly_usd = Decimal("4.50")
+                coder_config_errors.append(
+                    f"{error}; using safe default $4.50"
+                )
+
         return cls(
             sports_api_port=port("SPORTS_API_PORT", 8200),
             sports_web_port=port("SPORTS_WEB_PORT", 3200),
@@ -99,10 +145,31 @@ class ProductsSettings:
                 "SCS_PUBLIC_ORIGIN",
                 "https://ai.sunshineclimatesolutions.com",
             ),
+            scs_ai_api_port=port("SCS_AI_API_PORT", 8300),
+            scs_ai_web_port=port("SCS_AI_WEB_PORT", 3300),
+            scs_ai_public_origin=text(
+                "SCS_AI_PUBLIC_ORIGIN",
+                "https://ai.sunshineclimatesolutions.com",
+            ),
+            coder_api_port=port("CODER_API_PORT", 8301),
+            coder_web_port=port("CODER_WEB_PORT", 3301),
+            coder_model_alias=text(
+                "CODER_MODEL_ALIAS",
+                "defendcoder-heavy",
+            ),
             coder_public_origin=text(
                 "CODER_PUBLIC_ORIGIN",
                 "https://defendcoder.defend-network.org",
             ),
+            coder_workspace_root=Path(
+                text(
+                    "CODER_WORKSPACE_ROOT",
+                    str(Path(r"C:\DEFEND_CODER_DATA")),
+                )
+            ),
+            coder_database_url=os.environ.get("CODER_DATABASE_URL"),
+            coder_max_hourly_usd=coder_max_hourly_usd,
+            coder_config_errors=tuple(coder_config_errors),
             sports_database_url=os.environ.get("SPORTS_DATABASE_URL"),
         )
 
@@ -127,6 +194,129 @@ def build_sports_process_spec(
             "SPORTS_DATABASE_URL": settings.sports_database_url,
         },
         health_url=f"http://127.0.0.1:{settings.sports_api_port}/health",
+    )
+
+
+def build_coder_api_process_spec(
+    settings: ProductsSettings,
+    repository: Path,
+    python_executable: str,
+) -> ProcessSpec:
+    if not settings.coder_database_url:
+        raise ValueError("CODER_DATABASE_URL is not configured")
+
+    return ProcessSpec(
+        name="coder:api",
+        argv=(
+            str(python_executable),
+            "-m",
+            "tools.defend_coder_server",
+        ),
+        cwd=Path(repository),
+        env={
+            "CODER_DATABASE_URL": settings.coder_database_url,
+            "CODER_HOST": "127.0.0.1",
+            "CODER_PORT": str(settings.coder_api_port),
+            "CODER_PUBLIC_HTTPS": "true",
+            "CODER_WORKSPACE_ROOT": str(
+                settings.coder_workspace_root
+            ),
+        },
+        health_url=(
+            f"http://127.0.0.1:"
+            f"{settings.coder_api_port}/health"
+        ),
+    )
+
+
+def build_coder_web_process_spec(
+    settings: ProductsSettings,
+    repository: Path,
+) -> ProcessSpec:
+    return ProcessSpec(
+        name="coder:web",
+        argv=(
+            "node",
+            ".next/standalone/server.js",
+        ),
+        cwd=Path(repository) / "defendcoder-ui",
+        env={
+            "HOSTNAME": "127.0.0.1",
+            "PORT": str(settings.coder_web_port),
+            "NODE_ENV": "production",
+            "DEFENDCODER_INTERNAL_API_URL": (
+                f"http://127.0.0.1:"
+                f"{settings.coder_api_port}"
+            ),
+        },
+        health_url=(
+            f"http://127.0.0.1:"
+            f"{settings.coder_web_port}/"
+        ),
+    )
+
+
+class StandaloneWebBuildError(FileNotFoundError):
+    """DEFENDcoder standalone web bundle is missing or incomplete."""
+
+
+def prepare_standalone_web(repository: Path) -> Path:
+    """Make the standalone web bundle self-contained and return server.js.
+
+    The `output: "standalone"` build produces .next/standalone/server.js
+    but does NOT include static assets; `node .next/standalone/server.js`
+    serves them from .next/standalone/.next/static and
+    .next/standalone/public. This syncs those two trees (idempotent,
+    always-fresh) and fails closed with a clear message when the build
+    itself is missing — there is no silent fallback to `next start`.
+    """
+    ui = Path(repository) / "defendcoder-ui"
+    standalone = ui / ".next" / "standalone"
+    server = standalone / "server.js"
+    if not server.is_file():
+        raise StandaloneWebBuildError(
+            f"standalone web build missing at {server}; run "
+            "'npm run build' in defendcoder-ui before launching"
+        )
+    for relative in ("public", ".next/static"):
+        source = ui / relative
+        destination = standalone / relative
+        if source.is_dir():
+            shutil.copytree(source, destination, dirs_exist_ok=True)
+    return server
+
+
+def build_scs_ai_process_spec(
+    settings: ProductsSettings,
+    repository: Path,
+    python_executable: str,
+) -> ProcessSpec:
+    return ProcessSpec(
+        name="scs-ai:api",
+        argv=(
+            str(python_executable),
+            "-m",
+            "uvicorn",
+            "scs_ai.runtime:app",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(settings.scs_ai_api_port),
+        ),
+        cwd=Path(repository),
+        env={
+            "SCS_AI_PUBLIC_ORIGIN": settings.scs_ai_public_origin,
+            "SCS_AI_API_PORT": str(settings.scs_ai_api_port),
+            "SCS_AI_WEB_PORT": str(settings.scs_ai_web_port),
+
+            # Control Center owns the tunnel separately.
+            # runtime.py must therefore construct it disabled in this child.
+            "SCS_AI_TUNNEL_ENABLED": "false",
+        },
+        health_url=(
+            f"http://127.0.0.1:"
+            f"{settings.scs_ai_api_port}/health"
+        ),
     )
 
 
@@ -177,10 +367,10 @@ class DefendService:
     def status(self) -> ProductStatus:
         state = self._controller.poll_state()
         details = (
-            ("Model backend", state.selected_mode or "—"),
+            ("Model backend", state.selected_mode or "â€”"),
             (
                 "Owned services",
-                ", ".join(state.owned_services) if state.owned_services else "—",
+                ", ".join(state.owned_services) if state.owned_services else "â€”",
             ),
         )
         return self._row(
@@ -298,10 +488,10 @@ class SportsService:
         state = self.state
         details: list[tuple[str, str]] = [
             ("API state", state),
-            ("DB health", "—"),
-            ("Schema version", "—"),
+            ("DB health", "â€”"),
+            ("Schema version", "â€”"),
             ("Public origin", self._settings.sports_public_origin),
-            ("Sources", "—"),
+            ("Sources", "â€”"),
         ]
         if state == "running":
             health = self._cached_json(self._health_url())
@@ -320,7 +510,7 @@ class SportsService:
                     details[4] = ("Sources", str(len(source_list)))
         status_text = f"API {state}"
         if self._last_error:
-            status_text += f" — {self._last_error}"
+            status_text += f" â€” {self._last_error}"
         return ProductStatus(
             application_id=self.application_id,
             display_name=self.display_name,
@@ -361,104 +551,496 @@ class SportsService:
 
 class ScsService:
     application_id = "scs"
-    display_name = "SCS"
+    display_name = "SCS AI"
 
     def __init__(
         self,
         settings: ProductsSettings,
         *,
+        supervisor=None,
+        repository: Path | None = None,
+        python_executable: str | None = None,
+        tunnel=None,
         probe=fetch_http_json,
-        clock=time.monotonic,
-        probe_ttl_seconds: float = 5.0,
     ) -> None:
         self._settings = settings
+        self._supervisor = supervisor
+        self._repository = (
+            Path(repository)
+            if repository is not None
+            else None
+        )
+        self._python_executable = (
+            str(python_executable)
+            if python_executable is not None
+            else None
+        )
+        self._tunnel = tunnel
         self._probe = probe
-        self._clock = clock
-        self._probe_ttl = float(probe_ttl_seconds)
-        self._health_cache: tuple[float, JsonResult] | None = None
+        self._last_error: str | None = None
+
+    @property
+    def _lifecycle_enabled(self) -> bool:
+        return (
+            self._supervisor is not None
+            and self._repository is not None
+            and self._python_executable is not None
+            and self._tunnel is not None
+        )
+
+    def _api_running(self) -> bool:
+        if not self._lifecycle_enabled:
+            return False
+
+        for snapshot in self._supervisor.snapshot():
+            if snapshot.name == "scs-ai:api":
+                return bool(snapshot.running)
+
+        return False
 
     @property
     def state(self) -> str:
-        return "running" if self._cached_health().ok else "not configured"
+        if not self._lifecycle_enabled:
+            result = self._probe(
+                (
+                    f"http://127.0.0.1:"
+                    f"{self._settings.scs_api_port}/health"
+                ),
+                2.0,
+            )
+            return "running" if result.ok else "not configured"
 
-    def _cached_health(self) -> JsonResult:
-        now = self._clock()
-        if (
-            self._health_cache is not None
-            and now - self._health_cache[0] < self._probe_ttl
-        ):
-            return self._health_cache[1]
-        result = self._probe(
-            f"http://127.0.0.1:{self._settings.scs_api_port}/health", 2.0
-        )
-        self._health_cache = (now, result)
-        return result
+        api = self._api_running()
+        tunnel_state = self._tunnel.status().state
+
+        if api and tunnel_state == "connected":
+            return "running"
+
+        if api or tunnel_state in {"starting", "connected"}:
+            return "degraded"
+
+        return "stopped"
 
     def start(self) -> ProductStatus:
+        if not self._lifecycle_enabled:
+            return self.status()
+
+        try:
+            if not self._api_running():
+                self._supervisor.start(
+                    build_scs_ai_process_spec(
+                        self._settings,
+                        self._repository,
+                        self._python_executable,
+                    )
+                )
+
+            tunnel_state = self._tunnel.status().state
+
+            if tunnel_state == "stopped":
+                self._tunnel.start()
+
+            self._last_error = None
+
+        except Exception as error:
+            self._last_error = (
+                f"start failed ({type(error).__name__})"
+            )
+
         return self.status()
 
     def stop(self) -> ProductStatus:
+        if not self._lifecycle_enabled:
+            return self.status()
+
+        errors: list[str] = []
+
+        try:
+            self._tunnel.stop()
+        except Exception as error:
+            errors.append(
+                f"tunnel stop failed ({type(error).__name__})"
+            )
+
+        if self._api_running():
+            try:
+                self._supervisor.stop("scs-ai:api")
+            except Exception as error:
+                errors.append(
+                    f"api stop failed ({type(error).__name__})"
+                )
+
+        self._last_error = (
+            "; ".join(errors)
+            if errors
+            else None
+        )
+
         return self.status()
 
     def status(self) -> ProductStatus:
-        health = self._cached_health()
-        state = "running" if health.ok else "not configured"
-        status_text = (
-            "SCS API reachable"
-            if health.ok
-            else "Lifecycle not managed from Control Center"
-        )
+        if not self._lifecycle_enabled:
+            health = self._probe(
+                (
+                    f"http://127.0.0.1:"
+                    f"{self._settings.scs_api_port}/health"
+                ),
+                2.0,
+            )
+
+            state = "running" if health.ok else "not configured"
+
+            return ProductStatus(
+                application_id=self.application_id,
+                display_name=self.display_name,
+                state=state,
+                status_text=(
+                    "SCS API reachable"
+                    if health.ok
+                    else "Lifecycle not managed from Control Center"
+                ),
+                details=(
+                    ("Public origin", self._settings.scs_public_origin),
+                    ("API port", str(self._settings.scs_api_port)),
+                    ("Web port", str(self._settings.scs_web_port)),
+                    ("Health", "reachable" if health.ok else "unreachable"),
+                ),
+                open_url=self._settings.scs_public_origin,
+                launch_available=False,
+                stop_available=False,
+                logs_available=False,
+            )
+
+        api = "running" if self._api_running() else "stopped"
+        tunnel = self._tunnel.status()
+
+        state = self.state
+
+        if self._last_error:
+            status_text = self._last_error
+        elif state == "running":
+            status_text = "SCS AI API and tunnel running"
+        elif state == "degraded":
+            status_text = "SCS AI partially running"
+        else:
+            status_text = "SCS AI stopped"
+
         return ProductStatus(
             application_id=self.application_id,
             display_name=self.display_name,
             state=state,
             status_text=status_text,
             details=(
-                ("Public origin", self._settings.scs_public_origin),
-                ("API port", str(self._settings.scs_api_port)),
-                ("Web port", str(self._settings.scs_web_port)),
-                ("Health", "reachable" if health.ok else "unreachable"),
+                ("API", api),
+                ("Tunnel", str(tunnel.state)),
+                ("API port", str(self._settings.scs_ai_api_port)),
+                ("Web port", str(self._settings.scs_ai_web_port)),
+                ("Public origin", self._settings.scs_ai_public_origin),
             ),
-            open_url=self._settings.scs_public_origin,
-            launch_available=False,
-            stop_available=False,
-            logs_available=False,
+            open_url=self._settings.scs_ai_public_origin,
+            launch_available=True,
+            stop_available=True,
+            open_available=True,
+            logs_available=True,
+            last_error=self._last_error,
         )
 
     def health(self) -> bool:
-        return self._cached_health().ok
+        api_port = (
+            self._settings.scs_ai_api_port
+            if self._lifecycle_enabled
+            else self._settings.scs_api_port
+        )
+
+        result = self._probe(
+            f"http://127.0.0.1:{api_port}/health",
+            2.0,
+        )
+
+        return bool(result.ok)
 
     def open_url(self) -> bool:
-        return webbrowser.open(self._settings.scs_public_origin)
+        return webbrowser.open(
+            self._settings.scs_ai_public_origin
+        )
 
     def logs(self) -> tuple[LogEntry, ...]:
-        return ()
+        if not self._lifecycle_enabled:
+            return ()
+
+        entries = [
+            entry
+            for entry in self._supervisor.logs.snapshot()
+            if entry.service.startswith("scs-ai:")
+        ]
+
+        for service, text in self._tunnel.logs():
+            entries.append(
+                LogEntry(
+                    service=f"scs-ai:{service}",
+                    text=text,
+                )
+            )
+
+        return tuple(entries)
+
+
+def coder_plan_rows(prepared) -> tuple[tuple[str, str], ...]:
+    """Owner-visible plan rows for the approval dialog and status detail."""
+    plan = prepared.plan
+    offer = prepared.offer
+    public = plan.as_public_dict()
+    offer_id = public.get("offer_id")
+    hourly = public.get("provider_hourly_rate")
+    gpu_name = (
+        offer.gpu_name
+        if offer is not None
+        else None
+    ) or public.get("gpu_family") or "\u2014"
+    reliability = (
+        str(offer.reliability)
+        if offer is not None
+        else "\u2014"
+    )
+    return (
+        ("Logical model", public["logical_repo_id"]),
+        ("Deployment", public["deployment_repo_id"]),
+        ("Pinned revision", str(public["deployment_revision"])),
+        ("Precision", str(public["precision"])),
+        ("GPU", str(gpu_name)),
+        ("GPU count", str(public["gpu_count"])),
+        (
+            "VRAM per GPU",
+            (
+                f"{offer.gpu_ram_mb:,} MB reported"
+                if offer is not None
+                else f'{public["vram_per_gpu_mb"]} MB'
+            ),
+        ),
+        ("Reliability", reliability),
+        (
+            "Offer ID",
+            str(offer_id) if offer_id is not None else "\u2014",
+        ),
+        (
+            "Exact $/hr",
+            f"${hourly}" if hourly is not None else "\u2014",
+        ),
+        (
+            "Configured max $/hr",
+            f"${public['max_hourly_price_usd']}",
+        ),
+        (
+            "Session budget",
+            f"${public['session_budget_usd']}",
+        ),
+        ("vLLM image", str(public["serving_runtime"])),
+        ("Max model length", str(public["max_model_len"])),
+        (
+            "Tensor parallel",
+            str(public["tensor_parallel_size"]),
+        ),
+        ("Tool parser", str(public["tool_call_parser"])),
+        (
+            "Transport",
+            (
+                "Direct SSH"
+                if str(public["launch_runtype"]) == "ssh_direct"
+                else "Vast SSH Proxy"
+            ),
+        ),
+        (
+            "Runtype",
+            (
+                "ssh_direct (direct SSH \u2014 explicit alternative)"
+                if str(public["launch_runtype"]) == "ssh_direct"
+                else "ssh_proxy (Vast SSH Proxy \u2014 qualification default)"
+            ),
+        ),
+        ("Plan ID", str(public["plan_id"])),
+        ("Plan hash", str(public["plan_hash"])),
+    )
+
+
+def _provider_category(error: BaseException) -> str | None:
+    category = getattr(error, "category", None)
+    if isinstance(category, str) and category:
+        return category
+    if isinstance(error, CoderNoQualifyingOffer):
+        return "no_qualifying_offer"
+    return None
+
+
+def coder_approval_ready(prepared) -> tuple[bool, tuple[str, ...]]:
+    """A prepared plan is spend-ready ONLY when every provider field is
+    concrete and within policy. Returns (ready, problems)."""
+    problems: list[str] = []
+    offer = getattr(prepared, "offer", None)
+    public = prepared.plan.as_public_dict()
+    if offer is None:
+        problems.append("no concrete provider offer")
+    else:
+        if public.get("offer_id") is None:
+            problems.append("missing offer ID")
+        if not public.get("gpu_family"):
+            problems.append("missing GPU name/family")
+        if getattr(offer, "reliability", None) is None:
+            problems.append("missing reliability")
+    if not (public.get("gpu_count") or 0) > 0:
+        problems.append("missing GPU count")
+    if not (public.get("vram_per_gpu_mb") or 0) > 0:
+        problems.append("missing VRAM per GPU")
+    rate = public.get("provider_hourly_rate")
+    ceiling = public.get("max_hourly_price_usd")
+    if not rate:
+        problems.append("missing exact provider hourly price")
+    else:
+        try:
+            if Decimal(str(rate)) > Decimal(str(ceiling or "0")):
+                problems.append("offer exceeds configured max $/hr")
+        except Exception:
+            problems.append("invalid provider hourly price")
+    if not public.get("plan_hash"):
+        problems.append("missing plan fingerprint")
+    return (not problems), tuple(problems)
 
 
 class CoderService:
     application_id = "coder"
     display_name = "DEFENDcoder"
 
+    # Typed lifecycle states (plane-wired builds). "running" is only reported
+    # after remote compute readiness AND local API/UI are genuinely up.
+    # "no_offer" means the qualification search found nothing spend-ready.
+    _LIFECYCLE_STATES = (
+        "stopped",
+        "preparing",
+        "approval_required",
+        "provisioning",
+        "starting_local",
+        "running",
+        "failed",
+        "no_offer",
+    )
+
     def __init__(
         self,
         settings: ProductsSettings,
+        *,
+        supervisor=None,
+        repository: Path | None = None,
+        python_executable: str | None = None,
         observation: object | None = None,
+        plane: object | None = None,
+        probe=fetch_http_json,
+        destroy_runtime_on_stop: bool = True,
     ) -> None:
         self._settings = settings
+        self._supervisor = supervisor
+        self._repository = (
+            Path(repository)
+            if repository is not None
+            else None
+        )
+        self._python_executable = (
+            str(python_executable)
+            if python_executable is not None
+            else None
+        )
         self._observation = observation
+        self._plane = plane
+        self._probe = probe
+        self._last_error: str | None = None
+        self._last_error_category: str | None = None
+        self._last_qualification: CoderNoQualifyingOffer | None = None
+        self._last_provision_failure: CoderProvisionFailure | None = None
+        self._prepared: object | None = None
+        self._approval: object | None = None
+        self._coder_state: str = "stopped"
+        self._destroy_runtime_on_stop = bool(destroy_runtime_on_stop)
+        self._lifecycle_log = LogBuffer(max_entries=400, max_line_chars=240)
+
+    def lifecycle_emit(self, line: str) -> None:
+        """Timestamped, owner-visible provisioning transition."""
+        self._lifecycle_log.append("coder:lifecycle", f"[{wall_clock()}] {line}")
+
+    def _refresh_provision_failure(self) -> None:
+        failure = getattr(self._plane, "last_provision_failure", None)
+        if failure is not None:
+            self._last_provision_failure = failure
+
+    def _emit_failure_line(self) -> None:
+        failure = self._last_provision_failure
+        if failure is None:
+            return
+        reason = failure.sanitized_message.replace("\n", " ")[:240]
+        self.lifecycle_emit(
+            f"FAILED phase={failure.phase} reason={reason}"
+        )
+
+    @property
+    def _lifecycle_enabled(self) -> bool:
+        return (
+            self._supervisor is not None
+            and self._repository is not None
+            and self._python_executable is not None
+        )
+
+    def _service_running(self, name: str) -> bool:
+        if not self._lifecycle_enabled:
+            return False
+
+        for snapshot in self._supervisor.snapshot():
+            if snapshot.name == name:
+                return bool(snapshot.running)
+        return False
 
     @property
     def state(self) -> str:
+        if self._plane is not None:
+            if self._coder_state in self._LIFECYCLE_STATES:
+                return self._coder_state
+            return "stopped"
+
+        if not self._lifecycle_enabled:
+            public = self._observation_public()
+
+            if public is None:
+                return "not configured"
+
+            return str(
+                public.get("state") or "unavailable"
+            )
+
+        api = self._service_running("coder:api")
+        web = self._service_running("coder:web")
+
+        if api and web:
+            return "running"
+
+        if api or web:
+            return "degraded"
+
         public = self._observation_public()
-        if public is None:
-            return "not configured"
-        return str(public.get("state") or "unavailable")
+
+        if public is not None:
+            remote_state = str(
+                public.get("state") or "unavailable"
+            )
+
+            if remote_state == "ready":
+                return "runtime ready"
+
+        return "stopped"
 
     def _observation_public(self) -> dict[str, object] | None:
         observation = self._observation
+
         if observation is None:
             return None
+
         status = getattr(observation, "status", None)
+
         if callable(status):
             try:
                 value = status()
@@ -466,62 +1048,758 @@ class CoderService:
                 return None
         else:
             value = observation
+
         as_public = getattr(value, "as_public_dict", None)
+
         if callable(as_public):
             try:
                 value = as_public()
             except Exception:
                 value = None
+
         if not isinstance(value, dict):
             return None
+
         return value
+
+    def start(self) -> ProductStatus:
+        if self._plane is None:
+            return self._start_local_only()
+
+        if self._coder_state in (
+            "preparing",
+            "provisioning",
+            "starting_local",
+        ):
+            return self.status()
+
+        alias = str(self._settings.coder_model_alias)
+
+        try:
+            endpoint = self._plane.status(alias)
+        except Exception as error:
+            self._coder_state = "failed"
+            self._last_error = (
+                "runtime status unavailable "
+                f"({type(error).__name__})"
+            )
+            return self.status()
+
+        if endpoint.get("state") == "ready":
+            return self._start_local_and_finish()
+
+        try:
+            lease = self._plane.resume_existing(alias)
+        except Exception as error:
+            self._coder_state = "failed"
+            self._last_error = (
+                f"resume check failed ({type(error).__name__})"
+            )
+            self._last_error_category = _provider_category(error)
+            return self.status()
+
+        if lease is not None:
+            self._coder_state = "provisioning"
+            try:
+                smoke = self._plane.smoke(alias)
+            except Exception as error:
+                self._fail_after_remote_error(
+                    alias,
+                    "resumed runtime verification failed "
+                    f"({type(error).__name__})",
+                    _provider_category(error),
+                )
+                return self.status()
+            if not smoke.ok:
+                self._fail_after_remote_error(
+                    alias,
+                    "resumed runtime failed smoke",
+                    "provider",
+                )
+                return self.status()
+            self.lifecycle_emit(f"resumed runtime ready: {alias}")
+            return self._start_local_and_finish()
+
+        self._coder_state = "preparing"
+        self._last_error = None
+        self._last_error_category = None
+        self._last_qualification = None
+
+        try:
+            prepared = self._plane.prepared_provision(alias)
+        except CoderNoQualifyingOffer as error:
+            self._prepared = None
+            self._approval = None
+            self._coder_state = "no_offer"
+            self._last_error = None
+            self._last_error_category = "no_qualifying_offer"
+            self._last_qualification = error
+            return self.status()
+        except Exception as error:
+            self._prepared = None
+            self._approval = None
+            self._coder_state = "failed"
+            self._last_error = (
+                f"plan preparation failed "
+                f"({type(error).__name__})"
+            )
+            self._last_error_category = _provider_category(error)
+            return self.status()
+
+        self._prepared = prepared
+        self._approval = None
+        self._coder_state = "approval_required"
+
+        return self.status()
+
+    def approve(self) -> ProductStatus:
+        if self._plane is None or self._prepared is None:
+            self._last_error = "no pending coder plan to approve"
+            self._last_error_category = None
+            return self.status()
+
+        if self._coder_state != "approval_required":
+            self._last_error = (
+                "no pending coder plan to approve"
+            )
+            self._last_error_category = None
+            return self.status()
+
+        ready, problems = coder_approval_ready(self._prepared)
+        if not ready:
+            self._prepared = None
+            self._approval = None
+            self._coder_state = "failed"
+            self._last_error = (
+                "plan is not spend-ready: "
+                + "; ".join(problems)
+            )
+            self._last_error_category = "no_qualifying_offer"
+            return self.status()
+
+        prepared = self._prepared
+        alias = str(prepared.plan.alias)
+        self.lifecycle_emit(f"provisioning approved for {alias}")
+        self._coder_state = "provisioning"
+
+        try:
+            approval = self._plane.approve(prepared)
+            self._approval = approval
+            self._plane.provision(prepared, approval)
+            smoke = self._plane.smoke(alias)
+        except CoderProvisionBlocked as error:
+            self._fail_after_remote_error(
+                alias,
+                f"provisioning blocked: {error}",
+                _provider_category(error),
+            )
+            return self.status()
+        except Exception as error:
+            self._fail_after_remote_error(
+                alias,
+                f"provisioning failed ({type(error).__name__})",
+                _provider_category(error),
+            )
+            return self.status()
+
+        if not smoke.ok:
+            self._fail_after_remote_error(
+                alias,
+                f"remote readiness failed: {smoke.detail}",
+            )
+            return self.status()
+
+        self._prepared = None
+        self._approval = None
+        self._last_provision_failure = None
+        self.lifecycle_emit(f"runtime ready: {alias} (smoke passed)")
+
+        return self._start_local_and_finish()
+
+    def cancel(self) -> ProductStatus:
+        if self._plane is None:
+            self._last_error = "no pending coder plan to cancel"
+            return self.status()
+
+        if self._coder_state == "approval_required":
+            self._prepared = None
+            self._approval = None
+            self._coder_state = "stopped"
+            self._last_error = None
+            self._last_error_category = None
+            self._last_qualification = None
+
+        return self.status()
+
+    def pending_plan(self):
+        return self._prepared
+
+    def _start_local_only(self) -> ProductStatus:
+        if not self._lifecycle_enabled:
+            return self.status()
+
+        if not self._settings.coder_database_url:
+            self._last_error = (
+                "CODER_DATABASE_URL is not configured"
+            )
+            return self.status()
+
+        self.lifecycle_emit("starting local coder services (api + web)")
+
+        try:
+            self._supervisor.logs.add_known_secrets(
+                [self._settings.coder_database_url]
+            )
+
+            if not self._service_running("coder:api"):
+                self._supervisor.start(
+build_coder_api_process_spec(
+                        self._settings,
+                        self._repository,
+                        self._python_executable,
+                    )
+                )
+
+            if not self._service_running("coder:web"):
+                prepare_standalone_web(self._repository)
+                self._supervisor.start(
+                    build_coder_web_process_spec(
+                        self._settings,
+                        self._repository,
+                    )
+                )
+
+            self._last_error = None
+
+        except Exception as error:
+            self._last_error = (
+                f"start failed ({type(error).__name__})"
+            )
+
+        return self.status()
+
+    def _start_local_and_finish(self) -> ProductStatus:
+        if not self._lifecycle_enabled:
+            self._coder_state = "running"
+            self._last_error = None
+            return self.status()
+
+        if not self._settings.coder_database_url:
+            self._coder_state = "failed"
+            self._last_error = (
+                "CODER_DATABASE_URL is not configured; "
+                "local API/UI cannot start"
+            )
+            return self.status()
+
+        if self._coder_state != "running":
+            self.lifecycle_emit("starting local coder services (api + web)")
+        self._coder_state = "starting_local"
+
+        try:
+            self._supervisor.logs.add_known_secrets(
+                [self._settings.coder_database_url]
+            )
+
+            if not self._service_running("coder:api"):
+                self._supervisor.start(
+build_coder_api_process_spec(
+                        self._settings,
+                        self._repository,
+                        self._python_executable,
+                    )
+                )
+
+            if not self._service_running("coder:web"):
+                prepare_standalone_web(self._repository)
+                self._supervisor.start(
+                    build_coder_web_process_spec(
+                        self._settings,
+                        self._repository,
+                    )
+                )
+
+            self._last_error = None
+            self._coder_state = "running"
+
+        except Exception as error:
+            self._coder_state = "failed"
+            self._last_error = (
+                f"local start failed ({type(error).__name__})"
+            )
+            status = (
+                self._plane.status(str(self._settings.coder_model_alias))
+                if self._plane is not None
+                else {}
+            )
+            self._last_provision_failure = CoderProvisionFailure(
+                phase="local_api_start",
+                exception_type=type(error).__name__,
+                sanitized_message=str(error),
+                instance_id=status.get("instance_id"),
+                gpu_name=status.get("gpu_type"),
+                approved_hourly_rate=status.get("hourly_price"),
+                elapsed_seconds=0.0,
+                endpoint_state="ready",
+                ssh_state="ready",
+                bootstrap_state="ready",
+                vllm_state="ready",
+                readiness_state="ready",
+                cleanup_state="not_attempted",
+            )
+            self._emit_failure_line()
+
+        return self.status()
+
+    def _fail_after_remote_error(
+        self,
+        alias: str,
+        message: str,
+        category: str | None = None,
+    ) -> None:
+        try:
+            self._plane.release(alias, destroy=True)
+        except Exception:
+            pass
+        try:
+            self._stop_coder_tunnels()
+        except Exception:
+            pass
+        self._refresh_provision_failure()
+        self._emit_failure_line()
+        self._prepared = None
+        self._approval = None
+        self._coder_state = "failed"
+        self._last_error = message
+        self._last_error_category = category or "provider"
+
+    def qualification(self):
+        """Sanitized no-offer metadata for the owner UI (None otherwise)."""
+        return self._last_qualification
+
+    def _stop_coder_tunnels(self) -> None:
+        if not self._lifecycle_enabled:
+            return
+        for snapshot in self._supervisor.snapshot():
+            if not snapshot.name.startswith("coder ssh tunnel"):
+                continue
+            try:
+                self._supervisor.stop(snapshot.name)
+            except Exception:
+                pass
+
+    def stop(self) -> ProductStatus:
+        if not self._lifecycle_enabled:
+            return self.status()
+
+        self.lifecycle_emit("stopping coder runtime")
+        errors: list[str] = []
+
+        for name in ("coder:web", "coder:api"):
+            if not self._service_running(name):
+                continue
+
+            try:
+                self._supervisor.stop(name)
+            except Exception as error:
+                errors.append(
+                    f"{name} stop failed "
+                    f"({type(error).__name__})"
+                )
+
+        try:
+            self._stop_coder_tunnels()
+        except Exception as error:
+            errors.append(
+                f"coder ssh tunnel stop failed "
+                f"({type(error).__name__})"
+            )
+
+        if self._plane is not None:
+            alias = str(self._settings.coder_model_alias)
+            try:
+                self._plane.release(
+                    alias,
+                    destroy=self._destroy_runtime_on_stop,
+                )
+            except Exception as error:
+                errors.append(
+                    f"runtime teardown failed "
+                    f"({type(error).__name__})"
+                )
+
+        self._prepared = None
+        self._approval = None
+        self._coder_state = "stopped"
+        self._last_error = (
+            "; ".join(errors)
+            if errors
+            else None
+        )
+        self._last_error_category = None
+        self._last_qualification = None
+        if not errors:
+            self.lifecycle_emit("coder runtime stopped")
+
+        return self.status()
 
     def status(self) -> ProductStatus:
         public = self._observation_public()
-        alias = gpu = instance = hourly = budget = "—"
+
+        alias = "\u2014"
+        gpu = "\u2014"
+        instance = "\u2014"
+        hourly = "\u2014"
+        budget = "\u2014"
+
         if public is not None:
-            alias = str(public.get("alias") or "—")
-            gpu = str(public.get("gpu_name") or public.get("gpu") or "—")
-            instance = str(public.get("instance_id") or "—")
-            hourly = str(public.get("hourly_price") or "—")
-            budget = str(public.get("session_budget_usd") or "—")
+            alias = str(public.get("alias") or "\u2014")
+            gpu = str(
+                public.get("gpu_name")
+                or public.get("gpu")
+                or "\u2014"
+            )
+            instance = str(
+                public.get("instance_id") or "\u2014"
+            )
+
+            raw_hourly = public.get("hourly_price")
+            if raw_hourly is not None:
+                hourly = f"${raw_hourly}"
+
+            raw_budget = public.get(
+                "session_budget_usd"
+            )
+            if raw_budget is not None:
+                budget = f"${raw_budget}"
+
+        if self._plane is not None:
+            try:
+                endpoint = self._plane.status(
+                    str(self._settings.coder_model_alias)
+                )
+            except Exception:
+                endpoint = {}
+            if endpoint.get("alias"):
+                alias = str(endpoint["alias"])
+            if endpoint.get("gpu_type"):
+                gpu = str(endpoint["gpu_type"])
+            if endpoint.get("instance_id") is not None:
+                instance = str(endpoint["instance_id"])
+            if endpoint.get("hourly_price") is not None:
+                hourly = f"${endpoint['hourly_price']}"
+
+        api = (
+            "running"
+            if self._service_running("coder:api")
+            else "stopped"
+        )
+
+        web = (
+            "running"
+            if self._service_running("coder:web")
+            else "stopped"
+        )
+
         state = self.state
+
+        plan_rows: tuple[tuple[str, str], ...] = ()
+        if (
+            state == "approval_required"
+            and self._prepared is not None
+        ):
+            plan_rows = coder_plan_rows(self._prepared)
+
+        if not self._lifecycle_enabled:
+            return ProductStatus(
+                application_id=self.application_id,
+                display_name=self.display_name,
+                state=state,
+                status_text=(
+                    "Observation-only (read-only)"
+                    if public is not None
+                    else "Observation not wired in this build"
+                ),
+                details=(
+                    ("Alias", alias),
+                    ("GPU", gpu),
+                    ("Instance", instance),
+                    ("$/hr", hourly),
+                    ("Session cost", budget),
+                    (
+                        "Max $/hr (ceiling)",
+                        f"${self._settings.coder_max_hourly_usd}",
+                    ),
+                ),
+                open_url=self._settings.coder_public_origin,
+                launch_available=False,
+                stop_available=False,
+                logs_available=False,
+            )
+
+        if state == "no_offer" and self._last_qualification is not None:
+            qualification = self._last_qualification
+            required_gpu = (
+                " / ".join(qualification.required_gpu_families)
+                or "\u2014"
+            )
+            return ProductStatus(
+                application_id=self.application_id,
+                display_name=self.display_name,
+                state=state,
+                status_text="NO QUALIFYING VAST OFFER",
+                details=(
+                    (
+                        "Required",
+                        (
+                            f"{qualification.required_gpu_count} \u00d7 "
+                            f"{required_gpu}"
+                        ),
+                    ),
+                    (
+                        "GPU memory class",
+                        (
+                            f">= "
+                            f"{vast_gpu_ram_floor(qualification.required_vram_per_gpu_mb) // 1000} GB"
+                        ),
+                    ),
+                    (
+                        "Vast threshold",
+                        (
+                            f">= "
+                            f"{vast_gpu_ram_floor(qualification.required_vram_per_gpu_mb)} MB"
+                        ),
+                    ),
+                    (
+                        "Reliability",
+                        f">= {qualification.required_min_reliability}",
+                    ),
+                    (
+                        "Max rate",
+                        f"<= ${qualification.max_hourly_usd}/hr",
+                    ),
+                    (
+                        "Offers searched",
+                        str(qualification.searched_offer_count),
+                    ),
+                    *(
+                        (
+                            ("Provider query matched approved GPU universe", str(qualification.provider_returned_count)),
+                        )
+                        if qualification.provider_returned_count is not None
+                        else ()
+                    ),
+                    *(
+                        (
+                            ("Eligible after validation", str(qualification.eligible_count)),
+                        )
+                        if qualification.eligible_count is not None
+                        else ()
+                    ),
+                    *(
+                        (
+                            (
+                                f"Rejected: {category}",
+                                str(count),
+                            )
+                        )
+                        for category, count in qualification.rejections
+                    ),
+                    *(
+                        (("Config", "; ".join(self._settings.coder_config_errors)),)
+                        if self._settings.coder_config_errors
+                        else ()
+                    ),
+                    (
+                        "Possible reasons",
+                        (
+                            "no current inventory meeting filters; "
+                            "configured hourly ceiling too low; "
+                            "Vast provider/API problem"
+                        ),
+                    ),
+                ),
+                open_url=self._settings.coder_public_origin,
+                launch_available=True,
+                stop_available=True,
+                open_available=True,
+                logs_available=True,
+                error_category="no_qualifying_offer",
+            )
+
+        failure = self._last_provision_failure
+        if failure is not None:
+            cleanup_failed = failure.cleanup_state in (
+                "destroy_request_failed",
+                "destroy_verification_failed",
+            )
+            return ProductStatus(
+                application_id=self.application_id,
+                display_name=self.display_name,
+                state="failed",
+                status_text=(
+                    "PROVISIONING FAILED \u2014 PROVIDER CLEANUP FAILED: "
+                    "the Vast instance may still be running and billing. "
+                    "Destroy it in the Vast console immediately."
+                    if cleanup_failed
+                    else "PROVISIONING FAILED"
+                ),
+                details=(
+                    ("Phase", failure.phase),
+                    ("Reason", f"{failure.phase} failed — see DEFENDcoder logs / COPY DIAGNOSTICS"),
+                    ("Instance", (
+                        str(failure.instance_id)
+                        if failure.instance_id is not None
+                        else "\u2014"
+                    )),
+                    ("GPU", failure.gpu_name or "\u2014"),
+                    ("Approved rate", (
+                        f"${format(failure.approved_hourly_rate, 'f')}/hr"
+                        if failure.approved_hourly_rate is not None
+                        else "\u2014"
+                    )),
+                    (
+                        "Runtime before failure",
+                        format_elapsed(failure.elapsed_seconds),
+                    ),
+                    (
+                        "Cleanup",
+                        {
+                            "destroyed": "instance destroyed",
+                            "destroy_pending": (
+                                "destruction pending \u2014 provider "
+                                "acknowledged; teardown in progress"
+                            ),
+                            "destroy_verification_failed": (
+                                "VERIFICATION FAILED \u2014 could not "
+                                "confirm the instance is gone"
+                            ),
+                            "destroy_request_failed": (
+                                "DESTROY REQUEST FAILED \u2014 instance "
+                                "may still be running"
+                            ),
+                            "not_attempted": (
+                                "not attempted \u2014 instance kept "
+                                "running (local start failed)"
+                            ),
+                            "unknown": "unknown",
+                        }.get(
+                            failure.cleanup_state or "unknown",
+                            failure.cleanup_state or "unknown",
+                        ),
+                    ),
+                ),
+                open_url=self._settings.coder_public_origin,
+                launch_available=True,
+                stop_available=True,
+                open_available=True,
+                logs_available=True,
+                last_error=self._last_error,
+                error_category=self._last_error_category,
+                diagnostics=failure.as_text(),
+            )
+
+        if self._last_error:
+            status_text = self._last_error
+        elif state == "approval_required":
+            status_text = (
+                "Plan ready \u2014 owner approval required "
+                "before any spend"
+            )
+        elif state == "preparing":
+            status_text = "Preparing NEXT deployment plan\u2026"
+        elif state == "provisioning":
+            status_text = (
+                "Provisioning approved NEXT runtime\u2026"
+            )
+        elif state == "starting_local":
+            status_text = "Starting local API and UI\u2026"
+        elif state == "running":
+            status_text = "DEFENDcoder API and UI running"
+        elif state == "degraded":
+            status_text = "DEFENDcoder partially running"
+        elif state == "runtime ready":
+            status_text = (
+                "Runtime observed; local API/UI stopped"
+            )
+        else:
+            status_text = "DEFENDcoder stopped"
+
         return ProductStatus(
             application_id=self.application_id,
             display_name=self.display_name,
             state=state,
-            status_text=(
-                "Observation-only (read-only)"
-                if public is not None
-                else "Observation not wired in this build"
-            ),
+            status_text=status_text,
             details=(
+                ("API", api),
+                ("Web", web),
                 ("Alias", alias),
                 ("GPU", gpu),
                 ("Instance", instance),
-                ("$/hr", f"${hourly}" if public is not None else hourly),
-                ("Session cost", f"${budget}" if public is not None else budget),
+                ("$/hr", hourly),
+                ("Session cost", budget),
+                (
+                    "Max $/hr (ceiling)",
+                    f"${self._settings.coder_max_hourly_usd}",
+                ),
+                *(
+                    (("Config", "; ".join(self._settings.coder_config_errors)),)
+                    if self._settings.coder_config_errors
+                    else ()
+                ),
+                *plan_rows,
+                (
+                    "Public origin",
+                    self._settings.coder_public_origin,
+                ),
             ),
             open_url=self._settings.coder_public_origin,
-            launch_available=False,
-            stop_available=False,
-            logs_available=False,
+            launch_available=True,
+            stop_available=True,
+            open_available=True,
+            logs_available=True,
+            last_error=self._last_error,
+            error_category=self._last_error_category,
         )
 
-    def start(self) -> ProductStatus:
-        return self.status()
-
-    def stop(self) -> ProductStatus:
-        return self.status()
-
     def health(self) -> bool:
-        return self.state == "ready"
+        if not self._lifecycle_enabled:
+            return self.state == "ready"
+
+        if not self._service_running("coder:api"):
+            return False
+
+        result = self._probe(
+            (
+                f"http://127.0.0.1:"
+                f"{self._settings.coder_api_port}/health"
+            ),
+            2.0,
+        )
+
+        return bool(result.ok)
 
     def open_url(self) -> bool:
-        return webbrowser.open(self._settings.coder_public_origin)
+        return webbrowser.open(
+            self._settings.coder_public_origin
+        )
 
     def logs(self) -> tuple[LogEntry, ...]:
-        return ()
+        if not self._lifecycle_enabled:
+            return ()
+
+        lifecycle = self._lifecycle_log.snapshot()
+        snapshot = getattr(self._supervisor.logs, "snapshot", None)
+        supervisor_entries = (
+            tuple(
+                entry
+                for entry in snapshot()
+                if entry.service.startswith("coder:")
+            )
+            if snapshot is not None
+            else ()
+        )
+        return lifecycle + supervisor_entries
 
 
 def build_products(
@@ -532,10 +1810,26 @@ def build_products(
     python_executable: str,
     public_origin: str,
     settings: ProductsSettings | None = None,
+    scs_tunnel=None,
+    coder_plane=None,
     probe=fetch_http_json,
     clock=time.monotonic,
 ) -> tuple[ProductService, ...]:
     products_settings = settings or ProductsSettings.from_env()
+    coder_service = CoderService(
+        products_settings,
+        supervisor=supervisor,
+        repository=repository,
+        python_executable=python_executable,
+        plane=coder_plane,
+        probe=probe,
+    )
+    if coder_plane is not None:
+        setattr(
+            coder_plane,
+            "lifecycle_log",
+            coder_service.lifecycle_emit,
+        )
     return (
         DefendService(controller, public_origin=public_origin),
         SportsService(
@@ -546,8 +1840,19 @@ def build_products(
             probe=probe,
             clock=clock,
         ),
-        ScsService(products_settings, probe=probe, clock=clock),
-        CoderService(products_settings),
+        ScsService(
+            products_settings,
+            supervisor=supervisor if scs_tunnel is not None else None,
+            repository=repository if scs_tunnel is not None else None,
+            python_executable=(
+                python_executable
+                if scs_tunnel is not None
+                else None
+            ),
+            tunnel=scs_tunnel,
+            probe=probe,
+        ),
+        coder_service,
     )
 
 

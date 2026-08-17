@@ -38,6 +38,8 @@ class CoderDeploymentArtifact:
     tool_call_parser: str | None = None
     enable_auto_tool_choice: bool = False
     tensor_parallel_size: int = 1
+    enforce_eager: bool = False
+    disable_custom_all_reduce: bool = False
     required_min_gpu_ram_mb: int | None = None
     requires_hf_token: bool = False
     notes: str = ""
@@ -69,14 +71,18 @@ _CODER_DEFAULT_ARTIFACT = CoderDeploymentArtifact(
     repo_id=_DEFAULT_MODEL.repo_id,
     revision=_DEFAULT_MODEL.revision,
     precision="BF16",
-    minimum_vllm_version="0.10.0",
+    minimum_vllm_version="0.27.1",
     max_model_len=8192,
-    image_tag="v0.10.0",
-    tool_call_parser=None,
-    enable_auto_tool_choice=False,
+    image_tag="v0.27.1",
+    tool_call_parser="qwen3_xml",
+    enable_auto_tool_choice=True,
     required_min_gpu_ram_mb=81_920,
     requires_hf_token=False,
-    notes="Plain BF16 instruct serving on a single 80GB-class GPU",
+    notes=(
+        "Proven live baseline: Qwen3-Coder-30B-A3B-Instruct BF16 on "
+        "vLLM 0.27.1 with qwen3_xml automatic tool calling, "
+        "single 80GB-class-or-better GPU, initial context 8192"
+    ),
 )
 
 _CODER_HEAVY_ARTIFACT = CoderDeploymentArtifact(
@@ -90,12 +96,14 @@ _CODER_HEAVY_ARTIFACT = CoderDeploymentArtifact(
     tool_call_parser="qwen3_coder",
     enable_auto_tool_choice=True,
     tensor_parallel_size=2,
+    enforce_eager=True,
+    disable_custom_all_reduce=True,
     required_min_gpu_ram_mb=81_920,
     requires_hf_token=False,
     notes=(
         "Official Qwen FP8 checkpoint (F8_E4M3); vLLM >= 0.15.0 with "
         "--enable-auto-tool-choice and --tool-call-parser qwen3_coder; "
-        "initial context 32768; tensor-parallel-size 2 (2x80GB-class)"
+        "initial context 32768; tensor-parallel-size 2 (2x80GB-class); ""enforce-eager enabled for known vLLM 0.15/Qwen3-Next CUDA-graph startup issue"
     ),
 )
 
