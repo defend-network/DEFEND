@@ -23,7 +23,10 @@ from defend_control.coder_control_plane import (
 from defend_control.coder_deployment import resolve_deployment
 from defend_control.coder_m0 import resolve_alias
 from defend_control.coder_remote_vllm import CoderRemoteVllmBootstrap
-from defend_control.coder_vast_backend import VastCoderBackend
+from defend_control.coder_vast_backend import (
+    CoderVastBackendError,
+    VastCoderBackend,
+)
 from defend_control.ssh_tunnel import CommandResult
 from defend_control.types import (
     LaunchSpec,
@@ -35,8 +38,8 @@ from defend_control.types import (
 FP8_REVISION = "da6e2ed27304dd39abadd9c82ef50e8de67bdd4c"
 
 _OFFERS = (
-    VastOffer(601, "A100 SXM4 80GB", 81920, Decimal("1.65"), Decimal("0.99")),
-    VastOffer(602, "H100 SXM 80GB", 81920, Decimal("2.00"), Decimal("0.99")),
+    VastOffer(601, "H100 SXM 80GB", 81920, Decimal("1.65"), Decimal("0.99")),
+    VastOffer(602, "H200 SXM 141GB", 144384, Decimal("2.00"), Decimal("0.99")),
 )
 
 
@@ -47,10 +50,10 @@ class RecordingHeavyBackend:
         self.smokes = 0
         self.stops: list[tuple[int | None, bool]] = []
 
-    def search_offers_for(self, model, profile):
+    def search_offers_for(self, model, profile, *, launch_runtype=None):
         return self.offers
 
-    def start(self, model, *, local_port, session_budget_usd, offer=None, profile=None):
+    def start(self, model, *, local_port, session_budget_usd, offer=None, profile=None, launch_runtype=None):
         self.starts.append(
             (model.alias, local_port, offer.offer_id if offer is not None else None)
         )
@@ -120,7 +123,11 @@ class TestHeavyProfile:
         profile = resource_profile("defendcoder-heavy", CoderPolicy())
         assert profile.num_gpus == 2
         assert profile.min_gpu_ram_mb == 81_920
-        assert profile.allowed_gpu_families == ("A100", "H100")
+        assert profile.allowed_gpu_families == (
+            "H100",
+            "H200",
+            "B200",
+        )
 
     def test_single_gpu_heavy_profile_remains_available(self):
         profile = resource_profile(
@@ -159,40 +166,49 @@ class TestPlanAndApproval:
         assert plan.precision == "FP8"
         assert plan.gpu_count == 2
         assert plan.vram_per_gpu_mb == 81_920
-        assert plan.gpu_family == "A100 SXM4 80GB"
+        assert plan.gpu_family == "H100 SXM 80GB"
         assert plan.provider_hourly_rate == Decimal("1.65")
         assert plan.estimated_max_hourly_spend == Decimal("1.65")
         assert plan.offer_id == 601
-        assert plan.max_hourly_price_usd == Decimal("2.00")
+        assert plan.max_hourly_price_usd == Decimal("4.50")
         assert plan.session_budget_usd == Decimal("5.00")
         assert plan.max_model_len == 32_768
         assert plan.tensor_parallel_size == 2
         assert plan.serving_runtime == "vllm/vllm-openai:v0.15.0"
         assert plan.tool_call_parser == "qwen3_coder"
-        assert plan.launch_runtype == "ssh_direct"
+        assert plan.launch_runtype == "ssh_proxy"
         assert plan.local_port == 8003
         assert plan.status == "requires_approval"
         assert plan.plan_id
         assert plan.plan_hash
 
-    def test_default_coder_lane_plan_uses_documented_proxy_runtype(self):
+    def test_default_coder_lane_plan_uses_qualification_proxy_runtype(self):
         backend = RecordingHeavyBackend()
         plane = _plane(backend)
         plan = plane.live_smoke_plan("defendcoder-default")
         assert plan.launch_runtype == "ssh_proxy"
         assert plan.as_public_dict()["launch_runtype"] == "ssh_proxy"
 
+    def test_explicit_direct_lane_plan_is_fingerprinted_as_ssh_direct(self):
+        backend = RecordingHeavyBackend()
+        plane = _plane(backend)
+        plan = plane.prepared_provision(
+            "defendcoder-heavy", launch_runtype="ssh_direct"
+        )
+        assert plan.plan.launch_runtype == "ssh_direct"
+        assert plan.plan.as_public_dict()["launch_runtype"] == "ssh_direct"
+
     def test_changed_launch_transport_invalidates_approval(self):
         plane = _plane()
         prepared = plane.prepared_provision("defendcoder-heavy")
-        assert prepared.plan.launch_runtype == "ssh_direct"
+        assert prepared.plan.launch_runtype == "ssh_proxy"
         approval = plane.approve(prepared)
-        direct_hash = _plan_fingerprint(prepared.plan, prepared.offer)
-        proxy_plan = replace(prepared.plan, launch_runtype="ssh_proxy")
-        proxy_hash = _plan_fingerprint(proxy_plan, prepared.offer)
-        assert proxy_hash != direct_hash
+        proxy_hash = _plan_fingerprint(prepared.plan, prepared.offer)
+        direct_plan = replace(prepared.plan, launch_runtype="ssh_direct")
+        direct_hash = _plan_fingerprint(direct_plan, prepared.offer)
+        assert direct_hash != proxy_hash
         reoffered = CoderPreparedProvision(
-            plan=proxy_plan, offer=prepared.offer, plan_hash=proxy_hash
+            plan=direct_plan, offer=prepared.offer, plan_hash=direct_hash
         )
         with pytest.raises(CoderProvisionBlocked, match="no longer matches"):
             plane.provision(reoffered, approval)
@@ -257,15 +273,29 @@ class TestPlanAndApproval:
         assert backend.starts == [("defendcoder-heavy", 8003, 601)]
         assert plane.active_endpoints()[0].state == "ready"
 
-    def test_over_budget_offer_cannot_be_approved(self):
+    def test_cheapest_qualifying_proxy_capable_offer_wins(self):
         backend = RecordingHeavyBackend(
             offers=(
-                VastOffer(900, "A100 SXM4 80GB", 81920, Decimal("2.75"), Decimal("0.99")),
+                VastOffer(602, "H200 SXM 141GB", 144384, Decimal("2.00"), Decimal("0.99")),
+                VastOffer(601, "H100 SXM 80GB", 81920, Decimal("1.65"), Decimal("0.99")),
+                VastOffer(600, "H100 SXM 80GB", 81920, Decimal("1.65"), Decimal("0.999")),
+                VastOffer(599, "H100 SXM 80GB", 81920, Decimal("1.65"), Decimal("0.999")),
             )
         )
         plane = _plane(backend)
         prepared = plane.prepared_provision("defendcoder-heavy")
-        assert prepared.plan.estimated_max_hourly_spend == Decimal("2.75")
+        assert prepared.plan.launch_runtype == "ssh_proxy"
+        assert prepared.plan.offer_id == 599
+
+    def test_over_budget_offer_cannot_be_approved(self):
+        backend = RecordingHeavyBackend(
+            offers=(
+                VastOffer(900, "A100 SXM4 80GB", 81920, Decimal("5.25"), Decimal("0.99")),
+            )
+        )
+        plane = _plane(backend)
+        prepared = plane.prepared_provision("defendcoder-heavy")
+        assert prepared.plan.estimated_max_hourly_spend == Decimal("5.25")
         with pytest.raises(ValueError, match="exceeds"):
             plane.approve(prepared)
         assert backend.starts == []
@@ -304,6 +334,11 @@ class TestUnchanged:
 class RecordingHeavyVast:
     def __init__(self) -> None:
         self.created: list[LaunchSpec] = []
+        self._last_raw = {}
+
+    def list_labeled_instance_ids(self, label):
+        del label
+        return ()
 
     def search_offers(self, max_hourly, profile):
         return _OFFERS
@@ -315,9 +350,25 @@ class RecordingHeavyVast:
         )
 
     def wait_until_running(self, instance_id):
+        return self.show_instance(instance_id)
+
+    def show_instance(self, instance_id):
         return VastInstance(
-            555, "running", "ssh.example", 2222, "A100 SXM4 80GB", 81920, Decimal("1.65")
+            instance_id,
+            "running",
+            "ssh.example",
+            2222,
+            "A100 SXM4 80GB",
+            81920,
+            Decimal("1.65"),
+            direct_ssh_host="10.0.0.9",
+            direct_ssh_port=2222,
+            image_runtype="ssh_direct",
         )
+
+    def last_raw_payload(self, kind):
+        del kind
+        return self._last_raw
 
     def destroy_instance(self, instance_id, *, confirmed_instance_id=None):
         return True
@@ -337,11 +388,17 @@ def _heavy_backend(vast: RecordingHeavyVast) -> VastCoderBackend:
             key_path=Path("key"),
         ),
         max_hourly=Decimal("2.00"),
+        tunnel_start=lambda instance, local_port, *, prefer_direct: (
+            f"http://127.0.0.1:{local_port}/v1"
+        ),
+        local_verify=lambda endpoint: True,
+        direct_endpoint_wait_seconds=5.0,
+        direct_endpoint_poll_seconds=0.01,
     )
 
 
-class TestHeavyDirectSshLane:
-    def test_heavy_lane_requests_direct_ssh_runtype_at_creation(self):
+class TestHeavyProxySshLane:
+    def test_heavy_lane_requests_proxy_ssh_runtype_at_creation(self):
         vast = RecordingHeavyVast()
         backend = _heavy_backend(vast)
         backend.start(
@@ -351,11 +408,11 @@ class TestHeavyDirectSshLane:
             offer=_OFFERS[0],
         )
         assert len(vast.created) == 1
-        assert vast.created[0].runtype == "ssh_direct"
+        assert vast.created[0].runtype == "ssh_proxy"
         assert vast.created[0].label == "defendcoder-vllm"
         assert vast.created[0].image == "vllm/vllm-openai:v0.15.0"
 
-    def test_default_coder_lane_keeps_proxy_ssh_runtype(self):
+    def test_default_coder_lane_uses_proxy_ssh_runtype(self):
         vast = RecordingHeavyVast()
         backend = _heavy_backend(vast)
         backend.start(
@@ -368,6 +425,33 @@ class TestHeavyDirectSshLane:
         assert vast.created[0].runtype == "ssh_proxy"
         assert vast.created[0].label == "defendcoder-vllm"
 
+    def test_direct_lane_remains_available_as_explicit_alternative(self):
+        vast = RecordingHeavyVast()
+        backend = _heavy_backend(vast)
+        backend.start(
+            resolve_alias("defendcoder-heavy"),
+            local_port=8003,
+            session_budget_usd=Decimal("5.00"),
+            offer=_OFFERS[0],
+            launch_runtype="ssh_direct",
+        )
+        assert len(vast.created) == 1
+        assert vast.created[0].runtype == "ssh_direct"
+        assert vast.created[0].label == "defendcoder-vllm"
+
+    def test_invalid_explicit_runtype_is_rejected(self):
+        vast = RecordingHeavyVast()
+        backend = _heavy_backend(vast)
+        with pytest.raises(CoderVastBackendError, match="launch_runtype"):
+            backend.start(
+                resolve_alias("defendcoder-heavy"),
+                local_port=8003,
+                session_budget_usd=Decimal("5.00"),
+                offer=_OFFERS[0],
+                launch_runtype="ssh_sidecar",
+            )
+        assert vast.created == []
+
 
 class TestSmokeSequence:
     def test_live_smoke_sequence_is_documented_and_ordered(self):
@@ -376,3 +460,4 @@ class TestSmokeSequence:
         assert "return DEFENDCODER_HEAVY_READY" in LIVE_SMOKE_SEQUENCE[8]
         assert len(LIVE_SMOKE_SEQUENCE) == 15
         assert LIVE_SMOKE_SEQUENCE[-1] == "report total measured cost"
+

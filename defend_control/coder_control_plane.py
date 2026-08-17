@@ -37,6 +37,7 @@ from .coder_m0 import (
     parse_session_budget,
     resolve_alias,
 )
+from .coder_provisioning import CoderProvisionFailure
 from .types import ResourceProfile, VastOffer
 
 CoderMode = Literal["AUTO", "FAST", "DEFAULT", "HEAVY", "MAXIMUM"]
@@ -69,7 +70,7 @@ class CoderPolicy:
 
     mode: CoderMode = "DEFAULT"
     auto_provisioning_enabled: bool = True
-    max_hourly_usd: Decimal = Decimal("2.00")
+    max_hourly_usd: Decimal = Decimal("4.50")
     max_session_spend_usd: Decimal = Decimal("5.00")
     max_concurrent_instances: int = 1
     idle_shutdown_minutes: int = 10
@@ -84,7 +85,11 @@ class CoderPolicy:
         "H200",
         "B200",
     )
-    heavy_gpu_families: tuple[str, ...] = ("A100", "H100")
+    heavy_gpu_families: tuple[str, ...] = (
+        "H100",
+        "H200",
+        "B200",
+    )
     min_reliability: Decimal = Decimal("0.98")
     min_disk_gb: int = 160
     max_model_len: int = 8192
@@ -128,7 +133,7 @@ def resource_profile(alias: str, policy: CoderPolicy) -> ResourceProfile:
             num_gpus=policy.heavy_num_gpus,
             min_reliability=policy.min_reliability,
             min_disk_gb=policy.min_disk_gb,
-            max_model_len=policy.max_model_len,
+            max_model_len=resolve_deployment(alias).max_model_len,
         )
     return ResourceProfile(
         min_gpu_ram_mb=policy.default_min_gpu_ram_mb,
@@ -160,6 +165,54 @@ class CoderProvisionBlocked(RuntimeError):
     """Policy denied provisioning (disabled, concurrency, budget, etc.)."""
 
 
+class CoderNoQualifyingOffer(CoderProvisionBlocked):
+    """No provider offer met the qualification filters — zero spend occurred.
+
+    Carries only safe, sanitized filter metadata for the owner UI: required
+    GPU family/count/VRAM/reliability ceiling, hourly ceiling, and how many
+    offers the search actually returned.
+    """
+
+    def __init__(
+        self,
+        *,
+        alias: str,
+        provider: str,
+        required_gpu_families: tuple[str, ...],
+        required_gpu_count: int,
+        required_vram_per_gpu_mb: int,
+        required_min_reliability: Decimal,
+        max_hourly_usd: Decimal,
+        searched_offer_count: int,
+        provider_returned_count: int | None = None,
+        eligible_count: int | None = None,
+        rejections: tuple[tuple[str, int], ...] = (),
+    ) -> None:
+        super().__init__(f"no qualifying {provider} offer for {alias!r}")
+        self.alias = str(alias)
+        self.provider = str(provider)
+        self.required_gpu_families = tuple(required_gpu_families)
+        self.required_gpu_count = int(required_gpu_count)
+        self.required_vram_per_gpu_mb = int(required_vram_per_gpu_mb)
+        self.required_min_reliability = Decimal(
+            required_min_reliability
+        )
+        self.max_hourly_usd = Decimal(max_hourly_usd)
+        self.searched_offer_count = int(searched_offer_count)
+        self.provider_returned_count = (
+            int(provider_returned_count)
+            if provider_returned_count is not None
+            else None
+        )
+        self.eligible_count = (
+            int(eligible_count) if eligible_count is not None else None
+        )
+        self.rejections = tuple(
+            (str(category), int(count))
+            for category, count in rejections
+        )
+
+
 @dataclass(frozen=True)
 class EndpointLease:
     alias: str
@@ -167,6 +220,8 @@ class EndpointLease:
     instance_id: int | None
     provider_run_id: str | None
     reused: bool
+    user_id: str | None = None
+    session_id: str | None = None
 
 
 @dataclass
@@ -182,6 +237,8 @@ class ActiveCoderEndpoint:
     gpu_type: str | None = None
     hourly_price: Decimal | None = None
     model_ready_at: datetime | None = None
+    user_id: str | None = None
+    session_id: str | None = None
 
     def touch(self, now: datetime) -> None:
         self.last_used_at = now
@@ -353,12 +410,16 @@ class CoderProvisionApproval:
 def _launch_runtype_for(alias: str) -> str:
     """The documented Vast runtype used at create time for an alias.
 
-    The heavy diagnostic lane requests the documented direct-SSH runtype;
-    every other DEFEND / DEFENDcoder lane uses the documented proxy runtype.
-    Binding this into the approval fingerprint means changing the launch
-    transport invalidates prior owner approvals.
+    Vast proxy SSH is the qualification default for every current
+    DEFENDcoder lane: it only requires ssh_host/ssh_port and does not
+    depend on direct-port publication, which the provider does not
+    guarantee. Direct SSH (ssh_direct) remains available only as an
+    EXPLICIT alternative — never silently substituted for a proxy plan
+    or vice versa. Binding the runtype into the approval fingerprint
+    means changing the launch transport invalidates prior owner
+    approvals.
     """
-    return "ssh_direct" if alias == "defendcoder-heavy" else "ssh_proxy"
+    return "ssh_proxy"
 
 
 def _plan_fingerprint(plan: CoderLiveSmokePlan, offer: VastOffer | None) -> str:
@@ -437,11 +498,22 @@ class CoderControlPlane:
     clock: Callable[[], datetime] | None = None
     run_store: RunTraceStore = field(default_factory=RunTraceStore)
     token_provider: Callable[[], str | None] | None = None
+    fingerprint_confirmer: Callable[[int, str], bool] | None = None
     port_available: Callable[[int], bool] | None = None
     offer_provider: Callable[[str], tuple[VastOffer, ...]] | None = None
     offer_chooser: Callable[[tuple[VastOffer, ...]], VastOffer] | None = None
+    lifecycle_log: Callable[[str], None] | None = None
+    # Ownership identity stamped onto leases/endpoints when the launching
+    # session is known; None means operator-owned (Control Center launch).
+    owner_user_id: str | None = None
+    owner_session_id: str | None = None
+    # lifecycle log sink for timestamped owner-visible provisioning
+    # transitions; wired by the Control Center layer.
     _active: dict[str, ActiveCoderEndpoint] = field(
         default_factory=dict, init=False
+    )
+    last_provision_failure: CoderProvisionFailure | None = field(
+        default=None, init=False
     )
 
     def __post_init__(self) -> None:
@@ -460,6 +532,13 @@ class CoderControlPlane:
     def _now(self) -> datetime:
         return self.clock()  # type: ignore[misc]
 
+    def _emit(self, line: str) -> None:
+        if self.lifecycle_log is not None:
+            try:
+                self.lifecycle_log(line)
+            except Exception:
+                pass
+
     def active_endpoints(self) -> tuple[ActiveCoderEndpoint, ...]:
         return tuple(self._active.values())
 
@@ -477,6 +556,8 @@ class CoderControlPlane:
                 instance_id=existing.instance_id,
                 provider_run_id=existing.provider_run_id,
                 reused=True,
+                user_id=existing.user_id,
+                session_id=existing.session_id,
             )
         if existing is not None:
             self._active.pop(alias, None)
@@ -506,6 +587,84 @@ class CoderControlPlane:
             instance_id=endpoint.instance_id,
             provider_run_id=endpoint.provider_run_id,
             reused=False,
+            user_id=endpoint.user_id,
+            session_id=endpoint.session_id,
+        )
+
+    def resume_existing(
+        self,
+        alias: str,
+        *,
+        launch_runtype: str | None = None,
+    ) -> EndpointLease | None:
+        """Reuse a ready in-memory endpoint or resume a running labeled
+        instance instead of provisioning a duplicate billable runtime.
+
+        Returns None when nothing compatible exists (fresh provisioning may
+        proceed) and raises fail-closed whenever the fleet state is
+        uncertain (multiple instances, wrong runtype, over budget, stopped).
+        """
+        model = resolve_alias(alias)
+        now = self._now()
+
+        existing = self._active.get(alias)
+        if existing is not None and existing.state == "ready":
+            existing.touch(now)
+            return EndpointLease(
+                alias=alias,
+                endpoint=existing.endpoint,
+                instance_id=existing.instance_id,
+                provider_run_id=existing.provider_run_id,
+                reused=True,
+                user_id=existing.user_id,
+                session_id=existing.session_id,
+            )
+        if existing is not None:
+            self._active.pop(alias, None)
+
+        runtype = (
+            launch_runtype
+            if launch_runtype is not None
+            else _launch_runtype_for(alias)
+        )
+
+        report = self.preflight(alias)
+        if not report.all_ok:
+            failed = ", ".join(
+                check.name for check in report.checks if not check.ok
+            )
+            raise CoderProvisionBlocked(
+                f"preflight failed for {alias!r}: {failed}"
+            )
+
+        self._authorize_provisioning()
+
+        candidate = self.backend.resume_candidate(
+            launch_runtype=runtype,
+            approved_ceiling=self.policy.max_hourly_usd,
+        )
+        if candidate is None:
+            return None
+
+        self._emit("resuming existing runtime")
+        local_port = self.base_port + len(self._active)
+        result = self.backend.start(
+            model,
+            local_port=local_port,
+            session_budget_usd=self.session_budget_usd,
+            launch_runtype=runtype,
+            resume_instance=candidate,
+        )
+        endpoint = self._endpoint_from_result(alias, now, result)
+        self._active[alias] = endpoint
+        return EndpointLease(
+            alias=alias,
+            endpoint=endpoint.endpoint,
+            instance_id=endpoint.instance_id,
+            provider_run_id=endpoint.provider_run_id,
+            reused=True,
+            user_id=endpoint.user_id,
+            session_id=endpoint.session_id,
         )
 
     def _authorize_provisioning(self) -> None:
@@ -642,17 +801,68 @@ class CoderControlPlane:
 
         return CoderPreflightReport(alias, tuple(checks))
 
-    def prepared_provision(self, alias: str) -> CoderPreparedProvision:
+    def prepared_provision(
+        self,
+        alias: str,
+        *,
+        launch_runtype: str | None = None,
+    ) -> CoderPreparedProvision:
         """Search qualifying offers, select the best, produce the approval
         basis. Zero provider create calls — inspection/approval only.
+
+        ``launch_runtype`` is an explicit opt-in for the direct-SSH lane
+        ("ssh_direct"); the default is ssh_proxy for every alias.
         """
+        if launch_runtype is not None and launch_runtype not in (
+            "ssh_direct",
+            "ssh_proxy",
+        ):
+            raise ValueError("launch_runtype is invalid")
+        runtype = (
+            launch_runtype
+            if launch_runtype is not None
+            else _launch_runtype_for(alias)
+        )
         model = resolve_alias(alias)
         artifact = resolve_deployment(alias)
         profile = resource_profile(alias, self.policy)
 
-        offers = self._search_offers(alias, model, profile)
-        offer = self._select_offer(offers) if offers else None
-        plan = self._build_plan(alias, model, artifact, profile, offer)
+        offers = self._search_offers(
+            alias, model, profile, launch_runtype=runtype
+        )
+        if not offers:
+            diagnostics = getattr(
+                self.backend, "offer_search_diagnostics", None
+            )
+            provider_returned = None
+            eligible = None
+            rejections: tuple[tuple[str, int], ...] = ()
+            if callable(diagnostics):
+                try:
+                    provider_returned, eligible, rejections = (
+                        diagnostics()
+                    )
+                except Exception:
+                    provider_returned = None
+                    eligible = None
+                    rejections = ()
+            raise CoderNoQualifyingOffer(
+                alias=alias,
+                provider="vast",
+                required_gpu_families=profile.allowed_gpu_families,
+                required_gpu_count=profile.num_gpus,
+                required_vram_per_gpu_mb=profile.min_gpu_ram_mb,
+                required_min_reliability=profile.min_reliability,
+                max_hourly_usd=self.policy.max_hourly_usd,
+                searched_offer_count=len(offers),
+                provider_returned_count=provider_returned,
+                eligible_count=eligible,
+                rejections=rejections,
+            )
+        offer = self._select_offer(offers)
+        plan = self._build_plan(
+            alias, model, artifact, profile, offer, launch_runtype=runtype
+        )
         plan_hash = _plan_fingerprint(plan, offer)
         plan = replace(plan, plan_hash=plan_hash)
         return CoderPreparedProvision(
@@ -668,18 +878,38 @@ class CoderControlPlane:
         alias: str,
         model: Any,
         profile: ResourceProfile,
+        *,
+        launch_runtype: str | None = None,
     ) -> tuple[VastOffer, ...]:
         if self.offer_provider is not None:
             return tuple(self.offer_provider(alias))
         provider = getattr(self.backend, "search_offers_for", None)
         if provider is None:
             return ()
-        return tuple(provider(model, profile))
+        return tuple(
+            provider(model, profile, launch_runtype=launch_runtype)
+        )
 
     def _select_offer(self, offers: tuple[VastOffer, ...]) -> VastOffer:
+        """Explicit selection policy among ALREADY-QUALIFYING offers.
+
+        Qualification (exact resource contract, verified/acceptable
+        provider, reliability >= profile minimum, rate <= configured
+        maximum) is enforced by the offer search itself. Selection then
+        prefers the lowest total hourly rate, with a deterministic
+        tie-break of higher reliability first, then lower offer ID.
+        Newer families (H200/B200) are never preferred on their own.
+        """
         if self.offer_chooser is not None:
             return self.offer_chooser(offers)
-        return min(offers, key=lambda offer: (offer.dph_total, offer.offer_id))
+        return min(
+            offers,
+            key=lambda offer: (
+                offer.dph_total,
+                -offer.reliability,
+                offer.offer_id,
+            ),
+        )
 
     def _build_plan(
         self,
@@ -688,6 +918,8 @@ class CoderControlPlane:
         artifact: Any,
         profile: ResourceProfile,
         offer: VastOffer | None,
+        *,
+        launch_runtype: str | None = None,
     ) -> CoderLiveSmokePlan:
         rate = offer.dph_total if offer is not None else None
         max_spend = rate if rate is not None else self.policy.max_hourly_usd
@@ -713,7 +945,11 @@ class CoderControlPlane:
             minimum_vllm_version=artifact.minimum_vllm_version,
             tool_call_parser=artifact.tool_call_parser,
             auto_tool_choice=artifact.enable_auto_tool_choice,
-            launch_runtype=_launch_runtype_for(alias),
+            launch_runtype=(
+                launch_runtype
+                if launch_runtype is not None
+                else _launch_runtype_for(alias)
+            ),
             local_port=self.base_port + len(self._active),
             offer_id=offer.offer_id if offer is not None else None,
             status="requires_approval",
@@ -722,9 +958,17 @@ class CoderControlPlane:
         )
 
     def approve(self, prepared: CoderPreparedProvision) -> CoderProvisionApproval:
-        """Owner approval: binds to the exact plan hash; rejects over-budget."""
+        """Owner approval: binds to the exact plan hash; rejects over-budget.
+
+        Fail closed: a plan without a concrete qualifying offer is NOT
+        spend-ready and can never be approved.
+        """
         if prepared.plan.status != "requires_approval":
             raise ValueError("plan is not awaiting approval")
+        if prepared.offer is None:
+            raise CoderProvisionBlocked(
+                "no qualifying offer selected; nothing to approve"
+            )
         if prepared.plan.estimated_max_hourly_spend > self.policy.max_hourly_usd:
             raise ValueError(
                 f"offer exceeds max hourly budget "
@@ -755,6 +999,10 @@ class CoderControlPlane:
             raise CoderProvisionBlocked(
                 "owner approval required before provisioning"
             )
+        if prepared.offer is None:
+            raise CoderProvisionBlocked(
+                "no qualifying offer selected; nothing to provision"
+            )
         current_hash = _plan_fingerprint(prepared.plan, prepared.offer)
         if current_hash != approval.plan_hash:
             raise CoderProvisionBlocked(
@@ -774,16 +1022,32 @@ class CoderControlPlane:
             )
         self._authorize_provisioning()
 
+        self._emit("offer approved")
         model = resolve_alias(alias)
         profile = resource_profile(alias, self.policy)
         now = self._now()
-        result = self.backend.start(
-            model,
-            local_port=prepared.plan.local_port,
-            session_budget_usd=self.session_budget_usd,
-            offer=prepared.offer,
-            profile=profile,
-        )
+        backend_log = getattr(self.backend, "log", None)
+        if backend_log is not None:
+            self.backend.log = self.lifecycle_log
+        try:
+            result = self.backend.start(
+                model,
+                local_port=prepared.plan.local_port,
+                session_budget_usd=self.session_budget_usd,
+                offer=prepared.offer,
+                profile=profile,
+                launch_runtype=prepared.plan.launch_runtype,
+            )
+        except Exception as exc:
+            failure = getattr(exc, "failure", None)
+            if failure is None:
+                failure = getattr(
+                    self.backend, "last_provision_failure", None
+                )
+            if failure is not None:
+                self.last_provision_failure = failure
+            raise
+        self.last_provision_failure = None
         endpoint = self._endpoint_from_result(alias, now, result)
         self._active[alias] = endpoint
         return EndpointLease(
@@ -810,6 +1074,8 @@ class CoderControlPlane:
             provider_run_id=result.get("provider_run_id"),
             gpu_type=result.get("gpu_type"),
             hourly_price=_as_decimal(result.get("hourly_price")),
+            user_id=self.owner_user_id,
+            session_id=self.owner_session_id,
         )
 
     def smoke(self, alias: str) -> CoderSmokeResult:
@@ -856,6 +1122,12 @@ class CoderControlPlane:
         elapsed = time.perf_counter() - started
         completed_clock = self._now()
         ok = bool(result.get("ok"))
+        if not ok:
+            backend_failure = getattr(
+                self.backend, "last_provision_failure", None
+            )
+            if backend_failure is not None:
+                self.last_provision_failure = backend_failure
         latency = int(result.get("latency_ms") or elapsed * 1000)
         self._record_trace(
             endpoint,
@@ -887,6 +1159,7 @@ class CoderControlPlane:
         detail: str,
     ) -> None:
         trace = CoderRunTrace(
+            user_id=endpoint.user_id,
             model_alias=endpoint.alias,
             provider=endpoint.provider,
             instance_id=endpoint.instance_id,
@@ -911,8 +1184,48 @@ class CoderControlPlane:
         )
         self.run_store.record(trace)
 
-    def maybe_reap_idle(self) -> tuple[str, ...]:
+    def release(self, alias: str, *, destroy: bool = False) -> dict[str, Any]:
+        """Explicit owner teardown of the endpoint for an alias.
+
+        Removes the endpoint from the active set and stops it (or destroys
+        the provider instance when destroy=True). Safe to call when nothing
+        is active. Returns the backend stop result.
+        """
+        resolve_alias(alias)
+        endpoint = self._active.pop(alias, None)
+        if endpoint is None:
+            return {
+                "state": "stopped",
+                "message": f"no active coder endpoint for {alias!r}",
+            }
+        if destroy and endpoint.instance_id is not None:
+            self._emit(f"destroying instance {endpoint.instance_id}")
+        result = self.backend.stop(
+            instance_id=endpoint.instance_id,
+            provider_run_id=endpoint.provider_run_id,
+            destroy=destroy,
+        )
+        if destroy and result.get("state") == "stopped":
+            self._emit("cleanup confirmed")
+        backend_failure = getattr(
+            self.backend, "last_provision_failure", None
+        )
+        if backend_failure is not None:
+            self.last_provision_failure = backend_failure
+        return result
+
+    def maybe_reap_idle(
+        self,
+        *,
+        session_id: str | None = None,
+        user_id: str | None = None,
+    ) -> tuple[str, ...]:
         """Stop endpoints idle past the configured timeout (never destroys).
+
+        Ownership-aware: when ``session_id`` (or ``user_id``) is given, only
+        endpoints owned by that identity are candidates — an idle session
+        never stops another user's active runtime, and unknown ownership
+        fails closed (nothing reaped). None means operator-owned endpoints.
 
         No background daemon: the owner/operator invokes this check.
         """
@@ -920,6 +1233,10 @@ class CoderControlPlane:
         reaped: list[str] = []
         for alias, endpoint in list(self._active.items()):
             if endpoint.state != "ready":
+                continue
+            if session_id is not None and endpoint.session_id != session_id:
+                continue
+            if user_id is not None and endpoint.user_id != user_id:
                 continue
             idle_minutes = (
                 now - endpoint.last_used_at

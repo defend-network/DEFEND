@@ -62,8 +62,11 @@ CODER_MODEL_REGISTRY: dict[str, CoderModelRef] = {
         alias="defendcoder-heavy",
         repo_id=_CODER_HEAVY_REPO,
         revision=_CODER_HEAVY_REVISION,
-        max_model_len=8192,
-        notes="Heavy lane: Qwen3-Coder-Next on A100/H100 80GB-class",
+        max_model_len=32_768,
+        notes=(
+            "Heavy lane: Qwen3-Coder-Next FP8 on H100/H200/B200-class "
+            "compute; initial context 32768"
+        ),
     ),
     "defendcoder-eval": CoderModelRef(
         alias="defendcoder-eval",
@@ -93,6 +96,32 @@ def parse_session_budget(raw: object) -> Decimal:
         raise ValueError("CODER_SESSION_BUDGET_USD must be a decimal value") from exc
     if not value.is_finite() or value <= 0:
         raise ValueError("CODER_SESSION_BUDGET_USD must be a positive finite decimal")
+    return value
+
+
+# Hard billing-protection ceiling for CODER_MAX_HOURLY_USD. Never widened
+# automatically when no qualifying offers exist.
+CODER_MAX_HOURLY_UPPER_USD = Decimal("100")
+
+
+def parse_max_hourly_budget(raw: object) -> Decimal:
+    """CODER_MAX_HOURLY_USD: Decimal, positive, finite, upper-bounded.
+
+    Strict — never a silent removal of the billing ceiling.
+    """
+    if isinstance(raw, bool) or not isinstance(raw, (str, int, Decimal)):
+        raise ValueError("CODER_MAX_HOURLY_USD must be a decimal value")
+    try:
+        value = Decimal(str(raw))
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError("CODER_MAX_HOURLY_USD must be a decimal value") from exc
+    if not value.is_finite() or value <= 0:
+        raise ValueError("CODER_MAX_HOURLY_USD must be a positive finite decimal")
+    if value > CODER_MAX_HOURLY_UPPER_USD:
+        raise ValueError(
+            "CODER_MAX_HOURLY_USD must not exceed "
+            f"{format(CODER_MAX_HOURLY_UPPER_USD, 'f')}"
+        )
     return value
 
 
@@ -178,7 +207,10 @@ class LocalFakeCoderBackend:
         *,
         local_port: int,
         session_budget_usd: Decimal,
+        launch_runtype: str | None = None,
+        resume_instance: object | None = None,
     ) -> dict[str, Any]:
+        del launch_runtype, resume_instance
         self.started = True
         self.destroyed = False
         self._endpoint = f"http://127.0.0.1:{local_port}/v1"
@@ -271,7 +303,13 @@ class CoderM0Service:
             message=self._message,
         )
 
-    def start(self, alias: str | None = None) -> CoderSessionStatus:
+    def start(
+        self,
+        alias: str | None = None,
+        *,
+        launch_runtype: str | None = None,
+        resume_instance: object | None = None,
+    ) -> CoderSessionStatus:
         if alias is not None:
             model = resolve_alias(alias)
             self.alias = model.alias  # type: ignore[assignment]
@@ -290,6 +328,8 @@ class CoderM0Service:
                 model,
                 local_port=self.local_port,
                 session_budget_usd=self.session_budget_usd,
+                launch_runtype=launch_runtype,
+                resume_instance=resume_instance,
             )
         except Exception as exc:
             self._state = "failed"

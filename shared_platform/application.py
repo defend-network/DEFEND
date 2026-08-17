@@ -10,8 +10,8 @@ from typing import Literal
 from urllib.parse import urlsplit
 
 
-ApplicationId = Literal["defend", "scs", "sports"]
-_APPLICATION_IDS = ("defend", "scs", "sports")
+ApplicationId = Literal["defend", "scs", "sports", "markets"]
+_APPLICATION_IDS = ("defend", "scs", "sports", "markets")
 _UPPER_NAMESPACE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 _COOKIE_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 
@@ -86,7 +86,7 @@ class ApplicationContext:
 
     def __post_init__(self) -> None:
         if self.application_id not in _APPLICATION_IDS:
-            raise ValueError("application_id must be defend, scs, or sports")
+            raise ValueError("application_id must be defend, scs, sports, or markets")
         root = Path(self.data_root).expanduser()
         if not root.is_absolute():
             raise ValueError("data_root must be absolute")
