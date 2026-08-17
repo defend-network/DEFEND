@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 from decimal import Decimal
 from uuid import UUID, uuid4
 
@@ -23,8 +24,10 @@ pytestmark_db = pytest.mark.skipif(
     reason="MARKETS_TEST_DATABASE_URL not configured; DB-gated tests skipped",
 )
 
+DETERMINISTIC_CUTOFF = datetime(2026, 8, 16, 12, 0, 0, tzinfo=timezone.utc)
 
-def _record() -> DecisionRecord:
+
+def _record(data_cutoff_timestamp: datetime | None = DETERMINISTIC_CUTOFF) -> DecisionRecord:
     return DecisionRecord(
         opportunity_id=str(uuid4()),
         strategy_key="tt_two_way_arb",
@@ -37,6 +40,7 @@ def _record() -> DecisionRecord:
         confidence=Decimal("0.9"),
         estimated_edge=None,
         cost_estimate=None,
+        data_cutoff_timestamp=data_cutoff_timestamp,
     )
 
 
@@ -134,6 +138,7 @@ class TestDecisionJournalPostgres:
         assert fetched.record.policy_key == "markets_core"
         assert fetched.record.decision_type is DecisionType.NO_ACTION
         assert fetched.record.reason_codes == (NoActionReason.COSTS_UNACCOUNTED,)
+        assert fetched.record.data_cutoff_timestamp == DETERMINISTIC_CUTOFF
 
     def test_amendment_chain_persists(self):
         from defend_markets.db import MarketsDatabase
@@ -195,6 +200,30 @@ class TestDecisionJournalPostgres:
         )
         outcome_id = journal.resolve(entry.decision_id, outcome)
         assert isinstance(outcome_id, UUID)
+
+    def test_append_rejects_missing_data_cutoff(self):
+        from defend_markets.db import MarketsDatabase
+
+        database = MarketsDatabase(os.environ["MARKETS_TEST_DATABASE_URL"])
+        database.migrate()
+        journal = DecisionJournal(database)
+
+        from defend_markets.repositories import MarketsRepository
+
+        repository = MarketsRepository()
+        with database.connect() as connection:
+            with connection.transaction():
+                repository.seed_defaults(connection)
+                strategy_id = repository.strategy_id(connection, "tt_two_way_arb")
+                policy_id = repository.policy_id(connection, "markets_core")
+
+        with pytest.raises(ValueError, match="data_cutoff_timestamp"):
+            journal.append(
+                _record(data_cutoff_timestamp=None),
+                opportunity_id=None,
+                strategy_id=strategy_id,
+                policy_id=policy_id,
+            )
 
     def test_get_unknown_decision_raises(self):
         from defend_markets.db import MarketsDatabase
