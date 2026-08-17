@@ -64,6 +64,7 @@ def run_command(
     stdin: bytes | None,
     timeout: float,
     cancelled: Callable[[], bool] | None = None,
+    on_output: Callable[[str, bytes], None] | None = None,
 ) -> CommandResult:
     if (
         isinstance(timeout, bool)
@@ -89,27 +90,38 @@ def run_command(
     stdout_buffer = bytearray()
     stderr_buffer = bytearray()
 
-    def read_bounded(stream, target: bytearray) -> None:
+    def read_bounded(stream, target: bytearray, stream_name: str) -> None:
         try:
             while chunk := stream.read1(4_096):
                 remaining = _MAX_COMMAND_OUTPUT - len(target)
                 if len(chunk) > remaining:
-                    target.extend(chunk[: max(0, remaining)])
+                    kept = chunk[: max(0, remaining)]
+                    target.extend(kept)
+                    if on_output is not None and kept:
+                        try:
+                            on_output(stream_name, kept)
+                        except Exception:
+                            pass
                     overflow.set()
                     return
                 target.extend(chunk)
+                if on_output is not None:
+                    try:
+                        on_output(stream_name, chunk)
+                    except Exception:
+                        pass
         except Exception:
             return
 
     readers = (
         threading.Thread(
             target=read_bounded,
-            args=(process.stdout, stdout_buffer),
+            args=(process.stdout, stdout_buffer, "stdout"),
             daemon=True,
         ),
         threading.Thread(
             target=read_bounded,
-            args=(process.stderr, stderr_buffer),
+            args=(process.stderr, stderr_buffer, "stderr"),
             daemon=True,
         ),
     )
@@ -634,6 +646,16 @@ class SshTunnel:
                 str(self._key_path),
                 "-o",
                 "BatchMode=yes",
+                "-o",
+                "ConnectTimeout=10",
+                "-o",
+                "ConnectionAttempts=3",
+                "-o",
+                "ServerAliveInterval=5",
+                "-o",
+                "ServerAliveCountMax=3",
+                "-o",
+                "TCPKeepAlive=yes",
                 "-o",
                 "ExitOnForwardFailure=yes",
                 "-o",

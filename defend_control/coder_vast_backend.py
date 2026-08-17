@@ -652,15 +652,35 @@ class VastCoderBackend:
                 "no local tunnel configured for coder endpoint",
                 category="tunnel",
             )
-        try:
-            endpoint = self.tunnel_start(
-                instance,
-                local_port,
-                prefer_direct=(self.launch.runtype == "ssh_direct"),
-            )
-        except Exception as exc:
+        last_exc: Exception | None = None
+        endpoint: str | None = None
+
+        # Vast proxy SSH can briefly stop accepting new connections even
+        # after the remote vLLM bootstrap is healthy. Retry the FINAL
+        # forwarding step rather than destroying an expensive loaded runtime
+        # on the first transient proxy miss.
+        for attempt in range(1, 7):
+            try:
+                self._log(f"local tunnel attempt {attempt}/6")
+                endpoint = self.tunnel_start(
+                    instance,
+                    local_port,
+                    prefer_direct=(self.launch.runtype == "ssh_direct"),
+                )
+                break
+            except Exception as exc:
+                last_exc = exc
+                self._log(
+                    f"local tunnel attempt {attempt}/6 failed "
+                    f"({type(exc).__name__})"
+                )
+                if attempt < 6:
+                    time.sleep(10.0)
+
+        if endpoint is None:
+            exc = last_exc or RuntimeError("tunnel attempts exhausted")
             raise CoderVastBackendError(
-                f"local tunnel failed to establish ({type(exc).__name__})",
+                f"local tunnel failed after 6 attempts ({type(exc).__name__})",
                 category="tunnel",
             ) from exc
         if not isinstance(endpoint, str) or not endpoint:
