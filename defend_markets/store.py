@@ -37,6 +37,8 @@ class MarketsStore(Protocol):
 
     def catalog_decisions(self, limit: int = 50) -> list[dict[str, object]]: ...
 
+    def catalog_outcomes(self, limit: int = 500) -> list[dict[str, object]]: ...
+
     def catalog_quality(self, limit: int = 50) -> list[dict[str, object]]: ...
 
     def counts(self) -> dict[str, int]: ...
@@ -115,6 +117,10 @@ class PostgresMarketsStore:
     def catalog_decisions(self, limit: int = 50) -> list[dict[str, object]]:
         with self._database.connect() as connection:
             return self._repository.list_decisions(connection, limit=limit)
+
+    def catalog_outcomes(self, limit: int = 500) -> list[dict[str, object]]:
+        with self._database.connect() as connection:
+            return self._repository.list_outcomes(connection, limit=limit)
 
     def catalog_quality(self, limit: int = 50) -> list[dict[str, object]]:
         with self._database.connect() as connection:

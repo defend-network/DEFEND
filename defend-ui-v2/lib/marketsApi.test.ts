@@ -4,6 +4,9 @@ import {
   MARKETS_API_BASE,
   fetchOverview,
   evaluateSports,
+  fetchTableTennisBoard,
+  fetchPerformance,
+  fetchDecisions,
 } from "@/lib/marketsApi";
 
 afterEach(() => {
@@ -54,5 +57,56 @@ describe("marketsApi", () => {
       strategy_key: "tt_two_way_arb",
       policy_key: "markets_core",
     });
+  });
+
+  it("fetchTableTennisBoard reads the live board endpoint", async () => {
+    const fetchMock = vi.fn(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({ events: [], provider_health: [], now: "t" }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        )
+      )
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await fetchTableTennisBoard();
+    expect(result.events).toEqual([]);
+    const [url] = fetchMock.mock.calls[0] as unknown as [string];
+    expect(url).toBe(`${MARKETS_API_BASE}/v1/sports/table-tennis`);
+  });
+
+  it("fetchPerformance reads the performance endpoint", async () => {
+    const fetchMock = vi.fn(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            sample_size: { decisions: 0, opportunities: 0, no_actions: 0, settled: 0 },
+            roi: { available: false },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        )
+      )
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await fetchPerformance();
+    expect(result.sample_size.decisions).toBe(0);
+    expect(result.roi.available).toBe(false);
+    const [url] = fetchMock.mock.calls[0] as unknown as [string];
+    expect(url).toBe(`${MARKETS_API_BASE}/v1/performance`);
+  });
+
+  it("fetchDecisions passes the limit through", async () => {
+    const fetchMock = vi.fn(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ decisions: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        })
+      )
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    await fetchDecisions(25);
+    const [url] = fetchMock.mock.calls[0] as unknown as [string];
+    expect(url).toBe(`${MARKETS_API_BASE}/v1/decisions?limit=25`);
   });
 });

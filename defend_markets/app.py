@@ -8,7 +8,8 @@ values.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from typing import Any, Callable
 
 from fastapi import FastAPI, HTTPException
@@ -21,8 +22,13 @@ from defend_markets.models import ReasonerRegistry, build_default_reasoners
 from defend_markets.pipeline import DecisionPipeline, LoopOutcome
 from defend_markets.quality import HealthGate
 from defend_markets.repositories import MarketsRepository
+from defend_markets.sports_adapter import SportsSelectionQuote
 from defend_markets.store import MarketsStore, PostgresMarketsStore
 from defend_markets.strategies import StrategyRegistry, build_default_registry
+
+_TT_STRATEGY_KEY = "tt_two_way_arb"
+_TT_MARKET_KEY = "match_winner"
+_TT_FRESHNESS_MAX_AGE = timedelta(minutes=5)
 
 
 @dataclass(frozen=True)
@@ -136,6 +142,300 @@ def _outcome_payload(outcome: LoopOutcome) -> dict[str, object]:
     }
 
 
+def _now(dependencies: MarketsDependencies) -> datetime:
+    if dependencies.clock is not None:
+        return dependencies.clock()
+    return datetime.now(timezone.utc)
+
+
+def _leg_quality_score(quotes: list[SportsSelectionQuote]) -> Decimal:
+    """Deterministic provenance completeness score.
+
+    Mirrors ``DecisionPipeline._leg_quality_score`` so the board shows the
+    same data-quality basis the decision loop uses.
+    """
+    if not quotes:
+        return Decimal("0")
+    scores: list[Decimal] = []
+    for quote in quotes:
+        stamp = quote.provenance
+        if stamp is None:
+            scores.append(Decimal("0.5"))
+            continue
+        score = Decimal("1.0")
+        if stamp.observed_at is None:
+            score -= Decimal("0.3")
+        if stamp.received_at is None:
+            score -= Decimal("0.3")
+        if stamp.raw_ref is None:
+            score -= Decimal("0.2")
+        scores.append(max(Decimal("0"), score))
+    return sum(scores, Decimal("0")) / len(scores)
+
+
+def _freshness(observed_at: datetime | None, now: datetime) -> dict[str, object]:
+    if observed_at is None:
+        return {"ok": False, "status": "UNAVAILABLE", "age_seconds": None}
+    age_seconds = max(0, int((now - observed_at).total_seconds()))
+    ok = age_seconds <= _TT_FRESHNESS_MAX_AGE.total_seconds()
+    return {
+        "ok": ok,
+        "status": "HEALTHY" if ok else "STALE",
+        "age_seconds": age_seconds,
+    }
+
+
+def _normalized_legs(
+    quotes: list[SportsSelectionQuote],
+) -> list[dict[str, object]]:
+    """Leg payloads with honest implied probabilities and provenance."""
+    legs: list[dict[str, object]] = []
+    for quote in quotes:
+        stamp = quote.provenance
+        implied = None
+        if quote.decimal_odds is not None and quote.decimal_odds > Decimal("1"):
+            implied = Decimal("1") / quote.decimal_odds
+        legs.append(
+            {
+                "selection_key": quote.selection_key,
+                "display_name": quote.display_name,
+                "decimal_odds": (
+                    str(quote.decimal_odds) if quote.decimal_odds is not None else None
+                ),
+                "implied_probability": str(implied) if implied is not None else None,
+                "source_key": stamp.source_key if stamp is not None else None,
+                "observed_at": (
+                    stamp.observed_at.isoformat()
+                    if stamp is not None and stamp.observed_at is not None
+                    else None
+                ),
+                "received_at": (
+                    stamp.received_at.isoformat()
+                    if stamp is not None and stamp.received_at is not None
+                    else None
+                ),
+                "raw_ref": stamp.raw_ref if stamp is not None else None,
+            }
+        )
+    return legs
+
+
+def _decision_summary(decision: dict[str, object]) -> dict[str, object]:
+    return {
+        "decision_id": decision.get("decision_id"),
+        "decision_type": decision.get("decision_type"),
+        "reason_codes": decision.get("reason_codes") or [],
+        "thesis": decision.get("thesis"),
+        "estimated_edge": decision.get("estimated_edge"),
+        "cost_estimate": decision.get("cost_estimate"),
+        "confidence": decision.get("confidence"),
+        "created_at": decision.get("created_at"),
+    }
+
+
+def _max_drawdown(outcomes: list[dict[str, object]]) -> Decimal | None:
+    pnl_values: list[Decimal] = []
+    for outcome in outcomes:
+        pnl = outcome.get("pnl")
+        if pnl is not None:
+            pnl_values.append(Decimal(str(pnl)))
+    if len(pnl_values) < 2:
+        return None
+    peak = Decimal("0")
+    cumulative = Decimal("0")
+    max_dd = Decimal("0")
+    for pnl in pnl_values:
+        cumulative += pnl
+        peak = max(peak, cumulative)
+        max_dd = max(max_dd, peak - cumulative)
+    return max_dd
+
+
+def _board_payload(dependencies: MarketsDependencies) -> dict[str, object]:
+    deps = dependencies
+    now = _now(deps)
+    decisions = deps.store.catalog_decisions(limit=1000)
+    by_instrument: dict[str, dict[str, object]] = {}
+    for decision in decisions:
+        key = decision.get("instrument_key")
+        if key:
+            by_instrument.setdefault(str(key), decision)
+
+    events: list[dict[str, object]] = []
+    for event in deps.reader.tt_events():
+        event_key = str(event["event_key"])
+        quotes = deps.reader.latest_odds(event_key, _TT_MARKET_KEY)
+        strategy = deps.registry.get(_TT_STRATEGY_KEY).definition
+        evaluation = deps.registry.evaluate(
+            _TT_STRATEGY_KEY,
+            {
+                "selections": [
+                    {
+                        "selection_key": quote.selection_key,
+                        "display_name": quote.display_name,
+                        "decimal_odds": quote.decimal_odds,
+                        "provenance": quote.provenance,
+                        "costs": quote.costs,
+                    }
+                    for quote in quotes
+                ],
+                "params": strategy.params,
+            },
+        )
+
+        legs = _normalized_legs(quotes)
+        observed_times = [
+            quote.provenance.observed_at
+            for quote in quotes
+            if quote.provenance is not None and quote.provenance.observed_at is not None
+        ]
+        latest_observed = max(observed_times) if observed_times else None
+
+        live = deps.reader.latest_live_state(event_key)
+
+        gross_edge = evaluation.gross_edge
+        cost_total = evaluation.costs.total()
+        net_edge = (
+            gross_edge - cost_total
+            if gross_edge is not None and cost_total is not None
+            else None
+        )
+        decision = by_instrument.get(f"sports:{event_key}:{_TT_MARKET_KEY}")
+
+        events.append(
+            {
+                "event_key": event_key,
+                "display_name": event.get("display_name"),
+                "scheduled_at": event.get("scheduled_at"),
+                "league_key": event.get("league_key"),
+                "market_key": _TT_MARKET_KEY,
+                "live": live,
+                "legs": legs,
+                "gross_edge": (
+                    str(gross_edge) if gross_edge is not None else None
+                ),
+                "costs": {
+                    "components": {
+                        name: (
+                            str(value) if value is not None else None
+                        )
+                        for name, value in evaluation.costs.components().items()
+                    },
+                    "total": str(cost_total) if cost_total is not None else None,
+                },
+                "net_edge": str(net_edge) if net_edge is not None else None,
+                "confidence": (
+                    str(evaluation.confidence)
+                    if evaluation.eligible and evaluation.confidence is not None
+                    else None
+                ),
+                "model_probability": None,
+                "model_probability_available": False,
+                "data_quality": str(_leg_quality_score(quotes)),
+                "freshness": _freshness(latest_observed, now),
+                "strategy": {
+                    "key": strategy.strategy_key,
+                    "version": strategy.version,
+                    "lifecycle": strategy.lifecycle.value,
+                    "eligible": evaluation.eligible,
+                    "reasons": list(evaluation.reasons),
+                },
+                "decision": (
+                    _decision_summary(decision) if decision is not None else None
+                ),
+            }
+        )
+
+    provider_health = [
+        {"source_key": key, "status": state.get("status")}
+        for key, state in deps.reader.provider_health().items()
+    ]
+    return {
+        "events": events,
+        "provider_health": provider_health,
+        "strategy_key": _TT_STRATEGY_KEY,
+        "market_key": _TT_MARKET_KEY,
+        "now": now.isoformat(),
+    }
+
+
+def _performance_payload(dependencies: MarketsDependencies) -> dict[str, object]:
+    deps = dependencies
+    now = _now(deps)
+    decisions = deps.store.catalog_decisions(limit=1000)
+    outcomes = deps.store.catalog_outcomes(limit=500)
+
+    total = len(decisions)
+    opportunities = sum(
+        1 for decision in decisions
+        if decision.get("decision_type") == "OPPORTUNITY"
+    )
+    no_actions = total - opportunities
+
+    settled = [
+        outcome for outcome in outcomes
+        if outcome.get("result") in ("WON", "LOST", "VOID", "PUSH")
+    ]
+    won = sum(1 for outcome in settled if outcome.get("result") == "WON")
+    pnl_values = [
+        Decimal(str(outcome["pnl"]))
+        for outcome in outcomes
+        if outcome.get("pnl") is not None
+    ]
+    clv_values = [
+        Decimal(str(outcome["clv"]))
+        for outcome in outcomes
+        if outcome.get("clv") is not None
+    ]
+    buckets: dict[str, int] = {}
+    for outcome in outcomes:
+        bucket = outcome.get("calibration_bucket")
+        if bucket:
+            buckets[str(bucket)] = buckets.get(str(bucket), 0) + 1
+
+    drawdown = _max_drawdown(outcomes)
+    return {
+        "sample_size": {
+            "decisions": total,
+            "opportunities": opportunities,
+            "no_actions": no_actions,
+            "settled": len(settled),
+        },
+        "no_action_pct": (
+            round(no_actions / total, 6) if total else None
+        ),
+        "net_pnl": (
+            round(sum(pnl_values), 8) if pnl_values else None
+        ),
+        "win_rate": (
+            round(won / len(settled), 6) if settled else None
+        ),
+        "roi": {
+            "value": None,
+            "available": False,
+            "reason": "no stake basis is recorded in market_decisions or market_outcomes",
+        },
+        "clv": {
+            "value": round(sum(clv_values) / len(clv_values), 8)
+            if clv_values
+            else None,
+            "available": bool(clv_values),
+            "reason": None if clv_values else "no resolved outcomes carry clv",
+        },
+        "calibration": {
+            "available": bool(buckets),
+            "buckets": buckets,
+            "reason": None if buckets else "no settled outcomes carry a calibration bucket",
+        },
+        "max_drawdown": {
+            "value": round(drawdown, 8) if drawdown is not None else None,
+            "available": drawdown is not None,
+            "reason": None if drawdown is not None else "fewer than 2 settled outcomes with pnl",
+        },
+        "as_of": now.isoformat(),
+    }
+
+
 def build_markets_app(dependencies: MarketsDependencies) -> FastAPI:
     deps = dependencies.build()
     settings = deps.settings
@@ -226,6 +526,16 @@ def build_markets_app(dependencies: MarketsDependencies) -> FastAPI:
                 for key, state in deps.reader.provider_health().items()
             ]
         return {"quality_observations": quality, "sports_provider_health": sports_health}
+
+    @app.get("/v1/sports/table-tennis")
+    def sports_table_tennis() -> dict[str, object]:
+        if deps.reader is None:
+            raise HTTPException(status_code=503, detail="Sports data source not configured")
+        return _board_payload(deps)
+
+    @app.get("/v1/performance")
+    def performance() -> dict[str, object]:
+        return _performance_payload(deps)
 
     @app.post("/v1/evaluate/sports")
     def evaluate_sports(request: EvaluateSportsRequest) -> dict[str, object]:

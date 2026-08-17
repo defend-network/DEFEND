@@ -576,10 +576,13 @@ class MarketsRepository:
                 SELECT d.decision_id, d.opportunity_id, s.strategy_key, p.policy_key,
                        d.decision_type, d.reason_codes, d.thesis, d.confidence,
                        d.estimated_edge, d.cost_estimate, d.data_cutoff_timestamp,
-                       d.model_version, d.created_at, d.amendment_of, d.outcome_id
+                       d.model_version, d.created_at, d.amendment_of, d.outcome_id,
+                       i.instrument_key
                 FROM market_decisions d
                 JOIN market_strategies s ON s.strategy_id = d.strategy_id
                 JOIN market_risk_policies p ON p.policy_id = d.policy_id
+                LEFT JOIN market_opportunities o ON o.opportunity_id = d.opportunity_id
+                LEFT JOIN market_instruments i ON i.instrument_id = o.instrument_id
                 ORDER BY d.created_at DESC LIMIT %s
                 """,
                 (limit,),
@@ -601,6 +604,35 @@ class MarketsRepository:
                     "created_at": row[12],
                     "amendment_of": str(row[13]) if row[13] else None,
                     "outcome_id": str(row[14]) if row[14] else None,
+                    "instrument_key": row[15],
+                }
+                for row in cursor.fetchall()
+            ]
+
+    def list_outcomes(self, connection: Any, limit: int = 500) -> list[dict[str, object]]:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT o.outcome_id, o.decision_id, i.instrument_key, o.resolved_at,
+                       o.result, o.pnl, o.clv, o.calibration_bucket
+                FROM market_outcomes o
+                JOIN market_decisions d ON d.decision_id = o.decision_id
+                LEFT JOIN market_opportunities opp ON opp.opportunity_id = d.opportunity_id
+                LEFT JOIN market_instruments i ON i.instrument_id = opp.instrument_id
+                ORDER BY o.resolved_at ASC LIMIT %s
+                """,
+                (limit,),
+            )
+            return [
+                {
+                    "outcome_id": str(row[0]),
+                    "decision_id": str(row[1]),
+                    "instrument_key": row[2],
+                    "resolved_at": row[3],
+                    "result": row[4],
+                    "pnl": row[5],
+                    "clv": row[6],
+                    "calibration_bucket": row[7],
                 }
                 for row in cursor.fetchall()
             ]

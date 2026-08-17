@@ -59,6 +59,125 @@ export type EvaluateResponse = {
   } | null;
 };
 
+export type DecisionRow = {
+  decision_id?: string | null;
+  opportunity_id?: string | null;
+  strategy_key?: string;
+  policy_key?: string;
+  decision_type?: "OPPORTUNITY" | "NO_ACTION";
+  reason_codes?: string[];
+  thesis?: string;
+  confidence?: string | null;
+  estimated_edge?: string | null;
+  cost_estimate?: string | null;
+  data_cutoff_timestamp?: string | null;
+  model_version?: string | null;
+  created_at?: string | null;
+  amendment_of?: string | null;
+  outcome_id?: string | null;
+  instrument_key?: string | null;
+};
+
+export type TTLeg = {
+  selection_key: string;
+  display_name?: string | null;
+  decimal_odds?: string | null;
+  implied_probability?: string | null;
+  source_key?: string | null;
+  observed_at?: string | null;
+  received_at?: string | null;
+  raw_ref?: string | null;
+};
+
+export type TTLiveState = {
+  state: Record<string, unknown>;
+  observed_at?: string | null;
+  received_at?: string | null;
+};
+
+export type TTBoardEvent = {
+  event_key: string;
+  display_name?: string | null;
+  scheduled_at?: string | null;
+  league_key?: string | null;
+  market_key: string;
+  live: TTLiveState | null;
+  legs: TTLeg[];
+  gross_edge?: string | null;
+  costs: {
+    components: Record<string, string | null>;
+    total?: string | null;
+  };
+  net_edge?: string | null;
+  confidence?: string | null;
+  model_probability?: string | null;
+  model_probability_available: boolean;
+  data_quality?: string | null;
+  freshness: {
+    ok: boolean;
+    status: "HEALTHY" | "STALE" | "UNAVAILABLE";
+    age_seconds?: number | null;
+  };
+  strategy: {
+    key: string;
+    version?: number;
+    lifecycle?: string;
+    eligible: boolean;
+    reasons?: string[];
+  };
+  decision: {
+    decision_id?: string | null;
+    decision_type?: "OPPORTUNITY" | "NO_ACTION";
+    reason_codes?: string[];
+    thesis?: string | null;
+    estimated_edge?: string | null;
+    cost_estimate?: string | null;
+    confidence?: string | null;
+    created_at?: string | null;
+  } | null;
+};
+
+export type TableTennisBoardResponse = {
+  events: TTBoardEvent[];
+  provider_health: { source_key: string; status?: string }[];
+  strategy_key: string;
+  market_key: string;
+  now: string;
+};
+
+export type PerformanceResponse = {
+  sample_size: {
+    decisions: number;
+    opportunities: number;
+    no_actions: number;
+    settled: number;
+  };
+  no_action_pct?: number | null;
+  net_pnl?: number | null;
+  win_rate?: number | null;
+  roi: {
+    value?: number | null;
+    available: boolean;
+    reason?: string | null;
+  };
+  clv: {
+    value?: number | null;
+    available: boolean;
+    reason?: string | null;
+  };
+  calibration: {
+    available: boolean;
+    buckets: Record<string, number>;
+    reason?: string | null;
+  };
+  max_drawdown: {
+    value?: number | null;
+    available: boolean;
+    reason?: string | null;
+  };
+  as_of?: string | null;
+};
+
 export const MARKETS_API_BASE = (
   process.env.NEXT_PUBLIC_MARKETS_API_BASE ?? "http://127.0.0.1:8300"
 ).replace(/\/$/, "");
@@ -107,6 +226,18 @@ export function fetchList<T = CatalogItem>(path: string): Promise<{ [key: string
 
 export function fetchDataHealth(): Promise<DataHealthResponse> {
   return json<DataHealthResponse>("/v1/data-quality");
+}
+
+export function fetchTableTennisBoard(): Promise<TableTennisBoardResponse> {
+  return json<TableTennisBoardResponse>("/v1/sports/table-tennis");
+}
+
+export function fetchPerformance(): Promise<PerformanceResponse> {
+  return json<PerformanceResponse>("/v1/performance");
+}
+
+export function fetchDecisions(limit: number = 50): Promise<{ decisions: DecisionRow[] }> {
+  return json<{ decisions: DecisionRow[] }>(`/v1/decisions?limit=${limit}`);
 }
 
 export function evaluateSports(

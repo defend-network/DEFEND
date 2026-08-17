@@ -1,10 +1,10 @@
 import { MarketsShell } from "@/components/markets/MarketsShell";
-import { SportsPanel } from "@/components/markets/SportsPanel";
+import { TableTennisBoard } from "@/components/markets/TableTennisBoard";
 
 export default function MarketsSportsPage() {
   return (
     <MarketsShell>
-      <SportsPanel />
+      <TableTennisBoard />
     </MarketsShell>
   );
 }
