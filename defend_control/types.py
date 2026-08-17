@@ -110,6 +110,7 @@ class VastOffer:
     reliability: Decimal
     storage_cost_per_gb_month: Decimal | None = None
     storage_total_hourly: Decimal | None = None
+    direct_port_count: int | None = None
 
 
 @dataclass(frozen=True)

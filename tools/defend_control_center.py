@@ -104,7 +104,32 @@ def _build_coder_plane(
         confirmer if confirmer is not None else _CoderFingerprintConfirmer()
     )
 
-    def tunnel_start(instance, local_port):
+    def host_prepare(instance, prefer_direct):
+        tunnel = SshTunnel(
+            supervisor,
+            known_hosts=known_hosts,
+            key_path=key_path,
+            name="coder ssh host preparation",
+        )
+        try:
+            tunnel.prepare_host(
+                instance,
+                confirm_fingerprint=None,
+                prefer_direct=prefer_direct,
+            )
+        except HostFingerprintConfirmation as pending:
+            if not active_confirmer.confirm(
+                pending.instance_id,
+                pending.fingerprint,
+            ):
+                raise
+            tunnel.prepare_host(
+                instance,
+                confirm_fingerprint=pending.fingerprint,
+                prefer_direct=prefer_direct,
+            )
+
+    def tunnel_start(instance, local_port, *, prefer_direct):
         tunnel = SshTunnel(
             supervisor,
             known_hosts=known_hosts,
@@ -116,7 +141,7 @@ def _build_coder_plane(
             fingerprint = tunnel.prepare_host(
                 instance,
                 confirm_fingerprint=None,
-                prefer_direct=True,
+                prefer_direct=prefer_direct,
             )
         except HostFingerprintConfirmation as pending:
             if not active_confirmer.confirm(
@@ -127,9 +152,9 @@ def _build_coder_plane(
             fingerprint = tunnel.prepare_host(
                 instance,
                 confirm_fingerprint=pending.fingerprint,
-                prefer_direct=True,
+                prefer_direct=prefer_direct,
             )
-        tunnel.start(instance, prefer_direct=True)
+        tunnel.start(instance, prefer_direct=prefer_direct)
         return f"http://127.0.0.1:{local_port}/v1"
 
     template = SshTunnel(
@@ -142,7 +167,9 @@ def _build_coder_plane(
         known_hosts=known_hosts,
         key_path=key_path,
     )
-    policy = CoderPolicy()
+    policy = CoderPolicy(
+        max_hourly_usd=products_settings.coder_max_hourly_usd,
+    )
     backend = VastCoderBackend(
         vast=VastClient(secrets["VAST_API_KEY"]),
         secrets=secrets,
@@ -150,6 +177,7 @@ def _build_coder_plane(
         max_hourly=policy.max_hourly_usd,
         profile=ResourceProfile.coder_default(),
         tunnel_start=tunnel_start,
+        host_prepare=host_prepare,
     )
     plane = CoderControlPlane(
         backend=backend,
@@ -691,6 +719,9 @@ def run_control_center() -> None:
                 app.wire_coder_fingerprint_confirmer(
                     result.candidate_runtime.coder_fingerprint_confirmer
                 ),
+                app.wire_idle_reaper(
+                    result.candidate_runtime.coder_plane
+                ),
             ),
         )
 
@@ -714,6 +745,7 @@ def run_control_center() -> None:
     app.wire_coder_fingerprint_confirmer(
         coordinator.runtime.coder_fingerprint_confirmer
     )
+    app.wire_idle_reaper(coordinator.runtime.coder_plane)
     root.mainloop()
 
 

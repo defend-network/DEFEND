@@ -19,6 +19,10 @@ from .types import LaunchSpec, ResourceProfile, VastInstance, VastOffer
 _API_ROOT = "https://console.vast.ai/api/v0"
 _API_V1_ROOT = "https://console.vast.ai/api/v1"
 _MAX_RESPONSE_BYTES = 64 * 1024
+# Offer search responses carry full listings; discovery queries request
+# up to 100 offers. Measured live: ~59 KiB at limit 20, ~300 KiB at
+# limit 100. Create/show responses stay under the strict 64 KiB cap.
+_SEARCH_MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 _TIMEOUT_SECONDS = 30.0
 _MAX_ATTEMPTS = 3
 _PROVISIONING_TIMEOUT_SECONDS = 300.0
@@ -40,9 +44,87 @@ _TERMINAL_STATUSES = frozenset({"exited", "unknown", "offline"})
 # Default profile used when callers do not supply one (higher floor + modern families)
 _DEFAULT_PROFILE = ResourceProfile()
 
+# Sanitized rejection categories for offer search validation. Counts only —
+# never raw payloads, never credentials.
+OFFER_REJECTION_CATEGORIES = (
+    "invalid_shape",
+    "not_verified",
+    "not_rentable",
+    "already_rented",
+    "wrong_pricing_type",
+    "wrong_gpu_count",
+    "insufficient_vram",
+    "insufficient_disk",
+    "wrong_gpu_family",
+    "below_reliability",
+    "over_price",
+    "malformed_numeric_field",
+)
+
+# Provider-specific GPU name universe, separate from the abstract policy
+# families. Vast.ai matches gpu_name against these exact strings, so the
+# search request must scope to the approved names BEFORE limit/order.
+# Names below were verified against the live provider (zero-spend probes,
+# Aug 2026): H100 80GB-class is reported as gpu_ram 81559 MB by the REST
+# API, and the H200 family's on-demand name is exactly "H200" (no SXM).
+VAST_GPU_NAME_VARIANTS: Mapping[str, tuple[str, ...]] = {
+    "A100": ("A100 SXM4", "A100 PCIE"),
+    "H100": ("H100 SXM", "H100 PCIE", "H100 NVL"),
+    "H200": ("H200", "H200 NVL"),
+    "B200": ("B200",),
+}
+
+# Abstract policy speaks in "GPU memory class" (e.g. "2x 80GB-class");
+# the provider encodes the same intent in decimal MB. The Vast REST API
+# reports 80GB-class H100 as gpu_ram 81559 MB, so an abstract 81920
+# (80 GiB) intent must encode as >= 80000, not >= 81920.
+VAST_80GB_CLASS_MIN_GPU_RAM_MB = 80_000
+
+
+def vast_gpu_ram_floor(min_gpu_ram_mb: int) -> int:
+    """Encode an abstract per-GPU VRAM minimum as a Vast gpu_ram floor.
+
+    Floors at or below the 80GB-class band stay unchanged; abstract
+    floors in (80000, 81920] (the 80 GiB intent) encode as the
+    provider's 80000 decimal-MB threshold; larger abstract floors
+    (e.g. 140 GB-class chat) stay unchanged.
+    """
+    if (
+        min_gpu_ram_mb > VAST_80GB_CLASS_MIN_GPU_RAM_MB
+        and min_gpu_ram_mb <= 81_920
+    ):
+        return VAST_80GB_CLASS_MIN_GPU_RAM_MB
+    return min_gpu_ram_mb
+
+
+def approved_vast_gpu_names(families: tuple[str, ...]) -> tuple[str, ...]:
+    """Expand abstract policy families into the provider's exact names."""
+    names: list[str] = []
+    for family in families:
+        variants = VAST_GPU_NAME_VARIANTS.get(family)
+        if not variants:
+            raise ValueError(
+                f"no provider GPU names known for family {family!r}"
+            )
+        names.extend(variants)
+    if not names:
+        raise ValueError("no approved GPU families")
+    return tuple(names)
+
 
 class VastError(RuntimeError):
     """A safe Vast.ai failure containing no provider body or credential data."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = (
+            int(status_code) if status_code is not None else None
+        )
 
 
 class VastOfferUnavailable(VastError):
@@ -55,6 +137,32 @@ class VastSchedulingTimeout(VastError):
     def __init__(self, instance_id: int) -> None:
         super().__init__("Vast.ai restart remained scheduled for 30 seconds")
         self.instance_id = instance_id
+
+
+class VastDestructionRequestFailedError(VastError):
+    """The DELETE request itself was rejected; destruction never started.
+
+    The instance is presumed still running and billing — operator action
+    required. ``status_code`` carries the provider response status.
+    """
+
+
+class VastDestructionPendingError(VastError):
+    """DELETE was accepted but the instance was still visible at the end of
+    the verification window.
+
+    The provider has acknowledged destruction and teardown is normally in
+    flight; absence was not confirmed, but nothing contradicts the destroy.
+    """
+
+
+class VastDestructionUnverifiedError(VastError):
+    """DELETE was accepted but absence could not be verified at all.
+
+    Verification requests failed (network / provider errors) and the
+    instance was never observed either present or absent, so its fate is
+    genuinely unknown.
+    """
 
 
 class _DeadlineExceeded(Exception):
@@ -135,6 +243,26 @@ def _positive_int(value: object, field: str) -> int:
     if isinstance(value, bool) or type(value) is not int or value <= 0:
         raise ValueError(f"{field} is invalid")
     return value
+
+
+def _offer_int(value: object, field: str, *, minimum: int = 1) -> int:
+    """Provider offer integer field: int, or float with an integral value.
+
+    The API documents ints for num_gpus/gpu_ram/id, but real responses
+    occasionally encode whole numbers as floats (2.0). Billing-critical
+    values must still be whole and positive (direct_port_count may be 0).
+    """
+    if isinstance(value, bool):
+        raise ValueError(f"{field} is invalid")
+    if type(value) is int:
+        result = value
+    elif isinstance(value, float) and value.is_integer():
+        result = int(value)
+    else:
+        raise ValueError(f"{field} is invalid")
+    if result < minimum:
+        raise ValueError(f"{field} is invalid")
+    return result
 
 
 def _gpu_name_matches(gpu_name: str, families: tuple[str, ...]) -> bool:
@@ -299,6 +427,9 @@ class VastClient:
         self._offer_search_summary = "search not run"
         self._last_raw_create: Mapping[str, object] | None = None
         self._last_raw_show: Mapping[str, object] | None = None
+        self._last_search_rejections: dict[str, int] = {}
+        self._last_search_raw_count = 0
+        self._last_search_eligible_count = 0
 
     def __repr__(self) -> str:
         return "VastClient()"
@@ -323,43 +454,377 @@ class VastClient:
         self,
         max_hourly: Decimal,
         profile: ResourceProfile | None = None,
+        *,
+        require_direct_ports: bool = False,
     ) -> tuple[VastOffer, ...]:
         ceiling = _decimal(max_hourly, "maximum hourly price")
         if ceiling <= 0:
             raise ValueError("maximum hourly price must be positive")
+        if type(require_direct_ports) is not bool:
+            raise ValueError("require_direct_ports must be a bool")
         policy = profile if profile is not None else _DEFAULT_PROFILE
-        document = self._request_json(
-            "POST",
-            f"{_API_ROOT}/bundles/",
-            {
-                "type": "on-demand",
-                "verified": {"eq": True},
-                "rentable": {"eq": True},
-                "rented": {"eq": False},
-                "num_gpus": {"eq": policy.num_gpus},
-                "gpu_ram": {"gte": policy.min_gpu_ram_mb},
-                "disk_space": {"gte": policy.min_disk_gb},
-                "direct_port_count": {"gte": 1},
-                "reliability": {"gte": float(policy.min_reliability)},
-                "dph_total": {"lte": float(ceiling)},
-                "allocated_storage": policy.min_disk_gb,
-                "order": [["dph_total", "asc"]],
-                "limit": 20,
+        document = {
+            "type": "on-demand",
+            "verified": {"eq": True},
+            "rentable": {"eq": True},
+            "rented": {"eq": False},
+            "gpu_name": {
+                "in": list(approved_vast_gpu_names(policy.allowed_gpu_families)),
             },
+            "num_gpus": {"eq": policy.num_gpus},
+            "gpu_ram": {"gte": vast_gpu_ram_floor(policy.min_gpu_ram_mb)},
+            "disk_space": {"gte": policy.min_disk_gb},
+            "reliability": {"gte": float(policy.min_reliability)},
+            "dph_total": {"lte": float(ceiling)},
+            "allocated_storage": policy.min_disk_gb,
+            "order": [["dph_total", "asc"]],
+            "limit": 20,
+        }
+        if require_direct_ports:
+            document["direct_port_count"] = {"gte": 1}
+        raw_offers = self._offer_search_documents((document,))[0]
+        self._last_search_rejections = dict.fromkeys(
+            OFFER_REJECTION_CATEGORIES, 0
         )
-        raw_offers = document.get("offers") if isinstance(document, Mapping) else None
-        if not isinstance(raw_offers, list):
-            raise VastError("Vast.ai offer response is invalid")
         offers: list[VastOffer] = []
         for raw in raw_offers:
-            offer = self._validated_offer(raw, ceiling, policy)
+            offer = self._validated_offer(
+                raw,
+                ceiling,
+                policy,
+                self._last_search_rejections,
+            )
             if offer is not None:
                 offers.append(offer)
         offers.sort(key=lambda offer: (offer.dph_total, offer.offer_id))
+        self._last_search_raw_count = len(raw_offers)
+        self._last_search_eligible_count = len(offers)
         self._offer_search_summary = (
-            f"provider returned {len(raw_offers)}; eligible {len(offers)}"
+            f"provider returned {self._last_search_raw_count}; "
+            f"eligible {self._last_search_eligible_count}"
         )
         return tuple(offers[:20])
+
+    def last_search_counts(
+        self,
+    ) -> tuple[int, int, tuple[tuple[str, int], ...]]:
+        """(provider returned, eligible, sanitized rejection counts).
+
+        Counts only — no raw provider bodies, no credentials.
+        """
+        rejections = tuple(
+            (category, self._last_search_rejections.get(category, 0))
+            for category in OFFER_REJECTION_CATEGORIES
+            if self._last_search_rejections.get(category, 0) > 0
+        )
+        return (
+            self._last_search_raw_count,
+            self._last_search_eligible_count,
+            rejections,
+        )
+
+    def _offer_search_documents(
+        self,
+        documents: tuple[dict[str, object], ...],
+    ) -> tuple[tuple[object, ...], ...]:
+        """POST each search document and return raw offer lists.
+
+        Search-only: never creates or mutates instances.
+        """
+        results: list[tuple[object, ...]] = []
+        for document in documents:
+            payload = self._request_json(
+                "POST",
+                f"{_API_ROOT}/bundles/",
+                document,
+                max_response_bytes=_SEARCH_MAX_RESPONSE_BYTES,
+            )
+            raw_offers = (
+                payload.get("offers")
+                if isinstance(payload, Mapping)
+                else None
+            )
+            if not isinstance(raw_offers, list):
+                raise VastError("Vast.ai offer response is invalid")
+            results.append(tuple(raw_offers))
+        return tuple(results)
+
+    def diagnose_filters(
+        self,
+        max_hourly: Decimal,
+        profile: ResourceProfile | None = None,
+        *,
+        limit: int = 20,
+        require_direct_ports: bool = True,
+    ) -> tuple[tuple[str, int], ...]:
+        """Zero-spend filter ladder: report ONLY counts at each step.
+
+        Steps: base verified+rentable+on-demand (both documented type
+        spellings), then num_gpus, approved GPU names, gpu_ram,
+        reliability, dph_total, disk_space and — only when
+        ``require_direct_ports`` — direct_port_count. Search
+        calls only — no instance creation, no raw payloads in the
+        report. The limit matches search_offers (20) so ladder counts
+        reflect the real search and responses stay within the transport
+        cap.
+        """
+        ceiling = _decimal(max_hourly, "maximum hourly price")
+        if ceiling <= 0:
+            raise ValueError("maximum hourly price must be positive")
+        if type(require_direct_ports) is not bool:
+            raise ValueError("require_direct_ports must be a bool")
+        policy = profile if profile is not None else _DEFAULT_PROFILE
+
+        base: dict[str, object] = {
+            "verified": {"eq": True},
+            "rentable": {"eq": True},
+            "rented": {"eq": False},
+            "limit": limit,
+        }
+        approved_names = approved_vast_gpu_names(policy.allowed_gpu_families)
+        steps = [
+            ("num_gpus", {"eq": policy.num_gpus}),
+            ("gpu_name", {"in": list(approved_names)}),
+            ("gpu_ram", {"gte": vast_gpu_ram_floor(policy.min_gpu_ram_mb)}),
+            ("reliability", {"gte": float(policy.min_reliability)}),
+            ("dph_total", {"lte": float(ceiling)}),
+            ("disk_space", {"gte": policy.min_disk_gb}),
+        ]
+        labels = [
+            "base ondemand",
+            "base on-demand",
+            "2 GPUs",
+            "approved GPU names",
+            "80GB class",
+            "reliability",
+            "price",
+            "disk",
+        ]
+        if require_direct_ports:
+            steps.append(("direct_port_count", {"gte": 1}))
+            labels.append("direct ports")
+        ladder: list[dict[str, object]] = []
+        for type_value in ("ondemand", "on-demand"):
+            document = dict(base)
+            document["type"] = type_value
+            ladder.append(document)
+        cumulative = dict(base)
+        for field, filter_value in steps:
+            cumulative[field] = filter_value
+            ladder.append(dict(cumulative))
+        results = self._offer_search_documents(tuple(ladder))
+        counts = tuple(
+            (label, len(raw))
+            for label, raw in zip(labels, results)
+        )
+        self._last_search_raw_count = len(results[-1])
+        self._last_search_eligible_count = 0
+        self._offer_search_summary = (
+            "diagnostic ladder: "
+            + "; ".join(f"{label} {count}" for label, count in counts)
+        )
+        return counts
+
+    def discover_gpu_names(
+        self,
+        *,
+        num_gpus: int = 2,
+        limit: int = 100,
+    ) -> tuple[tuple[str, int, Decimal, int, Decimal], ...]:
+        """Zero-spend GPU-name discovery: SANITIZED aggregates only.
+
+        Queries verified+rentable with the requested GPU count and no
+        name/VRAM/price filters, then aggregates each observed gpu_name
+        into (name, count, min_dph_total, max_gpu_ram_mb,
+        max_reliability). No raw provider bodies are retained or
+        returned, no credentials, no instance creation.
+        """
+        if type(num_gpus) is not int or not 1 <= num_gpus <= 64:
+            raise ValueError("GPU count must be an integer in [1, 64]")
+        if type(limit) is not int or not 1 <= limit <= 500:
+            raise ValueError("limit must be an integer in [1, 500]")
+        document = {
+            "verified": {"eq": True},
+            "rentable": {"eq": True},
+            "num_gpus": {"eq": num_gpus},
+            "limit": limit,
+        }
+        raw_offers = self._offer_search_documents((document,))[0]
+        aggregates: dict[str, list[object]] = {}
+        for raw in raw_offers:
+            if not isinstance(raw, Mapping):
+                continue
+            name = raw.get("gpu_name")
+            if not isinstance(name, str) or not name:
+                continue
+            entry = aggregates.setdefault(name, [0, None, 0, Decimal("0")])
+            entry[0] += 1
+            dph = raw.get("dph_total")
+            if isinstance(dph, (int, float)):
+                value = Decimal(str(dph))
+                if entry[1] is None or value < entry[1]:
+                    entry[1] = value
+            ram = raw.get("gpu_ram")
+            if isinstance(ram, (int, float)) and ram > entry[2]:
+                entry[2] = int(ram)
+            rel = raw.get("reliability")
+            if isinstance(rel, (int, float)):
+                rel_value = Decimal(str(rel))
+                if rel_value > entry[3]:
+                    entry[3] = rel_value
+        result = tuple(
+            (
+                name,
+                int(entry[0]),
+                entry[1] if entry[1] is not None else Decimal("0"),
+                int(entry[2]),
+                entry[3],
+            )
+            for name, entry in sorted(aggregates.items())
+        )
+        self._offer_search_summary = (
+            f"discovery: {len(raw_offers)} provider offers, "
+            f"{len(result)} distinct GPU names"
+        )
+        return result
+
+    def exact_name_counts(
+        self,
+        names: tuple[str, ...],
+        *,
+        num_gpus: int = 2,
+        limit: int = 20,
+    ) -> tuple[tuple[str, int], ...]:
+        """Per-name exact-match probe: count only, zero-spend.
+
+        One search per name with gpu_name {"eq": name} — no guessed
+        strings, no raw bodies, no credentials, no creation.
+        """
+        documents = tuple(
+            {
+                "verified": {"eq": True},
+                "rentable": {"eq": True},
+                "num_gpus": {"eq": num_gpus},
+                "gpu_name": {"eq": name},
+                "limit": limit,
+            }
+            for name in names
+        )
+        results = self._offer_search_documents(documents)
+        return tuple(
+            (name, len(raw))
+            for name, raw in zip(names, results)
+        )
+
+    def probe_type_semantics(
+        self,
+        *,
+        num_gpus: int = 2,
+        limit: int = 20,
+    ) -> tuple[int, int, int]:
+        """Type-filter semantics probe: (no_type, ondemand, on-demand).
+
+        The live API ignores the type filter for search and responses do
+        not echo a type field, so the three counts are normally equal.
+        Zero-spend, counts only.
+        """
+        documents = tuple(
+            (
+                {
+                    "verified": {"eq": True},
+                    "rentable": {"eq": True},
+                    "num_gpus": {"eq": num_gpus},
+                    "limit": limit,
+                },
+                {
+                    "verified": {"eq": True},
+                    "rentable": {"eq": True},
+                    "num_gpus": {"eq": num_gpus},
+                    "type": "ondemand",
+                    "limit": limit,
+                },
+                {
+                    "verified": {"eq": True},
+                    "rentable": {"eq": True},
+                    "num_gpus": {"eq": num_gpus},
+                    "type": "on-demand",
+                    "limit": limit,
+                },
+            )
+        )
+        results = self._offer_search_documents(documents)
+        return tuple(len(raw) for raw in results)
+
+    def approved_offer_details(
+        self,
+        profile: ResourceProfile,
+        *,
+        limit: int = 100,
+    ) -> tuple[
+        tuple[int, str, int, int, Decimal, Decimal, Decimal, int], ...
+    ]:
+        """Sanitized detail rows for approved-family offers.
+
+        (offer_id, gpu_name, gpu_ram, num_gpus, reliability, dph_total,
+        disk_space, direct_port_count) — non-secret fields only, for the
+        approved GPU universe without VRAM/price filters so the real
+        blockers per offer are visible. No raw bodies, no credentials,
+        no creation.
+        """
+        if type(limit) is not int or not 1 <= limit <= 500:
+            raise ValueError("limit must be an integer in [1, 500]")
+        document = {
+            "verified": {"eq": True},
+            "rentable": {"eq": True},
+            "num_gpus": {"eq": profile.num_gpus},
+            "gpu_name": {
+                "in": list(
+                    approved_vast_gpu_names(profile.allowed_gpu_families)
+                ),
+            },
+            "limit": limit,
+        }
+        raw_offers = self._offer_search_documents((document,))[0]
+        rows: list[
+            tuple[int, str, int, int, Decimal, Decimal, Decimal, int]
+        ] = []
+        for raw in raw_offers:
+            if not isinstance(raw, Mapping):
+                continue
+            try:
+                offer_id = _offer_int(raw.get("id"), "offer ID")
+                gpu_name = raw.get("gpu_name")
+                if not isinstance(gpu_name, str) or not gpu_name:
+                    continue
+                gpu_ram = _offer_int(raw.get("gpu_ram"), "GPU RAM")
+                num_gpus = _offer_int(raw.get("num_gpus"), "GPU count")
+                reliability = _decimal(
+                    raw.get("reliability", raw.get("reliability2")),
+                    "reliability",
+                )
+                dph_total = _decimal(raw.get("dph_total"), "hourly price")
+                disk_space = _decimal(raw.get("disk_space"), "disk space")
+                direct_port_count = _offer_int(
+                    raw.get("direct_port_count"),
+                    "direct port count",
+                    minimum=0,
+                )
+            except ValueError:
+                continue
+            rows.append(
+                (
+                    offer_id,
+                    gpu_name,
+                    gpu_ram,
+                    num_gpus,
+                    reliability,
+                    dph_total,
+                    disk_space,
+                    direct_port_count,
+                )
+            )
+        rows.sort(key=lambda row: (row[5], -row[4], row[0]))
+        return tuple(rows)
 
     def list_labeled_instance_ids(self, label: str) -> tuple[int, ...]:
         if (
@@ -574,22 +1039,29 @@ class VastClient:
             or confirmed_instance_id != parsed_id
         ):
             raise ValueError("destruction requires the exact instance ID")
-        response = self._request(
-            "DELETE", f"{_API_ROOT}/instances/{parsed_id}/", None
-        )
-        self._require_mutation_success(response, "Vast.ai destruction failed")
+        try:
+            response = self._request(
+                "DELETE", f"{_API_ROOT}/instances/{parsed_id}/", None
+            )
+            self._require_mutation_success(
+                response, "Vast.ai destruction failed"
+            )
+        except VastError as exc:
+            raise VastDestructionRequestFailedError(
+                "Vast.ai destruction request failed",
+                status_code=exc.status_code,
+            ) from exc
         self._wait_until_destroyed(parsed_id)
         return True
 
     def _wait_until_destroyed(self, instance_id: int) -> None:
         deadline = self._monotonic() + _DESTRUCTION_VERIFY_SECONDS
         url = f"{_API_ROOT}/instances/{instance_id}/"
+        last_present = False
         while True:
             remaining = deadline - self._monotonic()
             if remaining <= 0:
-                raise VastError(
-                    "Vast.ai destruction could not be verified after 30 seconds"
-                )
+                break
             try:
                 response = self._request(
                     "GET",
@@ -600,17 +1072,45 @@ class VastClient:
                     allow_not_found=True,
                 )
             except _DeadlineExceeded:
-                raise VastError(
-                    "Vast.ai destruction could not be verified after 30 seconds"
-                ) from None
-            if response.status_code == 404:
+                break
+            except VastError:
+                continue
+            if self._response_absent(response):
                 return
+            last_present = True
             remaining = deadline - self._monotonic()
             if remaining <= 0:
-                raise VastError(
-                    "Vast.ai destruction could not be verified after 30 seconds"
-                )
+                break
             self._sleep(min(_DESTRUCTION_POLL_SECONDS, remaining))
+        if last_present:
+            raise VastDestructionPendingError(
+                "Vast.ai instance still visible after destruction "
+                "verification window"
+            )
+        raise VastDestructionUnverifiedError(
+            "Vast.ai destruction could not be verified"
+        )
+
+    @staticmethod
+    def _response_absent(response: _Response) -> bool:
+        """True when the provider response proves the instance is gone.
+
+        Vast reports a destroyed or never-existing instance as HTTP 404 OR
+        HTTP 200 with an ``instances`` key that is null / empty — both mean
+        absent. Only these shapes count; anything else is inconclusive.
+        """
+        if response.status_code == 404:
+            return True
+        if response.status_code != 200:
+            return False
+        try:
+            document = json.loads(response.body.decode("utf-8"))
+        except Exception:
+            return False
+        if not isinstance(document, Mapping):
+            return False
+        instances = document.get("instances")
+        return instances is None or instances == {} or instances == []
 
     def ensure_account_ssh_key(self, public_key: str) -> int:
         if (
@@ -809,70 +1309,135 @@ class VastClient:
         raw: object,
         ceiling: Decimal,
         profile: ResourceProfile,
+        rejections: dict[str, int] | None = None,
     ) -> VastOffer | None:
+        """Local validation of one provider offer with sanitized counters.
+
+        Properties already constrained in the provider request (verified,
+        rentable, rented, type, reliability) are validated only when the
+        response echoes them — an absent echo field never alone rejects a
+        valid offer. CRITICAL spend/resource values (offer ID, GPU name,
+        GPU count, VRAM, actual hourly rate, disk) are always validated
+        locally: billing protections are never weakened.
+        """
+
+        def reject(category: str) -> None:
+            if rejections is not None:
+                rejections[category] = (
+                    rejections.get(category, 0) + 1
+                )
+
         if not isinstance(raw, Mapping):
+            reject("invalid_shape")
+            return None
+        if "verified" in raw:
+            if raw.get("verified") is not True:
+                reject("not_verified")
+                return None
+        else:
+            verification = raw.get("verification")
+            if (
+                isinstance(verification, str)
+                and verification
+                and verification.strip().casefold() != "verified"
+            ):
+                reject("not_verified")
+                return None
+        if "type" in raw and raw.get("type") not in (
+            "on-demand",
+            "ondemand",
+        ):
+            reject("wrong_pricing_type")
+            return None
+        if "rentable" in raw and raw.get("rentable") is not True:
+            reject("not_rentable")
+            return None
+        if "rented" in raw and raw.get("rented") is not False:
+            reject("already_rented")
             return None
         try:
-            if "verified" in raw:
-                verified = raw.get("verified") is True
-            else:
-                verification = raw.get("verification")
-                verified = (
-                    isinstance(verification, str)
-                    and verification.strip().casefold() == "verified"
-                )
-            if "type" in raw:
-                on_demand = raw.get("type") in ("on-demand", "ondemand")
-            else:
-                on_demand = raw.get("is_bid") is False
-            if (
-                not verified
-                or raw.get("rentable") is not True
-                or raw.get("rented") is not False
-                or not on_demand
-                or type(raw.get("num_gpus")) is not int
-                or raw.get("num_gpus") != profile.num_gpus
-            ):
-                return None
-            gpu_ram = _positive_int(raw.get("gpu_ram"), "GPU RAM")
-            if gpu_ram < profile.min_gpu_ram_mb:
-                return None
-            disk_space = _decimal(raw.get("disk_space"), "disk space")
-            if disk_space < profile.min_disk_gb:
-                return None
-            dph_total = _decimal(raw.get("dph_total"), "hourly price")
-            if dph_total < 0 or dph_total > ceiling:
-                return None
-            offer_id = _positive_int(raw.get("id"), "offer ID")
-            gpu_name = raw.get("gpu_name")
-            if not isinstance(gpu_name, str) or not _gpu_name_matches(
-                gpu_name, profile.allowed_gpu_families
-            ):
-                return None
-            reliability = _decimal(
-                raw.get("reliability", raw.get("reliability2")), "reliability"
-            )
-            if reliability < profile.min_reliability or reliability > 1:
-                return None
-            storage_cost = (
-                None
-                if raw.get("storage_cost") is None
-                else _decimal(raw.get("storage_cost"), "storage cost")
-            )
-            storage_total = (
-                None
-                if raw.get("storage_total_cost") is None
-                else _decimal(raw.get("storage_total_cost"), "storage total cost")
-            )
-            if (
-                storage_cost is not None
-                and storage_cost < 0
-                or storage_total is not None
-                and storage_total < 0
-            ):
-                return None
+            num_gpus = _offer_int(raw.get("num_gpus"), "GPU count")
         except ValueError:
+            reject("malformed_numeric_field")
             return None
+        if num_gpus != profile.num_gpus:
+            reject("wrong_gpu_count")
+            return None
+        try:
+            gpu_ram = _offer_int(raw.get("gpu_ram"), "GPU RAM")
+        except ValueError:
+            reject("malformed_numeric_field")
+            return None
+        if gpu_ram < vast_gpu_ram_floor(profile.min_gpu_ram_mb):
+            reject("insufficient_vram")
+            return None
+        try:
+            disk_space = _decimal(raw.get("disk_space"), "disk space")
+        except ValueError:
+            reject("malformed_numeric_field")
+            return None
+        if disk_space < profile.min_disk_gb:
+            reject("insufficient_disk")
+            return None
+        try:
+            dph_total = _decimal(raw.get("dph_total"), "hourly price")
+        except ValueError:
+            reject("malformed_numeric_field")
+            return None
+        if dph_total < 0 or dph_total > ceiling:
+            reject("over_price")
+            return None
+        try:
+            offer_id = _offer_int(raw.get("id"), "offer ID")
+        except ValueError:
+            reject("malformed_numeric_field")
+            return None
+        gpu_name = raw.get("gpu_name")
+        if not isinstance(gpu_name, str) or not _gpu_name_matches(
+            gpu_name, profile.allowed_gpu_families
+        ):
+            reject("wrong_gpu_family")
+            return None
+        if "reliability" in raw or "reliability2" in raw:
+            try:
+                reliability = _decimal(
+                    raw.get("reliability", raw.get("reliability2")),
+                    "reliability",
+                )
+            except ValueError:
+                reject("malformed_numeric_field")
+                return None
+            if reliability < profile.min_reliability or reliability > 1:
+                reject("below_reliability")
+                return None
+        else:
+            reliability = profile.min_reliability
+        storage_cost = (
+            None
+            if raw.get("storage_cost") is None
+            else _decimal(raw.get("storage_cost"), "storage cost")
+        )
+        storage_total = (
+            None
+            if raw.get("storage_total_cost") is None
+            else _decimal(raw.get("storage_total_cost"), "storage total cost")
+        )
+        if (
+            storage_cost is not None
+            and storage_cost < 0
+            or storage_total is not None
+            and storage_total < 0
+        ):
+            reject("over_price")
+            return None
+        try:
+            direct_port_count = _offer_int(
+                raw.get("direct_port_count"),
+                "direct port count",
+                minimum=0,
+            )
+        except ValueError:
+            direct_port_count = None
         return VastOffer(
             offer_id,
             gpu_name,
@@ -881,6 +1446,7 @@ class VastClient:
             reliability,
             storage_cost,
             storage_total,
+            direct_port_count,
         )
 
     @staticmethod
@@ -942,6 +1508,7 @@ class VastClient:
         timeout_seconds: float = _TIMEOUT_SECONDS,
         deadline: float | None = None,
         allow_not_found: bool = False,
+        max_response_bytes: int = _MAX_RESPONSE_BYTES,
     ) -> _Response:
         headers = {
             "Accept": "application/json",
@@ -965,7 +1532,7 @@ class VastClient:
                     headers=headers,
                     json=body,
                     timeout=attempt_timeout,
-                    max_response_bytes=_MAX_RESPONSE_BYTES,
+                    max_response_bytes=max_response_bytes,
                 )
             except Exception as error:
                 if deadline is not None and self._monotonic() >= deadline:
@@ -975,8 +1542,8 @@ class VastClient:
                 ) from None
             if deadline is not None and self._monotonic() >= deadline:
                 raise _DeadlineExceeded
-            if len(response.body) > _MAX_RESPONSE_BYTES:
-                raise VastError("Vast.ai response exceeds 64 KiB")
+            if len(response.body) > max_response_bytes:
+                raise VastError("Vast.ai response exceeds size cap")
             if response.status_code != 429 or attempt == max_attempts - 1:
                 break
             try:
@@ -999,7 +1566,10 @@ class VastClient:
         if allow_not_found and response.status_code == 404:
             return response
         if response.status_code < 200 or response.status_code >= 300:
-            raise VastError(f"Vast.ai request failed (status {response.status_code})")
+            raise VastError(
+                f"Vast.ai request failed (status {response.status_code})",
+                status_code=response.status_code,
+            )
         return response
 
     def _request_json(
@@ -1012,6 +1582,7 @@ class VastClient:
         retry_429: bool = True,
         timeout_seconds: float = _TIMEOUT_SECONDS,
         deadline: float | None = None,
+        max_response_bytes: int = _MAX_RESPONSE_BYTES,
     ) -> object:
         response = self._request(
             method,
@@ -1021,6 +1592,7 @@ class VastClient:
             retry_429=retry_429,
             timeout_seconds=timeout_seconds,
             deadline=deadline,
+            max_response_bytes=max_response_bytes,
         )
         try:
             return json.loads(response.body.decode("utf-8"))

@@ -1,15 +1,31 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from decimal import Decimal
 import os
 from pathlib import Path
+import shutil
 import time
 from typing import Protocol
 import webbrowser
 
 from .health import JsonResult, fetch_http_json
-from .processes import LogEntry, ProcessSpec
-from .coder_control_plane import CoderProvisionBlocked
+from .processes import LogBuffer, LogEntry, ProcessSpec
+from .coder_control_plane import (
+    CoderNoQualifyingOffer,
+    CoderProvisionBlocked,
+)
+from .coder_m0 import (
+    CODER_MAX_HOURLY_UPPER_USD,
+    parse_max_hourly_budget,
+)
+from .coder_provisioning import (
+    CoderProvisionFailure,
+    format_elapsed,
+    wall_clock,
+)
+from .coder_vast_backend import CoderVastBackendError
+from .vast import vast_gpu_ram_floor
 
 
 @dataclass(frozen=True)
@@ -25,6 +41,8 @@ class ProductStatus:
     open_available: bool = True
     logs_available: bool = True
     last_error: str | None = None
+    error_category: str | None = None
+    diagnostics: str | None = None
 
 
 class ProductService(Protocol):
@@ -74,6 +92,8 @@ class ProductsSettings:
     coder_public_origin: str = "https://defendcoder.defend-network.org"
     coder_workspace_root: Path = Path(r"C:\DEFEND_CODER_DATA")
     coder_database_url: str | None = field(default=None, repr=False)
+    coder_max_hourly_usd: Decimal = Decimal("4.50")
+    coder_config_errors: tuple[str, ...] = ()
     sports_database_url: str | None = field(default=None, repr=False)
 
     @classmethod
@@ -92,6 +112,22 @@ class ProductsSettings:
             if value is None or not value.strip():
                 return default
             return value
+
+        coder_config_errors: list[str] = []
+
+        raw_max_hourly = os.environ.get("CODER_MAX_HOURLY_USD")
+        if raw_max_hourly is None or not raw_max_hourly.strip():
+            coder_max_hourly_usd = Decimal("4.50")
+        else:
+            try:
+                coder_max_hourly_usd = parse_max_hourly_budget(
+                    raw_max_hourly
+                )
+            except ValueError as error:
+                coder_max_hourly_usd = Decimal("4.50")
+                coder_config_errors.append(
+                    f"{error}; using safe default $4.50"
+                )
 
         return cls(
             sports_api_port=port("SPORTS_API_PORT", 8200),
@@ -132,6 +168,8 @@ class ProductsSettings:
                 )
             ),
             coder_database_url=os.environ.get("CODER_DATABASE_URL"),
+            coder_max_hourly_usd=coder_max_hourly_usd,
+            coder_config_errors=tuple(coder_config_errors),
             sports_database_url=os.environ.get("SPORTS_DATABASE_URL"),
         )
 
@@ -198,13 +236,14 @@ def build_coder_web_process_spec(
     return ProcessSpec(
         name="coder:web",
         argv=(
-            "npm.cmd",
-            "run",
-            "start",
+            "node",
+            ".next/standalone/server.js",
         ),
         cwd=Path(repository) / "defendcoder-ui",
         env={
+            "HOSTNAME": "127.0.0.1",
             "PORT": str(settings.coder_web_port),
+            "NODE_ENV": "production",
             "DEFENDCODER_INTERNAL_API_URL": (
                 f"http://127.0.0.1:"
                 f"{settings.coder_api_port}"
@@ -215,6 +254,36 @@ def build_coder_web_process_spec(
             f"{settings.coder_web_port}/"
         ),
     )
+
+
+class StandaloneWebBuildError(FileNotFoundError):
+    """DEFENDcoder standalone web bundle is missing or incomplete."""
+
+
+def prepare_standalone_web(repository: Path) -> Path:
+    """Make the standalone web bundle self-contained and return server.js.
+
+    The `output: "standalone"` build produces .next/standalone/server.js
+    but does NOT include static assets; `node .next/standalone/server.js`
+    serves them from .next/standalone/.next/static and
+    .next/standalone/public. This syncs those two trees (idempotent,
+    always-fresh) and fails closed with a clear message when the build
+    itself is missing — there is no silent fallback to `next start`.
+    """
+    ui = Path(repository) / "defendcoder-ui"
+    standalone = ui / ".next" / "standalone"
+    server = standalone / "server.js"
+    if not server.is_file():
+        raise StandaloneWebBuildError(
+            f"standalone web build missing at {server}; run "
+            "'npm run build' in defendcoder-ui before launching"
+        )
+    for relative in ("public", ".next/static"):
+        source = ui / relative
+        destination = standalone / relative
+        if source.is_dir():
+            shutil.copytree(source, destination, dirs_exist_ok=True)
+    return server
 
 
 def build_scs_ai_process_spec(
@@ -298,10 +367,10 @@ class DefendService:
     def status(self) -> ProductStatus:
         state = self._controller.poll_state()
         details = (
-            ("Model backend", state.selected_mode or "—"),
+            ("Model backend", state.selected_mode or "â€”"),
             (
                 "Owned services",
-                ", ".join(state.owned_services) if state.owned_services else "—",
+                ", ".join(state.owned_services) if state.owned_services else "â€”",
             ),
         )
         return self._row(
@@ -419,10 +488,10 @@ class SportsService:
         state = self.state
         details: list[tuple[str, str]] = [
             ("API state", state),
-            ("DB health", "—"),
-            ("Schema version", "—"),
+            ("DB health", "â€”"),
+            ("Schema version", "â€”"),
             ("Public origin", self._settings.sports_public_origin),
-            ("Sources", "—"),
+            ("Sources", "â€”"),
         ]
         if state == "running":
             health = self._cached_json(self._health_url())
@@ -441,7 +510,7 @@ class SportsService:
                     details[4] = ("Sources", str(len(source_list)))
         status_text = f"API {state}"
         if self._last_error:
-            status_text += f" — {self._last_error}"
+            status_text += f" â€” {self._last_error}"
         return ProductStatus(
             application_id=self.application_id,
             display_name=self.display_name,
@@ -740,7 +809,14 @@ def coder_plan_rows(prepared) -> tuple[tuple[str, str], ...]:
         ("Precision", str(public["precision"])),
         ("GPU", str(gpu_name)),
         ("GPU count", str(public["gpu_count"])),
-        ("VRAM per GPU", f'{public["vram_per_gpu_mb"]} MB'),
+        (
+            "VRAM per GPU",
+            (
+                f"{offer.gpu_ram_mb:,} MB reported"
+                if offer is not None
+                else f'{public["vram_per_gpu_mb"]} MB'
+            ),
+        ),
         ("Reliability", reliability),
         (
             "Offer ID",
@@ -765,10 +841,68 @@ def coder_plan_rows(prepared) -> tuple[tuple[str, str], ...]:
             str(public["tensor_parallel_size"]),
         ),
         ("Tool parser", str(public["tool_call_parser"])),
-        ("Launch runtype", str(public["launch_runtype"])),
+        (
+            "Transport",
+            (
+                "Direct SSH"
+                if str(public["launch_runtype"]) == "ssh_direct"
+                else "Vast SSH Proxy"
+            ),
+        ),
+        (
+            "Runtype",
+            (
+                "ssh_direct (direct SSH \u2014 explicit alternative)"
+                if str(public["launch_runtype"]) == "ssh_direct"
+                else "ssh_proxy (Vast SSH Proxy \u2014 qualification default)"
+            ),
+        ),
         ("Plan ID", str(public["plan_id"])),
         ("Plan hash", str(public["plan_hash"])),
     )
+
+
+def _provider_category(error: BaseException) -> str | None:
+    category = getattr(error, "category", None)
+    if isinstance(category, str) and category:
+        return category
+    if isinstance(error, CoderNoQualifyingOffer):
+        return "no_qualifying_offer"
+    return None
+
+
+def coder_approval_ready(prepared) -> tuple[bool, tuple[str, ...]]:
+    """A prepared plan is spend-ready ONLY when every provider field is
+    concrete and within policy. Returns (ready, problems)."""
+    problems: list[str] = []
+    offer = getattr(prepared, "offer", None)
+    public = prepared.plan.as_public_dict()
+    if offer is None:
+        problems.append("no concrete provider offer")
+    else:
+        if public.get("offer_id") is None:
+            problems.append("missing offer ID")
+        if not public.get("gpu_family"):
+            problems.append("missing GPU name/family")
+        if getattr(offer, "reliability", None) is None:
+            problems.append("missing reliability")
+    if not (public.get("gpu_count") or 0) > 0:
+        problems.append("missing GPU count")
+    if not (public.get("vram_per_gpu_mb") or 0) > 0:
+        problems.append("missing VRAM per GPU")
+    rate = public.get("provider_hourly_rate")
+    ceiling = public.get("max_hourly_price_usd")
+    if not rate:
+        problems.append("missing exact provider hourly price")
+    else:
+        try:
+            if Decimal(str(rate)) > Decimal(str(ceiling or "0")):
+                problems.append("offer exceeds configured max $/hr")
+        except Exception:
+            problems.append("invalid provider hourly price")
+    if not public.get("plan_hash"):
+        problems.append("missing plan fingerprint")
+    return (not problems), tuple(problems)
 
 
 class CoderService:
@@ -777,6 +911,7 @@ class CoderService:
 
     # Typed lifecycle states (plane-wired builds). "running" is only reported
     # after remote compute readiness AND local API/UI are genuinely up.
+    # "no_offer" means the qualification search found nothing spend-ready.
     _LIFECYCLE_STATES = (
         "stopped",
         "preparing",
@@ -785,6 +920,7 @@ class CoderService:
         "starting_local",
         "running",
         "failed",
+        "no_offer",
     )
 
     def __init__(
@@ -815,10 +951,32 @@ class CoderService:
         self._plane = plane
         self._probe = probe
         self._last_error: str | None = None
+        self._last_error_category: str | None = None
+        self._last_qualification: CoderNoQualifyingOffer | None = None
+        self._last_provision_failure: CoderProvisionFailure | None = None
         self._prepared: object | None = None
         self._approval: object | None = None
         self._coder_state: str = "stopped"
         self._destroy_runtime_on_stop = bool(destroy_runtime_on_stop)
+        self._lifecycle_log = LogBuffer(max_entries=400, max_line_chars=240)
+
+    def lifecycle_emit(self, line: str) -> None:
+        """Timestamped, owner-visible provisioning transition."""
+        self._lifecycle_log.append("coder:lifecycle", f"[{wall_clock()}] {line}")
+
+    def _refresh_provision_failure(self) -> None:
+        failure = getattr(self._plane, "last_provision_failure", None)
+        if failure is not None:
+            self._last_provision_failure = failure
+
+    def _emit_failure_line(self) -> None:
+        failure = self._last_provision_failure
+        if failure is None:
+            return
+        reason = failure.sanitized_message.replace("\n", " ")[:240]
+        self.lifecycle_emit(
+            f"FAILED phase={failure.phase} reason={reason}"
+        )
 
     @property
     def _lifecycle_enabled(self) -> bool:
@@ -930,17 +1088,62 @@ class CoderService:
         if endpoint.get("state") == "ready":
             return self._start_local_and_finish()
 
-        self._coder_state = "preparing"
-        self._last_error = None
-
         try:
-            prepared = self._plane.prepared_provision(alias)
+            lease = self._plane.resume_existing(alias)
         except Exception as error:
             self._coder_state = "failed"
             self._last_error = (
-                "plan preparation failed "
+                f"resume check failed ({type(error).__name__})"
+            )
+            self._last_error_category = _provider_category(error)
+            return self.status()
+
+        if lease is not None:
+            self._coder_state = "provisioning"
+            try:
+                smoke = self._plane.smoke(alias)
+            except Exception as error:
+                self._fail_after_remote_error(
+                    alias,
+                    "resumed runtime verification failed "
+                    f"({type(error).__name__})",
+                    _provider_category(error),
+                )
+                return self.status()
+            if not smoke.ok:
+                self._fail_after_remote_error(
+                    alias,
+                    "resumed runtime failed smoke",
+                    "provider",
+                )
+                return self.status()
+            self.lifecycle_emit(f"resumed runtime ready: {alias}")
+            return self._start_local_and_finish()
+
+        self._coder_state = "preparing"
+        self._last_error = None
+        self._last_error_category = None
+        self._last_qualification = None
+
+        try:
+            prepared = self._plane.prepared_provision(alias)
+        except CoderNoQualifyingOffer as error:
+            self._prepared = None
+            self._approval = None
+            self._coder_state = "no_offer"
+            self._last_error = None
+            self._last_error_category = "no_qualifying_offer"
+            self._last_qualification = error
+            return self.status()
+        except Exception as error:
+            self._prepared = None
+            self._approval = None
+            self._coder_state = "failed"
+            self._last_error = (
+                f"plan preparation failed "
                 f"({type(error).__name__})"
             )
+            self._last_error_category = _provider_category(error)
             return self.status()
 
         self._prepared = prepared
@@ -952,16 +1155,31 @@ class CoderService:
     def approve(self) -> ProductStatus:
         if self._plane is None or self._prepared is None:
             self._last_error = "no pending coder plan to approve"
+            self._last_error_category = None
             return self.status()
 
         if self._coder_state != "approval_required":
             self._last_error = (
                 "no pending coder plan to approve"
             )
+            self._last_error_category = None
+            return self.status()
+
+        ready, problems = coder_approval_ready(self._prepared)
+        if not ready:
+            self._prepared = None
+            self._approval = None
+            self._coder_state = "failed"
+            self._last_error = (
+                "plan is not spend-ready: "
+                + "; ".join(problems)
+            )
+            self._last_error_category = "no_qualifying_offer"
             return self.status()
 
         prepared = self._prepared
         alias = str(prepared.plan.alias)
+        self.lifecycle_emit(f"provisioning approved for {alias}")
         self._coder_state = "provisioning"
 
         try:
@@ -973,12 +1191,14 @@ class CoderService:
             self._fail_after_remote_error(
                 alias,
                 f"provisioning blocked: {error}",
+                _provider_category(error),
             )
             return self.status()
         except Exception as error:
             self._fail_after_remote_error(
                 alias,
                 f"provisioning failed ({type(error).__name__})",
+                _provider_category(error),
             )
             return self.status()
 
@@ -991,6 +1211,8 @@ class CoderService:
 
         self._prepared = None
         self._approval = None
+        self._last_provision_failure = None
+        self.lifecycle_emit(f"runtime ready: {alias} (smoke passed)")
 
         return self._start_local_and_finish()
 
@@ -1004,6 +1226,8 @@ class CoderService:
             self._approval = None
             self._coder_state = "stopped"
             self._last_error = None
+            self._last_error_category = None
+            self._last_qualification = None
 
         return self.status()
 
@@ -1020,6 +1244,8 @@ class CoderService:
             )
             return self.status()
 
+        self.lifecycle_emit("starting local coder services (api + web)")
+
         try:
             self._supervisor.logs.add_known_secrets(
                 [self._settings.coder_database_url]
@@ -1027,7 +1253,7 @@ class CoderService:
 
             if not self._service_running("coder:api"):
                 self._supervisor.start(
-                    build_coder_api_process_spec(
+build_coder_api_process_spec(
                         self._settings,
                         self._repository,
                         self._python_executable,
@@ -1035,6 +1261,7 @@ class CoderService:
                 )
 
             if not self._service_running("coder:web"):
+                prepare_standalone_web(self._repository)
                 self._supervisor.start(
                     build_coder_web_process_spec(
                         self._settings,
@@ -1065,6 +1292,8 @@ class CoderService:
             )
             return self.status()
 
+        if self._coder_state != "running":
+            self.lifecycle_emit("starting local coder services (api + web)")
         self._coder_state = "starting_local"
 
         try:
@@ -1074,7 +1303,7 @@ class CoderService:
 
             if not self._service_running("coder:api"):
                 self._supervisor.start(
-                    build_coder_api_process_spec(
+build_coder_api_process_spec(
                         self._settings,
                         self._repository,
                         self._python_executable,
@@ -1082,6 +1311,7 @@ class CoderService:
                 )
 
             if not self._service_running("coder:web"):
+                prepare_standalone_web(self._repository)
                 self._supervisor.start(
                     build_coder_web_process_spec(
                         self._settings,
@@ -1097,6 +1327,27 @@ class CoderService:
             self._last_error = (
                 f"local start failed ({type(error).__name__})"
             )
+            status = (
+                self._plane.status(str(self._settings.coder_model_alias))
+                if self._plane is not None
+                else {}
+            )
+            self._last_provision_failure = CoderProvisionFailure(
+                phase="local_api_start",
+                exception_type=type(error).__name__,
+                sanitized_message=str(error),
+                instance_id=status.get("instance_id"),
+                gpu_name=status.get("gpu_type"),
+                approved_hourly_rate=status.get("hourly_price"),
+                elapsed_seconds=0.0,
+                endpoint_state="ready",
+                ssh_state="ready",
+                bootstrap_state="ready",
+                vllm_state="ready",
+                readiness_state="ready",
+                cleanup_state="not_attempted",
+            )
+            self._emit_failure_line()
 
         return self.status()
 
@@ -1104,6 +1355,7 @@ class CoderService:
         self,
         alias: str,
         message: str,
+        category: str | None = None,
     ) -> None:
         try:
             self._plane.release(alias, destroy=True)
@@ -1113,10 +1365,17 @@ class CoderService:
             self._stop_coder_tunnels()
         except Exception:
             pass
+        self._refresh_provision_failure()
+        self._emit_failure_line()
         self._prepared = None
         self._approval = None
         self._coder_state = "failed"
         self._last_error = message
+        self._last_error_category = category or "provider"
+
+    def qualification(self):
+        """Sanitized no-offer metadata for the owner UI (None otherwise)."""
+        return self._last_qualification
 
     def _stop_coder_tunnels(self) -> None:
         if not self._lifecycle_enabled:
@@ -1133,6 +1392,7 @@ class CoderService:
         if not self._lifecycle_enabled:
             return self.status()
 
+        self.lifecycle_emit("stopping coder runtime")
         errors: list[str] = []
 
         for name in ("coder:web", "coder:api"):
@@ -1176,6 +1436,10 @@ class CoderService:
             if errors
             else None
         )
+        self._last_error_category = None
+        self._last_qualification = None
+        if not errors:
+            self.lifecycle_emit("coder runtime stopped")
 
         return self.status()
 
@@ -1262,11 +1526,177 @@ class CoderService:
                     ("Instance", instance),
                     ("$/hr", hourly),
                     ("Session cost", budget),
+                    (
+                        "Max $/hr (ceiling)",
+                        f"${self._settings.coder_max_hourly_usd}",
+                    ),
                 ),
                 open_url=self._settings.coder_public_origin,
                 launch_available=False,
                 stop_available=False,
                 logs_available=False,
+            )
+
+        if state == "no_offer" and self._last_qualification is not None:
+            qualification = self._last_qualification
+            required_gpu = (
+                " / ".join(qualification.required_gpu_families)
+                or "\u2014"
+            )
+            return ProductStatus(
+                application_id=self.application_id,
+                display_name=self.display_name,
+                state=state,
+                status_text="NO QUALIFYING VAST OFFER",
+                details=(
+                    (
+                        "Required",
+                        (
+                            f"{qualification.required_gpu_count} \u00d7 "
+                            f"{required_gpu}"
+                        ),
+                    ),
+                    (
+                        "GPU memory class",
+                        (
+                            f">= "
+                            f"{vast_gpu_ram_floor(qualification.required_vram_per_gpu_mb) // 1000} GB"
+                        ),
+                    ),
+                    (
+                        "Vast threshold",
+                        (
+                            f">= "
+                            f"{vast_gpu_ram_floor(qualification.required_vram_per_gpu_mb)} MB"
+                        ),
+                    ),
+                    (
+                        "Reliability",
+                        f">= {qualification.required_min_reliability}",
+                    ),
+                    (
+                        "Max rate",
+                        f"<= ${qualification.max_hourly_usd}/hr",
+                    ),
+                    (
+                        "Offers searched",
+                        str(qualification.searched_offer_count),
+                    ),
+                    *(
+                        (
+                            ("Provider query matched approved GPU universe", str(qualification.provider_returned_count)),
+                        )
+                        if qualification.provider_returned_count is not None
+                        else ()
+                    ),
+                    *(
+                        (
+                            ("Eligible after validation", str(qualification.eligible_count)),
+                        )
+                        if qualification.eligible_count is not None
+                        else ()
+                    ),
+                    *(
+                        (
+                            (
+                                f"Rejected: {category}",
+                                str(count),
+                            )
+                        )
+                        for category, count in qualification.rejections
+                    ),
+                    *(
+                        (("Config", "; ".join(self._settings.coder_config_errors)),)
+                        if self._settings.coder_config_errors
+                        else ()
+                    ),
+                    (
+                        "Possible reasons",
+                        (
+                            "no current inventory meeting filters; "
+                            "configured hourly ceiling too low; "
+                            "Vast provider/API problem"
+                        ),
+                    ),
+                ),
+                open_url=self._settings.coder_public_origin,
+                launch_available=True,
+                stop_available=True,
+                open_available=True,
+                logs_available=True,
+                error_category="no_qualifying_offer",
+            )
+
+        failure = self._last_provision_failure
+        if failure is not None:
+            cleanup_failed = failure.cleanup_state in (
+                "destroy_request_failed",
+                "destroy_verification_failed",
+            )
+            return ProductStatus(
+                application_id=self.application_id,
+                display_name=self.display_name,
+                state="failed",
+                status_text=(
+                    "PROVISIONING FAILED \u2014 PROVIDER CLEANUP FAILED: "
+                    "the Vast instance may still be running and billing. "
+                    "Destroy it in the Vast console immediately."
+                    if cleanup_failed
+                    else "PROVISIONING FAILED"
+                ),
+                details=(
+                    ("Phase", failure.phase),
+                    ("Reason", f"{failure.phase} failed — see DEFENDcoder logs / COPY DIAGNOSTICS"),
+                    ("Instance", (
+                        str(failure.instance_id)
+                        if failure.instance_id is not None
+                        else "\u2014"
+                    )),
+                    ("GPU", failure.gpu_name or "\u2014"),
+                    ("Approved rate", (
+                        f"${format(failure.approved_hourly_rate, 'f')}/hr"
+                        if failure.approved_hourly_rate is not None
+                        else "\u2014"
+                    )),
+                    (
+                        "Runtime before failure",
+                        format_elapsed(failure.elapsed_seconds),
+                    ),
+                    (
+                        "Cleanup",
+                        {
+                            "destroyed": "instance destroyed",
+                            "destroy_pending": (
+                                "destruction pending \u2014 provider "
+                                "acknowledged; teardown in progress"
+                            ),
+                            "destroy_verification_failed": (
+                                "VERIFICATION FAILED \u2014 could not "
+                                "confirm the instance is gone"
+                            ),
+                            "destroy_request_failed": (
+                                "DESTROY REQUEST FAILED \u2014 instance "
+                                "may still be running"
+                            ),
+                            "not_attempted": (
+                                "not attempted \u2014 instance kept "
+                                "running (local start failed)"
+                            ),
+                            "unknown": "unknown",
+                        }.get(
+                            failure.cleanup_state or "unknown",
+                            failure.cleanup_state or "unknown",
+                        ),
+                    ),
+                ),
+                open_url=self._settings.coder_public_origin,
+                launch_available=True,
+                stop_available=True,
+                open_available=True,
+                logs_available=True,
+                last_error=self._last_error,
+                error_category=self._last_error_category,
+                diagnostics=failure.as_text(),
             )
 
         if self._last_error:
@@ -1308,6 +1738,15 @@ class CoderService:
                 ("Instance", instance),
                 ("$/hr", hourly),
                 ("Session cost", budget),
+                (
+                    "Max $/hr (ceiling)",
+                    f"${self._settings.coder_max_hourly_usd}",
+                ),
+                *(
+                    (("Config", "; ".join(self._settings.coder_config_errors)),)
+                    if self._settings.coder_config_errors
+                    else ()
+                ),
                 *plan_rows,
                 (
                     "Public origin",
@@ -1320,6 +1759,7 @@ class CoderService:
             open_available=True,
             logs_available=True,
             last_error=self._last_error,
+            error_category=self._last_error_category,
         )
 
     def health(self) -> bool:
@@ -1348,11 +1788,18 @@ class CoderService:
         if not self._lifecycle_enabled:
             return ()
 
-        return tuple(
-            entry
-            for entry in self._supervisor.logs.snapshot()
-            if entry.service.startswith("coder:")
+        lifecycle = self._lifecycle_log.snapshot()
+        snapshot = getattr(self._supervisor.logs, "snapshot", None)
+        supervisor_entries = (
+            tuple(
+                entry
+                for entry in snapshot()
+                if entry.service.startswith("coder:")
+            )
+            if snapshot is not None
+            else ()
         )
+        return lifecycle + supervisor_entries
 
 
 def build_products(
@@ -1369,6 +1816,20 @@ def build_products(
     clock=time.monotonic,
 ) -> tuple[ProductService, ...]:
     products_settings = settings or ProductsSettings.from_env()
+    coder_service = CoderService(
+        products_settings,
+        supervisor=supervisor,
+        repository=repository,
+        python_executable=python_executable,
+        plane=coder_plane,
+        probe=probe,
+    )
+    if coder_plane is not None:
+        setattr(
+            coder_plane,
+            "lifecycle_log",
+            coder_service.lifecycle_emit,
+        )
     return (
         DefendService(controller, public_origin=public_origin),
         SportsService(
@@ -1391,14 +1852,7 @@ def build_products(
             tunnel=scs_tunnel,
             probe=probe,
         ),
-        CoderService(
-            products_settings,
-            supervisor=supervisor,
-            repository=repository,
-            python_executable=python_executable,
-            plane=coder_plane,
-            probe=probe,
-        ),
+        coder_service,
     )
 
 

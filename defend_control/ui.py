@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import asdict
 import os
+import time
 from pathlib import Path
 import threading
 import tkinter as tk
@@ -11,8 +12,13 @@ from tkinter.scrolledtext import ScrolledText
 
 from .coder_m0 import CoderM0Service, LocalFakeCoderBackend
 from .controller import ConfirmationRequired, ControlController, UIState
-from .products import ProductStatus, coder_plan_rows
+from .products import (
+    ProductStatus,
+    coder_approval_ready,
+    coder_plan_rows,
+)
 from .settings import ControlSettings
+from .vast import vast_gpu_ram_floor
 from .integration_catalog import (
     SECRET_CATALOG,
     IntegrationOwner,
@@ -20,6 +26,7 @@ from .integration_catalog import (
 
 
 _POLL_MILLISECONDS = 250
+_IDLE_REAP_INTERVAL_SECONDS = 30.0
 _STATE_COLORS = {
     "running": "green",
     "ready": "green",
@@ -561,11 +568,201 @@ class _ThreadedTkConfirmation:
             self._event.set()
 
 
+class CoderNoOfferDialog(tk.Toplevel):
+    """No qualifying Vast offer — zero spend, approval never offered.
+
+    Shows the sanitized filter summary (required GPUs, VRAM, reliability,
+    rate ceiling) and the actual search count. Only RETRY SEARCH / CANCEL;
+    there is deliberately no approve button.
+    """
+
+    RETRY_LABEL = "RETRY SEARCH"
+    CANCEL_LABEL = "CANCEL"
+    TITLE = "NO QUALIFYING VAST OFFER"
+
+    def __init__(
+        self,
+        parent: tk.Misc,
+        qualification,
+        *,
+        on_retry: Callable[[], None] | None = None,
+        on_cancel: Callable[[], None] | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._on_retry = on_retry
+        self._on_cancel = on_cancel
+        self._decided: str | None = None
+        self.title(self.TITLE)
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+
+        body = ttk.Frame(self, padding=12)
+        body.grid(sticky="nsew")
+
+        ttk.Label(
+            body,
+            text="NO QUALIFYING VAST OFFER",
+            font=("Segoe UI", 11, "bold"),
+            foreground="red",
+        ).grid(row=0, column=0, columnspan=2, sticky="w")
+
+        required_gpu = (
+            " / ".join(qualification.required_gpu_families)
+            or "\u2014"
+        )
+        rows = [
+            (
+                "Required",
+                (
+                    f"{qualification.required_gpu_count} \u00d7 "
+                    f"{required_gpu}"
+                ),
+            ),
+            (
+                "GPU memory class",
+                (
+                    f">= "
+                    f"{vast_gpu_ram_floor(qualification.required_vram_per_gpu_mb) // 1000} GB"
+                ),
+            ),
+            (
+                "Vast threshold",
+                (
+                    f">= "
+                    f"{vast_gpu_ram_floor(qualification.required_vram_per_gpu_mb)} MB"
+                ),
+            ),
+            (
+                "Reliability",
+                f">= {qualification.required_min_reliability}",
+            ),
+            (
+                "Max rate",
+                f"<= ${qualification.max_hourly_usd}/hr",
+            ),
+            (
+                "Offers searched",
+                str(qualification.searched_offer_count),
+            ),
+        ]
+        if qualification.provider_returned_count is not None:
+            rows.append(
+                (
+                    "Provider query matched approved GPU universe",
+                    str(qualification.provider_returned_count),
+                )
+            )
+        if qualification.eligible_count is not None:
+            rows.append(
+                (
+                    "Eligible after validation",
+                    str(qualification.eligible_count),
+                )
+            )
+        rows.extend(
+            (
+                f"Rejected: {category}",
+                str(count),
+            )
+            for category, count in qualification.rejections
+        )
+        for row, (label, value) in enumerate(rows, start=1):
+            ttk.Label(body, text=label).grid(
+                row=row,
+                column=0,
+                sticky="w",
+                padx=(0, 16),
+            )
+            ttk.Label(body, text=value).grid(
+                row=row,
+                column=1,
+                sticky="w",
+            )
+
+        ttk.Label(
+            body,
+            text=(
+                "Possible reasons:\n"
+                "- no current inventory meeting filters\n"
+                "- configured hourly ceiling too low\n"
+                "- Vast provider/API problem"
+            ),
+            justify="left",
+        ).grid(
+            row=len(rows) + 1,
+            column=0,
+            columnspan=2,
+            sticky="w",
+            pady=(8, 0),
+        )
+
+        buttons = ttk.Frame(body)
+        buttons.grid(
+            row=len(rows) + 2,
+            column=0,
+            columnspan=2,
+            sticky="e",
+            pady=(12, 0),
+        )
+        ttk.Button(
+            buttons,
+            text=self.RETRY_LABEL,
+            command=self._retry,
+        ).pack(side="left", padx=(0, 8))
+        ttk.Button(
+            buttons,
+            text=self.CANCEL_LABEL,
+            command=self._cancel,
+        ).pack(side="left")
+
+        self.protocol("WM_DELETE_WINDOW", self._cancel)
+        self.update_idletasks()
+        _center_toplevel(self, parent)
+        self.wait_visibility()
+
+    def _retry(self) -> None:
+        self._decided = "retry"
+        self.destroy()
+        if self._on_retry is not None:
+            self._on_retry()
+
+    def _cancel(self) -> None:
+        self._decided = "cancel"
+        self.destroy()
+        if self._on_cancel is not None:
+            self._on_cancel()
+
+    @property
+    def decided(self) -> str | None:
+        return self._decided
+
+
+def _center_toplevel(window: tk.Toplevel, parent: tk.Misc) -> None:
+    """Position a dialog over its parent without disturbing geometry."""
+    window.update_idletasks()
+    try:
+        parent_x = parent.winfo_rootx()
+        parent_y = parent.winfo_rooty()
+        parent_width = parent.winfo_width()
+        parent_height = parent.winfo_height()
+    except Exception:
+        return
+    width = window.winfo_reqwidth()
+    height = window.winfo_reqheight()
+    x = parent_x + (parent_width - width) // 2
+    y = parent_y + (parent_height - height) // 3
+    window.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+
+
 class CoderApprovalDialog(tk.Toplevel):
     """Exact-plan owner approval before any DEFENDcoder provider spend.
 
     Renders only the prepared plan fields; no auto-approval and no
-    fallback. Approving or cancelling invokes the injected callbacks.
+    fallback. APPROVE & LAUNCH is NEVER enabled unless the plan is
+    spend-ready (concrete offer, ID, GPU, VRAM, reliability, exact rate
+    within the configured ceiling, plan fingerprint). Approving or
+    cancelling invokes the injected callbacks.
     """
 
     APPROVE_LABEL = "APPROVE & LAUNCH"
@@ -592,6 +789,9 @@ class CoderApprovalDialog(tk.Toplevel):
         body = ttk.Frame(self, padding=12)
         body.grid(sticky="nsew")
 
+        ready, problems = coder_approval_ready(prepared)
+        self._ready = ready
+
         ttk.Label(
             body,
             text=(
@@ -606,9 +806,27 @@ class CoderApprovalDialog(tk.Toplevel):
             pady=(0, 8),
         )
 
+        if not ready:
+            ttk.Label(
+                body,
+                text=(
+                    "This plan is NOT spend-ready. Approval disabled: "
+                    + "; ".join(problems)
+                ),
+                foreground="red",
+                wraplength=520,
+            ).grid(
+                row=1,
+                column=0,
+                columnspan=2,
+                sticky="w",
+                pady=(0, 8),
+            )
+
+        start_row = 2 if not ready else 1
         for row, (label, value) in enumerate(
             coder_plan_rows(prepared),
-            start=1,
+            start=start_row,
         ):
             ttk.Label(body, text=label).grid(
                 row=row,
@@ -624,17 +842,20 @@ class CoderApprovalDialog(tk.Toplevel):
 
         buttons = ttk.Frame(body)
         buttons.grid(
-            row=len(coder_plan_rows(prepared)) + 1,
+            row=len(coder_plan_rows(prepared)) + start_row,
             column=0,
             columnspan=2,
             sticky="e",
             pady=(12, 0),
         )
-        ttk.Button(
+        self._approve_button = ttk.Button(
             buttons,
             text=self.APPROVE_LABEL,
             command=self._approve,
-        ).pack(side="left", padx=(0, 8))
+        )
+        self._approve_button.pack(side="left", padx=(0, 8))
+        if not ready:
+            self._approve_button.configure(state="disabled")
         ttk.Button(
             buttons,
             text=self.CANCEL_LABEL,
@@ -643,23 +864,16 @@ class CoderApprovalDialog(tk.Toplevel):
 
         self.protocol("WM_DELETE_WINDOW", self._cancel)
         self.update_idletasks()
-        self._center_over(parent)
+        _center_toplevel(self, parent)
         self.wait_visibility()
 
-    def _center_over(self, parent: tk.Misc) -> None:
-        self.update_idletasks()
-        try:
-            parent_x = parent.winfo_rootx()
-            parent_y = parent.winfo_rooty()
-            parent_width = parent.winfo_width()
-            parent_height = parent.winfo_height()
-        except Exception:
-            return
-        width = self.winfo_reqwidth()
-        height = self.winfo_reqheight()
-        x = parent_x + (parent_width - width) // 2
-        y = parent_y + (parent_height - height) // 3
-        self.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+    @property
+    def ready(self) -> bool:
+        return self._ready
+
+    @property
+    def ready(self) -> bool:
+        return self._ready
 
     def _approve(self) -> None:
         self._decided = "approve"
@@ -735,6 +949,8 @@ class ControlCenterUI:
         )
         self._closing_after_stop = False
         self._exit_future: object | None = None
+        self._idle_reaper: object | None = None
+        self._last_idle_check = 0.0
         self._coder_fingerprint_confirmation: _ThreadedTkConfirmation | None = None
         self._last_log_render: tuple[object, ...] | None = None
         self._last_confirmation_signature: tuple[object, ...] | None = None
@@ -789,6 +1005,21 @@ class ControlCenterUI:
         """Swap observation source (e.g. live Vast backend later)."""
         self._coder = coder_service
         self._render_coder()
+
+    def wire_idle_reaper(self, reaper: object | None) -> None:
+        """Connect the runtime idle reaper (plane.maybe_reap_idle).
+
+        The Control Center enforces the runtime side of the public idle
+        policy: ready endpoints idle past the configured window are stopped
+        (never destroyed) without a background daemon — this poll runs on
+        the existing UI loop, rate-limited.
+        """
+        if reaper is None:
+            return
+        if callable(getattr(reaper, "maybe_reap_idle", None)):
+            self._idle_reaper = reaper
+        elif callable(reaper):
+            self._idle_reaper = reaper
 
     def wire_coder_fingerprint_confirmer(self, holder: object | None) -> None:
         """Connect the runtime's fingerprint holder to an owner prompt.
@@ -1054,6 +1285,11 @@ class ControlCenterUI:
                 child.destroy()
 
             variables.clear()
+            setattr(
+                detail_frame,
+                "_defend_diagnostics_button",
+                None,
+            )
 
             for row, (key, value) in enumerate(incoming):
                 ttk.Label(
@@ -1085,6 +1321,67 @@ class ControlCenterUI:
         else:
             for key, value in incoming:
                 variables[key].set(str(value))
+
+        self._render_diagnostics_button(
+            detail_frame,
+            status,
+        )
+
+    def _render_diagnostics_button(
+        self,
+        detail_frame,
+        status: ProductStatus,
+    ) -> None:
+        diagnostics = getattr(status, "diagnostics", None)
+        existing = getattr(
+            detail_frame,
+            "_defend_diagnostics_button",
+            None,
+        )
+        if not diagnostics:
+            if existing is not None:
+                existing.destroy()
+                setattr(
+                    detail_frame,
+                    "_defend_diagnostics_button",
+                    None,
+                )
+            return
+        if existing is not None:
+            return
+        button = ttk.Button(
+            detail_frame,
+            text="COPY DIAGNOSTICS",
+            command=lambda: self._copy_diagnostics(
+                detail_frame,
+                diagnostics,
+            ),
+        )
+        button.grid(
+            row=len(detail_frame.winfo_children()),
+            column=0,
+            columnspan=2,
+            sticky="w",
+            pady=(8, 0),
+        )
+        setattr(
+            detail_frame,
+            "_defend_diagnostics_button",
+            button,
+        )
+
+    def _copy_diagnostics(self, button, diagnostics: str) -> None:
+        self.root.clipboard_clear()
+        self.root.clipboard_append(diagnostics)
+        button.configure(text="DIAGNOSTICS COPIED")
+        self.root.after(
+            1800,
+            lambda: (
+                button.configure(text="COPY DIAGNOSTICS")
+                if button.winfo_exists()
+                else None
+            ),
+        )
 
     def _render_product_logs(
         self,
@@ -1814,17 +2111,49 @@ class ControlCenterUI:
                 lambda: self._show_error(error),
             )
             return
-        if getattr(status, "state", "") != "approval_required":
+        if getattr(status, "state", "") == "approval_required":
+            self.root.after(
+                0,
+                lambda: self._show_coder_approval(product),
+            )
+        elif getattr(status, "state", "") == "no_offer":
+            self.root.after(
+                0,
+                lambda: self._show_coder_no_offer(product),
+            )
+
+    def _show_coder_no_offer(self, product: object) -> None:
+        qualification = getattr(product, "qualification", None)
+        info = qualification() if callable(qualification) else None
+        if info is None:
             return
-        self.root.after(
-            0,
-            lambda: self._show_coder_approval(product),
+
+        def on_retry() -> None:
+            self._coder_launch(product)
+
+        def on_cancel() -> None:
+            try:
+                self._controller.submit_work(
+                    getattr(product, "cancel")
+                )
+            except Exception as error:
+                self._show_error(error)
+
+        CoderNoOfferDialog(
+            self.root,
+            info,
+            on_retry=on_retry,
+            on_cancel=on_cancel,
         )
 
     def _show_coder_approval(self, product: object) -> None:
         pending = getattr(product, "pending_plan", None)
         prepared = pending() if callable(pending) else None
         if prepared is None:
+            return
+        ready, _problems = coder_approval_ready(prepared)
+        if not ready:
+            self._show_coder_no_offer(product)
             return
 
         def on_approve() -> None:
@@ -2063,6 +2392,7 @@ class ControlCenterUI:
             self._show_error(error)
 
     def _poll(self) -> None:
+        self._run_idle_reaper_if_due()
         try:
             state = self._controller.poll_state()
             self._render(state)
@@ -2080,6 +2410,23 @@ class ControlCenterUI:
             self._begin_exit_cleanup()
             return
         self.root.after(_POLL_MILLISECONDS, self._poll)
+
+    def _run_idle_reaper_if_due(self) -> None:
+        reaper = getattr(self, "_idle_reaper", None)
+        if reaper is None:
+            return
+        last_check = getattr(self, "_last_idle_check", 0.0)
+        if (
+            time.monotonic() - last_check
+            < _IDLE_REAP_INTERVAL_SECONDS
+        ):
+            return
+        self._last_idle_check = time.monotonic()
+        try:
+            if callable(reaper):
+                reaper()
+        except Exception:
+            pass
 
     def _handle_confirmation(self, state: UIState) -> None:
         kind = state.pending_confirmation
@@ -2426,7 +2773,8 @@ class ControlCenterUI:
         self._coder_price.set(f"${price}/hour" if price else "—")
         budget = public.get("session_budget_usd")
         self._coder_budget.set(f"${budget}" if budget else "—")
-        self._coder_message.set(str(public.get("message") or "—"))
+        message = str(public.get("message") or "—").splitlines()[0][:160]
+        self._coder_message.set(message)
 
     def _render(self, state: UIState) -> None:
         message = f"State: {state.state}"

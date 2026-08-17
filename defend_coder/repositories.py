@@ -229,6 +229,51 @@ class CoderRepository:
                     (session_id,),
                 )
 
+    def touch_session_last_seen(
+        self,
+        session_id: UUID,
+    ) -> None:
+        with self._db.connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE coder_sessions
+                    SET last_seen_at = now()
+                    WHERE session_id = %s
+                        AND revoked_at IS NULL
+                    """,
+                    (session_id,),
+                )
+
+    def list_expired_idle_sessions(
+        self,
+        threshold: datetime,
+    ) -> tuple[SessionRecord, ...]:
+        with self._db.connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT
+                        s.session_id,
+                        s.account_id,
+                        s.token_hash,
+                        s.created_at,
+                        s.expires_at,
+                        s.revoked_at,
+                        s.last_seen_at
+                    FROM coder_sessions AS s
+                    JOIN coder_accounts AS a
+                        ON a.account_id = s.account_id
+                    WHERE s.revoked_at IS NULL
+                        AND s.expires_at > now()
+                        AND s.last_seen_at < %s
+                        AND a.role = 'consumer'
+                        AND a.is_active = TRUE
+                    """,
+                    (threshold,),
+                )
+                return tuple(_session(row) for row in cursor.fetchall())
+
     def create_workspace(
         self,
         *,

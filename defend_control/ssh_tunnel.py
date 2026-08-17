@@ -68,7 +68,7 @@ def run_command(
     if (
         isinstance(timeout, bool)
         or not isinstance(timeout, (int, float))
-        or not 0 < float(timeout) <= 900
+        or not 0 < float(timeout) <= 1800
     ):
         raise ValueError("command timeout is invalid")
     if cancelled is not None and cancelled():

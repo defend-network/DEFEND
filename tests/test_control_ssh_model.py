@@ -249,6 +249,22 @@ def test_default_connection_keeps_proxy_behavior_even_when_direct_exists(
     assert keyscan[0][-1] == "ssh.example.test"
 
 
+def test_proxy_endpoint_requires_ssh_host_and_port():
+    from defend_control.ssh_tunnel import resolve_endpoint
+
+    instance = VastInstance(
+        4816,
+        "running",
+        None,
+        None,
+        "A100 SXM4",
+        81920,
+        Decimal("1.75"),
+    )
+    with pytest.raises(SshTunnelError):
+        resolve_endpoint(instance, prefer_direct=False)
+
+
 def test_tunnel_start_uses_selected_direct_endpoint(tmp_path: Path):
     commands = FakeSshCommands(
         "[203.0.113.10]:30220 ssh-ed25519 AAAAC3NzaDirectHostKey"
@@ -993,3 +1009,54 @@ def test_model_probe_rejects_generation_that_crosses_absolute_deadline():
         )
 
     assert len(transport.requests) == 2
+
+
+def test_run_command_accepts_heavy_coder_bootstrap_timeout(monkeypatch):
+    """Heavy NEXT bootstrap may legitimately run longer than 15 minutes."""
+    from defend_control import ssh_tunnel
+
+    class FakeProcess:
+        returncode = 0
+
+        def __init__(self):
+            import io
+            self.stdout = io.BytesIO(b"")
+            self.stderr = io.BytesIO(b"")
+
+        def poll(self):
+            return 0
+
+        def wait(self, timeout=None):
+            return 0
+
+        def terminate(self):
+            return None
+
+        def kill(self):
+            return None
+
+    monkeypatch.setattr(
+        ssh_tunnel.subprocess,
+        "Popen",
+        lambda *args, **kwargs: FakeProcess(),
+    )
+
+    result = ssh_tunnel.run_command(
+        ("ssh", "example"),
+        stdin=None,
+        timeout=1200.0,
+    )
+
+    assert result.returncode == 0
+
+
+def test_run_command_still_rejects_unreasonably_large_timeout():
+    from defend_control.ssh_tunnel import run_command
+    import pytest
+
+    with pytest.raises(ValueError, match="command timeout is invalid"):
+        run_command(
+            ("ssh", "example"),
+            stdin=None,
+            timeout=1801.0,
+        )

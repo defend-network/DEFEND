@@ -134,6 +134,66 @@ def test_admin_login_sets_secure_http_only_cookie(client):
     assert "secure" in cookie
 
 
+def test_login_cookie_is_host_only_and_proxy_safe(client):
+    """Host-only cookie: never pins Domain=localhost/127.0.0.1 so the
+    Next rewrite (web 3301 -> API 8301) keeps the session on the public
+    host instead of redirecting it to the origin host."""
+    response = _login(
+        client,
+        "admin",
+        "admin-password",
+        "admin",
+    )
+
+    assert response.status_code == 200
+    cookie = response.headers["set-cookie"].lower()
+    assert "path=/" in cookie
+    assert "domain=" not in cookie
+    assert "localhost" not in cookie
+    assert "127.0.0.1" not in cookie
+
+
+def test_session_roundtrip_with_explicit_cookie_header(client):
+    """E2E: login -> Set-Cookie -> workspace SSR forwards the Cookie
+    header -> /v1/auth/session and /v1/workspaces authenticate."""
+    login = _login(
+        client,
+        "consumer",
+        "consumer-password",
+        "consumer",
+    )
+    assert login.status_code == 200
+
+    cookie_pair = login.headers["set-cookie"].split(";")[0]
+    assert cookie_pair.startswith("defendcoder_session=")
+
+    session = client.get(
+        "/v1/auth/session",
+        headers={"cookie": cookie_pair},
+    )
+    assert session.status_code == 200
+    assert session.json()["account"]["username"] == "consumer"
+
+    workspaces = client.get(
+        "/v1/workspaces",
+        headers={"cookie": cookie_pair},
+    )
+    assert workspaces.status_code == 200
+
+
+def test_session_endpoint_rejects_cookieless_ssr_fetch(client):
+    login = _login(
+        client,
+        "consumer",
+        "consumer-password",
+        "consumer",
+    )
+    assert login.status_code == 200
+
+    assert client.get("/v1/auth/session").status_code == 401
+    assert client.get("/v1/workspaces").status_code == 401
+
+
 def test_consumer_login_uses_same_endpoint(client):
     response = _login(
         client,

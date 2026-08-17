@@ -236,6 +236,76 @@ class AuthService:
             target_id=str(session.session_id),
         )
 
+    def touch_session(self, raw_token: str) -> None:
+        """Record genuine activity for a live session (advisory; never raises).
+
+        Heartbeat calls must NOT use this — the idle policy requires that
+        heartbeats never extend the inactivity window.
+        """
+        if not isinstance(raw_token, str) or not raw_token:
+            return
+
+        token_hash = _hash_session_token(raw_token)
+
+        try:
+            session = self._repository.get_session_by_hash(token_hash)
+        except Exception:
+            return
+
+        if session is None or session.revoked_at is not None:
+            return
+
+        try:
+            self._repository.touch_session_last_seen(session.session_id)
+        except Exception:
+            return
+
+    def revoke_idle_sessions(
+        self,
+        *,
+        now: datetime | None = None,
+        idle_timeout: timedelta | None = None,
+    ) -> tuple[tuple[UUID, UUID], ...]:
+        """Revoke consumer sessions idle past the timeout (server-authoritative).
+
+        Heartbeats never count as activity; only genuine API activity resets
+        ``last_seen_at``. Admin sessions are exempt. Returns the
+        (session_id, account_id) pairs revoked and records one
+        ``session.idle_timeout`` audit event per session.
+        """
+        if idle_timeout is None:
+            idle_timeout = self._session_ttl
+
+        if idle_timeout.total_seconds() <= 0:
+            return ()
+
+        effective_now = now or datetime.now(timezone.utc)
+        threshold = effective_now - idle_timeout
+
+        expired = self._repository.list_expired_idle_sessions(
+            threshold
+        )
+
+        revoked: list[tuple[UUID, UUID]] = []
+
+        for session in expired:
+            self._repository.revoke_session(session.session_id)
+            self._repository.append_audit_event(
+                actor_account_id=session.account_id,
+                event_type="session.idle_timeout",
+                target_type="coder_session",
+                target_id=str(session.session_id),
+                detail={
+                    "account_id": str(session.account_id),
+                    "timeout_seconds": int(idle_timeout.total_seconds()),
+                },
+            )
+            revoked.append(
+                (session.session_id, session.account_id)
+            )
+
+        return tuple(revoked)
+
     def require_role(
         self,
         account: AuthenticatedAccount,

@@ -17,8 +17,19 @@ from defend_control.coder_control_plane import (
     derive_estimated_cost,
     resource_profile,
 )
+from defend_control.coder_deployment import resolve_deployment
 from defend_control.coder_m0 import CoderModelRef, resolve_alias
-from defend_control.types import ResourceProfile
+from defend_control.types import ResourceProfile, VastOffer
+
+_QUALIFYING_OFFERS = (
+    VastOffer(
+        601,
+        "H100 SXM 80GB",
+        81920,
+        Decimal("1.65"),
+        Decimal("0.99"),
+    ),
+)
 
 
 def _utc(year: int = 2026, month: int = 8, day: int = 14) -> datetime:
@@ -34,6 +45,7 @@ class RecordingBackend:
         hourly_price: str | None = "1.10",
         gpu_type: str = "A100 SXM4",
         smoke_ok: bool = True,
+        offers: tuple[object, ...] | None = None,
     ) -> None:
         self.starts: list[tuple[str, int, Decimal]] = []
         self.smokes: list[tuple[str, str]] = []
@@ -42,6 +54,15 @@ class RecordingBackend:
         self._gpu_type = gpu_type
         self._smoke_ok = smoke_ok
         self._instance = 555001
+        self.offers = offers if offers is not None else _QUALIFYING_OFFERS
+
+    def search_offers_for(self, model, profile, *, launch_runtype=None):
+        del model, profile, launch_runtype
+        return self.offers
+
+    def resume_candidate(self, *, launch_runtype, approved_ceiling):
+        del launch_runtype, approved_ceiling
+        return None
 
     def start(
         self,
@@ -51,8 +72,10 @@ class RecordingBackend:
         session_budget_usd: Decimal,
         offer=None,
         profile=None,
+        launch_runtype=None,
+        resume_instance=None,
     ) -> dict[str, object]:
-        del offer, profile
+        del offer, profile, launch_runtype, resume_instance
         self.starts.append((model.alias, local_port, session_budget_usd))
         self._instance += 1
         return {
@@ -95,6 +118,8 @@ def _plane(
     *,
     policy: CoderPolicy | None = None,
     clock: list[datetime] | None = None,
+    owner_user_id: str | None = None,
+    owner_session_id: str | None = None,
 ) -> CoderControlPlane:
     return CoderControlPlane(
         backend=backend,  # type: ignore[arg-type]
@@ -102,6 +127,8 @@ def _plane(
         clock=(lambda: clock[0]) if clock else None,
         token_provider=lambda: "hf_fake_token",
         port_available=lambda port: True,
+        owner_user_id=owner_user_id,
+        owner_session_id=owner_session_id,
     )
 
 
@@ -116,6 +143,14 @@ class TestLockedRegistry:
         assert ref.repo_id == "Qwen/Qwen3-Coder-Next"
         assert ref.revision == "a7fbcb5c0e12d62a448eaa0e260346bf5dcc0feb"
 
+    def test_heavy_max_model_len_matches_deployment_contract(self):
+        ref = resolve_alias("defendcoder-heavy")
+        artifact = resolve_deployment("defendcoder-heavy")
+        assert ref.max_model_len == 32_768
+        assert ref.max_model_len == artifact.max_model_len
+        profile = resource_profile("defendcoder-heavy", CoderPolicy())
+        assert profile.max_model_len == 32_768
+
     def test_default_and_heavy_are_independent_aliases(self):
         default = resolve_alias("defendcoder-default")
         heavy = resolve_alias("defendcoder-heavy")
@@ -129,7 +164,7 @@ class TestCoderPolicy:
         policy = CoderPolicy()
         assert policy.mode == "DEFAULT"
         assert policy.auto_provisioning_enabled is True
-        assert policy.max_hourly_usd == Decimal("2.00")
+        assert policy.max_hourly_usd == Decimal("4.50")
         assert policy.max_session_spend_usd == Decimal("5.00")
         assert policy.max_concurrent_instances == 1
         assert policy.idle_shutdown_minutes == 10
@@ -263,6 +298,83 @@ class TestIdleShutdown:
         lease = plane.acquire("defendcoder-default")
         assert lease.reused is False
         assert len(backend.starts) == 2
+
+    def test_idle_reap_never_stops_non_ready_provisioning_endpoint(self):
+        backend = RecordingBackend()
+        now = [_utc()]
+        plane = _plane(backend, clock=now)
+        plane.acquire("defendcoder-default")
+        endpoint = plane.active_endpoints()[0]
+        endpoint.state = "provisioning"
+        now[0] = now[0] + timedelta(minutes=11)
+
+        reaped = plane.maybe_reap_idle()
+
+        assert reaped == ()
+        assert backend.stops == []
+
+    def test_idle_reap_with_unknown_session_fails_closed(self):
+        backend = RecordingBackend()
+        now = [_utc()]
+        plane = _plane(backend, clock=now)
+        plane.acquire("defendcoder-default")
+        now[0] = now[0] + timedelta(minutes=11)
+
+        reaped = plane.maybe_reap_idle(session_id="other-session")
+
+        assert reaped == ()
+        assert backend.stops == []
+
+    def test_idle_reap_session_filter_only_stops_matching_owner(self):
+        backend = RecordingBackend()
+        now = [_utc()]
+        plane = _plane(
+            backend,
+            clock=now,
+            owner_user_id="user-a",
+            owner_session_id="session-a",
+        )
+        plane.acquire("defendcoder-default")
+        now[0] = now[0] + timedelta(minutes=11)
+
+        reaped = plane.maybe_reap_idle(session_id="session-a")
+        assert reaped == ("defendcoder-default",)
+
+    def test_idle_reap_session_filter_never_stops_another_users_runtime(self):
+        backend = RecordingBackend()
+        now = [_utc()]
+        plane = _plane(
+            backend,
+            clock=now,
+            owner_user_id="user-a",
+            owner_session_id="session-a",
+        )
+        plane.acquire("defendcoder-default")
+        now[0] = now[0] + timedelta(minutes=11)
+
+        reaped = plane.maybe_reap_idle(session_id="session-b")
+        assert reaped == ()
+        assert backend.stops == []
+
+    def test_ownership_is_stamped_on_lease_endpoint_and_trace(self):
+        backend = RecordingBackend(hourly_price="1.10", gpu_type="A100 SXM4")
+        plane = _plane(
+            backend,
+            owner_user_id="user-a",
+            owner_session_id="session-a",
+        )
+
+        lease = plane.acquire("defendcoder-default")
+
+        assert lease.user_id == "user-a"
+        assert lease.session_id == "session-a"
+        endpoint = plane.active_endpoints()[0]
+        assert endpoint.user_id == "user-a"
+        assert endpoint.session_id == "session-a"
+
+        plane.smoke("defendcoder-default")
+        run = plane.run_store.all_runs()[0]
+        assert run.user_id == "user-a"
 
 
 class TestMeasuredRunTrace:

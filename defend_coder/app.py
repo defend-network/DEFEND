@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import asyncio
+from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 import secrets
+import threading
 from typing import Callable
 
 from fastapi import FastAPI, HTTPException, Request, Response
@@ -18,6 +22,8 @@ from .repositories import CoderRepository
 
 SESSION_COOKIE = "defendcoder_session"
 CSRF_COOKIE = "defendcoder_csrf"
+
+HEARTBEAT_PATH = "/v1/auth/heartbeat"
 
 
 class LoginRequest(BaseModel):
@@ -75,15 +81,63 @@ def build_coder_app(
     db: CoderDatabase,
     auth: AuthService,
     runtime_status: Callable[[], dict[str, object]],
+    repository: CoderRepository | None = None,
+    idle_timeout_seconds: int | None = None,
+    runtime_stop_callback: Callable[[str], None] | None = None,
+    idle_reaper_interval_seconds: float = 15.0,
 ) -> FastAPI:
+    idle_timeout_seconds = (
+        settings.idle_timeout_seconds
+        if idle_timeout_seconds is None
+        else idle_timeout_seconds
+    )
+
+    if idle_timeout_seconds < 0:
+        raise ValueError("idle_timeout_seconds must be >= 0")
+
+    def _reaper_loop(stop_event: threading.Event) -> None:
+        while not stop_event.wait(idle_reaper_interval_seconds):
+            try:
+                run_idle_cycle(
+                    auth,
+                    runtime_stop_callback,
+                    idle_timeout=timedelta(
+                        seconds=idle_timeout_seconds
+                    ),
+                )
+            except Exception:
+                continue
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        task: asyncio.Task | None = None
+        stop_event = threading.Event()
+
+        if idle_timeout_seconds > 0:
+            task = asyncio.create_task(
+                asyncio.to_thread(_reaper_loop, stop_event)
+            )
+
+        try:
+            yield
+        finally:
+            if task is not None:
+                stop_event.set()
+
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
     app = FastAPI(
         title="DEFENDcoder API",
         version="1.0",
         docs_url=None,
         redoc_url=None,
+        lifespan=lifespan,
     )
 
-    repository = CoderRepository(db)
+    repository = repository or CoderRepository(db)
 
     def current_account(request: Request) -> AuthenticatedAccount:
         token = request.cookies.get(SESSION_COOKIE)
@@ -95,12 +149,20 @@ def build_coder_app(
             )
 
         try:
-            return auth.authenticate_session(token)
+            account = auth.authenticate_session(token)
         except AuthError:
             raise HTTPException(
                 status_code=401,
                 detail="invalid session",
             ) from None
+
+        if (
+            idle_timeout_seconds > 0
+            and request.url.path != HEARTBEAT_PATH
+        ):
+            auth.touch_session(token)
+
+        return account
 
     def require_csrf(request: Request) -> None:
         expected = request.cookies.get(CSRF_COOKIE)
@@ -179,6 +241,15 @@ def build_coder_app(
         return {
             "account": _account_dict(session.account),
             "csrf_token": csrf_token,
+        }
+
+    @app.post("/v1/auth/heartbeat")
+    def heartbeat(request: Request) -> dict[str, object]:
+        account = current_account(request)
+
+        return {
+            "ok": True,
+            "role": account.role,
         }
 
     @app.get("/v1/auth/session")
@@ -287,3 +358,34 @@ def build_coder_app(
         }
 
     return app
+
+
+def run_idle_cycle(
+    auth: AuthService,
+    runtime_stop_callback: Callable[[str], None] | None,
+    *,
+    idle_timeout: timedelta,
+    now: datetime | None = None,
+) -> tuple[tuple[str, str], ...]:
+    """One server-authoritative idle-policy cycle (sync, testable).
+
+    Revokes consumer sessions idle past ``idle_timeout`` and — when wired —
+    asks the runtime owner to stop the billable runtime for each revoked
+    session. Returns (session_id, account_id) pairs.
+    """
+    revoked = auth.revoke_idle_sessions(
+        now=now,
+        idle_timeout=idle_timeout,
+    )
+
+    if runtime_stop_callback is not None:
+        for session_id, _account_id in revoked:
+            try:
+                runtime_stop_callback(str(session_id))
+            except Exception:
+                continue
+
+    return tuple(
+        (str(session_id), str(account_id))
+        for session_id, account_id in revoked
+    )

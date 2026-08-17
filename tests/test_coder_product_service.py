@@ -71,6 +71,15 @@ def settings():
     )
 
 
+def with_standalone_build(repository: Path) -> Path:
+    standalone = repository / "defendcoder-ui" / ".next" / "standalone"
+    standalone.mkdir(parents=True)
+    (standalone / "server.js").write_text("")
+    (repository / "defendcoder-ui" / ".next" / "static").mkdir(parents=True)
+    (repository / "defendcoder-ui" / "public").mkdir(parents=True)
+    return repository
+
+
 def test_coder_api_spec_launches_real_server_without_secret_argv(tmp_path):
     spec = build_coder_api_process_spec(
         settings(),
@@ -92,7 +101,7 @@ def test_coder_api_spec_launches_real_server_without_secret_argv(tmp_path):
     assert "postgresql://synthetic/test" not in " ".join(spec.argv)
 
 
-def test_coder_web_spec_launches_next_ui(tmp_path):
+def test_coder_web_spec_launches_standalone_server(tmp_path):
     spec = build_coder_web_process_spec(
         settings(),
         tmp_path,
@@ -100,10 +109,29 @@ def test_coder_web_spec_launches_next_ui(tmp_path):
 
     assert spec.name == "coder:web"
     assert spec.cwd == tmp_path / "defendcoder-ui"
-    assert spec.argv[0].lower().endswith("npm.cmd")
-    assert spec.argv[1:] == ("run", "start")
+    assert spec.argv == ("node", ".next/standalone/server.js")
+    assert spec.env["HOSTNAME"] == "127.0.0.1"
     assert spec.env["PORT"] == "3301"
+    assert spec.env["NODE_ENV"] == "production"
     assert spec.env["DEFENDCODER_INTERNAL_API_URL"] == "http://127.0.0.1:8301"
+
+
+def test_web_start_refuses_missing_standalone_build(tmp_path):
+    supervisor = FakeSupervisor()
+
+    service = CoderService(
+        settings(),
+        supervisor=supervisor,
+        repository=tmp_path,
+        python_executable=r"C:\Python\python.exe",
+        probe=ReadyProbe(),
+    )
+
+    result = service.start()
+
+    assert result.last_error is not None
+    assert "StandaloneWebBuildError" in result.last_error
+    assert [spec.name for spec in supervisor.started] == ["coder:api"]
 
 
 def test_start_starts_only_owned_coder_api_and_web(tmp_path):
@@ -112,7 +140,7 @@ def test_start_starts_only_owned_coder_api_and_web(tmp_path):
     service = CoderService(
         settings(),
         supervisor=supervisor,
-        repository=tmp_path,
+        repository=with_standalone_build(tmp_path),
         python_executable=r"C:\Python\python.exe",
         probe=ReadyProbe(),
     )
@@ -133,7 +161,7 @@ def test_start_is_idempotent_when_services_already_running(tmp_path):
     service = CoderService(
         settings(),
         supervisor=supervisor,
-        repository=tmp_path,
+        repository=with_standalone_build(tmp_path),
         python_executable=r"C:\Python\python.exe",
         probe=ReadyProbe(),
     )
@@ -153,7 +181,7 @@ def test_stop_stops_only_coder_services(tmp_path):
     service = CoderService(
         settings(),
         supervisor=supervisor,
-        repository=tmp_path,
+        repository=with_standalone_build(tmp_path),
         python_executable=r"C:\Python\python.exe",
         probe=ReadyProbe(),
     )
@@ -173,7 +201,7 @@ def test_database_secret_is_registered_for_log_redaction(tmp_path):
     service = CoderService(
         settings(),
         supervisor=supervisor,
-        repository=tmp_path,
+        repository=with_standalone_build(tmp_path),
         python_executable=r"C:\Python\python.exe",
         probe=ReadyProbe(),
     )
@@ -198,7 +226,7 @@ def test_status_reports_local_services_and_observation_without_inventing_values(
     service = CoderService(
         settings(),
         supervisor=supervisor,
-        repository=tmp_path,
+        repository=with_standalone_build(tmp_path),
         python_executable=r"C:\Python\python.exe",
         observation=observation,
         probe=ReadyProbe(),
@@ -229,7 +257,7 @@ def test_logs_only_return_coder_service_entries(tmp_path):
     service = CoderService(
         settings(),
         supervisor=supervisor,
-        repository=tmp_path,
+        repository=with_standalone_build(tmp_path),
         python_executable=r"C:\Python\python.exe",
         probe=ReadyProbe(),
     )
@@ -252,7 +280,7 @@ def test_launch_does_not_call_provider_or_create_gpu_instance(tmp_path):
     service = CoderService(
         settings(),
         supervisor=supervisor,
-        repository=tmp_path,
+        repository=with_standalone_build(tmp_path),
         python_executable=r"C:\Python\python.exe",
         observation=observation,
         probe=ReadyProbe(),

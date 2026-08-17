@@ -11,6 +11,7 @@ class CoderSettings:
     port: int = 8301
     public_https: bool = False
     workspace_root: str = "./coder-workspaces"
+    idle_timeout_seconds: int = 600
 
     @classmethod
     def from_env(cls) -> "CoderSettings":
@@ -18,6 +19,16 @@ class CoderSettings:
 
         if not database_url:
             raise RuntimeError("CODER_DATABASE_URL is required")
+
+        idle_timeout_seconds = int(
+            os.environ.get("CODER_IDLE_TIMEOUT_SECONDS", "600")
+        )
+
+        if idle_timeout_seconds < 0:
+            raise RuntimeError(
+                "CODER_IDLE_TIMEOUT_SECONDS must be >= 0 "
+                "(0 disables the idle policy)"
+            )
 
         return cls(
             database_url=database_url,
@@ -34,4 +45,5 @@ class CoderSettings:
                 "CODER_WORKSPACE_ROOT",
                 "./coder-workspaces",
             ),
+            idle_timeout_seconds=idle_timeout_seconds,
         )
