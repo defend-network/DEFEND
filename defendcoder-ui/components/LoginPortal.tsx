@@ -29,6 +29,21 @@ const EMPTY_FORM: FormState = {
 };
 
 
+function fieldError(
+  username: string,
+  password: string,
+  role: LoginRole
+): string | null {
+  if (!username.trim()) {
+    return `Enter the ${role} username.`;
+  }
+  if (!password) {
+    return "Enter the password.";
+  }
+  return null;
+}
+
+
 export default function LoginPortal() {
   const [admin, setAdmin] = useState<FormState>(EMPTY_FORM);
   const [consumer, setConsumer] = useState<FormState>(EMPTY_FORM);
@@ -46,13 +61,23 @@ export default function LoginPortal() {
       return;
     }
 
-    setError(null);
-    setBusyRole(role);
-
     const credentials =
       role === "admin"
         ? admin
         : consumer;
+
+    const missing = fieldError(
+      credentials.username,
+      credentials.password,
+      role
+    );
+    if (missing) {
+      setError(missing);
+      return;
+    }
+
+    setError(null);
+    setBusyRole(role);
 
     try {
       const response = await fetch(
@@ -64,7 +89,7 @@ export default function LoginPortal() {
             "Content-Type": "application/json"
           },
           body: JSON.stringify({
-            username: credentials.username,
+            username: credentials.username.trim(),
             password: credentials.password,
             role
           })
@@ -94,12 +119,14 @@ export default function LoginPortal() {
       window.location.href = "/workspace";
     } catch {
       setError(
-        "Unable to reach DEFENDcoder. Please try again."
+        "Unable to reach DEFENDcoder. Check the connection and try again."
       );
     } finally {
       setBusyRole(null);
     }
   }
+
+  const signingIn = busyRole !== null;
 
   return (
     <main className="login-shell">
@@ -112,6 +139,12 @@ export default function LoginPortal() {
         className="portal-overlay"
         aria-label="DEFENDcoder secure login"
       >
+        <div className="login-heading">
+          <span className="brand-defend">DEFEND</span>
+          <span className="brand-coder">coder</span>
+          <p>Secure workspace login</p>
+        </div>
+
         <form
           className="login-form admin-form"
           aria-label="Admin Login"
@@ -119,17 +152,20 @@ export default function LoginPortal() {
             submitLogin(event, "admin")
           }
         >
+          <h2>Admin</h2>
+
           <label
-            className="sr-only"
+            className="portal-label"
             htmlFor="admin-username"
           >
-            Admin username
+            Username
           </label>
 
           <input
             id="admin-username"
             name="username"
             type="text"
+            placeholder="admin"
             autoComplete="username"
             spellCheck={false}
             value={admin.username}
@@ -144,16 +180,17 @@ export default function LoginPortal() {
           />
 
           <label
-            className="sr-only"
+            className="portal-label"
             htmlFor="admin-password"
           >
-            Admin password
+            Password
           </label>
 
           <input
             id="admin-password"
             name="password"
             type="password"
+            placeholder="••••••••"
             autoComplete="current-password"
             value={admin.password}
             onChange={(event) =>
@@ -169,14 +206,10 @@ export default function LoginPortal() {
           <button
             type="submit"
             className="portal-submit"
-            disabled={busyRole !== null}
+            disabled={signingIn}
             aria-label="Login as admin"
           >
-            <span className="sr-only">
-              {busyRole === "admin"
-                ? "Signing in as admin"
-                : "Login as admin"}
-            </span>
+            {busyRole === "admin" ? "Signing in…" : "Sign in"}
           </button>
         </form>
 
@@ -187,17 +220,20 @@ export default function LoginPortal() {
             submitLogin(event, "consumer")
           }
         >
+          <h2>Consumer</h2>
+
           <label
-            className="sr-only"
+            className="portal-label"
             htmlFor="consumer-username"
           >
-            Consumer username
+            Username
           </label>
 
           <input
             id="consumer-username"
             name="username"
             type="text"
+            placeholder="consumer"
             autoComplete="username"
             spellCheck={false}
             value={consumer.username}
@@ -212,16 +248,17 @@ export default function LoginPortal() {
           />
 
           <label
-            className="sr-only"
+            className="portal-label"
             htmlFor="consumer-password"
           >
-            Consumer password
+            Password
           </label>
 
           <input
             id="consumer-password"
             name="password"
             type="password"
+            placeholder="••••••••"
             autoComplete="current-password"
             value={consumer.password}
             onChange={(event) =>
@@ -237,14 +274,10 @@ export default function LoginPortal() {
           <button
             type="submit"
             className="portal-submit"
-            disabled={busyRole !== null}
+            disabled={signingIn}
             aria-label="Login as consumer"
           >
-            <span className="sr-only">
-              {busyRole === "consumer"
-                ? "Signing in as consumer"
-                : "Login as consumer"}
-            </span>
+            {busyRole === "consumer" ? "Signing in…" : "Sign in"}
           </button>
         </form>
 

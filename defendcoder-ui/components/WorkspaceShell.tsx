@@ -1,21 +1,35 @@
 "use client";
 
+import { FormEvent, useEffect, useState } from "react";
+
+import {
+  ApiError,
+  createRun,
+  fetchRunDetail,
+  FileEntry,
+  listFiles,
+  listRuns,
+  RunDetail,
+  RunMessage,
+  RunRecord,
+  RuntimeStatus,
+} from "@/app/workspace/load-workspace";
+
 type Account = {
   username: string;
   role: "admin" | "consumer";
 };
 
-type RuntimeStatus = {
-  state?: string | null;
-  model?: string | null;
-  provider?: string | null;
-  context_used?: number | null;
-  context_limit?: number | null;
-};
-
 type Workspace = {
   workspace_id: string;
   name: string;
+  repository_url?: string | null;
+  default_branch?: string | null;
+};
+
+type CreateWorkspacePayload = {
+  name: string;
+  workspace_root: string;
   repository_url?: string | null;
   default_branch?: string | null;
 };
@@ -26,10 +40,107 @@ type Props = {
   workspaces: Workspace[];
 };
 
-function display(value: string | number | null | undefined) {
+type ExecutionTab = "terminal" | "tests" | "diff" | "logs";
+
+const RUN_TESTS_PROMPT =
+  "Run the workspace tests (run_tests) and report the real results. " +
+  "If no test runner is detected, say so honestly and propose what to add.";
+
+const REVIEW_CHANGES_PROMPT =
+  "Review the current uncommitted changes: run git_diff, inspect the " +
+  "changed files with read_file, and summarize what changed, whether it " +
+  "looks correct, and any risks.";
+
+const POLL_INTERVAL_MS = 1500;
+
+function runtimeLabel(state: string | null | undefined): string {
+  switch (state) {
+    case "ready":
+      return "READY";
+    case "starting":
+      return "STARTING";
+    case "offline":
+      return "OFFLINE";
+    case "failed":
+      return "FAILED";
+    default:
+      return state ? state.toUpperCase() : "—";
+  }
+}
+
+function runtimeStateClass(state: string | null | undefined): string {
+  switch (state) {
+    case "ready":
+      return "runtime-state-ready";
+    case "starting":
+      return "runtime-state-starting";
+    case "failed":
+      return "runtime-state-failed";
+    default:
+      return "runtime-state-offline";
+  }
+}
+
+function runStatusLabel(status: RunRecord["status"]): string {
+  switch (status) {
+    case "queued":
+      return "Queued";
+    case "running":
+      return "Running";
+    case "succeeded":
+      return "Succeeded";
+    case "failed":
+      return "Failed";
+    default:
+      return status;
+  }
+}
+
+function display(value: string | number | null | undefined): string {
   return value === null || value === undefined || value === ""
-    ? "?"
+    ? "—"
     : String(value);
+}
+
+function csrfToken(): string | null {
+  try {
+    return sessionStorage.getItem("defendcoder_csrf");
+  } catch {
+    return null;
+  }
+}
+
+function promptForRun(run: RunRecord | null | undefined): string {
+  return run ? run.prompt : "";
+}
+
+function changedFileHints(messages: RunMessage[]): string[] {
+  const hints: string[] = [];
+  for (const message of messages) {
+    if (message.role !== "assistant" || !message.tool_calls) {
+      continue;
+    }
+    for (const call of message.tool_calls) {
+      if (call.name !== "write_file" && call.name !== "edit_file") {
+        continue;
+      }
+      const path = extractPath(call.arguments);
+      if (path) {
+        hints.push(path);
+      }
+    }
+  }
+  return [...new Set(hints)];
+}
+
+function extractPath(
+  raw: Record<string, unknown> | null | undefined
+): string | null {
+  if (!raw) {
+    return null;
+  }
+  const value = raw["path"];
+  return typeof value === "string" && value ? value : null;
 }
 
 export default function WorkspaceShell({
@@ -37,10 +148,352 @@ export default function WorkspaceShell({
   runtime,
   workspaces,
 }: Props) {
-  const runtimeAvailable =
-    runtime !== null &&
-    runtime.state !== null &&
-    runtime.state !== undefined;
+  const [items, setItems] = useState<Workspace[]>(workspaces);
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const [newProjectOpen, setNewProjectOpen] = useState(false);
+  const [connectRepoOpen, setConnectRepoOpen] = useState(false);
+
+  const [projectName, setProjectName] = useState("");
+  const [projectRoot, setProjectRoot] = useState("");
+  const [repoName, setRepoName] = useState("");
+  const [repoUrl, setRepoUrl] = useState("");
+  const [repoBranch, setRepoBranch] = useState("");
+
+  const [activeRun, setActiveRun] = useState<RunDetail | null>(null);
+  const [prompt, setPrompt] = useState("");
+  const [files, setFiles] = useState<FileEntry[]>([]);
+  const [filesPath, setFilesPath] = useState(".");
+  const [filesError, setFilesError] = useState<string | null>(null);
+  const [tab, setTab] = useState<ExecutionTab>("terminal");
+
+  const activeWorkspace =
+    items.find((item) => item.workspace_id === activeId) ?? null;
+
+  const runtimeState = runtime?.state ?? null;
+  const runtimeReady = runtimeState === "ready";
+  const runActive =
+    activeRun?.run.status === "queued" ||
+    activeRun?.run.status === "running";
+
+  const composerDisabledReason = (() => {
+    if (!activeWorkspace) {
+      return "Select or create a workspace to begin.";
+    }
+    if (runActive) {
+      return "An agent run is in progress for this workspace.";
+    }
+    if (runtimeState === "offline" || runtimeState === "failed") {
+      return (
+        "The model runtime is " +
+        (runtimeState === "failed" ? "failed" : "offline") +
+        " — start DEFENDcoder in Control Center, then retry."
+      );
+    }
+    if (!runtimeReady) {
+      return "The model runtime is starting — wait for READY, then retry.";
+    }
+    return null;
+  })();
+
+  useEffect(() => {
+    if (!runActive || !activeWorkspace || !activeRun) {
+      return;
+    }
+    const workspaceId = activeWorkspace.workspace_id;
+    const runId = activeRun.run.run_id;
+
+    const timer = window.setInterval(() => {
+      void (async () => {
+        try {
+          const detail = await fetchRunDetail(
+            fetch,
+            "/v1",
+            workspaceId,
+            runId
+          );
+          setActiveRun(detail);
+        } catch (cause) {
+          if (cause instanceof ApiError && cause.status === 401) {
+            window.clearInterval(timer);
+            setError(
+              "Session expired. Sign in again to continue."
+            );
+          }
+        }
+      })();
+    }, POLL_INTERVAL_MS);
+
+    return () => window.clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runActive, activeWorkspace?.workspace_id, activeRun?.run.run_id]);
+
+  async function refreshFiles(workspaceId: string, path: string) {
+    try {
+      const response = await listFiles(fetch, "/v1", workspaceId, path);
+      setFiles(response.entries ?? []);
+      setFilesPath(response.path);
+      setFilesError(null);
+    } catch (cause) {
+      setFilesError(
+        cause instanceof ApiError && cause.status === 404
+          ? "The workspace root does not exist on this host yet."
+          : "Unable to load workspace files."
+      );
+    }
+  }
+
+  async function selectWorkspace(workspaceId: string) {
+    setActiveId(workspaceId);
+    setError(null);
+    setActiveRun(null);
+    setPrompt("");
+    setFiles([]);
+    setFilesPath(".");
+    setFilesError(null);
+
+    try {
+      const runs = await listRuns(fetch, "/v1", workspaceId);
+      if (runs.length > 0) {
+        const latest = runs[0];
+        const detail = await fetchRunDetail(
+          fetch,
+          "/v1",
+          workspaceId,
+          latest.run_id
+        );
+        setActiveRun(detail);
+      }
+    } catch (cause) {
+      if (cause instanceof ApiError && cause.status === 401) {
+        setError("Session expired. Sign in again to continue.");
+      }
+    }
+
+    void refreshFiles(workspaceId, ".");
+  }
+
+  async function sendPrompt(rawPrompt: string) {
+    const value = rawPrompt.trim();
+    if (!value || !activeWorkspace || runActive) {
+      return;
+    }
+
+    const csrf = csrfToken();
+    setError(null);
+
+    try {
+      const run = await createRun(
+        fetch,
+        "/v1",
+        activeWorkspace.workspace_id,
+        value,
+        csrf
+      );
+      setActiveRun({ run, messages: [] });
+      setPrompt("");
+    } catch (cause) {
+      if (cause instanceof ApiError && cause.status === 401) {
+        setError("Session expired. Sign in again to continue.");
+      } else if (cause instanceof ApiError && cause.status === 409) {
+        setError(
+          "Another agent run is already active for this workspace."
+        );
+      } else if (cause instanceof ApiError && cause.status === 503) {
+        setError(
+          "Agent execution is not connected. Start the model runtime " +
+            "in Control Center, then retry."
+        );
+      } else {
+        setError("Unable to start the agent run. Please try again.");
+      }
+    }
+  }
+
+  function submitPrompt(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    void sendPrompt(prompt);
+  }
+
+  async function createWorkspace(
+    payload: CreateWorkspacePayload
+  ) {
+    if (busy) {
+      return;
+    }
+
+    setError(null);
+    setBusy(true);
+
+    try {
+      const csrf = csrfToken();
+      const response = await fetch("/v1/workspaces", {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+          ...(csrf ? { "X-CSRF-Token": csrf } : {}),
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (response.status === 403) {
+        setError(
+          "Session expired. Sign in again to continue."
+        );
+        return;
+      }
+
+      if (!response.ok) {
+        setError(
+          "DEFENDcoder could not create the workspace."
+        );
+        return;
+      }
+
+      const body = (await response.json()) as {
+        workspace: Workspace;
+      };
+
+      setItems((current) => [
+        body.workspace,
+        ...current.filter(
+          (item) =>
+            item.workspace_id !== body.workspace.workspace_id
+        ),
+      ]);
+      setActiveId(body.workspace.workspace_id);
+      setNewProjectOpen(false);
+      setConnectRepoOpen(false);
+      setProjectName("");
+      setProjectRoot("");
+      setRepoName("");
+      setRepoUrl("");
+      setRepoBranch("");
+      void refreshFiles(body.workspace.workspace_id, ".");
+    } catch {
+      setError(
+        "Unable to reach DEFENDcoder. Please try again."
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function submitNewProject(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const name = projectName.trim();
+    const root = projectRoot.trim();
+
+    if (!name || !root) {
+      setError("Project name and local root are required.");
+      return;
+    }
+
+    void createWorkspace({
+      name,
+      workspace_root: root,
+    });
+  }
+
+  function submitConnectRepo(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const name = repoName.trim();
+    const url = repoUrl.trim();
+
+    if (!name || !url) {
+      setError("Repo name and repository URL are required.");
+      return;
+    }
+
+    void createWorkspace({
+      name,
+      workspace_root: ".",
+      repository_url: url,
+      default_branch: repoBranch.trim() || null,
+    });
+  }
+
+  async function logout() {
+    if (busy) {
+      return;
+    }
+
+    setError(null);
+    setBusy(true);
+
+    try {
+      const csrf = csrfToken();
+      const response = await fetch("/v1/auth/logout", {
+        method: "POST",
+        credentials: "include",
+        headers: csrf ? { "X-CSRF-Token": csrf } : {},
+      });
+
+      if (!response.ok) {
+        setError("Sign out failed. Please try again.");
+        return;
+      }
+
+      try {
+        sessionStorage.removeItem("defendcoder_csrf");
+      } catch {
+        // ignore
+      }
+
+      window.location.href = "/";
+    } catch {
+      setError("Unable to reach DEFENDcoder. Please try again.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const userPrompt = promptForRun(activeRun?.run);
+  const conversation = activeRun ? activeRun.messages : [];
+  const changedFiles = changedFileHints(conversation);
+
+  const terminalMessages = conversation.filter(
+    (message) => message.role === "tool" && message.kind === "terminal"
+  );
+  const testMessages = conversation.filter(
+    (message) => message.role === "tool" && message.kind === "tests"
+  );
+  const diffMessages = conversation.filter(
+    (message) => message.role === "tool" && message.kind === "diff"
+  );
+  const logMessages = conversation.filter(
+    (message) => message.role === "log" || message.kind === "log"
+  );
+
+  const agentStateNotice = (() => {
+    if (runActive) {
+      return `Agent is ${runStatusLabel(activeRun!.run.status).toLowerCase()}…`;
+    }
+    if (activeRun?.run.status === "failed") {
+      return (
+        "Agent run failed" +
+        (activeRun.run.error ? `: ${activeRun.run.error}` : ".")
+      );
+    }
+    if (activeRun?.run.status === "succeeded") {
+      return "Agent run complete.";
+    }
+    if (!activeWorkspace) {
+      return "Select or create a workspace to begin.";
+    }
+    if (runtimeState === "offline" || runtimeState === "failed") {
+      return "The model runtime is " + runtimeState + " — start it in Control Center.";
+    }
+    if (!runtimeReady) {
+      return "The model runtime is starting — wait for READY.";
+    }
+    return "Ready — describe a coding task for the agent.";
+  })();
 
   return (
     <main className="workspace-shell">
@@ -51,11 +504,9 @@ export default function WorkspaceShell({
         </div>
 
         <div className="runtime-strip" aria-label="Model status">
-          <div>
+          <div className={runtimeStateClass(runtimeState)}>
             <span className="runtime-label">Runtime</span>
-            <strong>
-              {runtimeAvailable ? display(runtime?.state) : "Unavailable"}
-            </strong>
+            <strong>{runtimeLabel(runtimeState)}</strong>
           </div>
 
           <div>
@@ -71,9 +522,9 @@ export default function WorkspaceShell({
           <div>
             <span className="runtime-label">Context</span>
             <strong>
-              {display(runtime?.context_used)}
-              {" / "}
-              {display(runtime?.context_limit)}
+              {runtime?.context_limit
+                ? `${display(runtime.context_used)} / ${display(runtime.context_limit)}`
+                : "—"}
             </strong>
           </div>
         </div>
@@ -87,6 +538,15 @@ export default function WorkspaceShell({
               Admin
             </a>
           ) : null}
+
+          <button
+            type="button"
+            className="logout-link"
+            onClick={() => void logout()}
+            disabled={busy}
+          >
+            Sign out
+          </button>
         </div>
       </header>
 
@@ -94,38 +554,177 @@ export default function WorkspaceShell({
         <aside className="workspace-sidebar">
           <section>
             <h2>Projects</h2>
-            <button type="button">New Project</button>
+            <button
+              type="button"
+              onClick={() => {
+                setConnectRepoOpen(false);
+                setError(null);
+                setNewProjectOpen((open) => !open);
+              }}
+            >
+              New Project
+            </button>
+
+            {newProjectOpen ? (
+              <form
+                className="workspace-form"
+                aria-label="New local project"
+                onSubmit={submitNewProject}
+              >
+                <label className="sr-only" htmlFor="project-name">
+                  Project name
+                </label>
+                <input
+                  id="project-name"
+                  type="text"
+                  placeholder="Project name"
+                  value={projectName}
+                  onChange={(event) =>
+                    setProjectName(event.target.value)
+                  }
+                />
+
+                <label className="sr-only" htmlFor="project-root">
+                  Local workspace root
+                </label>
+                <input
+                  id="project-root"
+                  type="text"
+                  placeholder="Local root path"
+                  value={projectRoot}
+                  onChange={(event) =>
+                    setProjectRoot(event.target.value)
+                  }
+                />
+
+                <button type="submit" disabled={busy}>
+                  Create
+                </button>
+              </form>
+            ) : null}
           </section>
 
           <section>
             <h2>Git Repos</h2>
-            <button type="button">Connect Repo</button>
+            <button
+              type="button"
+              onClick={() => {
+                setNewProjectOpen(false);
+                setError(null);
+                setConnectRepoOpen((open) => !open);
+              }}
+            >
+              Connect Repo
+            </button>
+
+            {connectRepoOpen ? (
+              <form
+                className="workspace-form"
+                aria-label="Connect repository"
+                onSubmit={submitConnectRepo}
+              >
+                <label className="sr-only" htmlFor="repo-name">
+                  Workspace name
+                </label>
+                <input
+                  id="repo-name"
+                  type="text"
+                  placeholder="Workspace name"
+                  value={repoName}
+                  onChange={(event) =>
+                    setRepoName(event.target.value)
+                  }
+                />
+
+                <label className="sr-only" htmlFor="repo-url">
+                  Repository URL
+                </label>
+                <input
+                  id="repo-url"
+                  type="text"
+                  placeholder="https://github.com/org/repo.git"
+                  spellCheck={false}
+                  value={repoUrl}
+                  onChange={(event) =>
+                    setRepoUrl(event.target.value)
+                  }
+                />
+
+                <label className="sr-only" htmlFor="repo-branch">
+                  Default branch
+                </label>
+                <input
+                  id="repo-branch"
+                  type="text"
+                  placeholder="Default branch (optional)"
+                  value={repoBranch}
+                  onChange={(event) =>
+                    setRepoBranch(event.target.value)
+                  }
+                />
+
+                <button type="submit" disabled={busy}>
+                  Create
+                </button>
+              </form>
+            ) : null}
           </section>
 
           <section>
             <h2>Workspaces</h2>
 
             <div className="workspace-list">
-              {workspaces.length === 0 ? (
+              {items.length === 0 ? (
                 <p className="muted">No workspaces yet.</p>
               ) : (
-                workspaces.map((workspace) => (
-                  <article
-                    key={workspace.workspace_id}
-                    className="workspace-card"
-                  >
-                    <strong>{workspace.name}</strong>
-                    <span>
-                      {workspace.repository_url ?? "Local workspace"}
-                    </span>
-                    <small>
-                      {workspace.default_branch ?? "?"}
-                    </small>
-                  </article>
-                ))
+                items.map((workspace) => {
+                  const isActive =
+                    workspace.workspace_id === activeId;
+
+                  return (
+                    <article
+                      key={workspace.workspace_id}
+                      className={
+                        isActive
+                          ? "workspace-card workspace-card-active"
+                          : "workspace-card"
+                      }
+                      role="button"
+                      tabIndex={0}
+                      aria-pressed={isActive}
+                      onClick={() =>
+                        selectWorkspace(workspace.workspace_id)
+                      }
+                      onKeyDown={(event) => {
+                        if (
+                          event.key === "Enter" ||
+                          event.key === " "
+                        ) {
+                          event.preventDefault();
+                          selectWorkspace(workspace.workspace_id);
+                        }
+                      }}
+                    >
+                      <strong>{workspace.name}</strong>
+                      <span>
+                        {workspace.repository_url ??
+                          "Local workspace"}
+                      </span>
+                      <small>
+                        {workspace.default_branch ?? "—"}
+                      </small>
+                    </article>
+                  );
+                })
               )}
             </div>
           </section>
+
+          {error ? (
+            <div className="workspace-error" role="alert">
+              {error}
+            </div>
+          ) : null}
         </aside>
 
         <section className="agent-pane">
@@ -136,59 +735,381 @@ export default function WorkspaceShell({
             </div>
 
             <div className="agent-actions">
-              <button type="button">Run Tests</button>
-              <button type="button">Review Changes</button>
+              <button
+                type="button"
+                disabled={
+                  !activeWorkspace || runActive || !runtimeReady
+                }
+                title={
+                  !activeWorkspace
+                    ? "Select a workspace first."
+                    : runActive
+                      ? "An agent run is in progress."
+                      : runtimeReady
+                        ? "Run the workspace test suite via the agent."
+                        : "The model runtime is not ready."
+                }
+                onClick={() => void sendPrompt(RUN_TESTS_PROMPT)}
+              >
+                Run Tests
+              </button>
+              <button
+                type="button"
+                disabled={
+                  !activeWorkspace || runActive || !runtimeReady
+                }
+                title={
+                  !activeWorkspace
+                    ? "Select a workspace first."
+                    : runActive
+                      ? "An agent run is in progress."
+                      : runtimeReady
+                        ? "Review current changes via the agent."
+                        : "The model runtime is not ready."
+                }
+                onClick={() => void sendPrompt(REVIEW_CHANGES_PROMPT)}
+              >
+                Review Changes
+              </button>
             </div>
           </div>
 
           <div className="agent-conversation">
-            <div className="empty-agent-state">
-              <strong>Ready for a coding task.</strong>
-              <p>
-                Select or create a workspace, then describe what you want
-                built, fixed, reviewed, or tested.
-              </p>
-            </div>
+            {!activeRun ? (
+              <div className="empty-agent-state">
+                <strong>
+                  {activeWorkspace
+                    ? activeWorkspace.name
+                    : "Select or create a workspace."}
+                </strong>
+                <p>{agentStateNotice}</p>
+              </div>
+            ) : (
+              <>
+                <div className="run-banner">
+                  <span className="run-status-chip">
+                    {runStatusLabel(activeRun.run.status)}
+                  </span>
+                  <span className="run-prompt-text">{userPrompt}</span>
+                </div>
+
+                {conversation.length === 0 ? (
+                  <div className="empty-agent-state">
+                    <p>
+                      {runActive
+                        ? "The agent is working…"
+                        : "This run has no output yet."}
+                    </p>
+                  </div>
+                ) : (
+                  conversation.map((message) => (
+                    <article
+                      key={message.seq}
+                      className={`agent-message agent-message-${message.role}`}
+                    >
+                      {message.role === "assistant" ? (
+                        <>
+                          <span className="message-role">Agent</span>
+                          {message.content ? (
+                            <p className="message-content">
+                              {message.content}
+                            </p>
+                          ) : null}
+                          {message.tool_calls &&
+                          message.tool_calls.length > 0 ? (
+                            <div className="tool-call-list">
+                              {message.tool_calls.map((call) => (
+                                <span
+                                  key={call.id}
+                                  className="tool-call-chip"
+                                >
+                                  {call.name}
+                                </span>
+                              ))}
+                            </div>
+                          ) : null}
+                        </>
+                      ) : message.role === "tool" ? (
+                        <div
+                          className={`tool-result tool-result-${message.kind ?? "log"}`}
+                        >
+                          <span className="message-role">
+                            {message.tool_name ?? "tool"}
+                          </span>
+                          <span
+                            className={
+                              message.ok === false
+                                ? "tool-result-error"
+                                : "tool-result-ok"
+                            }
+                          >
+                            {message.ok === false ? "failed" : "ok"}
+                          </span>
+                          {message.tool_result ? (
+                            <pre>{message.tool_result}</pre>
+                          ) : null}
+                        </div>
+                      ) : (
+                        <div className="agent-log-line">
+                          <span className="message-role">Log</span>
+                          <span>{message.content}</span>
+                        </div>
+                      )}
+                    </article>
+                  ))
+                )}
+              </>
+            )}
           </div>
 
-          <form className="agent-composer">
+          <form className="agent-composer" onSubmit={submitPrompt}>
             <textarea
               aria-label="Coding task"
-              placeholder="Ask DEFENDcoder to inspect, implement, debug, test, or review..."
+              placeholder={
+                composerDisabledReason ??
+                "Describe a coding task for the agent…"
+              }
+              disabled={composerDisabledReason !== null}
+              value={prompt}
+              onChange={(event) => setPrompt(event.target.value)}
+              onKeyDown={(event) => {
+                if (
+                  event.key === "Enter" &&
+                  !event.shiftKey &&
+                  !event.nativeEvent.isComposing
+                ) {
+                  event.preventDefault();
+                  void sendPrompt(prompt);
+                }
+              }}
             />
-            <button type="submit">Send</button>
+            <button
+              type="submit"
+              disabled={composerDisabledReason !== null || !prompt.trim()}
+            >
+              Send
+            </button>
           </form>
         </section>
 
         <aside className="review-pane">
           <div className="pane-header compact">
             <div>
-              <span className="eyebrow">Changes</span>
-              <h2>Review</h2>
+              <span className="eyebrow">Workspace</span>
+              <h2>Files</h2>
             </div>
+            {activeWorkspace ? (
+              <button
+                type="button"
+                className="refresh-files"
+                onClick={() =>
+                  void refreshFiles(
+                    activeWorkspace.workspace_id,
+                    filesPath
+                  )
+                }
+                disabled={busy}
+              >
+                Refresh
+              </button>
+            ) : null}
           </div>
 
           <div className="changed-files">
-            <p className="muted">
-              Changed files will appear here when an agent run modifies the
-              active workspace.
-            </p>
+            {!activeWorkspace ? (
+              <p className="muted">
+                Files of the active workspace will appear here.
+              </p>
+            ) : filesError ? (
+              <p className="muted">{filesError}</p>
+            ) : (
+              <>
+                <div className="files-breadcrumb">
+                  {filesPath !== "." ? (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void refreshFiles(
+                          activeWorkspace.workspace_id,
+                          upOne(filesPath)
+                        )
+                      }
+                    >
+                      ↑ {upOne(filesPath)}
+                    </button>
+                  ) : (
+                    <span>./</span>
+                  )}
+                </div>
+                <ul className="file-tree">
+                  {files.length === 0 ? (
+                    <li className="muted">(empty directory)</li>
+                  ) : (
+                    files.map((entry) => (
+                      <li key={entry.name}>
+                        {entry.type === "directory" ? (
+                          <button
+                            type="button"
+                            className="file-dir"
+                            onClick={() =>
+                              void refreshFiles(
+                                activeWorkspace.workspace_id,
+                                joinPath(filesPath, entry.name)
+                              )
+                            }
+                          >
+                            {entry.name}/
+                          </button>
+                        ) : (
+                          <span className="file-entry">{entry.name}</span>
+                        )}
+                      </li>
+                    ))
+                  )}
+                </ul>
+              </>
+            )}
           </div>
         </aside>
 
         <section className="execution-pane">
           <nav className="execution-tabs" aria-label="Execution output">
-            <button type="button">Terminal</button>
-            <button type="button">Tests</button>
-            <button type="button">Diff</button>
-            <button type="button">Logs</button>
+            <button
+              type="button"
+              className={tab === "terminal" ? "execution-tab-active" : ""}
+              onClick={() => setTab("terminal")}
+            >
+              Terminal
+            </button>
+            <button
+              type="button"
+              className={tab === "tests" ? "execution-tab-active" : ""}
+              onClick={() => setTab("tests")}
+            >
+              Tests
+            </button>
+            <button
+              type="button"
+              className={tab === "diff" ? "execution-tab-active" : ""}
+              onClick={() => setTab("diff")}
+            >
+              Diff
+            </button>
+            <button
+              type="button"
+              className={tab === "logs" ? "execution-tab-active" : ""}
+              onClick={() => setTab("logs")}
+            >
+              Logs
+            </button>
           </nav>
 
           <div className="execution-output">
-            <pre>Workspace output will appear here.</pre>
+            <OutputPane
+              tab={tab}
+              terminalMessages={terminalMessages}
+              testMessages={testMessages}
+              diffMessages={diffMessages}
+              logMessages={logMessages}
+              run={activeRun?.run ?? null}
+              changedFiles={changedFiles}
+            />
           </div>
         </section>
       </div>
     </main>
   );
+}
+
+function OutputPane({
+  tab,
+  terminalMessages,
+  testMessages,
+  diffMessages,
+  logMessages,
+  run,
+  changedFiles,
+}: {
+  tab: ExecutionTab;
+  terminalMessages: RunMessage[];
+  testMessages: RunMessage[];
+  diffMessages: RunMessage[];
+  logMessages: RunMessage[];
+  run: RunRecord | null;
+  changedFiles: string[];
+}) {
+  if (tab === "terminal") {
+    return <MessageList messages={terminalMessages} empty="No terminal output yet." />;
+  }
+  if (tab === "tests") {
+    return <MessageList messages={testMessages} empty="No test output yet." />;
+  }
+  if (tab === "diff") {
+    if (diffMessages.length > 0) {
+      return <MessageList messages={diffMessages} empty="No diff output yet." />;
+    }
+    if (changedFiles.length > 0) {
+      return (
+        <pre>
+          Changed files in the latest run:
+          {"\n" + changedFiles.map((path) => `  ${path}`).join("\n")}
+          {"\n\nRun “Review Changes” to see the full diff."}
+        </pre>
+      );
+    }
+    return <pre>No diff output yet. Use “Review Changes” to inspect changes.</pre>;
+  }
+  if (tab === "logs") {
+    return (
+      <MessageList
+        messages={logMessages}
+        empty={
+          run
+            ? `Run ${run.status}${run.error ? ` — ${run.error}` : ""}.`
+            : "No run activity yet."
+        }
+      />
+    );
+  }
+  return <pre>No output.</pre>;
+}
+
+function MessageList({
+  messages,
+  empty,
+}: {
+  messages: RunMessage[];
+  empty: string;
+}) {
+  if (messages.length === 0) {
+    return <pre>{empty}</pre>;
+  }
+  return (
+    <div className="execution-messages">
+      {messages.map((message) => (
+        <pre
+          key={message.seq}
+          className={message.ok === false ? "execution-pre-error" : ""}
+        >
+          {message.tool_result ?? message.content ?? ""}
+        </pre>
+      ))}
+    </div>
+  );
+}
+
+function upOne(path: string): string {
+  if (path === "." || path === "") {
+    return ".";
+  }
+  const parts = path.split("/").filter(Boolean);
+  parts.pop();
+  return parts.length === 0 ? "." : parts.join("/");
+}
+
+function joinPath(base: string, name: string): string {
+  if (base === "." || base === "") {
+    return name;
+  }
+  return `${base}/${name}`;
 }

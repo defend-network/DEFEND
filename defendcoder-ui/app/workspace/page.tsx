@@ -26,7 +26,7 @@ export default async function WorkspacePage() {
   return (
     <WorkspaceShell
       account={data.account}
-      runtime={null}
+      runtime={data.runtime}
       workspaces={data.workspaces}
     />
   );

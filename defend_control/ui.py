@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import asdict
+from datetime import datetime, timezone
+import json
 import os
 import time
 from pathlib import Path
@@ -10,11 +12,16 @@ import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
 from tkinter.scrolledtext import ScrolledText
 
-from .coder_m0 import CoderM0Service, LocalFakeCoderBackend
+from .coder_m0 import (
+    CoderM0Service,
+    LocalFakeCoderBackend,
+    resolve_alias,
+)
 from .controller import ConfirmationRequired, ControlController, UIState
 from .products import (
     ProductStatus,
     coder_approval_ready,
+    coder_model_status_file,
     coder_plan_rows,
 )
 from .settings import ControlSettings
@@ -27,6 +34,17 @@ from .integration_catalog import (
 
 _POLL_MILLISECONDS = 250
 _IDLE_REAP_INTERVAL_SECONDS = 30.0
+_CODER_STATE_MAP = {
+    "running": "ready",
+    "starting": "starting",
+    "starting_local": "starting",
+    "provisioning": "starting",
+    "preparing": "starting",
+    "approval_required": "starting",
+    "stopped": "offline",
+    "no_offer": "offline",
+    "failed": "failed",
+}
 _STATE_COLORS = {
     "running": "green",
     "ready": "green",
@@ -890,6 +908,112 @@ class CoderApprovalDialog(tk.Toplevel):
     @property
     def decided(self) -> str | None:
         return self._decided
+
+
+def coder_runtime_status_payload(
+    products: tuple[object, ...],
+) -> dict[str, object] | None:
+    """Compose the shared coder-model-status.json payload (pure, testable).
+
+    Returns None when no coder product is registered. The payload is the
+    consumer-safe surface published for the DEFENDcoder API: state is
+    mapped from the control-plane vocabulary to ready/starting/offline/
+    failed, and model identity/context come from the pinned registry.
+    """
+    coder = next(
+        (
+            product
+            for product in products
+            if getattr(product, "application_id", None) == "coder"
+        ),
+        None,
+    )
+    if coder is None:
+        return None
+
+    try:
+        product_status = coder.status()
+    except Exception:
+        return None
+
+    raw_state = str(getattr(product_status, "state", "stopped"))
+    state = _CODER_STATE_MAP.get(raw_state, "offline")
+
+    alias = None
+    settings = getattr(coder, "_settings", None)
+    if settings is not None:
+        alias = getattr(settings, "coder_model_alias", None)
+    if not alias:
+        for name, value in getattr(product_status, "details", ()):
+            if name == "Alias" and value != "\u2014":
+                alias = value
+
+    model_name = None
+    context_limit = None
+    if alias:
+        try:
+            model_ref = resolve_alias(alias)
+        except ValueError:
+            model_ref = None
+        if model_ref is not None:
+            model_name = model_ref.repo_id
+            context_limit = model_ref.max_model_len
+
+    provider = None
+    gpu = None
+    instance_id = None
+    plane = getattr(coder, "_plane", None)
+    if plane is not None:
+        try:
+            endpoint = plane.status(
+                str(alias or "defendcoder-heavy")
+            )
+        except Exception:
+            endpoint = {}
+        if isinstance(endpoint, dict):
+            if endpoint.get("provider"):
+                provider = str(endpoint["provider"])
+            if endpoint.get("gpu_type"):
+                gpu = str(endpoint["gpu_type"])
+            if endpoint.get("instance_id") is not None:
+                instance_id = str(endpoint["instance_id"])
+
+    detail = (
+        getattr(product_status, "last_error", None)
+        or getattr(product_status, "status_text", None)
+    )
+    if detail:
+        detail = str(detail)[:240]
+
+    return {
+        "alias": alias,
+        "state": state,
+        "model_name": model_name,
+        "provider": provider,
+        "context_limit": context_limit,
+        "context_used": None,
+        "gpu": gpu,
+        "instance_id": instance_id,
+        "detail": detail,
+        "updated_at": datetime.now(timezone.utc).isoformat(
+            timespec="seconds"
+        ),
+    }
+
+
+def write_coder_runtime_status_file(
+    payload: dict[str, object],
+    path: str | Path,
+) -> None:
+    """Atomically write the shared status file (tmp + replace)."""
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_suffix(target.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, default=str),
+        encoding="utf-8",
+    )
+    os.replace(temporary, target)
 
 
 class ControlCenterUI:
@@ -2385,6 +2509,7 @@ class ControlCenterUI:
 
     def _poll(self) -> None:
         self._run_idle_reaper_if_due()
+        self._publish_coder_runtime_status()
         try:
             state = self._controller.poll_state()
             self._render(state)
@@ -2402,6 +2527,27 @@ class ControlCenterUI:
             self._begin_exit_cleanup()
             return
         self.root.after(_POLL_MILLISECONDS, self._poll)
+
+    def _publish_coder_runtime_status(self) -> None:
+        """Publish the coder model status for the DEFENDcoder API child.
+
+        Runs on every poll; the API process reads this file for its
+        consumer runtime status. Failures are swallowed — the coder API
+        already reports OFFLINE when the file is absent.
+        """
+        try:
+            payload = coder_runtime_status_payload(self._products)
+        except Exception:
+            return
+        if payload is None:
+            return
+        try:
+            write_coder_runtime_status_file(
+                payload,
+                coder_model_status_file(),
+            )
+        except OSError:
+            pass
 
     def _run_idle_reaper_if_due(self) -> None:
         reaper = getattr(self, "_idle_reaper", None)

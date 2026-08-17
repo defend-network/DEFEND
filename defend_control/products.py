@@ -94,6 +94,10 @@ class ProductsSettings:
     coder_api_port: int = 8301
     coder_web_port: int = 3301
     coder_model_alias: str = "defendcoder-heavy"
+    coder_model_name: str | None = None
+    coder_model_base_url: str | None = None
+    coder_model_api_key: str | None = field(default=None, repr=False)
+    coder_model_api_key_file: str | None = None
     coder_public_origin: str = "https://defendcoder.defend-network.org"
     coder_workspace_root: Path = Path(r"C:\DEFEND_CODER_DATA")
     coder_database_url: str | None = field(default=None, repr=False)
@@ -177,6 +181,18 @@ class ProductsSettings:
                 "CODER_MODEL_ALIAS",
                 "defendcoder-heavy",
             ),
+            coder_model_name=text(
+                "CODER_MODEL_NAME", ""
+            ) or None,
+            coder_model_base_url=text(
+                "CODER_MODEL_BASE_URL", ""
+            ) or None,
+            coder_model_api_key=os.environ.get(
+                "CODER_MODEL_API_KEY"
+            ),
+            coder_model_api_key_file=os.environ.get(
+                "CODER_MODEL_API_KEY_FILE"
+            ) or None,
             coder_public_origin=text(
                 "CODER_PUBLIC_ORIGIN",
                 "https://defendcoder.defend-network.org",
@@ -217,6 +233,17 @@ def build_sports_process_spec(
     )
 
 
+def coder_model_status_file() -> str:
+    explicit = os.environ.get("CODER_MODEL_STATUS_FILE")
+    if explicit and explicit.strip():
+        return explicit.strip()
+    return str(
+        Path(os.environ.get("LOCALAPPDATA", "."))
+        / "DEFEND"
+        / "coder-model-status.json"
+    )
+
+
 def build_coder_api_process_spec(
     settings: ProductsSettings,
     repository: Path,
@@ -224,6 +251,29 @@ def build_coder_api_process_spec(
 ) -> ProcessSpec:
     if not settings.coder_database_url:
         raise ValueError("CODER_DATABASE_URL is not configured")
+
+    env: dict[str, str] = {
+        "CODER_DATABASE_URL": settings.coder_database_url,
+        "CODER_HOST": "127.0.0.1",
+        "CODER_PORT": str(settings.coder_api_port),
+        "CODER_PUBLIC_HTTPS": "true",
+        "CODER_WORKSPACE_ROOT": str(
+            settings.coder_workspace_root
+        ),
+        "CODER_MODEL_ALIAS": settings.coder_model_alias,
+        "CODER_MODEL_NAME": settings.coder_model_name or "",
+        "CODER_MODEL_BASE_URL": (
+            settings.coder_model_base_url
+            or "http://127.0.0.1:8001/v1"
+        ),
+        "CODER_MODEL_STATUS_FILE": coder_model_status_file(),
+    }
+    if settings.coder_model_api_key:
+        env["CODER_MODEL_API_KEY"] = settings.coder_model_api_key
+    if settings.coder_model_api_key_file:
+        env["CODER_MODEL_API_KEY_FILE"] = (
+            settings.coder_model_api_key_file
+        )
 
     return ProcessSpec(
         name="coder:api",
@@ -233,15 +283,7 @@ def build_coder_api_process_spec(
             "tools.defend_coder_server",
         ),
         cwd=Path(repository),
-        env={
-            "CODER_DATABASE_URL": settings.coder_database_url,
-            "CODER_HOST": "127.0.0.1",
-            "CODER_PORT": str(settings.coder_api_port),
-            "CODER_PUBLIC_HTTPS": "true",
-            "CODER_WORKSPACE_ROOT": str(
-                settings.coder_workspace_root
-            ),
-        },
+        env=env,
         health_url=(
             f"http://127.0.0.1:"
             f"{settings.coder_api_port}/health"
