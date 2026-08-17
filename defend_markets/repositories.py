@@ -245,6 +245,34 @@ class MarketsRepository:
             )
             return cursor.fetchone()[0]
 
+    def strategy_id(self, connection: Any, strategy_key: str) -> UUID:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT strategy_id FROM market_strategies
+                WHERE strategy_key = %s ORDER BY version DESC LIMIT 1
+                """,
+                (strategy_key,),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                raise KeyError(f"strategy not seeded: {strategy_key}")
+            return row[0]
+
+    def policy_id(self, connection: Any, policy_key: str) -> UUID:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT policy_id FROM market_risk_policies
+                WHERE policy_key = %s ORDER BY version DESC LIMIT 1
+                """,
+                (policy_key,),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                raise KeyError(f"policy not seeded: {policy_key}")
+            return row[0]
+
     def load_policy(self, connection: Any, policy_key: str, version: int = 1) -> RiskPolicy:
         from defend_markets.domain import RiskTier
 
@@ -325,6 +353,10 @@ class MarketsRepository:
         strategy_id: UUID,
         policy_id: UUID,
     ) -> UUID:
+        if decision.data_cutoff_timestamp is None:
+            raise ValueError(
+                "persisted market decisions require data_cutoff_timestamp"
+            )
         with connection.cursor() as cursor:
             cursor.execute(
                 """

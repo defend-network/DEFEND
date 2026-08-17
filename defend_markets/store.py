@@ -58,33 +58,13 @@ class PostgresMarketsStore:
 
     def strategy_id(self, strategy_key: str) -> UUID:
         with self._database.connect() as connection:
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    """
-                    SELECT strategy_id FROM market_strategies
-                    WHERE strategy_key = %s ORDER BY version DESC LIMIT 1
-                    """,
-                    (strategy_key,),
-                )
-                row = cursor.fetchone()
-                if row is None:
-                    raise KeyError(f"strategy not seeded: {strategy_key}")
-                return row[0]
+            with connection.transaction():
+                return self._repository.strategy_id(connection, strategy_key)
 
     def policy_id(self, policy_key: str) -> UUID:
         with self._database.connect() as connection:
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    """
-                    SELECT policy_id FROM market_risk_policies
-                    WHERE policy_key = %s ORDER BY version DESC LIMIT 1
-                    """,
-                    (policy_key,),
-                )
-                row = cursor.fetchone()
-                if row is None:
-                    raise KeyError(f"policy not seeded: {policy_key}")
-                return row[0]
+            with connection.transaction():
+                return self._repository.policy_id(connection, policy_key)
 
     def insert_opportunity(self, opportunity: Opportunity) -> UUID:
         with self._database.connect() as connection:
