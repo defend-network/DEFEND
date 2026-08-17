@@ -29,7 +29,7 @@ class ServiceProfile:
 
     def __post_init__(self) -> None:
         if self.application_id not in _APPLICATION_IDS:
-            raise ValueError("service application_id must be defend, scs, or sports")
+            raise ValueError("service application_id must be defend, scs, sports, or markets")
         if self.role not in _ROLES:
             raise ValueError("unsupported service role")
         if self.service_name != f"{self.application_id}:{self.role}":
@@ -55,7 +55,7 @@ class RouteProfile:
 
     def __post_init__(self) -> None:
         if self.application_id not in _APPLICATION_IDS:
-            raise ValueError("route application_id must be defend, scs, or sports")
+            raise ValueError("route application_id must be defend, scs, sports, or markets")
         try:
             origin = _canonical_origin(self.public_origin)
         except ValueError as error:
