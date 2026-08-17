@@ -11,9 +11,10 @@ import sys
 import threading
 import tkinter as tk
 from tkinter import messagebox
+import webbrowser
 
 from defend_control.controller import ControlController
-from defend_control.health import probe_http
+from defend_control.health import fetch_http_json, probe_http
 from defend_control.local_model import LocalOllamaBackend
 from defend_control.orchestrator import StackOrchestrator
 from defend_control.preflight import CheckResult, PreflightRunner
@@ -726,12 +727,28 @@ def run_control_center() -> None:
         )
 
     def open_setup() -> None:
-        SetupDialog(
-            root,
-            coordinator.settings,
-            submit_save,
-            settings_saved,
+        """Open the web Setup/Integrations control plane locally.
+
+        Prefers the local admin surface (usable even when the public
+        Cloudflare route is unavailable); falls back to the public origin and
+        explains why when neither is reachable.
+        """
+        local_url = f"http://127.0.0.1:{settings.web_port}/setup"
+        probe = fetch_http_json(
+            f"http://127.0.0.1:{settings.web_port}/health", 2.0
         )
+        if probe.ok:
+            webbrowser.open(local_url)
+            return
+        public_url = f"{settings.public_web_origin}/setup"
+        messagebox.showwarning(
+            "DEFEND Setup",
+            "The local admin surface is not reachable "
+            f"(http://127.0.0.1:{settings.web_port}).\n\n"
+            "Start DEFEND and try again, or open the public Setup page.",
+            parent=root,
+        )
+        webbrowser.open(public_url)
 
     app = ControlCenterUI(
         root,
