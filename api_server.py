@@ -28,9 +28,18 @@ from api_batch3_routes import router as batch3_router, ensure_visitor_session
 from api_identity_routes import SensitivePathRedactionMiddleware, router as identity_router
 from api_identity_admin_routes import router as identity_admin_router
 from api_admin_rag_routes import build_admin_rag_router
+from api_setup_integrations_routes import build_setup_integrations_router
+from defend_control.secrets import DpapiSecretStore
 from defend_data import DataCore
 from defend_data.admin_rag import PermanentRagService
 from defend_data.ingest_policy import AIIngestExcluded, assert_ai_ingest_allowed
+from defend_integrations.service import SetupIntegrationsService
+from defend_integrations.stores import (
+    ProviderConfigStore,
+    SecretRegistry,
+    default_config_path,
+    default_secret_path,
+)
 from embedding_client import EmbeddingClient
 from embedding_provider import EmbeddingSettings, build_embedding_client
 
@@ -402,6 +411,28 @@ app.include_router(identity_router)
 app.include_router(identity_admin_router)
 admin_rag_service = PermanentRagService(DATA_ROOT)
 app.include_router(build_admin_rag_router(admin_rag_service))
+
+
+def _build_setup_integrations_service():
+    """Build the Setup/Integrations service against the shared DPAPI store.
+
+    The encrypted secret store lives at %LOCALAPPDATA%\\DEFEND\\secrets.dpapi,
+    shared with the desktop Control Center. If the platform cannot provide it
+    (e.g. non-Windows hosts), the admin routes respond 503 instead of failing
+    startup.
+    """
+    try:
+        secret_store = DpapiSecretStore(default_secret_path())
+        config_store = ProviderConfigStore(default_config_path())
+        return SetupIntegrationsService(
+            SecretRegistry(secret_store), config_store
+        )
+    except Exception:
+        return None
+
+
+setup_integrations_service = _build_setup_integrations_service()
+app.include_router(build_setup_integrations_router(setup_integrations_service))
 
 
 async def _health_payload() -> dict[str, Any]:
