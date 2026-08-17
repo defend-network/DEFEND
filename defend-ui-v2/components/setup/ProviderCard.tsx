@@ -21,10 +21,14 @@ const BADGE_LABEL: Record<string, string> = {
 
 const STATE_LABEL: Record<string, string> = {
   DISABLED: "Disabled",
-  PLACEHOLDER: "Adapter not implemented",
-  AVAILABLE: "Available",
-  CONFIGURED: "Configured",
-  TESTED: "Tested",
+  PLANNED: "Planned",
+  NEEDS_CREDENTIAL: "Needs credential",
+  READY_TO_TEST: "Ready to test",
+  HEALTHY: "Healthy",
+  DEGRADED: "Degraded",
+  RATE_LIMITED: "Rate limited",
+  AUTH_FAILED: "Auth failed",
+  UNAVAILABLE: "Unavailable",
 };
 
 type Props = {
@@ -143,13 +147,14 @@ export default function ProviderCard({ provider, token, onChanged }: Props) {
       </header>
 
       <div className="setup-card-badge">
-        <span
-          className={`setup-badge setup-badge-${provider.health_badge.toLowerCase()}`}
-        >
-          {BADGE_LABEL[provider.health_badge] ?? provider.health_badge}
-        </span>
-        {placeholder && (
+        {placeholder ? (
           <span className="setup-placeholder">ADAPTER NOT IMPLEMENTED</span>
+        ) : (
+          <span
+            className={`setup-badge setup-badge-${provider.health_badge.toLowerCase()}`}
+          >
+            {BADGE_LABEL[provider.health_badge] ?? provider.health_badge}
+          </span>
         )}
       </div>
 
@@ -176,7 +181,7 @@ export default function ProviderCard({ provider, token, onChanged }: Props) {
                 }
                 placeholder={cred.configured ? "Leave blank to keep" : "Enter value"}
                 aria-label={`${cred.name} value`}
-                disabled={busy !== null || !provider.enabled}
+                disabled={busy !== null || (!provider.enabled && !placeholder)}
               />
               <div className="setup-cred-actions">
                 <button
@@ -184,7 +189,7 @@ export default function ProviderCard({ provider, token, onChanged }: Props) {
                   className="ghost-btn"
                   disabled={
                     busy !== null ||
-                    !provider.enabled ||
+                    (!provider.enabled && !placeholder) ||
                     !(secretValues[cred.name] ?? "").trim()
                   }
                   onClick={() => saveSecret(cred.name)}
@@ -195,7 +200,7 @@ export default function ProviderCard({ provider, token, onChanged }: Props) {
                   <button
                     type="button"
                     className="setup-remove"
-                    disabled={busy !== null}
+                    disabled={busy !== null || (!provider.enabled && !placeholder)}
                     onClick={() => removeSecret(cred.name)}
                   >
                     Remove
@@ -204,12 +209,30 @@ export default function ProviderCard({ provider, token, onChanged }: Props) {
               </div>
             </div>
           ))}
+          {placeholder && (
+            <p className="setup-placeholder-note">
+              Credentials can be saved in advance and will be used when this
+              adapter ships.
+            </p>
+          )}
+        </section>
+      )}
+
+      {provider.detected && Object.keys(provider.detected).length > 0 && (
+        <section className="setup-card-creds">
+          <h4 className="setup-card-label">Detected (runtime)</h4>
+          {Object.entries(provider.detected).map(([key, value]) => (
+            <div key={key} className="setup-detected-row">
+              <span className="setup-cred-name">{key}</span>
+              <span className="setup-detected-value">{value}</span>
+            </div>
+          ))}
         </section>
       )}
 
       {provider.optional_config.length > 0 && (
         <section className="setup-card-creds">
-          <h4 className="setup-card-label">Config</h4>
+          <h4 className="setup-card-label">Configured override</h4>
           {provider.optional_config.map((name) => (
             <div key={name} className="setup-cred-row">
               <span className="setup-cred-name">{name}</span>
@@ -224,6 +247,18 @@ export default function ProviderCard({ provider, token, onChanged }: Props) {
                   }))
                 }
                 aria-label={`${name} value`}
+                title={
+                  provider.detected?.[name]
+                    ? `Detected: ${provider.detected[name]}`
+                    : undefined
+                }
+                placeholder={
+                  configValues[name]
+                    ? undefined
+                    : provider.detected?.[name]
+                      ? `Detected: ${provider.detected[name]}`
+                      : "Enter value"
+                }
                 disabled={busy !== null || !provider.enabled}
               />
             </div>
@@ -300,16 +335,25 @@ export default function ProviderCard({ provider, token, onChanged }: Props) {
       )}
 
       <footer className="setup-card-foot">
-        <label className="setup-enable">
-          <input
-            type="checkbox"
-            checked={provider.enabled}
-            onChange={toggleEnabled}
-            disabled={busy !== null}
-            aria-label={`Enable ${provider.display_name}`}
-          />
-          Enabled
-        </label>
+        {placeholder ? (
+          <span
+            className="setup-planned-enable"
+            title="This adapter is planned; it cannot be enabled or tested yet"
+          >
+            Enabled: <strong>PLANNED</strong>
+          </span>
+        ) : (
+          <label className="setup-enable">
+            <input
+              type="checkbox"
+              checked={provider.enabled}
+              onChange={toggleEnabled}
+              disabled={busy !== null}
+              aria-label={`Enable ${provider.display_name}`}
+            />
+            Enabled
+          </label>
+        )}
         <div className="setup-card-meta">
           {provider.last_latency_ms != null && (
             <span className="setup-meta">{provider.last_latency_ms} ms</span>

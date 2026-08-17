@@ -142,13 +142,23 @@ export default function SetupIntegrationsPanel({ session }: Props) {
 
       {testingAll && (
         <div className="setup-test-all-result" role="status">
-          Tested {testingAll.tested} provider(s)
-          {testingAll.skipped.length > 0 &&
-            `; skipped ${testingAll.skipped.length} (${testingAll.skipped
-              .slice(0, 3)
-              .map((s) => s.reason)
-              .join(", ")}${testingAll.skipped.length > 3 ? ", …" : ""})`}
-          .
+          <span>
+            Tested {testingAll.summary.tested} · healthy{" "}
+            {testingAll.summary.healthy} · degraded {testingAll.summary.degraded}{" "}
+            · failed {testingAll.summary.failed} · skipped{" "}
+            {testingAll.summary.skipped} · planned {testingAll.summary.planned}
+          </span>
+          {testingAll.skipped.length > 0 && (
+            <span className="setup-test-all-detail">
+              {" "}
+              — skipped:{" "}
+              {testingAll.skipped
+                .slice(0, 4)
+                .map((s) => `${s.provider_id} (${s.reason})`)
+                .join(", ")}
+              {testingAll.skipped.length > 4 ? ", …" : ""}
+            </span>
+          )}
         </div>
       )}
 
@@ -239,8 +249,10 @@ function DiagnosticsMatrix({ rows }: { rows: Diagnostics["rows"] }) {
               <th>Provider</th>
               <th>Category</th>
               <th>Product(s)</th>
-              <th>Config</th>
-              <th>Auth</th>
+              <th>Adapter</th>
+              <th>Creds</th>
+              <th>Enabled</th>
+              <th>Tested</th>
               <th>Health</th>
               <th>Quota</th>
               <th>Last success</th>
@@ -257,9 +269,25 @@ function DiagnosticsMatrix({ rows }: { rows: Diagnostics["rows"] }) {
                 <td>{row.category}</td>
                 <td>{row.products.join(", ")}</td>
                 <td>
-                  {row.enabled ? (row.configured ? "configured" : "missing") : "disabled"}
+                  {row.implemented ? (
+                    <span className="setup-matrix-implemented">implemented</span>
+                  ) : (
+                    <span className="setup-matrix-planned">PLANNED</span>
+                  )}
                 </td>
-                <td>{row.auth_type}</td>
+                <td>
+                  {row.requires_credentials
+                    ? row.credentials_configured
+                      ? "configured"
+                      : "missing"
+                    : "n/a"}
+                </td>
+                <td>{row.enabled ? "enabled" : "disabled"}</td>
+                <td>
+                  {row.tested
+                    ? row.last_test_at ?? "yes"
+                    : "not tested"}
+                </td>
                 <td>
                   <span
                     className={`setup-badge setup-badge-${row.health_badge.toLowerCase()}`}

@@ -34,13 +34,24 @@ class AdapterKind(str, Enum):
 
 
 class ProviderState(str, Enum):
-    """Lifecycle state shown on a provider card (computed, not stored)."""
+    """Lifecycle state shown on a provider card (computed, not stored).
+
+    The four semantic dimensions stay separate in the provider view:
+    implementation (``PLANNED`` vs real), credentials
+    (``NEEDS_CREDENTIAL``), enabled (``DISABLED``), and health (the badge
+    states). A saved credential alone never implies operational health —
+    ``READY_TO_TEST`` is the bridge state before the first probe.
+    """
 
     DISABLED = "DISABLED"
-    PLACEHOLDER = "PLACEHOLDER"
-    AVAILABLE = "AVAILABLE"
-    CONFIGURED = "CONFIGURED"
-    TESTED = "TESTED"
+    PLANNED = "PLANNED"
+    NEEDS_CREDENTIAL = "NEEDS_CREDENTIAL"
+    READY_TO_TEST = "READY_TO_TEST"
+    HEALTHY = "HEALTHY"
+    DEGRADED = "DEGRADED"
+    RATE_LIMITED = "RATE_LIMITED"
+    AUTH_FAILED = "AUTH_FAILED"
+    UNAVAILABLE = "UNAVAILABLE"
 
 
 class HealthBadge(str, Enum):
@@ -245,6 +256,22 @@ def badge_from_probe(probe: AdapterProbe) -> HealthBadge:
     if probe.authenticated is False:
         return HealthBadge.AUTH_FAILED
     return HealthBadge.HEALTHY
+
+
+def state_from_badge(badge: HealthBadge) -> ProviderState:
+    """Map a stored health badge onto the lifecycle state progression.
+
+    ``NOT_TESTED`` / ``NOT_CONFIGURED`` are pre-test bookkeeping states; the
+    caller decides those before calling here.
+    """
+
+    return {
+        HealthBadge.HEALTHY: ProviderState.HEALTHY,
+        HealthBadge.DEGRADED: ProviderState.DEGRADED,
+        HealthBadge.RATE_LIMITED: ProviderState.RATE_LIMITED,
+        HealthBadge.AUTH_FAILED: ProviderState.AUTH_FAILED,
+        HealthBadge.UNAVAILABLE: ProviderState.UNAVAILABLE,
+    }.get(badge, ProviderState.READY_TO_TEST)
 
 
 def mask_secret(value: str) -> str:

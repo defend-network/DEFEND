@@ -27,13 +27,16 @@ function makeProvider(overrides: Partial<ProviderView> = {}): ProviderView {
     category: "macro",
     auth_type: "api_key",
     adapter_kind: "real",
-    state: "CONFIGURED",
+    state: "READY_TO_TEST",
     health_badge: "NOT_TESTED",
     enabled: true,
+    requires_credentials: true,
+    credentials_configured: true,
     credentials: [
       { name: "FRED_API_KEY", configured: true, masked: "****-key" },
     ],
     config: {},
+    detected: {},
     optional_config: ["host"],
     products: ["defend_ai"],
     docs_url: null,
@@ -141,16 +144,108 @@ it("surfaces a failing test as an error message", async () => {
   );
 });
 
-it("labels placeholders and disables their test button", () => {
+it("labels placeholders as planned and disables their test button", () => {
   render(
     <ProviderCard
-      provider={makeProvider({ adapter_kind: "placeholder", state: "PLACEHOLDER" })}
+      provider={makeProvider({
+        adapter_kind: "placeholder",
+        state: "PLANNED",
+        health_badge: "NOT_TESTED",
+      })}
       token="t"
       onChanged={vi.fn()}
     />,
   );
+  expect(screen.getByText("Planned")).toBeVisible();
   expect(screen.getByText("ADAPTER NOT IMPLEMENTED")).toBeVisible();
   expect(screen.getByRole("button", { name: "Test" })).toBeDisabled();
+  expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+  expect(screen.getByText(/PLANNED/)).toBeVisible();
+});
+
+it("keeps placeholder credentials savable even when credentials exist", async () => {
+  vi.mocked(setupApi.saveSetupSecret).mockResolvedValue({
+    ok: true,
+    provider_id: "api_sports",
+    secret_name: "API_SPORTS_API_KEY",
+    configured: true,
+    masked: "****new",
+  });
+  const user = userEvent.setup();
+  render(
+    <ProviderCard
+      provider={makeProvider({
+        provider_id: "api_sports",
+        display_name: "API-Sports",
+        adapter_kind: "placeholder",
+        state: "PLANNED",
+        credentials: [
+          { name: "API_SPORTS_API_KEY", configured: true, masked: "****key" },
+        ],
+      })}
+      token="t"
+      onChanged={vi.fn()}
+    />,
+  );
+  expect(
+    screen.getByText(/saved in advance/i),
+  ).toBeVisible();
+  const input = screen.getByLabelText("API_SPORTS_API_KEY value");
+  expect(input).not.toBeDisabled();
+  await user.type(input, "preloaded-key-77");
+  await user.click(screen.getByRole("button", { name: "Update" }));
+  await waitFor(() =>
+    expect(setupApi.saveSetupSecret).toHaveBeenCalledWith(
+      "t",
+      "api_sports",
+      "API_SPORTS_API_KEY",
+      "preloaded-key-77",
+    ),
+  );
+});
+
+it("shows the state progression labels", () => {
+  const states: [ProviderView["state"], string][] = [
+    ["NEEDS_CREDENTIAL", "Needs credential"],
+    ["READY_TO_TEST", "Ready to test"],
+    ["HEALTHY", "Healthy"],
+    ["RATE_LIMITED", "Rate limited"],
+    ["AUTH_FAILED", "Auth failed"],
+    ["UNAVAILABLE", "Unavailable"],
+  ];
+  for (const [state, label] of states) {
+    const { unmount } = render(
+      <ProviderCard provider={makeProvider({ state })} token="t" onChanged={vi.fn()} />,
+    );
+    expect(screen.getByText(label)).toBeVisible();
+    unmount();
+  }
+});
+
+it("shows detected runtime values as read-only context", () => {
+  render(
+    <ProviderCard
+      provider={makeProvider({
+        provider_id: "origin_defend_ai",
+        display_name: "DEFEND AI origin",
+        auth_type: "none",
+        credentials: [],
+        detected: {
+          public_origin: "https://ai.defend-network.org",
+          api_port: "8000",
+          web_port: "3000",
+        },
+        optional_config: ["public_origin", "api_port", "web_port"],
+        config: {},
+      })}
+      token="t"
+      onChanged={vi.fn()}
+    />,
+  );
+  expect(screen.getByText("Detected (runtime)")).toBeVisible();
+  expect(screen.getByText("https://ai.defend-network.org")).toBeVisible();
+  const apiInput = screen.getByLabelText("api_port value") as HTMLInputElement;
+  expect(apiInput.placeholder).toBe("Detected: 8000");
 });
 
 it("omits the credentials section for auth-free providers", () => {

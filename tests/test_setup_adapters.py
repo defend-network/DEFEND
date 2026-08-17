@@ -79,7 +79,7 @@ def probe_for(provider_id: str, result: FetchResult):
 
 def test_all_real_adapters_resolve_and_report_healthy_on_200():
     success_bodies = {
-        "vast": {"instances": []},
+        "vast": {"id": 12345, "email": "user@example.com", "balance": 12.5},
         "huggingface": {"name": "someone", "orgs": []},
         "fred": {"seriess": [{"id": "GDPC1"}]},
         "congress_gov": {"bills": []},
@@ -94,6 +94,41 @@ def test_all_real_adapters_resolve_and_report_healthy_on_200():
         assert probe.ok, provider_id
         assert probe.latency_ms == 31
         assert badge_from_probe(probe) is HealthBadge.HEALTHY, provider_id
+
+
+def test_vast_probe_hits_users_current_endpoint_with_bearer():
+    captured: list[dict] = []
+
+    def capturing(url, *, timeout_seconds=10.0, headers=None, retries=2,
+                  backoff_seconds=1.0, known_secrets=()):
+        captured.append({"url": url, "headers": headers, "known": known_secrets})
+        return _Success({"id": 7, "email": "owner@example.com"})
+
+    adapters_module.fetch = capturing
+    probe = probe_for("vast", _Success({}))
+    assert probe.ok is True
+    assert probe.authenticated is True
+    assert captured[0]["url"] == "https://console.vast.ai/api/v0/users/current/"
+    assert captured[0]["headers"]["Authorization"] == "Bearer vast-key-value"
+    assert "vast-key-value" in captured[0]["known"]
+
+
+def test_vast_404_regression_maps_to_unavailable_not_healthy():
+    # The previous probe path (/api/v0/current) returned 404; the corrected
+    # probe must still classify a 404 as unavailable, never as healthy.
+    fake_fetch(_Failure(status_code=404))
+    probe = probe_for("vast", _Failure(status_code=404))
+    assert probe.ok is False
+    assert probe.status_code == 404
+    assert probe.detail == "status 404"
+    assert badge_from_probe(probe) is HealthBadge.UNAVAILABLE
+
+
+def test_vast_success_requires_user_shape():
+    fake_fetch(_Success({}))
+    probe = probe_for("vast", _Success({}))
+    assert probe.ok is False
+    assert badge_from_probe(probe) is HealthBadge.UNAVAILABLE
 
 
 def test_missing_credentials_never_touch_network():

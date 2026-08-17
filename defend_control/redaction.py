@@ -26,7 +26,7 @@ _AUTHORIZATION_VALUE = re.compile(
 )
 _UNQUOTED_VALUE = re.compile(
     rf"(?P<prefix>(?<![A-Za-z0-9_.-])[\"']?{_SECRET_KEY}[\"']?\s*[:=]\s*)"
-    r"(?P<value>[^\s,;}\]]+)",
+    r"(?P<value>(?![\"'])(?!true\b)(?!false\b)(?!null\b)(?!-?\d)[^\s,;}\[\]]+)",
     re.IGNORECASE,
 )
 
