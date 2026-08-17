@@ -50,6 +50,10 @@ class SportsDataReader(Protocol):
 
     def tt_events(self) -> list[dict[str, object]]: ...
 
+    def latest_live_state(
+        self, event_key: str
+    ) -> dict[str, object] | None: ...
+
     def market_selections(self, event_key: str, market_key: str) -> list[SportsSelectionQuote]: ...
 
     def latest_odds(
@@ -120,6 +124,39 @@ class PostgresSportsDataReader:
                     }
                     for row in cursor.fetchall()
                 ]
+
+    def latest_live_state(self, event_key: str) -> dict[str, object] | None:
+        """Latest raw live observation for an event, passed through untouched.
+
+        ``state_json`` is the provider's own shape (e.g. sets/games/points
+        for table tennis); it is never normalized here so nothing is
+        invented about its semantics. Returns None when no observation
+        exists or the state cannot be parsed.
+        """
+        with self._database.connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT lo.state_json, lo.observed_at, lo.received_at
+                    FROM live_observations lo
+                    JOIN sport_events e ON e.event_id = lo.event_id
+                    WHERE e.event_key = %s
+                    ORDER BY lo.observed_at DESC, lo.live_observation_id DESC
+                    LIMIT 1
+                    """,
+                    (event_key,),
+                )
+                row = cursor.fetchone()
+        if row is None:
+            return None
+        state = row[0]
+        if not isinstance(state, dict):
+            return None
+        return {
+            "state": state,
+            "observed_at": row[1],
+            "received_at": row[2],
+        }
 
     def market_selections(self, event_key: str, market_key: str) -> list[SportsSelectionQuote]:
         with self._database.connect() as connection:

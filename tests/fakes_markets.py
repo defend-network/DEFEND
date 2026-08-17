@@ -42,6 +42,7 @@ class FakeSportsReader:
 
     def __init__(self, quotes: Mapping[str, list[SportsSelectionQuote]] | None = None) -> None:
         self._quotes = dict(quotes or {})
+        self._live: dict[str, dict[str, object]] = {}
         self._health: dict[str, Mapping[str, object]] = {
             "book-a": {"status": "HEALTHY", "observed_at": _aware()},
             "book-b": {"status": "HEALTHY", "observed_at": _aware()},
@@ -56,6 +57,19 @@ class FakeSportsReader:
 
     def tt_events(self) -> list[dict[str, object]]:
         return [{"event_key": "tt-live-001", "display_name": "Player A vs Player B"}]
+
+    def latest_live_state(self, event_key: str) -> dict[str, object] | None:
+        live = self._live.get(event_key)
+        if live is None:
+            return None
+        return dict(live)
+
+    def set_live_state(self, event_key: str, state: dict[str, object]) -> None:
+        self._live[event_key] = {
+            "state": dict(state),
+            "observed_at": _aware(),
+            "received_at": _aware(hour=13),
+        }
 
     def market_selections(self, event_key: str, market_key: str) -> list[SportsSelectionQuote]:
         return self._quotes.get((event_key, market_key), [])
@@ -120,6 +134,8 @@ class InMemoryStore:
         self._policy_ids: dict[str, UUID] = {}
         self._opportunities: list[Opportunity] = []
         self._instruments: list[dict[str, object]] = []
+        self._decisions: list[dict[str, object]] = []
+        self._outcomes: list[dict[str, object]] = []
 
     def register_strategy(self, strategy_key: str) -> None:
         self._strategy_ids.setdefault(strategy_key, uuid4())
@@ -182,7 +198,16 @@ class InMemoryStore:
         ]
 
     def catalog_decisions(self, limit: int = 50) -> list[dict[str, object]]:
-        return []
+        return list(self._decisions[-limit:])
+
+    def record_decision(self, decision: dict[str, object]) -> None:
+        self._decisions.append(decision)
+
+    def catalog_outcomes(self, limit: int = 500) -> list[dict[str, object]]:
+        return list(self._outcomes[-limit:])
+
+    def record_outcome(self, outcome: dict[str, object]) -> None:
+        self._outcomes.append(outcome)
 
     def catalog_quality(self, limit: int = 50) -> list[dict[str, object]]:
         return []

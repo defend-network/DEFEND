@@ -2,8 +2,12 @@ import { notFound } from "next/navigation";
 import { MarketsShell } from "@/components/markets/MarketsShell";
 import { MarketsSectionId } from "@/components/markets/marketsSections";
 import { PendingPanel } from "@/components/markets/PendingPanel";
+import { JournalPanel } from "@/components/markets/JournalPanel";
 
-type PendingSectionId = Exclude<MarketsSectionId, "" | "sports" | "data-health">;
+type PendingSectionId = Exclude<
+  MarketsSectionId,
+  "" | "sports" | "data-health" | "journal"
+>;
 
 const PENDING_SECTIONS: PendingSectionId[] = [
   "opportunities",
@@ -13,7 +17,6 @@ const PENDING_SECTIONS: PendingSectionId[] = [
   "events",
   "strategies",
   "backtests",
-  "journal",
 ];
 
 const PENDING_SET = new Set<PendingSectionId>(PENDING_SECTIONS);
@@ -28,6 +31,13 @@ export default function MarketsSectionPage({
   params: { section: string };
 }) {
   const { section } = params;
+  if (section === "journal") {
+    return (
+      <MarketsShell>
+        <JournalPanel />
+      </MarketsShell>
+    );
+  }
   if (!PENDING_SET.has(section as PendingSectionId)) {
     notFound();
   }

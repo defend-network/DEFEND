@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { MARKETS_SECTIONS } from "@/components/markets/marketsSections";
+import { ProductSwitcher } from "@/components/ProductSwitcher";
 
 export type { MarketsSectionId } from "@/components/markets/marketsSections";
 
@@ -13,9 +14,12 @@ export function MarketsShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="markets-shell">
       <header className="markets-header">
-        <Link href="/markets" className="markets-brand">
-          DEFENDmarkets
-        </Link>
+        <div className="markets-header-top">
+          <Link href="/markets" className="markets-brand">
+            DEFENDmarkets
+          </Link>
+          <ProductSwitcher />
+        </div>
         <nav className="markets-nav" aria-label="Markets sections">
           {MARKETS_SECTIONS.map((section) => (
             <Link

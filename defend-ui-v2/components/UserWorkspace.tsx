@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { Brand } from "./Brand";
 import { StatusPill } from "./StatusPill";
+import { ProductSwitcher } from "./ProductSwitcher";
 import {
   sendChat,
   uploadFiles,
@@ -264,6 +265,7 @@ export function UserWorkspace() {
             <Menu size={18} />
           </button>
           <Brand href="/" />
+          <ProductSwitcher />
         </div>
         <div className="topbar-right">
           <span className="system-online">

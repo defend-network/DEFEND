@@ -1,18 +1,23 @@
-import { describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { describe, expect, it, vi, afterEach } from "vitest";
+import { render, screen, within } from "@testing-library/react";
 import { MarketsShell } from "@/components/markets/MarketsShell";
 import { PendingPanel } from "@/components/markets/PendingPanel";
 
 vi.mock("next/navigation", () => ({ usePathname: () => "/markets" }));
 
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
 describe("MarketsShell", () => {
   it("renders the full DEFENDmarkets navigation", () => {
+    vi.stubGlobal("fetch", vi.fn(() => Promise.reject(new TypeError("offline"))));
     render(<MarketsShell>content</MarketsShell>);
-    expect(screen.getByText("DEFENDmarkets")).toBeDefined();
+    expect(screen.getAllByText("DEFENDmarkets").length).toBeGreaterThan(0);
     for (const label of [
       "Overview",
       "Opportunities",
-      "Sports",
+      "Table Tennis",
       "Equities",
       "Macro",
       "Crypto",
@@ -24,6 +29,23 @@ describe("MarketsShell", () => {
     ]) {
       expect(screen.getByRole("link", { name: label })).toBeDefined();
     }
+  });
+
+  it("includes the shared product switcher with DEFEND AI and DEFENDcoder", () => {
+    vi.stubGlobal("fetch", vi.fn(() => Promise.reject(new TypeError("offline"))));
+    render(<MarketsShell>content</MarketsShell>);
+    const switcher = screen.getByRole("navigation", { name: "DEFEND products" });
+    expect(within(switcher).getByRole("link", { name: /DEFEND AI/ })).toBeDefined();
+    expect(within(switcher).getByRole("link", { name: /DEFENDmarkets/ })).toBeDefined();
+    expect(within(switcher).getByText(/DEFENDcoder/)).toBeDefined();
+  });
+
+  it("does not route into an offline product origin", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => Promise.reject(new TypeError("offline"))));
+    render(<MarketsShell>content</MarketsShell>);
+    const switcher = screen.getByRole("navigation", { name: "DEFEND products" });
+    expect(await within(switcher).findByText("unavailable")).toBeDefined();
+    expect(within(switcher).queryAllByRole("link", { name: /DEFENDcoder/ }).length).toBe(0);
   });
 });
 

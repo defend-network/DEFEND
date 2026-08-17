@@ -160,3 +160,188 @@ class TestApiHermetic:
         assert client.get("/v1/decisions").status_code == 200
         assert client.get("/v1/data-quality").status_code == 200
         assert client.get("/v1/catalog/venues").status_code == 503
+
+
+class TestTableTennisBoard:
+    def test_board_without_reader_is_503(self):
+        app = app_module.build_markets_app(_build_dependencies())
+        response = TestClient(app).get("/v1/sports/table-tennis")
+        assert response.status_code == 503
+
+    def test_board_reports_real_odds_edges_and_honest_unavailable_values(self):
+        reader = FakeSportsReader(quotes={("tt-live-001", "match_winner"): arb_pair()})
+        app = app_module.build_markets_app(_build_dependencies(reader))
+        body = TestClient(app).get("/v1/sports/table-tennis").json()
+
+        assert body["strategy_key"] == "tt_two_way_arb"
+        assert body["market_key"] == "match_winner"
+        assert body["now"] == NOW.isoformat()
+        assert len(body["events"]) == 1
+
+        event = body["events"][0]
+        assert event["event_key"] == "tt-live-001"
+        assert event["display_name"] == "Player A vs Player B"
+        assert len(event["legs"]) == 2
+        for leg in event["legs"]:
+            assert leg["implied_probability"] is not None
+            assert leg["source_key"] in ("book-a", "book-b")
+        assert event["gross_edge"] is not None
+        assert event["costs"]["total"] is None
+        assert event["net_edge"] is None
+        assert event["model_probability"] is None
+        assert event["model_probability_available"] is False
+        assert event["confidence"] is not None
+        assert event["data_quality"] is not None
+        assert event["freshness"]["status"] == "STALE"
+        assert event["freshness"]["age_seconds"] == 7200
+        assert event["strategy"]["key"] == "tt_two_way_arb"
+        assert event["strategy"]["eligible"] is True
+        assert event["decision"] is None
+
+    def test_board_passes_through_live_state_when_present(self):
+        reader = FakeSportsReader(quotes={("tt-live-001", "match_winner"): arb_pair()})
+        reader.set_live_state(
+            "tt-live-001",
+            {"status": "live", "sets": [1, 0], "games": [3, 2], "points": [9, 7]},
+        )
+        app = app_module.build_markets_app(_build_dependencies(reader))
+        body = TestClient(app).get("/v1/sports/table-tennis").json()
+        event = body["events"][0]
+        assert event["live"] is not None
+        assert event["live"]["state"]["status"] == "live"
+        assert event["live"]["state"]["sets"] == [1, 0]
+        assert event["live"]["observed_at"] is not None
+
+    def test_board_attaches_latest_journaled_decision_per_event(self):
+        reader = FakeSportsReader(
+            quotes={("tt-live-001", "match_winner"): arb_pair(fees="0.001")}
+        )
+        dependencies = _build_dependencies(reader)
+        app = app_module.build_markets_app(dependencies)
+        client = TestClient(app)
+        outcome = client.post(
+            "/v1/evaluate/sports",
+            json={"event_key": "tt-live-001", "market_key": "match_winner"},
+        ).json()
+        assert outcome["decision_type"] == "OPPORTUNITY"
+
+        dependencies.store.record_decision(
+            {
+                "decision_id": outcome["decision_id"],
+                "opportunity_id": outcome["opportunity_id"],
+                "strategy_key": "tt_two_way_arb",
+                "policy_key": "markets_core",
+                "decision_type": "OPPORTUNITY",
+                "reason_codes": [],
+                "thesis": "tt_two_way_arb evaluation on tt-live-001 match_winner using real observed odds.",
+                "confidence": outcome["confidence"],
+                "estimated_edge": outcome["estimated_edge"],
+                "cost_estimate": outcome["cost_estimate"],
+                "data_cutoff_timestamp": NOW.isoformat(),
+                "model_version": None,
+                "created_at": NOW.isoformat(),
+                "amendment_of": None,
+                "outcome_id": None,
+                "instrument_key": "sports:tt-live-001:match_winner",
+            }
+        )
+        body = client.get("/v1/sports/table-tennis").json()
+        event = body["events"][0]
+        assert event["decision"] is not None
+        assert event["decision"]["decision_type"] == "OPPORTUNITY"
+        assert event["decision"]["decision_id"] == outcome["decision_id"]
+
+    def test_board_marks_no_action_with_reason_codes(self):
+        reader = FakeSportsReader(quotes={("tt-live-001", "match_winner"): arb_pair()})
+        dependencies = _build_dependencies(reader)
+        app = app_module.build_markets_app(dependencies)
+        client = TestClient(app)
+        outcome = client.post(
+            "/v1/evaluate/sports",
+            json={"event_key": "tt-live-001", "market_key": "match_winner"},
+        ).json()
+        assert outcome["decision_type"] == "NO_ACTION"
+        dependencies.store.record_decision(
+            {
+                "decision_id": outcome["decision_id"],
+                "decision_type": "NO_ACTION",
+                "reason_codes": ["costs_unaccounted"],
+                "instrument_key": "sports:tt-live-001:match_winner",
+            }
+        )
+        event = client.get("/v1/sports/table-tennis").json()["events"][0]
+        assert event["decision"]["decision_type"] == "NO_ACTION"
+        assert event["decision"]["reason_codes"] == ["costs_unaccounted"]
+
+
+class TestPerformance:
+    def test_performance_reports_empty_sample_size_honestly(self):
+        app = app_module.build_markets_app(_build_dependencies())
+        body = TestClient(app).get("/v1/performance").json()
+        assert body["sample_size"]["decisions"] == 0
+        assert body["no_action_pct"] is None
+        assert body["net_pnl"] is None
+        assert body["win_rate"] is None
+        assert body["roi"]["available"] is False
+        assert body["clv"]["available"] is False
+        assert body["calibration"]["available"] is False
+        assert body["max_drawdown"]["available"] is False
+
+    def test_performance_aggregates_real_journal_rows(self):
+        dependencies = _build_dependencies()
+        store = dependencies.store
+        store.record_decision(
+            {
+                "decision_id": "d-1",
+                "decision_type": "NO_ACTION",
+                "reason_codes": ["costs_unaccounted"],
+                "instrument_key": "sports:tt-live-001:match_winner",
+            }
+        )
+        store.record_decision(
+            {
+                "decision_id": "d-2",
+                "decision_type": "OPPORTUNITY",
+                "reason_codes": [],
+                "instrument_key": "sports:tt-live-001:match_winner",
+            }
+        )
+        store.record_outcome(
+            {
+                "outcome_id": "o-1",
+                "decision_id": "d-2",
+                "instrument_key": "sports:tt-live-001:match_winner",
+                "resolved_at": NOW.isoformat(),
+                "result": "WON",
+                "pnl": "12.5",
+                "clv": "0.03",
+                "calibration_bucket": "0.85-1.00",
+            }
+        )
+        store.record_outcome(
+            {
+                "outcome_id": "o-2",
+                "decision_id": "d-2",
+                "instrument_key": "sports:tt-live-001:match_winner",
+                "resolved_at": NOW.isoformat(),
+                "result": "LOST",
+                "pnl": "-8.0",
+                "clv": None,
+                "calibration_bucket": None,
+            }
+        )
+        app = app_module.build_markets_app(dependencies)
+        body = TestClient(app).get("/v1/performance").json()
+
+        assert body["sample_size"]["decisions"] == 2
+        assert body["sample_size"]["no_actions"] == 1
+        assert body["sample_size"]["settled"] == 2
+        assert body["no_action_pct"] == 0.5
+        assert float(body["net_pnl"]) == 4.5
+        assert body["win_rate"] == 0.5
+        assert body["roi"]["available"] is False
+        assert float(body["clv"]["value"]) == 0.03
+        assert body["clv"]["available"] is True
+        assert body["calibration"]["available"] is True
+        assert body["calibration"]["buckets"] == {"0.85-1.00": 1}
+        assert float(body["max_drawdown"]["value"]) == 8.0
