@@ -10,9 +10,25 @@ import {
 
 type Props = {
   onSuccess: (session: AdminSession) => void;
+  eyebrow?: string;
+  title?: string;
+  description?: string;
+  headerLabel?: string;
+  headerHref?: string | null;
+  backHref?: string | null;
+  backLabel?: string | null;
 };
 
-export default function AdminLogin({ onSuccess }: Props) {
+export default function AdminLogin({
+  onSuccess,
+  eyebrow = "Restricted",
+  title = "Admin access",
+  description = "Enter your operator account to continue.",
+  headerLabel = "DEFEND AI home",
+  headerHref = "/",
+  backHref = "/",
+  backLabel = "← Back to DEFEND AI",
+}: Props) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -46,12 +62,16 @@ export default function AdminLogin({ onSuccess }: Props) {
     <div className="shell admin-lock">
       <div className="flag-bg" aria-hidden="true" />
       <header className="topbar">
-        <a href="/" aria-label="DEFEND AI home"><Brand /></a>
+        {headerHref ? (
+          <a href={headerHref} aria-label={headerLabel}><Brand /></a>
+        ) : (
+          <span className="admin-lock-banner">{headerLabel}</span>
+        )}
       </header>
       <form className="admin-lock-card" onSubmit={unlock}>
-        <span className="eyebrow">Restricted</span>
-        <h1>Admin access</h1>
-        <p>Enter your operator account to continue.</p>
+        <span className="eyebrow">{eyebrow}</span>
+        <h1>{title}</h1>
+        <p>{description}</p>
         <input
           type="text"
           value={username}
@@ -73,7 +93,7 @@ export default function AdminLogin({ onSuccess }: Props) {
         <button type="submit" disabled={loading}>
           {loading ? "Checking…" : "Unlock"}
         </button>
-        <a href="/">← Back to DEFEND AI</a>
+        {backHref && backLabel !== null && <a href={backHref}>{backLabel}</a>}
       </form>
     </div>
   );

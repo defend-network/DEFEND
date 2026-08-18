@@ -84,19 +84,24 @@ class FakeSportsReader:
         return PitAvailability(provided=frozenset({"observed_at", "received_at", "scheduled_at", "raw_ref"}))
 
 
-def arb_pair(day: int = 15, *, fees: str | None = None) -> list[SportsSelectionQuote]:
+def arb_pair(
+    day: int = 15,
+    *,
+    fees: str | None = None,
+    selection_keys: tuple[str, str] = ("player_a", "player_b"),
+) -> list[SportsSelectionQuote]:
     return [
         SportsSelectionQuote(
-            selection_key="player_a",
-            display_name="Player A",
+            selection_key=selection_keys[0],
+            display_name=selection_keys[0],
             decimal_odds=Decimal("1.85"),
             provenance=stamp("book-a", day, 10),
             selection_id=str(uuid4()),
             costs=CostModel(fees=Decimal(fees)) if fees is not None else None,
         ),
         SportsSelectionQuote(
-            selection_key="player_b",
-            display_name="Player B",
+            selection_key=selection_keys[1],
+            display_name=selection_keys[1],
             decimal_odds=Decimal("2.35"),
             provenance=stamp("book-b", day, 10),
             selection_id=str(uuid4()),
@@ -136,6 +141,32 @@ class InMemoryStore:
         self._instruments: list[dict[str, object]] = []
         self._decisions: list[dict[str, object]] = []
         self._outcomes: list[dict[str, object]] = []
+        self._tt_results: list[dict[str, object]] = []
+        self._feeds: dict[str, dict[str, object]] = {}
+        self._feed_records: dict[str, list[dict[str, object]]] = {}
+
+    def catalog_tt_results(self, limit: int = 2000) -> list[dict[str, object]]:
+        return list(self._tt_results[-limit:])
+
+    def upsert_feed(self, definition: object) -> None:
+        self._feeds[definition.provider_id] = {"provider_id": definition.provider_id}
+
+    def record_probe(self, result: object, *, observed_at: object) -> None:
+        self._feeds.setdefault(result.provider_id, {})["status"] = result.status
+
+    def insert_records(self, provider_id: str, records: object, *, received_at: object) -> int:
+        stored = [{"record_key": r.record_key} for r in records]
+        self._feed_records.setdefault(provider_id, []).extend(stored)
+        return len(stored)
+
+    def record_tt_results(self, results: object) -> int:
+        return len(results)
+
+    def list_feeds(self) -> list[dict[str, object]]:
+        return list(self._feeds.values())
+
+    def list_records(self, provider_id: str, limit: int = 50) -> list[dict[str, object]]:
+        return list(self._feed_records.get(provider_id, [])[-limit:])
 
     def register_strategy(self, strategy_key: str) -> None:
         self._strategy_ids.setdefault(strategy_key, uuid4())

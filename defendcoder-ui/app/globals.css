@@ -53,66 +53,101 @@ input {
 }
 
 .portal-overlay {
-  /* Anchored to the visible 3:2 artwork region so every percentage below
-     is a true pixel coordinate of defendcoder-login-bg.png (1536x1024),
-     independent of the viewport aspect ratio. Wide viewports (aspect
-     >= 3/2) crop the artwork vertically: the overlay tracks the full
-     image width, centered. The media query below handles the narrow case
-     (full image height, centered). */
   position: absolute;
-  top: 50%;
-  left: 0;
-  width: 100vw;
-  height: calc(100vw / 1.5);
-  transform: translateY(-50%);
+  inset: 0;
+  display: grid;
+  place-content: center;
+  gap: 18px;
+  padding: 32px 20px;
+  overflow-y: auto;
+}
+
+.login-heading {
+  text-align: center;
+  margin-bottom: 6px;
+}
+
+.login-heading p {
+  margin: 6px 0 0;
+  color: #8ba8bd;
+  font-size: 0.85rem;
+  letter-spacing: 0.04em;
+}
+
+.login-forms {
+  display: flex;
+  gap: 16px;
+  justify-content: center;
 }
 
 .login-form {
-  position: absolute;
-  top: 55.55%;
-  width: 23.8%;
-  height: 24.6%;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  width: min(320px, 44vw);
+  padding: 20px 20px 18px;
+  border: 1px solid rgba(72, 167, 255, 0.16);
+  border-radius: 14px;
+  background:
+    linear-gradient(
+      180deg,
+      rgba(4, 18, 36, 0.92),
+      rgba(2, 11, 24, 0.94)
+    );
+  box-shadow:
+    0 10px 34px rgba(0, 0, 0, 0.45),
+    0 0 0 1px rgba(72, 167, 255, 0.05);
 }
 
-.admin-form {
-  left: 19.25%;
+.login-form h2 {
+  margin: 0 0 4px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: #eaf5ff;
 }
 
-.consumer-form {
-  left: 51.35%;
+.admin-form h2 {
+  color: #ff8fa3;
+}
+
+.consumer-form h2 {
+  color: #4fbfff;
+}
+
+.portal-label {
+  display: block;
+  margin-top: 4px;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: #8ba8bd;
 }
 
 .portal-input {
-  position: absolute;
-  left: 7.25%;
-  width: 85.5%;
-  height: 19.2%;
-  border: 1px solid rgba(72, 167, 255, 0.08);
-  border-radius: 0.62rem;
+  width: 100%;
+  height: 42px;
+  border: 1px solid rgba(72, 167, 255, 0.22);
+  border-radius: 9px;
   outline: none;
   color: #f7fbff;
   background:
     linear-gradient(
       90deg,
-      rgba(2, 14, 29, 0.88),
-      rgba(3, 18, 37, 0.78)
+      rgba(2, 14, 29, 0.92),
+      rgba(3, 18, 37, 0.86)
     );
   caret-color: #42cfff;
-  padding:
-    0.3rem
-    0.9rem
-    0.3rem
-    3.3rem;
-  font-size:
-    clamp(
-      0.72rem,
-      0.94vw,
-      1.08rem
-    );
+  padding: 0 12px;
+  font-size: 0.95rem;
   transition:
     border-color 120ms ease,
     box-shadow 120ms ease,
     background 120ms ease;
+}
+
+.portal-input::placeholder {
+  color: #47637a;
 }
 
 .portal-input:focus {
@@ -120,58 +155,53 @@ input {
   box-shadow:
     0 0 0 1px rgba(41, 186, 255, 0.22),
     0 0 14px rgba(0, 174, 255, 0.16);
-  background: rgba(2, 17, 34, 0.94);
-}
-
-.username-input {
-  top: 22.3%;
-}
-
-.password-input {
-  top: 45.8%;
+  background: rgba(2, 17, 34, 0.96);
 }
 
 .portal-submit {
-  position: absolute;
-  left: 7.2%;
-  top: 69.1%;
-  width: 85.7%;
-  height: 20.8%;
+  margin-top: 10px;
+  height: 42px;
   border: 0;
-  border-radius: 0.62rem;
+  border-radius: 9px;
   cursor: pointer;
-  opacity: 0.01;
-  background: transparent;
+  font-size: 0.92rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: #04121f;
+  background: linear-gradient(90deg, #37b4ff, #1f9cf0);
+  transition:
+    filter 120ms ease,
+    transform 80ms ease;
 }
 
-.portal-submit:focus-visible {
-  opacity: 1;
-  outline: 2px solid #5ad8ff;
-  outline-offset: 3px;
-  background: rgba(28, 143, 230, 0.12);
+.portal-submit:hover:not(:disabled) {
+  filter: brightness(1.08);
 }
 
-.admin-form .portal-submit:focus-visible {
-  outline-color: #ff304c;
-  background: rgba(255, 28, 61, 0.12);
+.portal-submit:active:not(:disabled) {
+  transform: translateY(1px);
 }
 
 .portal-submit:disabled {
   cursor: wait;
+  filter: saturate(0.5);
+  opacity: 0.75;
+}
+
+.admin-form .portal-submit {
+  background: linear-gradient(90deg, #ff5d78, #ef3d5c);
+  color: #fff;
 }
 
 .login-error {
-  position: absolute;
-  left: 50%;
-  top: 82.7%;
-  transform: translateX(-50%);
-  max-width: min(90vw, 650px);
+  max-width: min(90vw, 660px);
+  margin: 4px auto 0;
   padding: 0.65rem 1rem;
   border:
     1px solid
     rgba(255, 77, 98, 0.55);
   border-radius: 0.5rem;
-  background: rgba(18, 2, 8, 0.9);
+  background: rgba(18, 2, 8, 0.92);
   box-shadow:
     0 0 22px
     rgba(255, 25, 57, 0.22);
@@ -193,27 +223,30 @@ input {
   border: 0;
 }
 
-@media (max-aspect-ratio: 3 / 2) {
-  .login-artwork {
-    background-size: auto 100%;
-  }
-
-  .portal-overlay {
-    top: 0;
-    left: 50%;
-    width: calc(100vh * 1.5);
-    height: 100vh;
-    transform: translateX(-50%);
-  }
-}
-
 @media (max-width: 760px) {
   body {
     overflow: auto;
   }
 
   .login-shell {
-    min-height: 760px;
+    min-height: 100vh;
+    height: auto;
+    overflow: visible;
+  }
+
+  .login-artwork {
+    background-size: auto 100%;
+    position: fixed;
+  }
+
+  .portal-overlay {
+    position: relative;
+    place-content: start center;
+    padding: 48px 16px 40px;
+  }
+
+  .login-form {
+    width: min(100%, 340px);
   }
 }
 
@@ -368,6 +401,17 @@ input {
   padding: 10px;
   border: 1px solid rgba(67, 143, 207, 0.18);
   background: rgba(5, 20, 37, 0.75);
+  cursor: pointer;
+}
+
+.workspace-card:hover {
+  border-color: rgba(75, 191, 255, 0.4);
+}
+
+.workspace-card-active,
+.workspace-card-active:hover {
+  border-color: rgba(75, 191, 255, 0.55);
+  background: rgba(12, 42, 70, 0.85);
 }
 
 .workspace-card span,
@@ -382,6 +426,58 @@ input {
 .muted {
   color: #667f94;
   font-size: 0.78rem;
+}
+
+.workspace-form {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.workspace-form input {
+  box-sizing: border-box;
+  width: 100%;
+  border: 1px solid rgba(71, 156, 221, 0.24);
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: rgba(3, 17, 32, 0.94);
+  color: #eef9ff;
+}
+
+.workspace-error {
+  margin-top: 12px;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 122, 89, 0.35);
+  border-radius: 6px;
+  background: rgba(60, 16, 8, 0.55);
+  color: #ffb3a3;
+  font-size: 0.78rem;
+}
+
+.logout-link {
+  border: 1px solid rgba(66, 161, 231, 0.28);
+  border-radius: 6px;
+  padding: 6px 10px;
+  background: rgba(8, 31, 55, 0.88);
+  color: #d8f0ff;
+  cursor: pointer;
+  font-size: 0.78rem;
+}
+
+.logout-link:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.agent-actions button:disabled,
+.agent-composer button:disabled,
+.workspace-form button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.agent-composer textarea:disabled {
+  cursor: not-allowed;
 }
 
 .agent-pane {
@@ -554,7 +650,243 @@ input {
     display: none;
   }
 
-  .execution-pane {
+.execution-pane {
     grid-column: 2;
+  }
+}
+
+.runtime-state-ready strong {
+  color: #58d68d;
+}
+
+.runtime-state-starting strong {
+  color: #4fbfff;
+}
+
+.runtime-state-failed strong {
+  color: #ff7070;
+}
+
+.runtime-state-offline strong {
+  color: #8ba8bd;
+}
+
+.run-banner {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 10px 14px;
+  margin-bottom: 14px;
+  border: 1px solid rgba(74, 157, 224, 0.18);
+  background: rgba(7, 24, 43, 0.5);
+  border-radius: 8px;
+}
+
+.run-status-chip {
+  flex: 0 0 auto;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(75, 191, 255, 0.4);
+  color: #4fbfff;
+  background: rgba(75, 191, 255, 0.08);
+}
+
+.run-prompt-text {
+  color: #cfe6f5;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.agent-message {
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: rgba(7, 24, 43, 0.45);
+  border: 1px solid rgba(74, 157, 224, 0.12);
+}
+
+.agent-message-tool {
+  background: rgba(3, 12, 24, 0.75);
+}
+
+.message-role {
+  display: inline-block;
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: #4fbfff;
+  margin-bottom: 6px;
+}
+
+.message-content {
+  color: #e4f2fc;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  margin: 0;
+}
+
+.tool-call-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.tool-call-chip {
+  font-size: 0.7rem;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid rgba(75, 191, 255, 0.32);
+  color: #bfe9ff;
+  background: rgba(75, 191, 255, 0.06);
+}
+
+.tool-result pre,
+.agent-log-line {
+  font-family:
+    "Cascadia Code",
+    "SFMono-Regular",
+    Consolas,
+    monospace;
+  font-size: 0.74rem;
+  color: #a9c6da;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 6px 0 0;
+}
+
+.tool-result-ok {
+  color: #58d68d;
+  font-size: 0.68rem;
+  margin-left: 8px;
+}
+
+.tool-result-error {
+  color: #ff7070;
+  font-size: 0.68rem;
+  margin-left: 8px;
+}
+
+.agent-log-line {
+  display: flex;
+  gap: 10px;
+}
+
+.agent-log-line span:last-child {
+  color: #8ba8bd;
+}
+
+.execution-tab-active {
+  border-color: rgba(75, 191, 255, 0.6);
+  color: #e4f2fc;
+  background: rgba(75, 191, 255, 0.1);
+}
+
+.execution-messages {
+  display: grid;
+  gap: 8px;
+}
+
+.execution-pre-error {
+  color: #ffb3b3;
+}
+
+.files-breadcrumb {
+  margin-bottom: 10px;
+  font-size: 0.78rem;
+}
+
+.files-breadcrumb button {
+  color: #4fbfff;
+  background: none;
+  border: none;
+  padding: 2px 0;
+  cursor: pointer;
+  font-size: 0.78rem;
+}
+
+.file-tree {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.file-tree li {
+  padding: 3px 0;
+  font-size: 0.8rem;
+}
+
+.file-dir {
+  color: #4fbfff;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font-size: 0.8rem;
+  text-align: left;
+}
+
+.file-entry {
+  color: #b9d3e4;
+}
+
+.refresh-files {
+  font-size: 0.72rem;
+  padding: 4px 9px;
+}
+
+@media (max-width: 760px) {
+  .workspace-topbar {
+    grid-template-columns: 1fr;
+    gap: 8px;
+    padding: 10px 12px;
+  }
+
+  .workspace-account {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+
+  .workspace-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .workspace-sidebar,
+  .review-pane {
+    grid-column: 1;
+    border-left: none;
+    border-bottom: 1px solid rgba(74, 157, 224, 0.14);
+  }
+
+  .agent-pane {
+    grid-column: 1;
+    min-height: 56vh;
+  }
+
+  .execution-pane {
+    grid-column: 1;
+    min-height: 260px;
+  }
+
+  .agent-composer {
+    grid-template-columns: 1fr;
+  }
+
+  .agent-composer button {
+    min-width: 100%;
+  }
+
+  .pane-header {
+    flex-wrap: wrap;
+  }
+
+  .runtime-strip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 18px;
   }
 }

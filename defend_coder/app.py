@@ -3,9 +3,11 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 import secrets
 import threading
 from typing import Callable
+from uuid import UUID
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from pydantic import BaseModel, Field
@@ -17,13 +19,33 @@ from .auth import (
 )
 from .config import CoderSettings
 from .db import CoderDatabase
-from .repositories import CoderRepository
+from .repositories import CoderRepository, WorkspaceRecord
+from .runs import (
+    RunConflictError,
+    RunDetail,
+    RunRecord,
+    RunsRepository,
+    RunRunner,
+)
+from .workspaces import WorkspaceAccessError, WorkspaceService
 
 
 SESSION_COOKIE = "defendcoder_session"
 CSRF_COOKIE = "defendcoder_csrf"
 
 HEARTBEAT_PATH = "/v1/auth/heartbeat"
+
+#: Fields the consumer-facing runtime status endpoint may expose. Anything
+#: else produced by the injected runtime_status() callback stays server-side.
+CONSUMER_RUNTIME_FIELDS = (
+    "state",
+    "model",
+    "alias",
+    "provider",
+    "context_used",
+    "context_limit",
+    "detail",
+)
 
 
 class LoginRequest(BaseModel):
@@ -39,6 +61,10 @@ class WorkspaceCreateRequest(BaseModel):
     default_branch: str | None = None
 
 
+class RunCreateRequest(BaseModel):
+    prompt: str = Field(min_length=1, max_length=20000)
+
+
 def _account_dict(account: AuthenticatedAccount) -> dict[str, object]:
     return {
         "account_id": str(account.account_id),
@@ -46,6 +72,21 @@ def _account_dict(account: AuthenticatedAccount) -> dict[str, object]:
         "email": account.email,
         "role": account.role,
         "is_active": account.is_active,
+    }
+
+
+def project_runtime_status(
+    status: dict[str, object],
+) -> dict[str, object]:
+    """Project a runtime status dict onto the consumer-safe field subset.
+
+    The full status may contain control-plane details; only the documented
+    safe fields are returned to authenticated browser clients.
+    """
+    return {
+        name: status[name]
+        for name in CONSUMER_RUNTIME_FIELDS
+        if name in status
     }
 
 
@@ -75,6 +116,52 @@ def _workspace_dict(workspace: object) -> dict[str, object]:
     return result
 
 
+def _run_dict(run: RunRecord) -> dict[str, object]:
+    return {
+        "run_id": str(run.run_id),
+        "workspace_id": str(run.workspace_id),
+        "owner_account_id": str(run.owner_account_id),
+        "prompt": run.prompt,
+        "status": run.status,
+        "error": run.error,
+        "created_at": (
+            run.created_at.isoformat()
+            if run.created_at is not None
+            else None
+        ),
+        "finished_at": (
+            run.finished_at.isoformat()
+            if run.finished_at is not None
+            else None
+        ),
+    }
+
+
+def _message_dict(message: object) -> dict[str, object]:
+    result = {
+        "seq": getattr(message, "seq"),
+        "role": getattr(message, "role"),
+        "content": getattr(message, "content"),
+        "tool_call_id": getattr(message, "tool_call_id"),
+        "tool_name": getattr(message, "tool_name"),
+        "tool_result": getattr(message, "tool_result"),
+        "kind": getattr(message, "kind"),
+        "ok": getattr(message, "ok"),
+        "created_at": (
+            getattr(message, "created_at").isoformat()
+            if getattr(message, "created_at") is not None
+            else None
+        ),
+    }
+
+    if getattr(message, "role") == "assistant":
+        result["tool_calls"] = getattr(message, "tool_arguments")
+    else:
+        result["tool_calls"] = None
+
+    return result
+
+
 def build_coder_app(
     *,
     settings: CoderSettings,
@@ -82,6 +169,9 @@ def build_coder_app(
     auth: AuthService,
     runtime_status: Callable[[], dict[str, object]],
     repository: CoderRepository | None = None,
+    runs_repository: RunsRepository | None = None,
+    runner: RunRunner | None = None,
+    configured_root: str | Path | None = None,
     idle_timeout_seconds: int | None = None,
     runtime_stop_callback: Callable[[str], None] | None = None,
     idle_reaper_interval_seconds: float = 15.0,
@@ -138,6 +228,15 @@ def build_coder_app(
     )
 
     repository = repository or CoderRepository(db)
+    runs_repository = runs_repository or RunsRepository(db)
+    workspace_service = WorkspaceService(
+        repository=repository,
+        configured_root=(
+            configured_root
+            if configured_root is not None
+            else settings.workspace_root
+        ),
+    )
 
     def current_account(request: Request) -> AuthenticatedAccount:
         token = request.cookies.get(SESSION_COOKIE)
@@ -338,6 +437,17 @@ def build_coder_app(
             "workspace": _workspace_dict(workspace),
         }
 
+    @app.get("/v1/runtime/status")
+    def runtime_status_view(
+        request: Request,
+    ) -> dict[str, object]:
+        current_account(request)
+
+        return {
+            "application_id": "coder",
+            "runtime": project_runtime_status(runtime_status()),
+        }
+
     @app.get("/v1/admin/status")
     def admin_status(
         request: Request,
@@ -355,6 +465,206 @@ def build_coder_app(
         return {
             "application_id": "coder",
             "runtime": runtime_status(),
+        }
+
+    def owned_workspace(
+        account: AuthenticatedAccount,
+        workspace_id: str,
+    ) -> WorkspaceRecord:
+        try:
+            parsed = UUID(workspace_id)
+        except ValueError:
+            raise HTTPException(
+                status_code=404,
+                detail="workspace not found",
+            ) from None
+
+        for workspace in repository.list_workspaces_for_owner(
+            account.account_id
+        ):
+            if workspace.workspace_id == parsed:
+                return workspace
+
+        raise HTTPException(
+            status_code=404,
+            detail="workspace not found",
+        )
+
+    def owned_run(
+        account: AuthenticatedAccount,
+        workspace_id: str,
+        run_id: str,
+    ) -> RunDetail:
+        workspace = owned_workspace(account, workspace_id)
+
+        try:
+            parsed = UUID(run_id)
+        except ValueError:
+            raise HTTPException(
+                status_code=404,
+                detail="run not found",
+            ) from None
+
+        run = runs_repository.get_run(parsed)
+        if (
+            run is None
+            or run.workspace_id != workspace.workspace_id
+            or run.owner_account_id != account.account_id
+        ):
+            raise HTTPException(
+                status_code=404,
+                detail="run not found",
+            )
+
+        return RunDetail(
+            run=run,
+            messages=runs_repository.messages_for_run(parsed),
+        )
+
+    @app.post(
+        "/v1/workspaces/{workspace_id}/runs",
+        status_code=201,
+    )
+    def create_run(
+        workspace_id: str,
+        payload: RunCreateRequest,
+        request: Request,
+    ) -> dict[str, object]:
+        account = current_account(request)
+        require_csrf(request)
+        workspace = owned_workspace(account, workspace_id)
+
+        if runner is None:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "agent execution is not connected; the model runtime "
+                    "must be started first"
+                ),
+            )
+
+        try:
+            run = runner.start(
+                workspace=workspace,
+                prompt=payload.prompt,
+            )
+        except RunConflictError as error:
+            raise HTTPException(
+                status_code=409,
+                detail=str(error),
+            ) from None
+
+        return {"run": _run_dict(run)}
+
+    @app.get("/v1/workspaces/{workspace_id}/runs")
+    def list_runs(
+        workspace_id: str,
+        request: Request,
+        limit: int = 50,
+    ) -> dict[str, object]:
+        account = current_account(request)
+        workspace = owned_workspace(account, workspace_id)
+
+        runs = runs_repository.list_runs_for_workspace(
+            workspace.workspace_id,
+            limit=limit,
+        )
+
+        return {
+            "runs": [_run_dict(run) for run in runs]
+        }
+
+    @app.get("/v1/workspaces/{workspace_id}/runs/{run_id}")
+    def get_run(
+        workspace_id: str,
+        run_id: str,
+        request: Request,
+    ) -> dict[str, object]:
+        account = current_account(request)
+        detail = owned_run(account, workspace_id, run_id)
+
+        return {
+            "run": _run_dict(detail.run),
+            "messages": [
+                _message_dict(message)
+                for message in detail.messages
+            ],
+        }
+
+    @app.get("/v1/workspaces/{workspace_id}/files")
+    def list_files(
+        workspace_id: str,
+        request: Request,
+        path: str = ".",
+    ) -> dict[str, object]:
+        account = current_account(request)
+        workspace = owned_workspace(account, workspace_id)
+
+        try:
+            target = workspace_service.resolve_owned_path(
+                account.account_id,
+                workspace.workspace_id,
+                path,
+            )
+        except WorkspaceAccessError as error:
+            raise HTTPException(
+                status_code=400,
+                detail=str(error),
+            ) from None
+
+        if target.is_file():
+            return {
+                "path": str(path),
+                "kind": "file",
+                "name": target.name,
+            }
+
+        if not target.is_dir():
+            raise HTTPException(
+                status_code=404,
+                detail="path not found",
+            )
+
+        entries = []
+        try:
+            children = sorted(
+                target.iterdir(),
+                key=lambda entry: (
+                    not entry.is_dir(),
+                    entry.name.casefold(),
+                ),
+            )
+        except OSError as error:
+            raise HTTPException(
+                status_code=500,
+                detail="could not read directory",
+            ) from error
+
+        for entry in children:
+            if entry.name in {
+                ".git",
+                "node_modules",
+                ".next",
+                "__pycache__",
+                ".venv",
+                "venv",
+            }:
+                continue
+            try:
+                is_dir = entry.is_dir()
+            except OSError:
+                continue
+            entries.append(
+                {
+                    "name": entry.name,
+                    "type": "directory" if is_dir else "file",
+                }
+            )
+
+        return {
+            "path": str(path),
+            "kind": "directory",
+            "entries": entries,
         }
 
     return app

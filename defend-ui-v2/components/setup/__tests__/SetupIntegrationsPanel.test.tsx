@@ -44,7 +44,7 @@ const category: SetupCategory = {
       category: "core",
       auth_type: "api_key",
       adapter_kind: "real",
-      state: "CONFIGURED",
+      state: "READY_TO_TEST",
       health_badge: "NOT_TESTED",
       enabled: true,
       credentials: [],
@@ -140,8 +140,12 @@ it("renders diagnostics rows when the diagnostics tab is active", async () => {
         products: ["defend_ai"],
         auth_type: "api_key",
         adapter_kind: "real",
-        enabled: true,
+        implemented: true,
+        requires_credentials: true,
+        credentials_configured: false,
         configured: false,
+        enabled: true,
+        tested: false,
         health_badge: "NOT_CONFIGURED",
         detail: null,
       },
@@ -155,6 +159,9 @@ it("renders diagnostics rows when the diagnostics tab is active", async () => {
   expect(await screen.findByText("FRED")).toBeVisible();
   expect(screen.getByText("Not configured")).toBeVisible();
   expect(screen.getByText("macro")).toBeVisible();
+  expect(screen.getByText("implemented")).toBeVisible();
+  expect(screen.getByText("missing")).toBeVisible();
+  expect(screen.getByText("not tested")).toBeVisible();
 });
 
 it("runs TEST ALL, reports the outcome, and refreshes the summary", async () => {
@@ -170,14 +177,23 @@ it("runs TEST ALL, reports the outcome, and refreshes the summary", async () => 
       },
     ],
     skipped: [{ provider_id: "api_sports", reason: "adapter not implemented" }],
+    summary: {
+      tested: 1,
+      healthy: 1,
+      degraded: 0,
+      failed: 0,
+      skipped: 0,
+      planned: 1,
+    },
   });
   const user = userEvent.setup();
   render(<SetupIntegrationsPanel session={session} />);
   await screen.findByRole("tab", { name: "Core" });
   await user.click(screen.getByRole("button", { name: "TEST ALL CONFIGURED" }));
-  expect(await screen.findByRole("status")).toHaveTextContent(
-    "Tested 1 provider(s)",
-  );
+  const status = await screen.findByRole("status");
+  expect(status).toHaveTextContent("Tested 1");
+  expect(status).toHaveTextContent("healthy 1");
+  expect(status).toHaveTextContent("planned 1");
   await waitFor(() =>
     expect(setupApi.getSetupSummary).toHaveBeenCalledTimes(2),
   );

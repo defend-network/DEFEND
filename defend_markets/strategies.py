@@ -158,6 +158,44 @@ def _combine_leg_costs(
     )
 
 
+def tt_elo_arb_evaluate(inputs: Mapping[str, object]) -> StrategyEvaluation:
+    """Composite L1+L2 evaluation: deterministic arb plus the Elo model gate.
+
+    The L1 arb math is identical to ``tt_two_way_arb_evaluate``; the
+    L2 model is consumed from ``inputs["model"]`` (a mapping produced by
+    the decision pipeline from real match history). Without an available
+    model evaluation the strategy is NOT eligible — the loop abstains
+    rather than trading on the arb signal alone.
+    """
+    evaluation = tt_two_way_arb_evaluate(inputs)
+    if not evaluation.eligible:
+        return evaluation
+
+    model = inputs.get("model")
+    if not isinstance(model, Mapping):
+        return StrategyEvaluation(
+            eligible=False,
+            reasons=("insufficient_model_history",),
+        )
+    available = model.get("available")
+    if not available:
+        return StrategyEvaluation(
+            eligible=False,
+            reasons=("insufficient_model_history",),
+            gross_edge=evaluation.gross_edge,
+        )
+    return StrategyEvaluation(
+        eligible=True,
+        reasons=("two_way_arb_with_model",),
+        gross_edge=evaluation.gross_edge,
+        costs=evaluation.costs,
+        evidence=evaluation.evidence,
+        confidence=evaluation.confidence,
+        model_probability=model.get("p_home"),
+        model_detail=model,
+    )
+
+
 _CLV_HYPOTHESIS = (
     "Closing line value: compare decision-time odds against closing odds to "
     "measure long-run edge. Not implemented; registered as PLANNED until a "
@@ -252,5 +290,27 @@ def build_default_registry() -> StrategyRegistry:
             source_ref="defend_markets.strategies:tt_clv_evaluate (planned)",
         ),
         None,
+    )
+    registry.register(
+        StrategyDefinition(
+            strategy_key="tt_elo_arb",
+            version=1,
+            display_name="Table Tennis Elo-Guarded Arbitrage",
+            hypothesis=(
+                "Arbitrage edge from real two-way quotes, traded only when the "
+                "L2 Elo model has sufficient match history for both players. "
+                "Without model history the loop abstains: a positive gross arb "
+                "edge alone is not enough."
+            ),
+            lifecycle=StrategyLifecycle.EXPERIMENTAL,
+            params={
+                "min_edge_pct": "0.5",
+                "commission": "0",
+                "require_provenance": True,
+            },
+            source_ref="defend_markets.strategies:tt_elo_arb_evaluate",
+            model_label="tt_elo",
+        ),
+        tt_elo_arb_evaluate,
     )
     return registry

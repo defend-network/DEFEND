@@ -26,6 +26,7 @@ from defend_markets.domain import (
     ProvenanceStamp,
     RiskPolicy,
     StrategyDefinition,
+    TTMatchResult,
 )
 from defend_markets.risk import from_params, to_params
 from defend_markets.strategies import build_default_registry
@@ -299,14 +300,15 @@ class MarketsRepository:
                      horizon, thesis, counter_thesis, evidence_json, historical_analogs_json,
                      gross_edge, net_edge, vig, spread, slippage, fees, other_costs, cost_estimate,
                      confidence, expected_value, max_loss, data_quality, data_quality_note,
-                     risk_tier, model_version, invalidation, provenance_json, generated_at)
+                     risk_tier, model_version, model_probability, model_detail_json,
+                     invalidation, provenance_json, generated_at)
                 VALUES (%s,
                         (SELECT instrument_id FROM market_instruments WHERE instrument_key = %s),
                         (SELECT strategy_id FROM market_strategies WHERE strategy_key = %s AND version = %s),
                         (SELECT policy_id FROM market_risk_policies WHERE policy_key = %s AND version = %s),
                         %s, %s, %s, %s, %s, %s,
                         %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING opportunity_id
                 """,
                 (
@@ -337,6 +339,8 @@ class MarketsRepository:
                     opportunity.data_quality_note,
                     opportunity.risk_tier.value,
                     opportunity.model_version,
+                    opportunity.model_probability,
+                    Jsonb(dict(opportunity.model_detail)),
                     opportunity.invalidation,
                     Jsonb([stamp_to_dict(stamp) for stamp in opportunity.provenance]),
                     opportunity.generated_at,
@@ -364,9 +368,9 @@ class MarketsRepository:
                     (decision_id, opportunity_id, strategy_id, policy_id, decision_type,
                      reason_codes, thesis, counter_thesis, confidence, estimated_edge,
                      cost_estimate, data_cutoff_timestamp, invalidation, model_version,
-                     created_at, amendment_of, note)
+                     model_probability, created_at, amendment_of, note)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s, %s, %s)
+                        %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING decision_id
                 """,
                 (
@@ -384,6 +388,7 @@ class MarketsRepository:
                     decision.data_cutoff_timestamp,
                     decision.invalidation,
                     decision.model_version,
+                    decision.model_probability,
                     decision.created_at or datetime.now(timezone.utc),
                     decision.amendment_of,
                     decision.note,
@@ -539,7 +544,8 @@ class MarketsRepository:
                 SELECT o.opportunity_id, i.instrument_key, s.strategy_key, p.policy_key,
                        o.direction, o.horizon, o.thesis, o.gross_edge, o.net_edge,
                        o.cost_estimate, o.confidence, o.expected_value, o.data_quality,
-                       o.risk_tier, o.generated_at
+                       o.risk_tier, o.model_version, o.model_probability, o.model_detail_json,
+                       o.generated_at
                 FROM market_opportunities o
                 JOIN market_instruments i ON i.instrument_id = o.instrument_id
                 JOIN market_strategies s ON s.strategy_id = o.strategy_id
@@ -564,7 +570,10 @@ class MarketsRepository:
                     "expected_value": row[11],
                     "data_quality": row[12],
                     "risk_tier": row[13],
-                    "generated_at": row[14],
+                    "model_version": row[14],
+                    "model_probability": row[15],
+                    "model_detail": dict(row[16] or {}),
+                    "generated_at": row[17],
                 }
                 for row in cursor.fetchall()
             ]
@@ -576,7 +585,7 @@ class MarketsRepository:
                 SELECT d.decision_id, d.opportunity_id, s.strategy_key, p.policy_key,
                        d.decision_type, d.reason_codes, d.thesis, d.confidence,
                        d.estimated_edge, d.cost_estimate, d.data_cutoff_timestamp,
-                       d.model_version, d.created_at, d.amendment_of, d.outcome_id,
+                       d.model_version, d.model_probability, d.created_at, d.amendment_of, d.outcome_id,
                        i.instrument_key
                 FROM market_decisions d
                 JOIN market_strategies s ON s.strategy_id = d.strategy_id
@@ -601,10 +610,11 @@ class MarketsRepository:
                     "cost_estimate": row[9],
                     "data_cutoff_timestamp": row[10],
                     "model_version": row[11],
-                    "created_at": row[12],
-                    "amendment_of": str(row[13]) if row[13] else None,
-                    "outcome_id": str(row[14]) if row[14] else None,
-                    "instrument_key": row[15],
+                    "model_probability": row[12],
+                    "created_at": row[13],
+                    "amendment_of": str(row[14]) if row[14] else None,
+                    "outcome_id": str(row[15]) if row[15] else None,
+                    "instrument_key": row[16],
                 }
                 for row in cursor.fetchall()
             ]
@@ -641,6 +651,203 @@ class MarketsRepository:
         with connection.cursor() as cursor:
             cursor.execute(f"SELECT count(*) FROM {table}")
             return int(cursor.fetchone()[0])
+
+    # ------------------------------------------------------------ provider feeds
+
+    def upsert_feed(self, connection: Any, provider_id: str, display_name: str) -> None:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO provider_feeds (feed_id, provider_id, display_name, status)
+                VALUES (%s, %s, %s, 'UNCONFIGURED')
+                ON CONFLICT (feed_id) DO UPDATE SET
+                    display_name = EXCLUDED.display_name,
+                    updated_at = now()
+                """,
+                (provider_id, provider_id, display_name),
+            )
+
+    def record_feed_probe(
+        self,
+        connection: Any,
+        provider_id: str,
+        *,
+        status: str,
+        observed_at: datetime,
+        error: str | None = None,
+        latency_ms: int | None = None,
+        detail: Mapping[str, object] | None = None,
+        records_ingested: int | None = None,
+        last_record_at: datetime | None = None,
+    ) -> None:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE provider_feeds
+                SET status = %s,
+                    last_attempt_at = %s,
+                    last_success_at = CASE WHEN %s = 'HEALTHY' OR %s = 'DEGRADED'
+                                           THEN %s ELSE last_success_at END,
+                    last_error = %s,
+                    latency_ms = %s,
+                    records_ingested = records_ingested + COALESCE(%s, 0),
+                    last_record_at = COALESCE(%s, last_record_at),
+                    detail_json = %s,
+                    updated_at = now()
+                WHERE feed_id = %s
+                """,
+                (
+                    status,
+                    observed_at,
+                    status,
+                    status,
+                    observed_at,
+                    error,
+                    latency_ms,
+                    records_ingested,
+                    last_record_at,
+                    Jsonb(dict(detail) if detail else {}),
+                    provider_id,
+                ),
+            )
+
+    def insert_feed_records(
+        self,
+        connection: Any,
+        provider_id: str,
+        records: Sequence[Mapping[str, object]],
+        *,
+        received_at: datetime,
+    ) -> int:
+        inserted = 0
+        with connection.cursor() as cursor:
+            for record in records:
+                cursor.execute(
+                    """
+                    INSERT INTO market_feed_records (feed_id, record_key, payload, observed_at, received_at)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (feed_id, record_key) DO NOTHING
+                    RETURNING record_id
+                    """,
+                    (
+                        provider_id,
+                        record["record_key"],
+                        Jsonb(dict(record["payload"])),
+                        record.get("observed_at"),
+                        received_at,
+                    ),
+                )
+                if cursor.fetchone() is not None:
+                    inserted += 1
+        return inserted
+
+    def list_feeds(self, connection: Any) -> list[dict[str, object]]:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT provider_id, display_name, status, last_attempt_at,
+                       last_success_at, last_error, latency_ms, records_ingested,
+                       last_record_at, detail_json
+                FROM provider_feeds
+                ORDER BY provider_id
+                """
+            )
+            return [
+                {
+                    "provider_id": row[0],
+                    "display_name": row[1],
+                    "status": row[2],
+                    "last_attempt_at": row[3],
+                    "last_success_at": row[4],
+                    "last_error": row[5],
+                    "latency_ms": row[6],
+                    "records_ingested": row[7],
+                    "last_record_at": row[8],
+                    "detail": row[9],
+                }
+                for row in cursor.fetchall()
+            ]
+
+    def list_feed_records(
+        self, connection: Any, provider_id: str, limit: int = 50
+    ) -> list[dict[str, object]]:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT record_id, record_key, payload, observed_at, received_at
+                FROM market_feed_records
+                WHERE feed_id = %s
+                ORDER BY received_at DESC LIMIT %s
+                """,
+                (provider_id, limit),
+            )
+            return [
+                {
+                    "record_id": str(row[0]),
+                    "record_key": row[1],
+                    "payload": row[2],
+                    "observed_at": row[3],
+                    "received_at": row[4],
+                }
+                for row in cursor.fetchall()
+            ]
+
+    # ---------------------------------------------------------- TT match history
+
+    def upsert_tt_result(self, connection: Any, result: TTMatchResult) -> None:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO tt_match_results
+                    (event_key, league_key, home_participant_key, away_participant_key,
+                     home_score, away_score, completed_at, source_provider, raw_ref)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (event_key) DO UPDATE SET
+                    home_score = EXCLUDED.home_score,
+                    away_score = EXCLUDED.away_score,
+                    completed_at = EXCLUDED.completed_at,
+                    raw_ref = EXCLUDED.raw_ref
+                """,
+                (
+                    result.event_key,
+                    result.league_key,
+                    result.home_participant_key,
+                    result.away_participant_key,
+                    result.home_score,
+                    result.away_score,
+                    result.completed_at,
+                    result.source_provider,
+                    result.raw_ref,
+                ),
+            )
+
+    def list_tt_results(self, connection: Any, limit: int = 2000) -> list[dict[str, object]]:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT result_id, event_key, league_key, home_participant_key,
+                       away_participant_key, home_score, away_score, completed_at,
+                       source_provider, raw_ref
+                FROM tt_match_results
+                ORDER BY completed_at DESC LIMIT %s
+                """,
+                (limit,),
+            )
+            return [
+                {
+                    "result_id": str(row[0]),
+                    "event_key": row[1],
+                    "league_key": row[2],
+                    "home_participant_key": row[3],
+                    "away_participant_key": row[4],
+                    "home_score": row[5],
+                    "away_score": row[6],
+                    "completed_at": row[7],
+                    "source_provider": row[8],
+                    "raw_ref": row[9],
+                }
+                for row in cursor.fetchall()
+            ]
 
 
 def stamp_to_dict(stamp: object) -> dict[str, object]:

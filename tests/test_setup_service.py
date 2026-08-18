@@ -121,8 +121,10 @@ def test_remove_secret_flips_configured_state(tmp_path):
     assert result["configured"] is False
     assert result["masked"] is None
     view = service.provider_view("fred")
-    assert view["state"] == "AVAILABLE"
+    assert view["state"] == "NEEDS_CREDENTIAL"
     assert view["health_badge"] == "NOT_CONFIGURED"
+    assert view["requires_credentials"] is True
+    assert view["credentials_configured"] is False
 
 
 def test_save_and_remove_rotate_cached_health(tmp_path):
@@ -179,14 +181,22 @@ def test_test_auth_failure_records_auth_failed(tmp_path):
     assert stored.health_badge is HealthBadge.AUTH_FAILED
 
 
-def test_test_placeholder_provider_never_goes_healthy(tmp_path):
+def test_placeholder_provider_is_not_testable(tmp_path):
     service, _, config_store, _ = make_service(tmp_path)
     service_module.adapter_for = lambda definition: PLACEHOLDER_ADAPTER
     service.save_secret("api_sports", "API_SPORTS_API_KEY", "placeholder-key")
-    result = service.test("api_sports")
-    assert result["badge"] == "NOT_TESTED"
-    assert result["detail"] == "ADAPTER NOT IMPLEMENTED"
+    with pytest.raises(ValueError, match="not testable"):
+        service.test("api_sports")
     assert config_store.get("api_sports").health_badge is HealthBadge.NOT_TESTED
+    view = service.provider_view("api_sports")
+    assert view["state"] == "PLANNED"
+    assert view["credentials_configured"] is True
+
+
+def test_test_missing_credentials_raises(tmp_path):
+    service, _, _, _ = make_service(tmp_path)
+    with pytest.raises(ValueError, match="missing required credentials"):
+        service.test("fred")
 
 
 def test_test_disabled_provider_raises(tmp_path):
@@ -205,12 +215,50 @@ def test_test_all_configured_skips_placeholders_and_disabled(tmp_path):
     assert result["tested"] == 7  # eight real adapters minus disabled world_bank
     assert len(result["results"]) == 7
     assert all(item["badge"] == "HEALTHY" for item in result["results"])
+    summary = result["summary"]
+    assert summary["tested"] == 7
+    assert summary["healthy"] == 7
+    assert summary["degraded"] == 0
+    assert summary["failed"] == 0
+    assert summary["skipped"] == 1
+    from defend_integrations.registry import PROVIDERS
+
+    assert summary["planned"] == sum(
+        1 for provider in PROVIDERS if provider.adapter_kind.value == "placeholder"
+    )
     reasons = {item["provider_id"]: item["reason"] for item in result["skipped"]}
     assert reasons["api_sports"] == "adapter not implemented"
     assert reasons["world_bank"] == "disabled"
     assert "fred" not in reasons
     for item in result["results"]:
         assert "super-secret" not in dump_payloads(item)
+
+
+def test_test_all_summary_buckets_failures_and_degraded(tmp_path):
+    service, _, _, adapter = make_service(tmp_path)
+    for name, value in SECRET_VALUES.items():
+        service._secrets.save({name: value})
+    adapter._probe = AdapterProbe(
+        ok=False,
+        status_code=429,
+        latency_ms=9,
+        detail="rate limited",
+        authenticated=True,
+    )
+    result = service.test_all_configured()
+    summary = result["summary"]
+    assert summary["tested"] == 8
+    assert summary["degraded"] == 8
+    assert summary["healthy"] == 0
+    adapter._probe = AdapterProbe(
+        ok=False,
+        status_code=401,
+        latency_ms=9,
+        detail="authentication failed",
+        authenticated=False,
+    )
+    result = service.test_all_configured()
+    assert result["summary"]["failed"] == 8
 
 
 def test_test_all_configured_skips_missing_credentials(tmp_path):
@@ -278,3 +326,114 @@ def test_unknown_provider_view_raises_key_error(tmp_path):
     service, _, _, _ = make_service(tmp_path)
     with pytest.raises(KeyError):
         service.provider_view("nope")
+
+
+def test_state_progression_needs_credential_to_ready_to_test_to_healthy(tmp_path):
+    service, _, _, _ = make_service(tmp_path)
+    assert service.provider_view("fred")["state"] == "NEEDS_CREDENTIAL"
+    service.save_secret("fred", "FRED_API_KEY", "progression-key")
+    view = service.provider_view("fred")
+    assert view["state"] == "READY_TO_TEST"
+    assert view["health_badge"] == "NOT_TESTED"
+    service.test("fred")
+    view = service.provider_view("fred")
+    assert view["state"] == "HEALTHY"
+    assert view["health_badge"] == "HEALTHY"
+
+
+def test_auth_none_real_provider_never_requires_credentials(tmp_path):
+    service, _, _, _ = make_service(tmp_path)
+    view = service.provider_view("world_bank")
+    assert view["requires_credentials"] is False
+    assert view["credentials_configured"] is True
+    assert view["state"] == "READY_TO_TEST"
+    service.test("world_bank")
+    assert service.provider_view("world_bank")["state"] == "HEALTHY"
+
+
+def test_auth_failure_state_progression(tmp_path):
+    service, _, _, adapter = make_service(tmp_path)
+    service.save_secret("fred", "FRED_API_KEY", "bad-key")
+    adapter._probe = AdapterProbe(
+        ok=False,
+        status_code=401,
+        latency_ms=12,
+        detail="authentication failed",
+        authenticated=False,
+    )
+    service.test("fred")
+    view = service.provider_view("fred")
+    assert view["state"] == "AUTH_FAILED"
+    assert view["health_badge"] == "AUTH_FAILED"
+
+
+def test_placeholder_state_is_planned_regardless_of_credentials(tmp_path):
+    service, _, _, _ = make_service(tmp_path)
+    view = service.provider_view("api_sports")
+    assert view["state"] == "PLANNED"
+    assert view["health_badge"] == "NOT_TESTED"
+    service.save_secret("api_sports", "API_SPORTS_API_KEY", "preloaded-key")
+    view = service.provider_view("api_sports")
+    assert view["state"] == "PLANNED"
+    assert view["credentials_configured"] is True
+
+
+def test_disabled_placeholder_still_planned_after_enable(tmp_path):
+    service, _, config_store, _ = make_service(tmp_path)
+    config_store.set_enabled("api_sports", False)
+    assert service.provider_view("api_sports")["state"] == "DISABLED"
+    config_store.set_enabled("api_sports", True)
+    assert service.provider_view("api_sports")["state"] == "PLANNED"
+
+
+def test_runtime_detected_values_are_exposed_per_provider(tmp_path):
+    runtime = {
+        "origin_defend_ai": {
+            "public_origin": "https://ai.defend-network.org",
+            "api_port": "8000",
+            "web_port": "3000",
+        },
+        "postgres_per_product": {
+            "databases": "identity (schema 4), sports (schema 1)"
+        },
+    }
+    secret_registry = SecretRegistry(MemStore())
+    config_store = ProviderConfigStore(tmp_path / "config.json")
+    service = SetupIntegrationsService(secret_registry, config_store, runtime=runtime)
+    view = service.provider_view("origin_defend_ai")
+    assert view["detected"] == {
+        "public_origin": "https://ai.defend-network.org",
+        "api_port": "8000",
+        "web_port": "3000",
+    }
+    view = service.provider_view("postgres_per_product")
+    assert view["detected"]["databases"].startswith("identity")
+    # Providers without detected values expose an empty map, not a secret leak.
+    assert service.provider_view("fred")["detected"] == {}
+
+
+def test_diagnostics_distinguishes_state_dimensions(tmp_path):
+    service, _, config_store, _ = make_service(tmp_path)
+    for name, value in SECRET_VALUES.items():
+        service._secrets.save({name: value})
+    service.test("fred")
+    config_store.set_enabled("world_bank", False)
+    rows = {row["provider_id"]: row for row in service.diagnostics()["rows"]}
+    fred = rows["fred"]
+    assert fred["implemented"] is True
+    assert fred["requires_credentials"] is True
+    assert fred["credentials_configured"] is True
+    assert fred["enabled"] is True
+    assert fred["tested"] is True
+    assert fred["state"] == "HEALTHY"
+    assert fred["last_status_code"] == 200
+    assert fred["last_latency_ms"] == 25
+    wb = rows["world_bank"]
+    assert wb["implemented"] is True
+    assert wb["enabled"] is False
+    assert wb["tested"] is False
+    assert wb["state"] == "DISABLED"
+    planned = rows["api_sports"]
+    assert planned["implemented"] is False
+    assert planned["state"] == "PLANNED"
+    assert planned["credentials_configured"] is False

@@ -13,10 +13,14 @@ export type AdapterKind = "real" | "placeholder";
 
 export type ProviderState =
   | "DISABLED"
-  | "PLACEHOLDER"
-  | "AVAILABLE"
-  | "CONFIGURED"
-  | "TESTED";
+  | "PLANNED"
+  | "NEEDS_CREDENTIAL"
+  | "READY_TO_TEST"
+  | "HEALTHY"
+  | "DEGRADED"
+  | "RATE_LIMITED"
+  | "AUTH_FAILED"
+  | "UNAVAILABLE";
 
 export type HealthBadge =
   | "NOT_CONFIGURED"
@@ -58,8 +62,11 @@ export type ProviderView = {
   state: ProviderState;
   health_badge: HealthBadge;
   enabled: boolean;
+  requires_credentials?: boolean;
+  credentials_configured?: boolean;
   credentials: CredentialState[];
   config: Record<string, string>;
+  detected?: Record<string, string>;
   optional_config: string[];
   products: string[];
   docs_url?: string | null;
@@ -102,11 +109,18 @@ export type DiagnosticRow = {
   products: string[];
   auth_type: AuthType;
   adapter_kind: AdapterKind;
+  implemented: boolean;
+  requires_credentials?: boolean;
+  credentials_configured?: boolean;
+  configured?: boolean;
   enabled: boolean;
-  configured: boolean;
+  tested?: boolean;
+  state?: ProviderState;
   health_badge: HealthBadge;
   last_success_at?: string | null;
   last_test_at?: string | null;
+  last_status_code?: number | null;
+  last_latency_ms?: number | null;
   remaining_quota?: number | null;
   quota_reset_at?: string | null;
   detail?: string | null;
@@ -131,6 +145,14 @@ export type TestAllResult = {
   results: TestResult[];
   tested: number;
   skipped: { provider_id: string; reason: string }[];
+  summary: {
+    tested: number;
+    healthy: number;
+    degraded: number;
+    failed: number;
+    skipped: number;
+    planned: number;
+  };
 };
 
 export type SaveSecretResult = {

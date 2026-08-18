@@ -27,11 +27,16 @@ from defend_markets.domain import (
     StrategyEvaluation,
 )
 from defend_markets.journal import DecisionSink, JournalEntry
-from defend_markets.models import ReasonerRegistry
+from defend_markets.models import (
+    ModelRegistry,
+    ReasonerRegistry,
+    build_default_reasoners,
+)
 from defend_markets.quality import HealthGate, HealthGateResult, ProviderHealthState
 from defend_markets.sports_adapter import SportsDataReader, SportsSelectionQuote
 from defend_markets.store import MarketsStore
 from defend_markets.strategies import StrategyRegistry
+from defend_markets.tt_rating import TTEloModel
 
 
 def market_instrument_key(event_key: str, market_key: str) -> str:
@@ -86,6 +91,7 @@ class DecisionPipeline:
         journal: DecisionSink,
         health_gate: HealthGate | None = None,
         reasoners: ReasonerRegistry | None = None,
+        models: ModelRegistry | None = None,
         clock: object | None = None,
     ) -> None:
         self._reader = reader
@@ -93,7 +99,8 @@ class DecisionPipeline:
         self._store = store
         self._journal = journal
         self._health_gate = health_gate if health_gate is not None else HealthGate()
-        self._reasoners = reasoners if reasoners is not None else ReasonerRegistry()
+        self._reasoners = reasoners if reasoners is not None else build_default_reasoners()
+        self._models = models if models is not None else ModelRegistry()
         self._clock = clock if clock is not None else (lambda: datetime.now(timezone.utc))
 
     def evaluate_sports(
@@ -128,17 +135,30 @@ class DecisionPipeline:
             }
             for quote in quotes
         ]
-        strategy_eval = self._registry.evaluate(
-            strategy_key,
-            {"selections": normalized, "params": definition.params},
-        )
+        inputs: dict[str, object] = {
+            "selections": normalized,
+            "params": definition.params,
+        }
+        model_context: dict[str, object] = {}
+        if definition.model_label:
+            inputs["model"] = self._evaluate_model(
+                definition.model_label, normalized, now
+            )
+            model_context = {"model": inputs["model"], "version": inputs["model"].get("version")}
+        strategy_eval = self._registry.evaluate(strategy_key, inputs)
 
         if not strategy_eval.eligible:
             reason = self._strategy_failure_reason(strategy_eval)
             return self._journal_no_action(
                 strategy_key=strategy_key,
                 policy_key=policy_key,
-                thesis=self._thesis(event_key, market_key, strategy_key),
+                thesis=self._thesis(
+                    event_key,
+                    market_key,
+                    strategy_key,
+                    model_context=model_context,
+                    strategy={"gross_edge": strategy_eval.gross_edge},
+                ),
                 reason_codes=(reason,),
                 now=now,
             )
@@ -177,7 +197,17 @@ class DecisionPipeline:
             policy_version=policy.version,
             direction="arb",
             horizon="event",
-            thesis=self._thesis(event_key, market_key, strategy_key),
+            thesis=self._thesis(
+                event_key,
+                market_key,
+                strategy_key,
+                model_context=model_context,
+                strategy={
+                    "gross_edge": gross_edge,
+                    "cost_total": cost_estimate,
+                    "net_edge": net_edge,
+                },
+            ),
             counter_thesis="Overround reversion after quoting delays or stale prices.",
             evidence=strategy_eval.evidence,
             historical_analogs=(),
@@ -190,7 +220,11 @@ class DecisionPipeline:
             data_quality=data_quality,
             data_quality_note=None if gate.ok else "; ".join(gate.reasons),
             risk_tier=policy.tier,
-            model_version=None,
+            model_version=(
+                str(model_context.get("version")) if model_context.get("version") else None
+            ),
+            model_probability=strategy_eval.model_probability,
+            model_detail=dict(model_context.get("model") or {}),
             invalidation="Arb vanishes once either leg reprices below the edge threshold.",
             provenance=tuple(
                 quote.provenance for quote in quotes if quote.provenance is not None
@@ -265,6 +299,7 @@ class DecisionPipeline:
             data_cutoff_timestamp=now,
             invalidation=opportunity.invalidation,
             model_version=opportunity.model_version,
+            model_probability=opportunity.model_probability,
             created_at=now,
         )
         entry = self._journal.append(
@@ -314,7 +349,10 @@ class DecisionPipeline:
             cost_estimate=opportunity.cost_estimate if opportunity is not None else None,
             data_cutoff_timestamp=now,
             invalidation=opportunity.invalidation if opportunity is not None else None,
-            model_version=None,
+            model_version=opportunity.model_version if opportunity is not None else None,
+            model_probability=(
+                opportunity.model_probability if opportunity is not None else None
+            ),
             created_at=now,
             note=note,
         )
@@ -331,6 +369,50 @@ class DecisionPipeline:
             opportunity_id=opportunity_id,
         )
 
+    def _evaluate_model(
+        self,
+        model_label: str,
+        normalized: Sequence[Mapping[str, object]],
+        now: datetime,
+    ) -> dict[str, object]:
+        """Run the strategy's L2 model over real match history.
+
+        Returns a mapping with ``available`` plus model outputs. The model
+        source is the markets store's ``tt_match_results`` history; with
+        no model registered or no history the result is unavailable and
+        the strategy gate abstains.
+        """
+        model = self._models.get(model_label)
+        if model is None:
+            return {"available": False, "reason": f"model not registered: {model_label}"}
+        keys = [
+            str(item.get("selection_key") or "")
+            for item in normalized
+            if item.get("selection_key")
+        ]
+        if len(keys) < 2:
+            return {"available": False, "reason": "model requires two selections"}
+        history = self._store.catalog_tt_results()
+        evaluator = TTEloModel.from_history_rows(history)
+        evaluation = evaluator.evaluate(keys[0], keys[1])
+        payload: dict[str, object] = {
+            "available": evaluation.available,
+            "reason": evaluation.reason,
+            "version": f"{model.label}@{evaluator.version}",
+            "p_home": evaluation.p_home,
+            "p_away": evaluation.p_away,
+            "home_rating": evaluation.home_rating,
+            "away_rating": evaluation.away_rating,
+            "home_games": evaluation.home_games,
+            "away_games": evaluation.away_games,
+            "home_form": evaluation.home_form,
+            "away_form": evaluation.away_form,
+            "calibration_bucket": evaluation.calibration_bucket,
+            "player_a": keys[0],
+            "player_b": keys[1],
+        }
+        return payload
+
     def _evaluate_health(self, quotes: Sequence[SportsSelectionQuote]) -> HealthGateResult:
         provider_states: dict[str, ProviderHealthState] = {}
         for source_key, state in self._reader.provider_health().items():
@@ -346,11 +428,26 @@ class DecisionPipeline:
         reasons = {str(reason) for reason in evaluation.reasons}
         if "missing_provenance" in reasons:
             return NoActionReason.MISSING_PROVENANCE
+        if "insufficient_model_history" in reasons:
+            return NoActionReason.INSUFFICIENT_MODEL_HISTORY
         if "no_arbitrage" in reasons or any(r.startswith("below_min_edge") for r in reasons):
             return NoActionReason.INSUFFICIENT_EDGE
         if NoActionReason.STRATEGY_NOT_ELIGIBLE.value in reasons:
             return NoActionReason.STRATEGY_NOT_ELIGIBLE
         return NoActionReason.INSUFFICIENT_EDGE
 
-    def _thesis(self, event_key: str, market_key: str, strategy_key: str) -> str:
-        return f"{strategy_key} evaluation on {event_key} {market_key} using real observed odds."
+    def _thesis(
+        self,
+        event_key: str,
+        market_key: str,
+        strategy_key: str,
+        model_context: Mapping[str, object] | None = None,
+        strategy: Mapping[str, object] | None = None,
+    ) -> str:
+        base = f"{strategy_key} evaluation on {event_key} {market_key} using real observed odds."
+        context = dict(model_context or {})
+        if context.get("model"):
+            context["strategy"] = dict(strategy or {})
+            reasoner = self._reasoners.get("tt_elo_reasoner")
+            return reasoner.reason("explain decision", context)
+        return base

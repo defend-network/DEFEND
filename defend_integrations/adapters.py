@@ -178,10 +178,11 @@ class VastAdapter(_BaseAdapter):
                 detail="missing VAST_API_KEY", authenticated=None,
             )
         return self._probe(
-            "https://console.vast.ai/api/v0/current",
+            "https://console.vast.ai/api/v0/users/current/",
             secrets,
             headers={"Authorization": f"Bearer {key}"},
-            success_predicate=lambda body: isinstance(body, dict),
+            success_predicate=lambda body: isinstance(body, dict)
+            and "id" in body,
             known_secrets=(key,),
         )
 

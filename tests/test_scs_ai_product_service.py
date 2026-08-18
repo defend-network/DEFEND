@@ -7,6 +7,7 @@ from defend_control.products import (
     ProductsSettings,
     ScsService,
     build_scs_ai_process_spec,
+    build_scs_web_process_spec,
 )
 
 
@@ -127,6 +128,53 @@ def test_scs_ai_process_spec_uses_dedicated_8300_lane(tmp_path):
     assert spec.env["SCS_AI_WEB_PORT"] == "3300"
 
 
+def test_scs_ai_process_spec_passes_model_config_without_secrets(tmp_path):
+    spec = build_scs_ai_process_spec(
+        settings(),
+        tmp_path,
+        r"C:\Python\python.exe",
+    )
+    assert "SCS_AI_MODEL_API_KEY" not in spec.env
+    assert "SCS_AI_MODEL_BASE_URL" not in spec.env
+
+    configured = ProductsSettings(
+        scs_ai_api_port=8300,
+        scs_ai_web_port=3300,
+        scs_ai_public_origin="https://ai.sunshineclimatesolutions.com",
+        scs_ai_model_alias="scs-language",
+        scs_ai_model_name="Qwen/Qwen3-30B-A3B-Instruct-2507",
+        scs_ai_model_base_url="http://127.0.0.1:8001/v1",
+        scs_ai_model_api_key="top-secret",
+        scs_ai_model_api_key_file=r"C:\SCS_AI\model.key",
+    )
+    spec = build_scs_ai_process_spec(configured, tmp_path, r"C:\Python\python.exe")
+    assert spec.env["SCS_AI_MODEL_ALIAS"] == "scs-language"
+    assert spec.env["SCS_AI_MODEL_NAME"] == "Qwen/Qwen3-30B-A3B-Instruct-2507"
+    assert spec.env["SCS_AI_MODEL_BASE_URL"] == "http://127.0.0.1:8001/v1"
+    assert spec.env["SCS_AI_MODEL_API_KEY"] == "top-secret"
+    assert spec.env["SCS_AI_MODEL_API_KEY_FILE"] == r"C:\SCS_AI\model.key"
+    assert "top-secret" not in repr(configured)
+    assert "top-secret" not in str(configured)
+
+
+def test_scs_web_process_spec_serves_scs_ui_on_3100_lane(tmp_path):
+    spec = build_scs_web_process_spec(settings(), tmp_path)
+
+    assert spec.name == "scs:web"
+    assert spec.argv == (
+        "npm.cmd",
+        "--prefix",
+        "scs-ui",
+        "run",
+        "start",
+    )
+    assert spec.cwd == tmp_path
+    assert spec.env["SCS_WEB_PORT"] == "3100"
+    assert spec.env["SCS_API_ORIGIN"] == "http://127.0.0.1:8100"
+    assert spec.env["SCS_AI_API_ORIGIN"] == "http://127.0.0.1:8300"
+    assert spec.health_url == "http://127.0.0.1:3100/"
+
+
 def test_start_starts_only_scs_ai_api_and_its_tunnel(tmp_path):
     supervisor = FakeSupervisor()
     tunnel = FakeTunnel()
@@ -144,6 +192,7 @@ def test_start_starts_only_scs_ai_api_and_its_tunnel(tmp_path):
 
     assert [spec.name for spec in supervisor.started] == [
         "scs-ai:api",
+        "scs:web",
     ]
     assert tunnel.started == 1
     assert result.launch_available is True
@@ -168,6 +217,7 @@ def test_start_is_idempotent(tmp_path):
 
     assert [spec.name for spec in supervisor.started] == [
         "scs-ai:api",
+        "scs:web",
     ]
     assert tunnel.started == 1
 
@@ -188,11 +238,11 @@ def test_stop_stops_only_scs_ai_owned_resources(tmp_path):
     service.start()
     service.stop()
 
-    assert supervisor.stopped == ["scs-ai:api"]
+    assert supervisor.stopped == ["scs:web", "scs-ai:api"]
     assert tunnel.stopped == 1
 
 
-def test_status_reports_api_and_tunnel_truthfully(tmp_path):
+def test_status_reports_api_web_and_tunnel_truthfully(tmp_path):
     supervisor = FakeSupervisor()
     tunnel = FakeTunnel()
 
@@ -210,15 +260,38 @@ def test_status_reports_api_and_tunnel_truthfully(tmp_path):
     details = dict(status.details)
 
     assert details["API"] == "running"
+    assert details["Web"] == "running"
     assert details["Tunnel"] == "connected"
     assert details["API port"] == "8300"
     assert details["Web port"] == "3300"
+    assert status.state == "running"
+
+
+def test_open_url_prefers_public_origin_only_when_tunnel_connected(tmp_path):
+    supervisor = FakeSupervisor()
+    tunnel = FakeTunnel()
+
+    service = ScsService(
+        settings(),
+        supervisor=supervisor,
+        repository=tmp_path,
+        python_executable=r"C:\Python\python.exe",
+        tunnel=tunnel,
+        probe=ReadyProbe(),
+    )
+
+    assert service.status().open_url == "http://127.0.0.1:3100"
+    service.start()
+    assert service.status().open_url == "https://ai.sunshineclimatesolutions.com"
+    tunnel.stop()
+    assert service.status().open_url == "http://127.0.0.1:3100"
 
 
 def test_logs_include_only_scs_ai_and_owned_tunnel_logs(tmp_path):
     supervisor = FakeSupervisor()
     supervisor.logs.entries = [
         SimpleNamespace(service="scs-ai:api:stdout", text="scs"),
+        SimpleNamespace(service="scs:web:stdout", text="web"),
         SimpleNamespace(service="coder:api:stdout", text="coder"),
     ]
 
@@ -236,6 +309,7 @@ def test_logs_include_only_scs_ai_and_owned_tunnel_logs(tmp_path):
     texts = [entry.text for entry in service.logs()]
 
     assert "scs" in texts
+    assert "web" in texts
     assert "safe tunnel log" in texts
     assert "coder" not in texts
 

@@ -369,3 +369,25 @@ def test_redaction_handles_literal_known_secrets_and_utf8_byte_bounds():
 
     assert "a+b?" not in cleaned
     assert len(cleaned.encode("utf-8")) <= 16 * 1024
+
+
+def test_redaction_preserves_valid_json_when_secret_is_echoed_in_body():
+    body = (
+        '{"can_pay": true, "id": 646002, "api_key": "vast-secret-echo", '
+        '"key_id": 24899465, "password_resettable": false, "credit": null}'
+    )
+
+    cleaned = redact_text(body, ["vast-secret-echo"])
+
+    parsed = json.loads(cleaned)
+    assert parsed["api_key"] == "[REDACTED]"
+    assert parsed["password_resettable"] is False
+    assert parsed["credit"] is None
+    assert parsed["id"] == 646002
+    assert "vast-secret-echo" not in cleaned
+
+
+def test_redaction_does_not_mangle_replacement_when_no_known_secrets():
+    cleaned = redact_text("API_KEY=foxtrot\nsafe=hotel", [])
+
+    assert cleaned == "API_KEY=[REDACTED]\nsafe=hotel"

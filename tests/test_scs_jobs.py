@@ -63,6 +63,20 @@ def test_note_visibility_is_enforced(stores):
     assert len(jobs.visible_notes(ScsPrincipal(owner.employee_id, owner.roles, (), owner.status), job.job_id)) == 3
 
 
+def test_visits_read_back_respects_job_scope(stores):
+    jobs, _identity, owner, worker, customer, site = stores
+    job = jobs.create_job(owner.employee_id, customer.customer_id, site.site_id, "hvac-service", job_date=date(2026, 8, 13))
+    jobs.add_visit(owner.employee_id, job.job_id, work_performed="First", readings_summary="400 fpm")
+    jobs.add_visit(owner.employee_id, job.job_id, work_performed="Second", findings="Operational")
+    manager = ScsPrincipal(owner.employee_id, owner.roles, (), owner.status)
+    visits = jobs.visible_visits(manager, job.job_id)
+    assert [visit.work_performed for visit in visits] == ["First", "Second"]
+    assert visits[0].readings_summary == "400 fpm"
+    other = ScsPrincipal(worker.employee_id, worker.roles, (), worker.status)
+    with pytest.raises(KeyError):
+        jobs.visible_visits(other, job.job_id)
+
+
 def test_controlled_classifications_and_age_derivation(stores):
     jobs, _identity, owner, _worker, customer, site = stores
     tab = jobs.create_job(owner.employee_id, customer.customer_id, site.site_id, "tab-testing", job_date=date(2026, 8, 13))

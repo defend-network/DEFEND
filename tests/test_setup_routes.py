@@ -216,6 +216,9 @@ def test_test_and_test_all_routes(tmp_path):
     assert response.status_code == 200
     body = response.json()
     assert body["tested"] == 8
+    assert body["summary"]["tested"] == 8
+    assert body["summary"]["healthy"] == 8
+    assert body["summary"]["planned"] >= 1
     assert body["skipped"]
 
     assert (
@@ -234,6 +237,9 @@ def test_diagnostics_route(tmp_path):
     assert response.status_code == 200
     rows = response.json()["rows"]
     assert rows
+    assert {"implemented", "credentials_configured", "enabled", "tested"} <= set(
+        rows[0]
+    )
     for value in _SECRETS.values():
         assert value not in response.text
 

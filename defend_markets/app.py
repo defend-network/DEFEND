@@ -18,7 +18,12 @@ from pydantic import BaseModel
 from defend_markets.config import MarketsSettings
 from defend_markets.db import MarketsDatabase
 from defend_markets.journal import DecisionJournal
-from defend_markets.models import ReasonerRegistry, build_default_reasoners
+from defend_markets.models import (
+    ModelRegistry,
+    ReasonerRegistry,
+    build_default_models,
+    build_default_reasoners,
+)
 from defend_markets.pipeline import DecisionPipeline, LoopOutcome
 from defend_markets.quality import HealthGate
 from defend_markets.repositories import MarketsRepository
@@ -43,6 +48,7 @@ class MarketsDependencies:
     pipeline: DecisionPipeline | None = None
     health_gate: HealthGate | None = None
     reasoners: ReasonerRegistry | None = None
+    models: ModelRegistry | None = None
     clock: Callable[[], datetime] | None = None
 
     def build(self) -> "MarketsDependencies":
@@ -58,6 +64,7 @@ class MarketsDependencies:
                 raise ValueError("database is required to build the default journal")
             journal = DecisionJournal(self.database, MarketsRepository())
         reasoners = self.reasoners if self.reasoners is not None else build_default_reasoners()
+        models = self.models if self.models is not None else build_default_models()
         health_gate = self.health_gate if self.health_gate is not None else HealthGate()
         pipeline = self.pipeline
         if pipeline is None and self.reader is not None:
@@ -68,6 +75,7 @@ class MarketsDependencies:
                 journal=journal,
                 health_gate=health_gate,
                 reasoners=reasoners,
+                models=models,
                 clock=self.clock,
             )
         return MarketsDependencies(
@@ -81,6 +89,7 @@ class MarketsDependencies:
             pipeline=pipeline,
             health_gate=health_gate,
             reasoners=reasoners,
+            models=models,
             clock=self.clock,
         )
 
@@ -230,6 +239,8 @@ def _decision_summary(decision: dict[str, object]) -> dict[str, object]:
         "cost_estimate": decision.get("cost_estimate"),
         "confidence": decision.get("confidence"),
         "created_at": decision.get("created_at"),
+        "model_version": decision.get("model_version"),
+        "model_probability": decision.get("model_probability"),
     }
 
 
@@ -260,6 +271,10 @@ def _board_payload(dependencies: MarketsDependencies) -> dict[str, object]:
         key = decision.get("instrument_key")
         if key:
             by_instrument.setdefault(str(key), decision)
+
+    from defend_markets.tt_rating import TTEloModel
+
+    elo_model = TTEloModel.from_history_rows(deps.store.catalog_tt_results())
 
     events: list[dict[str, object]] = []
     for event in deps.reader.tt_events():
@@ -302,6 +317,38 @@ def _board_payload(dependencies: MarketsDependencies) -> dict[str, object]:
         )
         decision = by_instrument.get(f"sports:{event_key}:{_TT_MARKET_KEY}")
 
+        selection_keys = [quote.selection_key for quote in quotes if quote.selection_key]
+        model_eval = None
+        if len(selection_keys) >= 2:
+            model_eval = elo_model.evaluate(selection_keys[0], selection_keys[1])
+        model_detail: dict[str, object] = {}
+        if model_eval is not None:
+            model_detail = {
+                "model": "tt_elo",
+                "version": elo_model.version,
+                "available": model_eval.available,
+                "reason": model_eval.reason,
+                "home_participant_key": selection_keys[0] if selection_keys else None,
+                "away_participant_key": selection_keys[1] if len(selection_keys) > 1 else None,
+                "p_home": str(model_eval.p_home) if model_eval.p_home is not None else None,
+                "p_away": str(model_eval.p_away) if model_eval.p_away is not None else None,
+                "home_rating": (
+                    str(model_eval.home_rating) if model_eval.home_rating is not None else None
+                ),
+                "away_rating": (
+                    str(model_eval.away_rating) if model_eval.away_rating is not None else None
+                ),
+                "home_games": model_eval.home_games,
+                "away_games": model_eval.away_games,
+                "home_form": (
+                    str(model_eval.home_form) if model_eval.home_form is not None else None
+                ),
+                "away_form": (
+                    str(model_eval.away_form) if model_eval.away_form is not None else None
+                ),
+                "calibration_bucket": model_eval.calibration_bucket,
+            }
+
         events.append(
             {
                 "event_key": event_key,
@@ -329,8 +376,13 @@ def _board_payload(dependencies: MarketsDependencies) -> dict[str, object]:
                     if evaluation.eligible and evaluation.confidence is not None
                     else None
                 ),
-                "model_probability": None,
-                "model_probability_available": False,
+                "model_probability": (
+                    str(model_eval.p_home) if model_eval is not None and model_eval.available else None
+                ),
+                "model_probability_available": (
+                    bool(model_eval is not None and model_eval.available)
+                ),
+                "model": model_detail or None,
                 "data_quality": str(_leg_quality_score(quotes)),
                 "freshness": _freshness(latest_observed, now),
                 "strategy": {
@@ -532,6 +584,26 @@ def build_markets_app(dependencies: MarketsDependencies) -> FastAPI:
         if deps.reader is None:
             raise HTTPException(status_code=503, detail="Sports data source not configured")
         return _board_payload(deps)
+
+    @app.get("/v1/providers")
+    def providers() -> dict[str, object]:
+        if deps.store is None:
+            raise HTTPException(status_code=503, detail="Markets store not configured")
+        try:
+            feeds = deps.store.list_feeds()
+        except AttributeError:
+            feeds = []
+        return {"providers": feeds}
+
+    @app.get("/v1/providers/{provider_id}/records")
+    def provider_records(provider_id: str, limit: int = 50) -> dict[str, object]:
+        if deps.store is None:
+            raise HTTPException(status_code=503, detail="Markets store not configured")
+        try:
+            records = deps.store.list_records(provider_id, limit=limit)
+        except AttributeError:
+            raise HTTPException(status_code=404, detail=f"provider not found: {provider_id}") from None
+        return {"provider_id": provider_id, "records": records}
 
     @app.get("/v1/performance")
     def performance() -> dict[str, object]:

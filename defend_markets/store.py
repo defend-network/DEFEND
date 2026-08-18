@@ -6,10 +6,11 @@ hermetic tests inject an in-memory store implementing ``MarketsStore``.
 
 from __future__ import annotations
 
-from typing import Any, Protocol, runtime_checkable
+from datetime import datetime
+from typing import Any, Protocol, Sequence, runtime_checkable
 from uuid import UUID
 
-from defend_markets.domain import Opportunity, RiskPolicy
+from defend_markets.domain import Opportunity, RiskPolicy, TTMatchResult
 from defend_markets.repositories import MarketsRepository
 
 
@@ -40,6 +41,8 @@ class MarketsStore(Protocol):
     def catalog_outcomes(self, limit: int = 500) -> list[dict[str, object]]: ...
 
     def catalog_quality(self, limit: int = 50) -> list[dict[str, object]]: ...
+
+    def catalog_tt_results(self, limit: int = 2000) -> list[dict[str, object]]: ...
 
     def counts(self) -> dict[str, int]: ...
 
@@ -148,6 +151,66 @@ class PostgresMarketsStore:
                     for row in cursor.fetchall()
                 ]
 
+    def catalog_tt_results(self, limit: int = 2000) -> list[dict[str, object]]:
+        with self._database.connect() as connection:
+            return self._repository.list_tt_results(connection, limit=limit)
+
+    def upsert_feed(self, definition: Any) -> None:
+        with self._database.connect() as connection:
+            with connection.transaction():
+                self._repository.upsert_feed(
+                    connection, definition.provider_id, definition.display_name
+                )
+
+    def record_probe(self, result: Any, *, observed_at: datetime) -> None:
+        with self._database.connect() as connection:
+            with connection.transaction():
+                self._repository.record_feed_probe(
+                    connection,
+                    result.provider_id,
+                    status=result.status,
+                    observed_at=observed_at,
+                    error=result.error,
+                    latency_ms=result.latency_ms,
+                    detail=result.detail,
+                    records_ingested=result.record_count,
+                    last_record_at=observed_at if result.records else None,
+                )
+
+    def insert_records(
+        self, provider_id: str, records: Sequence[Any], *, received_at: datetime
+    ) -> int:
+        with self._database.connect() as connection:
+            with connection.transaction():
+                return self._repository.insert_feed_records(
+                    connection,
+                    provider_id,
+                    [
+                        {
+                            "record_key": record.record_key,
+                            "payload": dict(record.payload),
+                            "observed_at": record.observed_at,
+                        }
+                        for record in records
+                    ],
+                    received_at=received_at,
+                )
+
+    def record_tt_results(self, results: Sequence[TTMatchResult]) -> int:
+        with self._database.connect() as connection:
+            with connection.transaction():
+                for result in results:
+                    self._repository.upsert_tt_result(connection, result)
+                return len(results)
+
+    def list_feeds(self) -> list[dict[str, object]]:
+        with self._database.connect() as connection:
+            return self._repository.list_feeds(connection)
+
+    def list_records(self, provider_id: str, limit: int = 50) -> list[dict[str, object]]:
+        with self._database.connect() as connection:
+            return self._repository.list_feed_records(connection, provider_id, limit=limit)
+
     def counts(self) -> dict[str, int]:
         tables = (
             "market_instruments",
@@ -158,6 +221,9 @@ class PostgresMarketsStore:
             "market_decisions",
             "market_outcomes",
             "market_data_quality",
+            "provider_feeds",
+            "market_feed_records",
+            "tt_match_results",
         )
         with self._database.connect() as connection:
             return {

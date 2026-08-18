@@ -20,6 +20,7 @@ from .models import (
     badge_from_probe,
     mask_config_value,
     mask_secret,
+    state_from_badge,
     utc_now_iso,
 )
 from .registry import (
@@ -54,10 +55,12 @@ class SetupIntegrationsService:
         config_store: ProviderConfigStore,
         *,
         clock=utc_now_iso,
+        runtime: Mapping[str, Mapping[str, str]] | None = None,
     ) -> None:
         self._secrets = secret_registry
         self._config = config_store
         self._clock = clock
+        self._runtime = dict(runtime or {})
 
     # ------------------------------------------------------------------ views
     def snapshot(self) -> dict[str, Any]:
@@ -134,13 +137,13 @@ class SetupIntegrationsService:
         if not config.enabled:
             state = ProviderState.DISABLED.value
         elif definition.adapter_kind is AdapterKind.PLACEHOLDER:
-            state = ProviderState.PLACEHOLDER.value
-        elif config.tested_at is not None:
-            state = ProviderState.TESTED.value
-        elif configured:
-            state = ProviderState.CONFIGURED.value
+            state = ProviderState.PLANNED.value
+        elif not configured:
+            state = ProviderState.NEEDS_CREDENTIAL.value
+        elif config.tested_at is None:
+            state = ProviderState.READY_TO_TEST.value
         else:
-            state = ProviderState.AVAILABLE.value
+            state = state_from_badge(config.health_badge).value
 
         badge = self._health_badge(definition, config, configured)
 
@@ -163,8 +166,11 @@ class SetupIntegrationsService:
             "state": state,
             "health_badge": badge.value,
             "enabled": config.enabled,
+            "requires_credentials": requires_credentials,
+            "credentials_configured": configured,
             "credentials": credentials,
             "config": public_config,
+            "detected": dict(self._runtime.get(provider_id, {})),
             "optional_config": list(definition.optional_config),
             "products": list(definition.products),
             "docs_url": definition.docs_url,
@@ -190,6 +196,18 @@ class SetupIntegrationsService:
         ):
             return HealthBadge.NOT_CONFIGURED
         return config.health_badge
+
+    @staticmethod
+    def _diagnostic_state(definition, config, configured: bool) -> ProviderState:
+        if not config.enabled:
+            return ProviderState.DISABLED
+        if definition.adapter_kind is AdapterKind.PLACEHOLDER:
+            return ProviderState.PLANNED
+        if not configured:
+            return ProviderState.NEEDS_CREDENTIAL
+        if config.tested_at is None:
+            return ProviderState.READY_TO_TEST
+        return state_from_badge(config.health_badge)
 
     # -------------------------------------------------------------- mutations
     def save_secret(
@@ -300,14 +318,43 @@ class SetupIntegrationsService:
         )
         if not config.enabled:
             raise ValueError(f"provider {provider_id!r} is disabled")
+        if definition.adapter_kind is AdapterKind.PLACEHOLDER:
+            raise ValueError(
+                f"provider {provider_id!r} is planned (adapter not implemented); not testable"
+            )
+        if (
+            definition.auth_type.value not in ("none", "user_agent")
+            and not all(
+                self._secrets.configured(name)
+                for name in definition.required_secrets
+            )
+        ):
+            raise ValueError(
+                f"provider {provider_id!r} is missing required credentials"
+            )
         adapter = adapter_for(definition)
         secrets = self._secrets.load_all()
         probe = adapter.probe(definition, secrets, dict(config.config))
         return self._record_probe(definition, probe)
 
     def test_all_configured(self) -> dict[str, Any]:
+        """Test every implemented + enabled + sufficiently configured provider.
+
+        Placeholders are counted as ``planned`` (never tested); disabled and
+        missing-credential providers count as ``skipped``. Tested results are
+        bucketed into ``healthy`` / ``degraded`` (incl. rate-limited) /
+        ``failed``.
+        """
         results = []
         skipped = []
+        summary = {
+            "tested": 0,
+            "healthy": 0,
+            "degraded": 0,
+            "failed": 0,
+            "skipped": 0,
+            "planned": 0,
+        }
         for definition in PROVIDERS:
             provider_id = definition.provider_id
             config = self._config.get(
@@ -320,22 +367,25 @@ class SetupIntegrationsService:
                 self._secrets.configured(name)
                 for name in definition.required_secrets
             )
-            if (
-                not config.enabled
-                or definition.adapter_kind is AdapterKind.PLACEHOLDER
-                or not configured
-            ):
+            if definition.adapter_kind is AdapterKind.PLACEHOLDER:
+                summary["planned"] += 1
                 skipped.append(
                     {
                         "provider_id": provider_id,
-                        "reason": (
-                            "disabled"
-                            if not config.enabled
-                            else "adapter not implemented"
-                            if definition.adapter_kind is AdapterKind.PLACEHOLDER
-                            else "missing credentials"
-                        ),
+                        "reason": "adapter not implemented",
                     }
+                )
+                continue
+            if not config.enabled:
+                summary["skipped"] += 1
+                skipped.append(
+                    {"provider_id": provider_id, "reason": "disabled"}
+                )
+                continue
+            if not configured:
+                summary["skipped"] += 1
+                skipped.append(
+                    {"provider_id": provider_id, "reason": "missing credentials"}
                 )
                 continue
             try:
@@ -349,10 +399,22 @@ class SetupIntegrationsService:
                     "tested_at": self._clock(),
                 }
             results.append(result)
+            summary["tested"] += 1
+            badge = result.get("badge")
+            if badge == HealthBadge.HEALTHY.value:
+                summary["healthy"] += 1
+            elif badge in (
+                HealthBadge.DEGRADED.value,
+                HealthBadge.RATE_LIMITED.value,
+            ):
+                summary["degraded"] += 1
+            else:
+                summary["failed"] += 1
         return {
             "results": results,
-            "tested": len(results),
+            "tested": summary["tested"],
             "skipped": skipped,
+            "summary": summary,
         }
 
     def _record_probe(
@@ -414,13 +476,24 @@ class SetupIntegrationsService:
                         "products": list(definition.products),
                         "auth_type": definition.auth_type.value,
                         "adapter_kind": definition.adapter_kind.value,
-                        "enabled": config.enabled,
+                        "implemented": (
+                            definition.adapter_kind is AdapterKind.REAL
+                        ),
+                        "requires_credentials": requires_credentials,
+                        "credentials_configured": configured,
                         "configured": configured,
+                        "enabled": config.enabled,
+                        "tested": config.tested_at is not None,
                         "health_badge": self._health_badge(
+                            definition, config, configured
+                        ).value,
+                        "state": self._diagnostic_state(
                             definition, config, configured
                         ).value,
                         "last_success_at": config.last_success_at,
                         "last_test_at": config.tested_at,
+                        "last_status_code": config.last_status_code,
+                        "last_latency_ms": config.last_latency_ms,
                         "remaining_quota": config.remaining_quota,
                         "quota_reset_at": config.quota_reset_at,
                         "detail": config.last_test_detail,

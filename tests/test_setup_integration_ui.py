@@ -18,7 +18,7 @@ def test_setup_groups_credentials_by_product():
     assert "Platform / Operations" in source
     assert "DEFEND AI" in source
     assert "DEFENDcoder" in source
-    assert "DEFEND Sports" in source
+    assert "DEFENDmarkets" in source
     assert "SCS AI" in source
 
 

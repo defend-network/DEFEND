@@ -119,6 +119,7 @@ class DecisionJournal:
             data_cutoff_timestamp=original.record.data_cutoff_timestamp,
             invalidation=invalidation if invalidation is not None else original.record.invalidation,
             model_version=original.record.model_version,
+            model_probability=original.record.model_probability,
             amendment_of=str(decision_id),
             note=note,
         )
@@ -147,7 +148,7 @@ class DecisionJournal:
                            p.policy_key, p.version, d.decision_type, d.reason_codes,
                            d.thesis, d.counter_thesis, d.confidence, d.estimated_edge,
                            d.cost_estimate, d.data_cutoff_timestamp, d.invalidation,
-                           d.model_version, d.created_at, d.amendment_of
+                           d.model_version, d.model_probability, d.created_at, d.amendment_of
                     FROM market_decisions d
                     JOIN market_strategies s ON s.strategy_id = d.strategy_id
                     JOIN market_risk_policies p ON p.policy_id = d.policy_id
@@ -177,8 +178,9 @@ class DecisionJournal:
                 data_cutoff_timestamp=row[13],
                 invalidation=row[14],
                 model_version=row[15],
-                created_at=row[16],
-                amendment_of=str(row[17]) if row[17] else None,
+                model_probability=row[16],
+                created_at=row[17],
+                amendment_of=str(row[18]) if row[18] else None,
             ),
         )
 
@@ -205,6 +207,7 @@ class DecisionJournal:
                         cost_estimate=row["cost_estimate"],
                         data_cutoff_timestamp=row["data_cutoff_timestamp"],
                         model_version=row["model_version"],
+                        model_probability=row["model_probability"],
                         created_at=row["created_at"],
                         amendment_of=row["amendment_of"],
                     ),

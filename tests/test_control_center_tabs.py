@@ -11,7 +11,7 @@ def test_control_center_uses_product_notebook():
     assert "ttk.Notebook" in source
     assert '"Home"' in source
     assert '"DEFEND AI"' in source
-    assert '"DEFEND Sports"' in source
+    assert '"DEFENDmarkets"' in source
     assert '"SCS AI"' in source
     assert '"DEFENDcoder"' in source
 

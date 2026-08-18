@@ -86,9 +86,18 @@ class ProductsSettings:
     scs_ai_api_port: int = 8300
     scs_ai_web_port: int = 3300
     scs_ai_public_origin: str = "https://ai.sunshineclimatesolutions.com"
+    scs_ai_model_alias: str | None = None
+    scs_ai_model_name: str | None = None
+    scs_ai_model_base_url: str | None = None
+    scs_ai_model_api_key: str | None = field(default=None, repr=False)
+    scs_ai_model_api_key_file: str | None = None
     coder_api_port: int = 8301
     coder_web_port: int = 3301
     coder_model_alias: str = "defendcoder-heavy"
+    coder_model_name: str | None = None
+    coder_model_base_url: str | None = None
+    coder_model_api_key: str | None = field(default=None, repr=False)
+    coder_model_api_key_file: str | None = None
     coder_public_origin: str = "https://defendcoder.defend-network.org"
     coder_workspace_root: Path = Path(r"C:\DEFEND_CODER_DATA")
     coder_database_url: str | None = field(default=None, repr=False)
@@ -151,12 +160,39 @@ class ProductsSettings:
                 "SCS_AI_PUBLIC_ORIGIN",
                 "https://ai.sunshineclimatesolutions.com",
             ),
+            scs_ai_model_alias=text(
+                "SCS_AI_MODEL_ALIAS", ""
+            ) or None,
+            scs_ai_model_name=text(
+                "SCS_AI_MODEL_NAME", ""
+            ) or None,
+            scs_ai_model_base_url=text(
+                "SCS_AI_MODEL_BASE_URL", ""
+            ) or None,
+            scs_ai_model_api_key=os.environ.get(
+                "SCS_AI_MODEL_API_KEY"
+            ),
+            scs_ai_model_api_key_file=os.environ.get(
+                "SCS_AI_MODEL_API_KEY_FILE"
+            ) or None,
             coder_api_port=port("CODER_API_PORT", 8301),
             coder_web_port=port("CODER_WEB_PORT", 3301),
             coder_model_alias=text(
                 "CODER_MODEL_ALIAS",
                 "defendcoder-heavy",
             ),
+            coder_model_name=text(
+                "CODER_MODEL_NAME", ""
+            ) or None,
+            coder_model_base_url=text(
+                "CODER_MODEL_BASE_URL", ""
+            ) or None,
+            coder_model_api_key=os.environ.get(
+                "CODER_MODEL_API_KEY"
+            ),
+            coder_model_api_key_file=os.environ.get(
+                "CODER_MODEL_API_KEY_FILE"
+            ) or None,
             coder_public_origin=text(
                 "CODER_PUBLIC_ORIGIN",
                 "https://defendcoder.defend-network.org",
@@ -197,6 +233,17 @@ def build_sports_process_spec(
     )
 
 
+def coder_model_status_file() -> str:
+    explicit = os.environ.get("CODER_MODEL_STATUS_FILE")
+    if explicit and explicit.strip():
+        return explicit.strip()
+    return str(
+        Path(os.environ.get("LOCALAPPDATA", "."))
+        / "DEFEND"
+        / "coder-model-status.json"
+    )
+
+
 def build_coder_api_process_spec(
     settings: ProductsSettings,
     repository: Path,
@@ -204,6 +251,29 @@ def build_coder_api_process_spec(
 ) -> ProcessSpec:
     if not settings.coder_database_url:
         raise ValueError("CODER_DATABASE_URL is not configured")
+
+    env: dict[str, str] = {
+        "CODER_DATABASE_URL": settings.coder_database_url,
+        "CODER_HOST": "127.0.0.1",
+        "CODER_PORT": str(settings.coder_api_port),
+        "CODER_PUBLIC_HTTPS": "true",
+        "CODER_WORKSPACE_ROOT": str(
+            settings.coder_workspace_root
+        ),
+        "CODER_MODEL_ALIAS": settings.coder_model_alias,
+        "CODER_MODEL_NAME": settings.coder_model_name or "",
+        "CODER_MODEL_BASE_URL": (
+            settings.coder_model_base_url
+            or "http://127.0.0.1:8001/v1"
+        ),
+        "CODER_MODEL_STATUS_FILE": coder_model_status_file(),
+    }
+    if settings.coder_model_api_key:
+        env["CODER_MODEL_API_KEY"] = settings.coder_model_api_key
+    if settings.coder_model_api_key_file:
+        env["CODER_MODEL_API_KEY_FILE"] = (
+            settings.coder_model_api_key_file
+        )
 
     return ProcessSpec(
         name="coder:api",
@@ -213,15 +283,7 @@ def build_coder_api_process_spec(
             "tools.defend_coder_server",
         ),
         cwd=Path(repository),
-        env={
-            "CODER_DATABASE_URL": settings.coder_database_url,
-            "CODER_HOST": "127.0.0.1",
-            "CODER_PORT": str(settings.coder_api_port),
-            "CODER_PUBLIC_HTTPS": "true",
-            "CODER_WORKSPACE_ROOT": str(
-                settings.coder_workspace_root
-            ),
-        },
+        env=env,
         health_url=(
             f"http://127.0.0.1:"
             f"{settings.coder_api_port}/health"
@@ -291,6 +353,25 @@ def build_scs_ai_process_spec(
     repository: Path,
     python_executable: str,
 ) -> ProcessSpec:
+    env: dict[str, str] = {
+        "SCS_AI_PUBLIC_ORIGIN": settings.scs_ai_public_origin,
+        "SCS_AI_API_PORT": str(settings.scs_ai_api_port),
+        "SCS_AI_WEB_PORT": str(settings.scs_ai_web_port),
+
+        # Control Center owns the tunnel separately.
+        # runtime.py must therefore construct it disabled in this child.
+        "SCS_AI_TUNNEL_ENABLED": "false",
+    }
+    for name, value in (
+        ("SCS_AI_MODEL_ALIAS", settings.scs_ai_model_alias),
+        ("SCS_AI_MODEL_NAME", settings.scs_ai_model_name),
+        ("SCS_AI_MODEL_BASE_URL", settings.scs_ai_model_base_url),
+        ("SCS_AI_MODEL_API_KEY", settings.scs_ai_model_api_key),
+        ("SCS_AI_MODEL_API_KEY_FILE", settings.scs_ai_model_api_key_file),
+    ):
+        if value is not None and value != "":
+            env[name] = value
+
     return ProcessSpec(
         name="scs-ai:api",
         argv=(
@@ -304,19 +385,36 @@ def build_scs_ai_process_spec(
             str(settings.scs_ai_api_port),
         ),
         cwd=Path(repository),
-        env={
-            "SCS_AI_PUBLIC_ORIGIN": settings.scs_ai_public_origin,
-            "SCS_AI_API_PORT": str(settings.scs_ai_api_port),
-            "SCS_AI_WEB_PORT": str(settings.scs_ai_web_port),
-
-            # Control Center owns the tunnel separately.
-            # runtime.py must therefore construct it disabled in this child.
-            "SCS_AI_TUNNEL_ENABLED": "false",
-        },
+        env=env,
         health_url=(
             f"http://127.0.0.1:"
             f"{settings.scs_ai_api_port}/health"
         ),
+    )
+
+
+def build_scs_web_process_spec(
+    settings: ProductsSettings,
+    repository: Path,
+    npm_executable: str = "npm.cmd",
+) -> ProcessSpec:
+    """SCS web (scs-ui Next app) served with `next start` on the SCS lane."""
+    return ProcessSpec(
+        name="scs:web",
+        argv=(
+            npm_executable,
+            "--prefix",
+            "scs-ui",
+            "run",
+            "start",
+        ),
+        cwd=Path(repository),
+        env={
+            "SCS_WEB_PORT": str(settings.scs_web_port),
+            "SCS_API_ORIGIN": f"http://127.0.0.1:{settings.scs_api_port}",
+            "SCS_AI_API_ORIGIN": f"http://127.0.0.1:{settings.scs_ai_api_port}",
+        },
+        health_url=f"http://127.0.0.1:{settings.scs_web_port}/",
     )
 
 
@@ -562,6 +660,7 @@ class ScsService:
         python_executable: str | None = None,
         tunnel=None,
         probe=fetch_http_json,
+        npm_executable: str | None = None,
     ) -> None:
         self._settings = settings
         self._supervisor = supervisor
@@ -577,6 +676,7 @@ class ScsService:
         )
         self._tunnel = tunnel
         self._probe = probe
+        self._npm_executable = npm_executable or "npm.cmd"
         self._last_error: str | None = None
 
     @property
@@ -598,6 +698,27 @@ class ScsService:
 
         return False
 
+    def _web_running(self) -> bool:
+        if not self._lifecycle_enabled:
+            return False
+
+        for snapshot in self._supervisor.snapshot():
+            if snapshot.name == "scs:web":
+                return bool(snapshot.running)
+
+        return False
+
+    def _local_web_url(self) -> str:
+        return f"http://127.0.0.1:{self._settings.scs_web_port}"
+
+    def _resolve_open_url(self) -> str:
+        if (
+            self._lifecycle_enabled
+            and self._tunnel.status().state == "connected"
+        ):
+            return self._settings.scs_ai_public_origin
+        return self._local_web_url()
+
     @property
     def state(self) -> str:
         if not self._lifecycle_enabled:
@@ -611,12 +732,13 @@ class ScsService:
             return "running" if result.ok else "not configured"
 
         api = self._api_running()
+        web = self._web_running()
         tunnel_state = self._tunnel.status().state
 
-        if api and tunnel_state == "connected":
+        if api and web and tunnel_state == "connected":
             return "running"
 
-        if api or tunnel_state in {"starting", "connected"}:
+        if api or web or tunnel_state in {"starting", "connected"}:
             return "degraded"
 
         return "stopped"
@@ -632,6 +754,15 @@ class ScsService:
                         self._settings,
                         self._repository,
                         self._python_executable,
+                    )
+                )
+
+            if not self._web_running():
+                self._supervisor.start(
+                    build_scs_web_process_spec(
+                        self._settings,
+                        self._repository,
+                        self._npm_executable,
                     )
                 )
 
@@ -661,6 +792,14 @@ class ScsService:
             errors.append(
                 f"tunnel stop failed ({type(error).__name__})"
             )
+
+        if self._web_running():
+            try:
+                self._supervisor.stop("scs:web")
+            except Exception as error:
+                errors.append(
+                    f"web stop failed ({type(error).__name__})"
+                )
 
         if self._api_running():
             try:
@@ -705,13 +844,14 @@ class ScsService:
                     ("Web port", str(self._settings.scs_web_port)),
                     ("Health", "reachable" if health.ok else "unreachable"),
                 ),
-                open_url=self._settings.scs_public_origin,
+                open_url=self._local_web_url(),
                 launch_available=False,
                 stop_available=False,
                 logs_available=False,
             )
 
         api = "running" if self._api_running() else "stopped"
+        web = "running" if self._web_running() else "stopped"
         tunnel = self._tunnel.status()
 
         state = self.state
@@ -719,7 +859,7 @@ class ScsService:
         if self._last_error:
             status_text = self._last_error
         elif state == "running":
-            status_text = "SCS AI API and tunnel running"
+            status_text = "SCS AI API, web, and tunnel running"
         elif state == "degraded":
             status_text = "SCS AI partially running"
         else:
@@ -732,12 +872,13 @@ class ScsService:
             status_text=status_text,
             details=(
                 ("API", api),
+                ("Web", web),
                 ("Tunnel", str(tunnel.state)),
                 ("API port", str(self._settings.scs_ai_api_port)),
                 ("Web port", str(self._settings.scs_ai_web_port)),
                 ("Public origin", self._settings.scs_ai_public_origin),
             ),
-            open_url=self._settings.scs_ai_public_origin,
+            open_url=self._resolve_open_url(),
             launch_available=True,
             stop_available=True,
             open_available=True,
@@ -760,9 +901,7 @@ class ScsService:
         return bool(result.ok)
 
     def open_url(self) -> bool:
-        return webbrowser.open(
-            self._settings.scs_ai_public_origin
-        )
+        return webbrowser.open(self._resolve_open_url())
 
     def logs(self) -> tuple[LogEntry, ...]:
         if not self._lifecycle_enabled:
@@ -771,7 +910,7 @@ class ScsService:
         entries = [
             entry
             for entry in self._supervisor.logs.snapshot()
-            if entry.service.startswith("scs-ai:")
+            if entry.service.startswith(("scs-ai:", "scs:web"))
         ]
 
         for service, text in self._tunnel.logs():
