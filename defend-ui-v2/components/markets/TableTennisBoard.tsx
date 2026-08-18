@@ -263,10 +263,31 @@ function MatchCard({ event }: { event: TTBoardEvent }) {
 
         <div className="dm-cell">
           <span className="dm-cell-k">Model probability</span>
-          <span className="dm-cell-v dm-cell-na" title="tt_two_way_arb is a deterministic arb strategy; no probability model is wired">
-            not wired
-            <small className="dm-cell-sub">arb strategy</small>
-          </span>
+          {event.model_probability_available ? (
+            <span className="dm-cell-v dm-edge">
+              {pct(event.model_probability, 2) ?? "—"}
+              <small className="dm-cell-sub">
+                {event.model?.model ?? "tt_elo"} ·{" "}
+                {event.model?.home_games ?? 0} vs {event.model?.away_games ?? 0} matches ·{" "}
+                {event.model?.calibration_bucket ?? "no bucket"}
+              </small>
+            </span>
+          ) : (
+            <span
+              className="dm-cell-v dm-cell-na"
+              title={
+                event.model?.reason ??
+                "no model probability: insufficient recorded match history for both players"
+              }
+            >
+              not available
+              <small className="dm-cell-sub">
+                {event.model?.available === false
+                  ? (event.model.reason ?? "insufficient history")
+                  : "model history pending"}
+              </small>
+            </span>
+          )}
         </div>
 
         <div className="dm-cell">

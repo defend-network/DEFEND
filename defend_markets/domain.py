@@ -73,6 +73,7 @@ class NoActionReason(Enum):
     PROVIDER_UNHEALTHY = "provider_unhealthy"
     NO_ELIGIBLE_DATA = "no_eligible_data"
     STRATEGY_NOT_ELIGIBLE = "strategy_not_eligible"
+    INSUFFICIENT_MODEL_HISTORY = "insufficient_model_history"
 
 
 def _require_text(name: str, value: object) -> str:
@@ -254,6 +255,7 @@ class StrategyDefinition:
     lifecycle: StrategyLifecycle = StrategyLifecycle.EXPERIMENTAL
     params: Mapping[str, object] = field(default_factory=dict)
     source_ref: str | None = None
+    model_label: str | None = None
 
     def __post_init__(self) -> None:
         _require_text("strategy_key", self.strategy_key)
@@ -265,6 +267,8 @@ class StrategyDefinition:
             raise ValueError("lifecycle must be a StrategyLifecycle")
         if not isinstance(self.params, Mapping):
             raise ValueError("params must be a mapping")
+        if self.model_label is not None and not self.model_label.strip():
+            raise ValueError("model_label must not be blank")
 
 
 @dataclass(frozen=True)
@@ -356,6 +360,8 @@ class Opportunity:
     data_quality_note: str | None = None
     risk_tier: RiskTier = RiskTier.CORE
     model_version: str | None = None
+    model_probability: Decimal | None = None
+    model_detail: Mapping[str, object] = field(default_factory=dict)
     invalidation: str = ""
     provenance: tuple[ProvenanceStamp, ...] = ()
     generated_at: datetime | None = None
@@ -410,6 +416,7 @@ class DecisionRecord:
     data_cutoff_timestamp: datetime | None = None
     invalidation: str | None = None
     model_version: str | None = None
+    model_probability: Decimal | None = None
     created_at: datetime | None = None
     amendment_of: str | None = None
     outcome: "Outcome | None" = None
@@ -421,7 +428,7 @@ class DecisionRecord:
         _require_text("thesis", self.thesis)
         if not isinstance(self.decision_type, DecisionType):
             raise ValueError("decision_type must be a DecisionType")
-        for name in ("confidence", "estimated_edge", "cost_estimate"):
+        for name in ("confidence", "estimated_edge", "cost_estimate", "model_probability"):
             value = getattr(self, name)
             if value is not None:
                 object.__setattr__(self, name, _require_optional_decimal(name, value))
@@ -478,6 +485,35 @@ class DataQualityAssessment:
 
 
 @dataclass(frozen=True)
+class TTMatchResult:
+    """One completed table tennis match used as L2 model history."""
+
+    event_key: str = ""
+    league_key: str = ""
+    home_participant_key: str = ""
+    away_participant_key: str = ""
+    home_score: int = 0
+    away_score: int = 0
+    completed_at: datetime | None = None
+    source_provider: str = ""
+    raw_ref: str | None = None
+
+    def __post_init__(self) -> None:
+        _require_text("event_key", self.event_key)
+        _require_text("league_key", self.league_key)
+        _require_text("home_participant_key", self.home_participant_key)
+        _require_text("away_participant_key", self.away_participant_key)
+        if not isinstance(self.home_score, int) or self.home_score < 0:
+            raise ValueError("home_score must be a non-negative integer")
+        if not isinstance(self.away_score, int) or self.away_score < 0:
+            raise ValueError("away_score must be a non-negative integer")
+        object.__setattr__(
+            self, "completed_at", _require_optional_datetime("completed_at", self.completed_at)
+        )
+        _require_text("source_provider", self.source_provider)
+
+
+@dataclass(frozen=True)
 class RiskEvaluation:
     accepted: bool = False
     reasons: tuple[str, ...] = ()
@@ -511,11 +547,14 @@ class StrategyEvaluation:
     costs: CostModel = field(default_factory=CostModel)
     evidence: tuple[Mapping[str, object], ...] = ()
     confidence: Decimal = Decimal("0")
+    model_probability: Decimal | None = None
+    model_detail: Mapping[str, object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "reasons", tuple(self.reasons))
         _require_probability("confidence", self.confidence)
         object.__setattr__(self, "gross_edge", _require_optional_decimal("gross_edge", self.gross_edge))
+        object.__setattr__(self, "model_probability", _require_optional_decimal("model_probability", self.model_probability))
         object.__setattr__(self, "evidence", tuple(self.evidence))
 
 

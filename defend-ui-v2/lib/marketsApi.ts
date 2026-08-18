@@ -36,6 +36,50 @@ export type DataHealthResponse = {
   }[];
 };
 
+export type ProviderFeedRow = {
+  provider_id?: string;
+  display_name?: string | null;
+  status?: string;
+  last_attempt_at?: string | null;
+  last_success_at?: string | null;
+  last_error?: string | null;
+  latency_ms?: number | null;
+  records_ingested?: number | null;
+  last_record_at?: string | null;
+  detail_json?: Record<string, unknown> | null;
+};
+
+export type ProviderFeedResponse = {
+  providers: ProviderFeedRow[];
+};
+
+export type ProviderRecordsResponse = {
+  provider_id: string;
+  records: {
+    record_key?: string;
+    observed_at?: string | null;
+    received_at?: string | null;
+  }[];
+};
+
+export type TTModelDetail = {
+  model?: string;
+  version?: string;
+  available: boolean;
+  reason?: string | null;
+  home_participant_key?: string | null;
+  away_participant_key?: string | null;
+  p_home?: string | null;
+  p_away?: string | null;
+  home_rating?: string | null;
+  away_rating?: string | null;
+  home_games?: number;
+  away_games?: number;
+  home_form?: string | null;
+  away_form?: string | null;
+  calibration_bucket?: string | null;
+};
+
 export type EvaluateResponse = {
   decision_id?: string | null;
   decision_type: "OPPORTUNITY" | "NO_ACTION";
@@ -112,6 +156,7 @@ export type TTBoardEvent = {
   confidence?: string | null;
   model_probability?: string | null;
   model_probability_available: boolean;
+  model?: TTModelDetail | null;
   data_quality?: string | null;
   freshness: {
     ok: boolean;
@@ -226,6 +271,19 @@ export function fetchList<T = CatalogItem>(path: string): Promise<{ [key: string
 
 export function fetchDataHealth(): Promise<DataHealthResponse> {
   return json<DataHealthResponse>("/v1/data-quality");
+}
+
+export function fetchProviders(): Promise<ProviderFeedResponse> {
+  return json<ProviderFeedResponse>("/v1/providers");
+}
+
+export function fetchProviderRecords(
+  providerId: string,
+  limit: number = 50
+): Promise<ProviderRecordsResponse> {
+  return json<ProviderRecordsResponse>(
+    `/v1/providers/${encodeURIComponent(providerId)}/records?limit=${limit}`
+  );
 }
 
 export function fetchTableTennisBoard(): Promise<TableTennisBoardResponse> {

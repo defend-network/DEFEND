@@ -7,7 +7,12 @@ from uuid import UUID
 import pytest
 
 from defend_markets.domain import DecisionType, NoActionReason
-from defend_markets.models import NullReasoner, ReasonerRegistry
+from defend_markets.models import (
+    ModelRegistry,
+    NullReasoner,
+    ReasonerRegistry,
+    build_default_models,
+)
 from defend_markets.pipeline import DecisionPipeline, market_instrument_key
 from defend_markets.strategies import build_default_registry
 
@@ -190,3 +195,121 @@ class TestReasoning:
             reasoner_label="null",
         )
         assert outcome.decision.model_version is None
+
+
+class TestEloGuardedArb:
+    def _pipeline(self, reader: FakeSportsReader, store: InMemoryStore | None = None):
+        store = store if store is not None else InMemoryStore()
+        for strategy_key in ("tt_two_way_arb", "tt_clv", "tt_elo_arb"):
+            store.register_strategy(strategy_key)
+        for policy in default_policies().values():
+            store.register_policy(policy)
+        return DecisionPipeline(
+            reader=reader,
+            registry=build_default_registry(),
+            store=store,
+            journal=InMemoryJournal(),
+            models=build_default_models(),
+            clock=lambda: NOW,
+        )
+
+    def test_abstains_when_model_not_registered(self):
+        reader = FakeSportsReader(quotes={("tt-live-001", "match_winner"): arb_pair(fees="0.001")})
+        pipeline = self._pipeline(reader)
+        pipeline._models = ModelRegistry()
+        outcome = pipeline.evaluate_sports(
+            event_key="tt-live-001",
+            market_key="match_winner",
+            strategy_key="tt_elo_arb",
+        )
+        assert not outcome.is_opportunity
+        assert NoActionReason.INSUFFICIENT_MODEL_HISTORY in outcome.decision.reason_codes
+
+    def test_abstains_without_match_history(self):
+        reader = FakeSportsReader(quotes={("tt-live-001", "match_winner"): arb_pair(fees="0.001")})
+        outcome = self._pipeline(reader).evaluate_sports(
+            event_key="tt-live-001",
+            market_key="match_winner",
+            strategy_key="tt_elo_arb",
+        )
+        assert not outcome.is_opportunity
+        assert NoActionReason.INSUFFICIENT_MODEL_HISTORY in outcome.decision.reason_codes
+        assert "No model probability available" in outcome.decision.thesis
+
+    def test_abstains_below_minimum_history(self):
+        store = InMemoryStore()
+        store._tt_results = [
+            {
+                "event_key": f"e{i}",
+                "league_key": "tabletennis",
+                "home_participant_key": "tabletennis:alice",
+                "away_participant_key": "tabletennis:bob",
+                "home_score": 3,
+                "away_score": 1,
+                "completed_at": NOW,
+                "source_provider": "the_odds_api_tt",
+                "raw_ref": "tabletennis",
+            }
+            for i in range(4)
+        ]
+        reader = FakeSportsReader(quotes={("tt-live-001", "match_winner"): arb_pair(fees="0.001")})
+        outcome = self._pipeline(reader, store=store).evaluate_sports(
+            event_key="tt-live-001",
+            market_key="match_winner",
+            strategy_key="tt_elo_arb",
+        )
+        assert not outcome.is_opportunity
+        assert NoActionReason.INSUFFICIENT_MODEL_HISTORY in outcome.decision.reason_codes
+
+    def test_opportunity_with_model_probability_when_history_sufficient(self):
+        store = InMemoryStore()
+        store._tt_results = [
+            {
+                "event_key": f"e{i}",
+                "league_key": "tabletennis",
+                "home_participant_key": "tabletennis:alice",
+                "away_participant_key": "tabletennis:bob",
+                "home_score": 3,
+                "away_score": 1,
+                "completed_at": NOW,
+                "source_provider": "the_odds_api_tt",
+                "raw_ref": "tabletennis",
+            }
+            for i in range(6)
+        ]
+        reader = FakeSportsReader(
+            quotes={
+                ("tt-live-001", "match_winner"): arb_pair(
+                    fees="0.001",
+                    selection_keys=("tabletennis:alice", "tabletennis:bob"),
+                )
+            }
+        )
+        journal = InMemoryJournal()
+        store.register_strategy("tt_elo_arb")
+        for policy in default_policies().values():
+            store.register_policy(policy)
+        pipeline = DecisionPipeline(
+            reader=reader,
+            registry=build_default_registry(),
+            store=store,
+            journal=journal,
+            models=build_default_models(),
+            clock=lambda: NOW,
+        )
+        outcome = pipeline.evaluate_sports(
+            event_key="tt-live-001",
+            market_key="match_winner",
+            strategy_key="tt_elo_arb",
+        )
+        assert outcome.is_opportunity
+        assert outcome.opportunity is not None
+        assert outcome.opportunity.model_version == "tt_elo@1.0.0"
+        assert outcome.opportunity.model_probability is not None
+        assert Decimal("0") < outcome.opportunity.model_probability < Decimal("1")
+        assert outcome.opportunity.model_detail.get("available") is True
+        assert outcome.opportunity.model_detail.get("home_games") == 6
+        assert outcome.opportunity.thesis.startswith("L1 arb gross edge")
+        assert outcome.opportunity.thesis.endswith(".")
+        assert outcome.decision.model_probability == outcome.opportunity.model_probability
+        assert outcome.decision.model_version == "tt_elo@1.0.0"

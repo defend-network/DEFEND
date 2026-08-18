@@ -410,3 +410,145 @@ class TestIngestionPipeline:
         names = {column for _, column in columns}
         for vendor_field in ("match_id", "moneyline", "scoreboard", "spread", "gameid"):
             assert vendor_field not in names
+
+
+_ODDS_API_SPORTS_LIST = [
+    {
+        "key": "table_tennis_superliga",
+        "group": "Table Tennis",
+        "title": "Table Tennis Superliga",
+        "active": True,
+        "has_outrights": False,
+    }
+]
+
+_ODDS_API_ODDS = [
+    {
+        "id": "tt-api-001",
+        "sport_key": "table_tennis_superliga",
+        "commence_time": "2026-08-17T11:00:00Z",
+        "home_team": "Player A",
+        "away_team": "Player B",
+        "bookmakers": [
+            {
+                "key": "pinnacle",
+                "title": "Pinnacle",
+                "markets": [
+                    {
+                        "key": "h2h",
+                        "outcomes": [
+                            {"name": "Home", "price": 1.85},
+                            {"name": "Away", "price": 2.05},
+                        ],
+                    }
+                ],
+            },
+            {
+                "key": "bet365",
+                "title": "Bet365",
+                "markets": [
+                    {
+                        "key": "h2h",
+                        "outcomes": [
+                            {"name": "Home", "price": "1.92"},
+                            {"name": "Away", "price": "2.00"},
+                        ],
+                    }
+                ],
+            },
+        ],
+    }
+]
+
+_ODDS_API_SCORES = [
+    {
+        "id": "tt-api-001",
+        "sport_key": "table_tennis_superliga",
+        "completed": False,
+        "scores": [
+            {"name": "Player A", "score": "1"},
+            {"name": "Player B", "score": "0"},
+        ],
+    }
+]
+
+
+class _OddsApiStubHttp:
+    def __call__(self, url: str) -> tuple[object, int]:
+        if "/sports/?" in url:
+            return list(_ODDS_API_SPORTS_LIST), 200
+        if "/odds/" in url:
+            return list(_ODDS_API_ODDS), 200
+        if "/scores/" in url:
+            return list(_ODDS_API_SCORES), 200
+        raise AssertionError(f"unexpected URL: {url}")
+
+
+@requires_database
+class TestOddsApiIngestionPipeline:
+    def test_odds_api_batch_ingests_through_the_same_pipeline(self, database):
+        from defend_sports.providers.the_odds_api import TheOddsApiSportsProvider
+
+        provider = TheOddsApiSportsProvider(
+            api_key="test-key",
+            http_get=_OddsApiStubHttp(),
+            clock=lambda: datetime(2026, 8, 17, 10, 30, 0, tzinfo=timezone.utc),
+        )
+        service = IngestionService(database)
+        result = service.ingest(provider.poll())
+
+        assert result.provider == "the_odds_api"
+        assert result.raw_events_created == 1
+        assert result.events == 1
+        assert result.live_observations == 1
+        assert result.odds_snapshots == 4
+        assert result.markets == 1
+        assert result.selections == 2
+        assert result.health == "HEALTHY"
+
+    def test_odds_api_event_and_live_state_persisted(self, database):
+        from defend_sports.providers.the_odds_api import TheOddsApiSportsProvider
+
+        provider = TheOddsApiSportsProvider(
+            api_key="test-key",
+            http_get=_OddsApiStubHttp(),
+            clock=lambda: datetime(2026, 8, 17, 10, 30, 0, tzinfo=timezone.utc),
+        )
+        service = IngestionService(database)
+        service.ingest(provider.poll())
+
+        with database.connect() as connection:
+            event = _rows(
+                connection,
+                """
+                SELECT e.event_key, e.display_name, l.league_key
+                FROM sport_events e
+                LEFT JOIN leagues l ON l.league_id = e.league_id
+                WHERE e.event_key = %s
+                """,
+                ("tt-api-001",),
+            )[0]
+            assert event[1] == "Player A vs Player B"
+            assert event[2] == "table_tennis_superliga"
+
+            live = _rows(
+                connection,
+                """
+                SELECT state_json
+                FROM live_observations
+                WHERE event_id = (SELECT event_id FROM sport_events WHERE event_key = %s)
+                """,
+                ("tt-api-001",),
+            )
+            assert live[0][0]["scores"] == [["Player A", "1"], ["Player B", "0"]]
+
+            books = _rows(
+                connection,
+                """
+                SELECT DISTINCT s.source_key
+                FROM odds_snapshots o
+                JOIN provider_sources s ON s.source_id = o.source_id
+                ORDER BY s.source_key
+                """,
+            )
+            assert [row[0] for row in books] == ["bet365", "pinnacle"]

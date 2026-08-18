@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from defend_markets import app as app_module
 from defend_markets.app import MarketsDependencies
 from defend_markets.config import MarketsSettings
+from defend_markets.feeds import FeedDefinition, FeedProbeResult, FeedRecord
 from defend_markets.models import ReasonerRegistry
 from defend_markets.strategies import build_default_registry
 
@@ -159,7 +160,44 @@ class TestApiHermetic:
         assert client.get("/v1/opportunities").status_code == 200
         assert client.get("/v1/decisions").status_code == 200
         assert client.get("/v1/data-quality").status_code == 200
+        assert client.get("/v1/providers").status_code == 200
+        assert client.get("/v1/providers/world_bank/records").status_code == 200
         assert client.get("/v1/catalog/venues").status_code == 503
+
+    def test_providers_endpoint_lists_ingested_feeds_and_records(self):
+        store = InMemoryStore()
+        for strategy_key in ("tt_two_way_arb", "tt_clv"):
+            store.register_strategy(strategy_key)
+        for policy in default_policies().values():
+            store.register_policy(policy)
+        store.upsert_feed(FeedDefinition("world_bank", "World Bank"))
+        store.record_probe(
+            FeedProbeResult(provider_id="world_bank", ok=True, status="HEALTHY", latency_ms=120),
+            observed_at=NOW,
+        )
+        store.insert_records(
+            "world_bank",
+            [FeedRecord(record_key="USA:NY.GDP.MKTP.KD.ZG:2025", payload={"value": 2.4}, observed_at=NOW)],
+            received_at=NOW,
+        )
+        deps = MarketsDependencies(
+            settings=_build_dependencies().settings,
+            database=None,
+            sports_database=None,
+            reader=None,
+            store=store,
+            journal=InMemoryJournal(),
+            registry=build_default_registry(),
+            reasoners=ReasonerRegistry(),
+            clock=lambda: NOW,
+        )
+        app = app_module.build_markets_app(deps)
+        client = TestClient(app)
+        body = client.get("/v1/providers").json()
+        assert any(p["provider_id"] == "world_bank" and p["status"] == "HEALTHY" for p in body["providers"])
+        records = client.get("/v1/providers/world_bank/records").json()
+        assert records["provider_id"] == "world_bank"
+        assert records["records"][0]["record_key"] == "USA:NY.GDP.MKTP.KD.ZG:2025"
 
 
 class TestTableTennisBoard:

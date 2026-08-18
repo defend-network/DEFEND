@@ -172,6 +172,14 @@ export function OverviewPanel() {
           <span className="dm-kpi-k">Risk policies</span>
           <span className="dm-kpi-v">{counts.market_risk_policies ?? 0}</span>
         </div>
+        <div className="dm-kpi">
+          <span className="dm-kpi-k">Feed records</span>
+          <span className="dm-kpi-v">{counts.market_feed_records ?? 0}</span>
+        </div>
+        <div className="dm-kpi">
+          <span className="dm-kpi-k">TT results</span>
+          <span className="dm-kpi-v">{counts.tt_match_results ?? 0}</span>
+        </div>
       </section>
 
       <section className="dm-panel">
