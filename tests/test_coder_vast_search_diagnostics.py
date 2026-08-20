@@ -8,7 +8,7 @@ rejections without hiding valid offers.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 import json
 from urllib.parse import urlsplit
@@ -501,9 +501,73 @@ class TestRejectionCategories:
             "insufficient_disk",
             "wrong_gpu_family",
             "below_reliability",
+            "below_cuda_max",
             "over_price",
             "malformed_numeric_field",
         )
+
+
+class TestCudaCapabilityFilter:
+    def test_search_sends_cuda_filter_when_profile_requires(self):
+        transport = _FakeTransport()
+        transport.add(offers=[_h100(101)])
+        client = VastClient(_KEY, transport=transport)
+        profile = replace(_HEAVY, min_cuda_max_good=13.0)
+        client.search_offers(Decimal("4.50"), profile)
+        payload = _search_payload(transport.search_calls[0])
+        assert payload["cuda_max_good"] == {"gte": 13.0}
+
+    def test_search_omits_cuda_filter_when_unset(self):
+        transport = _FakeTransport()
+        transport.add(offers=[_h100(101)])
+        client = VastClient(_KEY, transport=transport)
+        client.search_offers(Decimal("4.50"), _HEAVY)
+        payload = _search_payload(transport.search_calls[0])
+        assert "cuda_max_good" not in payload
+
+    def test_offer_below_cuda_floor_is_rejected_and_counted(self):
+        transport = _FakeTransport()
+        transport.add(
+            offers=[
+                _h100(102, cuda_max_good=12.2),
+                _h100(103, cuda_max_good=13.0),
+                _h100(104),
+            ]
+        )
+        client = VastClient(_KEY, transport=transport)
+        offers = client.search_offers(
+            Decimal("4.50"),
+            replace(_HEAVY, min_cuda_max_good=13.0),
+        )
+        assert [offer.offer_id for offer in offers] == [103, 104]
+        assert offers[0].cuda_max_good == 13.0
+        assert offers[1].cuda_max_good is None
+        provider, eligible, rejections = client.last_search_counts()
+        assert provider == 3
+        assert eligible == 2
+        assert dict(rejections)["below_cuda_max"] == 1
+
+    def test_malformed_cuda_max_good_is_rejected_as_malformed(self):
+        transport = _FakeTransport()
+        transport.add(offers=[_h100(105, cuda_max_good="13.0.0")])
+        client = VastClient(_KEY, transport=transport)
+        offers = client.search_offers(
+            Decimal("4.50"),
+            replace(_HEAVY, min_cuda_max_good=13.0),
+        )
+        assert offers == ()
+        provider, eligible, rejections = client.last_search_counts()
+        assert dict(rejections)["malformed_numeric_field"] == 1
+
+    def test_cuda_boundary_exactly_at_floor_is_eligible(self):
+        transport = _FakeTransport()
+        transport.add(offers=[_h100(106, cuda_max_good=13.0)])
+        client = VastClient(_KEY, transport=transport)
+        offers = client.search_offers(
+            Decimal("4.50"),
+            replace(_HEAVY, min_cuda_max_good=13.0),
+        )
+        assert [offer.offer_id for offer in offers] == [106]
 
 
 class TestApprovedGpuUniverse:

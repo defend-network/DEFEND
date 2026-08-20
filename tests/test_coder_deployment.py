@@ -188,6 +188,7 @@ class TestDefaultDeployment:
         assert "--max-model-len 8192" in rendered
         assert "--tool-call-parser qwen3_xml" in rendered
         assert "--enable-auto-tool-choice" in rendered
+        assert "--served-model-name Qwen/Qwen3-Coder-30B-A3B-Instruct" in rendered
         assert "hf_synthetic" not in rendered
         assert "vllm_synthetic" not in rendered
 
@@ -212,6 +213,7 @@ class TestHeavyBootstrapArtifactAware:
         assert "--max-model-len 32768" in rendered
         assert "--tool-call-parser qwen3_coder" in rendered
         assert "--enable-auto-tool-choice" in rendered
+        assert "--served-model-name Qwen/Qwen3-Coder-Next" in rendered
         assert "hf_synthetic" not in rendered
         assert "vllm_synthetic" not in rendered
         assert not any(

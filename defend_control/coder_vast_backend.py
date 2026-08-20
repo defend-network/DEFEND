@@ -141,6 +141,11 @@ class VastCoderBackend:
     direct_endpoint_wait_seconds: float = 300.0
     direct_endpoint_poll_seconds: float = 10.0
     smoke_http: Callable[[str, str, CoderModelRef], dict[str, Any]] | None = None
+    # remote_probe(instance, model, *, remote_port, prefer_direct) -> dict:
+    # liveness probe of the remote vLLM; when alive and serving the
+    # expected model id, reattach skips the bootstrap entirely (never
+    # starts a second server). None means always bootstrap.
+    remote_probe: Callable[..., dict[str, Any]] | None = None
     offer_chooser: Callable[[tuple[VastOffer, ...]], VastOffer] | None = None
     log: Callable[[str], None] | None = None
     failure_directory: str | None = None
@@ -258,11 +263,15 @@ class VastCoderBackend:
         Runtype-aware: ssh_direct searches additionally require
         direct_port_count >= 1 (provider capability filter, best-effort —
         never a guarantee); ssh_proxy searches omit it entirely.
+
+        Acquisition-only: the CUDA/runtime capability filter
+        (profile.min_cuda_max_good) is applied HERE and in the provider
+        document; it never constrains a retained instance being resumed.
         """
         del model
         prefer_direct = launch_runtype == "ssh_direct"
         try:
-            return self.vast.search_offers(
+            offers = self.vast.search_offers(
                 self.max_hourly,
                 profile,
                 require_direct_ports=prefer_direct,
@@ -272,6 +281,101 @@ class VastCoderBackend:
                 str(exc),
                 category=classify_vast_error(exc),
             ) from exc
+        return _filter_offers_by_cuda(offers, profile.min_cuda_max_good)
+
+    def retained_candidate(
+        self,
+        *,
+        recorded_instance_id: int | None,
+        launch_runtype: str,
+        approved_ceiling: Decimal,
+    ) -> VastInstance | None:
+        """The single labeled instance that may be resumed/reattached.
+
+        Lifecycle-management path — NEVER re-enters offer selection and
+        NEVER applies the current acquisition-price ceiling. The approval
+        basis is the owner ``approved_ceiling`` (the recorded max_hourly
+        ceiling), exactly as accepted for retained instances.
+
+        - ``recorded_instance_id`` given: the recorded identity is
+          authoritative; the instance must still be labeled and the fleet
+          must be unambiguous (no OTHER labeled instance). Returns the
+          instance regardless of provider state (running / stopped /
+          exited are all reattachable); terminal states fail closed.
+        - no recorded identity: returns the single labeled instance when
+          there is exactly one (any reattachable state), fail-closed on
+          ambiguity.
+        - nothing labeled -> None (fresh provisioning may proceed).
+        """
+        if launch_runtype not in ("ssh_direct", "ssh_proxy"):
+            raise CoderVastBackendError("launch_runtype is invalid")
+        try:
+            labeled_ids = self.vast.list_labeled_instance_ids(
+                LaunchSpec.coder_default().label
+            )
+        except VastError as exc:
+            raise CoderVastBackendError(
+                f"cannot verify existing coder instances: {exc}",
+                category=classify_vast_error(exc),
+            ) from exc
+
+        candidates: list[VastInstance] = []
+        for instance_id in labeled_ids:
+            if (
+                recorded_instance_id is not None
+                and instance_id != recorded_instance_id
+            ):
+                raise CoderVastBackendError(
+                    f"coder instance {instance_id} is labeled but was not "
+                    f"recorded ({recorded_instance_id}); reconcile manually "
+                    "before launching",
+                    category="duplicate_runtime",
+                )
+            try:
+                instance = self.vast.show_instance(instance_id)
+            except VastError as exc:
+                raise CoderVastBackendError(
+                    f"cannot verify existing coder instance {instance_id}: {exc}",
+                    category=classify_vast_error(exc),
+                ) from exc
+            if instance.image_runtype not in (None, launch_runtype):
+                raise CoderVastBackendError(
+                    f"coder instance {instance_id} runs "
+                    f"{instance.image_runtype or 'unknown'}, not "
+                    f"{launch_runtype}; reconcile manually before launching",
+                    category="duplicate_runtime",
+                )
+            if instance.dph_total > approved_ceiling:
+                raise CoderVastBackendError(
+                    f"coder instance {instance_id} actual rate "
+                    f"{format(instance.dph_total, 'f')} exceeds approved "
+                    f"ceiling {format(approved_ceiling, 'f')}; reconcile "
+                    "manually before launching",
+                    category="rate_exceeded",
+                )
+            if instance.actual_status in (
+                "running",
+                "stopped",
+                "exited",
+            ):
+                candidates.append(instance)
+            elif instance.actual_status in ("scheduling", "unknown", None):
+                candidates.append(instance)
+            else:
+                raise CoderVastBackendError(
+                    f"coder instance {instance_id} is in terminal state "
+                    f"{instance.actual_status!r}; reconcile manually before "
+                    "launching",
+                    category="duplicate_runtime",
+                )
+
+        if len(candidates) > 1:
+            raise CoderVastBackendError(
+                "multiple labeled coder instances; reconcile manually "
+                "before launching",
+                category="duplicate_runtime",
+            )
+        return candidates[0] if candidates else None
 
     def offer_search_diagnostics(
         self,
@@ -295,6 +399,7 @@ class VastCoderBackend:
         cancelled: Callable[[], bool] | None = None,
         launch_runtype: str | None = None,
         resume_instance: VastInstance | None = None,
+        destroy_on_failure: bool | None = None,
     ) -> dict[str, Any]:
         del session_budget_usd  # enforced by CoderM0Service / Control Center
         if type(local_port) is not int or not 1 <= local_port <= 65_535:
@@ -306,6 +411,14 @@ class VastCoderBackend:
             "ssh_proxy",
         ):
             raise CoderVastBackendError("launch_runtype is invalid")
+        # Reattach policy default: a retained instance is NEVER destroyed by
+        # a failed tunnel/bootstrap — recovery stays at the lowest failed
+        # layer and the owner reconciles the retained runtime. Fresh
+        # acquisitions keep the fail-closed destroy default.
+        if destroy_on_failure is None:
+            destroy_on_failure = resume_instance is None
+        if type(destroy_on_failure) is not bool:
+            raise CoderVastBackendError("destroy_on_failure must be a bool")
 
         # F1: fail closed BEFORE any billable spend when no local forward can
         # be established — never fabricate a localhost endpoint.
@@ -321,18 +434,23 @@ class VastCoderBackend:
         # Duplicate-launch guard: while any labeled coder instance exists in
         # an uncertain state, refuse to create a second billable runtime.
         # The only clean path to a fresh instance is a prior destroy.
-        candidate = self.resume_candidate(
-            launch_runtype=launch_runtype or "ssh_proxy",
-            approved_ceiling=(
-                offer.dph_total if offer is not None else self.max_hourly
-            ),
-        )
-        if resume_instance is None and candidate is not None:
-            raise CoderVastBackendError(
-                f"compatible coder instance {candidate.instance_id} is "
-                "already running; resume it instead of creating a duplicate",
-                category="duplicate_runtime",
+        # Applied to FRESH provisioning only: a resume/reattach operates on
+        # the recorded identity (already verified by the caller via
+        # retained_candidate/resume_candidate), and a stopped retained
+        # instance is started in place — never blocked by its own state.
+        if resume_instance is None:
+            candidate = self.resume_candidate(
+                launch_runtype=launch_runtype or "ssh_proxy",
+                approved_ceiling=(
+                    offer.dph_total if offer is not None else self.max_hourly
+                ),
             )
+            if candidate is not None:
+                raise CoderVastBackendError(
+                    f"compatible coder instance {candidate.instance_id} is "
+                    "already running; resume it instead of creating a duplicate",
+                    category="duplicate_runtime",
+                )
 
         if offer is not None:
             offers: tuple[VastOffer, ...] = (offer,)
@@ -355,6 +473,11 @@ class VastCoderBackend:
                     str(exc),
                     category=classify_vast_error(exc),
                 ) from exc
+            # Acquisition-only CUDA/runtime capability filter (belt over the
+            # provider-side document filter); never applies to resume.
+            offers = _filter_offers_by_cuda(
+                offers, resolved_profile.min_cuda_max_good
+            )
         if not offers and resume_instance is None:
             raise CoderVastBackendError(
                 "no eligible coder GPU offers under budget",
@@ -394,8 +517,16 @@ class VastCoderBackend:
             bootstrap_state: str | None = None,
             vllm_state: str | None = None,
             readiness_state: str | None = None,
+            destroy: bool | None = None,
         ) -> CoderVastBackendError:
-            """Build the sanitized failure record, tear down, then raise."""
+            """Build the sanitized failure record, tear down, then raise.
+
+            ``destroy`` defaults to the start() ``destroy_on_failure``
+            policy: fresh acquisitions destroy the owned instance; a
+            retained instance being reattached is NEVER destroyed by a
+            failed tunnel/bootstrap — recovery stays at the lowest failed
+            layer and the owner reconciles the retained runtime.
+            """
             text = (
                 message
                 if message is not None
@@ -427,7 +558,8 @@ class VastCoderBackend:
                 show_snapshot=show_snapshot,
             )
             self._persist_failure()
-            if instance_id is not None:
+            should_destroy = destroy if destroy is not None else destroy_on_failure
+            if instance_id is not None and should_destroy:
                 self._destroy_owned(instance_id)
             error = CoderVastBackendError(
                 text,
@@ -450,6 +582,38 @@ class VastCoderBackend:
                 )
                 instance_id = instance.instance_id
                 gpu_name = instance.gpu_name
+                if instance.actual_status not in ("running", "scheduling", None):
+                    if instance.actual_status in ("stopped", "exited"):
+                        # Provider-level transition of the RETAINED instance:
+                        # start it in place — never re-provision, never
+                        # re-enter offer selection, never apply the current
+                        # acquisition ceiling.
+                        self._log(
+                            f"retained instance is {instance.actual_status}; "
+                            "requesting provider start"
+                        )
+                        try:
+                            self.vast.set_state(instance_id, "running")
+                            instance = self.vast.wait_until_running(
+                                instance_id,
+                                allow_stopped_transition=True,
+                            )
+                        except VastError as exc:
+                            raise fail(
+                                "instance_running_wait",
+                                exc,
+                                category=classify_vast_error(exc, creating=True),
+                            )
+                    else:
+                        raise fail(
+                            "instance_running_wait",
+                            message=(
+                                f"coder instance {instance_id} is in terminal "
+                                f"state {instance.actual_status!r}; retained "
+                                "instance requires manual reconciliation"
+                            ),
+                            category="duplicate_runtime",
+                        )
             else:
                 self._log("creating Vast instance")
                 instance = self.vast.create_instance(offer, launch)
@@ -537,40 +701,71 @@ class VastCoderBackend:
                 ) from None
 
         self._log("testing SSH")
-        try:
-            self.bootstrap.start(
-                instance,
-                model,
-                self.secrets,
-                remote_port=self.remote_port,
-                artifact=artifact,
-                prefer_direct=prefer_direct,
-                cancelled=cancelled,
-            )
-        except CoderRemoteVllmError as exc:
-            phase = getattr(exc, "phase", None) or "ssh_connect"
-            reached = getattr(self.bootstrap, "last_stages", ())
-            raise fail(
-                phase,
-                exc,
-                category="bootstrap",
-                ssh_state=(
-                    "failed" if phase == "ssh_connect" else "ready"
-                ),
-                bootstrap_state=reached[-1] if reached else None,
-                vllm_state=(
-                    phase
-                    if phase
-                    in (
-                        "container_start",
-                        "vllm_start",
-                        "model_load",
-                        "health_wait",
-                    )
-                    else None
-                ),
-                readiness_state="not_ready",
-            )
+        # Reattach probe: when a retained instance is being resumed and the
+        # remote vLLM is already serving the expected model id, skip the
+        # bootstrap entirely — never start a second server, and recovery
+        # stays at the lowest failed layer (tunnel only). A failed probe is
+        # NOT a failure: the bootstrap re-establishes serving identity.
+        skipped_bootstrap = False
+        if (
+            resume_instance is not None
+            and self.remote_probe is not None
+            and launch.runtype != "ssh_direct"
+        ):
+            try:
+                probe = self.remote_probe(
+                    instance,
+                    model,
+                    remote_port=self.remote_port,
+                    prefer_direct=False,
+                )
+            except Exception as exc:
+                self._log(
+                    f"remote probe failed ({type(exc).__name__}); "
+                    "falling back to bootstrap"
+                )
+                probe = {"alive": False}
+            if bool(probe.get("alive")):
+                self._log(
+                    "remote vLLM already serving; skipping bootstrap "
+                    f"({probe.get('served_model_id')})"
+                )
+                skipped_bootstrap = True
+        if not skipped_bootstrap:
+            try:
+                self.bootstrap.start(
+                    instance,
+                    model,
+                    self.secrets,
+                    remote_port=self.remote_port,
+                    artifact=artifact,
+                    prefer_direct=prefer_direct,
+                    cancelled=cancelled,
+                )
+            except CoderRemoteVllmError as exc:
+                phase = getattr(exc, "phase", None) or "ssh_connect"
+                reached = getattr(self.bootstrap, "last_stages", ())
+                raise fail(
+                    phase,
+                    exc,
+                    category="bootstrap",
+                    ssh_state=(
+                        "failed" if phase == "ssh_connect" else "ready"
+                    ),
+                    bootstrap_state=reached[-1] if reached else None,
+                    vllm_state=(
+                        phase
+                        if phase
+                        in (
+                            "container_start",
+                            "vllm_start",
+                            "model_load",
+                            "health_wait",
+                        )
+                        else None
+                    ),
+                    readiness_state="not_ready",
+                )
         self._log("SSH ready")
         for stage in getattr(self.bootstrap, "last_stages", ()):
             self._log(f"remote stage: {stage}")
@@ -798,6 +993,27 @@ class VastCoderBackend:
 
 
 _LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1", "0:0:0:0:0:0:0:1")
+
+
+def _filter_offers_by_cuda(
+    offers: tuple[VastOffer, ...],
+    min_cuda_max_good: float | None,
+) -> tuple[VastOffer, ...]:
+    """Acquisition-side CUDA capability filter.
+
+    Hosts whose driver cannot run the pinned serving image are excluded
+    BEFORE rental. Offers that do not report cuda_max_good are kept (the
+    provider-side document filter is the enforcement; an absent echo
+    field never alone rejects — matching the reliability semantics).
+    """
+    if min_cuda_max_good is None:
+        return offers
+    return tuple(
+        offer
+        for offer in offers
+        if offer.cuda_max_good is None
+        or float(offer.cuda_max_good) >= float(min_cuda_max_good)
+    )
 
 
 def _is_loopback_endpoint(endpoint: str, expected_port: int) -> bool:

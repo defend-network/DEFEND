@@ -7,10 +7,11 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 import base64
+import json
 from pathlib import Path
 import re
 import shlex
-from typing import Protocol
+from typing import Any, Protocol
 
 from .coder_deployment import (
     CoderDeploymentArtifact,
@@ -74,6 +75,24 @@ def _endpoint(
     except RuntimeError:
         raise CoderRemoteVllmError("Vast.ai SSH endpoint is invalid") from None
     return host, port
+
+
+def _probe_script(remote_port: int) -> bytes:
+    script = f"""\
+KEY=$(cat /workspace/defendcoder/.vllm_api_key 2>/dev/null || true)
+if [ -z "$KEY" ]; then
+  echo "CODER_PROBE no_key"
+  exit 2
+fi
+BODY=$(curl -sf -m 8 -H "Authorization: Bearer $KEY" \\
+  http://127.0.0.1:{int(remote_port)}/v1/models 2>/dev/null) || true
+if [ -z "$BODY" ]; then
+  echo "CODER_PROBE unreachable"
+  exit 3
+fi
+echo "CODER_PROBE $BODY"
+"""
+    return script.encode("ascii")
 
 
 def _validate_model(model: CoderModelRef) -> None:
@@ -282,11 +301,23 @@ else
   exit 127
 fi
 
+# Reattach self-guard: if vLLM is already serving on the box (a retained
+# instance after a Control Center restart), NEVER start a second server -
+# exit immediately so the caller only re-establishes the tunnel.
+if [ -f /workspace/defendcoder/.vllm_api_key ] && \\
+   curl -sf -m 8 -H "Authorization: Bearer $VLLM_API_KEY" \\
+     http://127.0.0.1:8000/v1/models >/dev/null 2>&1; then
+  echo "coder already ready"
+  exit 0
+fi
+
 stage vllm_start
 nohup "${{VLLM_CMD[@]}}" /workspace/defendcoder/model \\
 {flags_block} \\
   >/workspace/defendcoder/vllm.log 2>&1 </dev/null &
 printf '%s\\n' "$!" > /workspace/defendcoder/vllm.pid
+printf '%s' "$VLLM_API_KEY" > /workspace/defendcoder/.vllm_api_key
+chmod 600 /workspace/defendcoder/.vllm_api_key
 
 stage remote_preflight
 python3 - <<'PY'
@@ -401,6 +432,96 @@ rm -f -- /workspace/defendcoder/.hf_token
         if len(encoded) > _MAX_STDIN_BYTES:
             raise CoderRemoteVllmError("Remote coder secret payload is too large")
         return encoded
+
+    def probe_remote(
+        self,
+        instance: VastInstance,
+        model: CoderModelRef,
+        *,
+        remote_port: int = 8000,
+        prefer_direct: bool = False,
+        timeout: float = 30.0,
+    ) -> dict[str, Any]:
+        """Cheap liveness probe: is vLLM already serving the expected model?
+
+        Used by retained-instance reattach to skip the bootstrap entirely
+        when inference survived a Control Center restart — never starts a
+        second server. Returns ``alive`` only when the served model id
+        matches the requested model; a mismatched server is reported as
+        not alive so the bootstrap re-establishes the expected identity.
+        """
+        _validate_model(model)
+        if type(remote_port) is not int or not 1 <= remote_port <= 65_535:
+            raise CoderRemoteVllmError("Remote coder port is invalid")
+        if type(prefer_direct) is not bool:
+            raise CoderRemoteVllmError("Remote coder probe direct option is invalid")
+        if (
+            isinstance(timeout, bool)
+            or not isinstance(timeout, (int, float))
+            or not 0 < float(timeout) <= 120
+        ):
+            raise CoderRemoteVllmError("Remote coder probe timeout is invalid")
+        try:
+            result = self._run(
+                self._argv(instance, prefer_direct=prefer_direct),
+                stdin=_probe_script(remote_port),
+                timeout=float(timeout),
+            )
+        except Exception as error:
+            error_type = type(error).__name__
+            if isinstance(error, TimeoutError) or "timeout" in error_type.casefold():
+                raise CoderRemoteVllmError(
+                    f"Remote coder probe timeout ({error_type})",
+                    phase="remote_probe",
+                ) from error
+            raise CoderRemoteVllmError(
+                f"Remote coder probe SSH connection failed ({error_type})",
+                phase="ssh_connect",
+            ) from error
+        output = (
+            result.stdout + b"\n" + result.stderr
+        ).decode("utf-8", errors="replace")
+        served_model_id: str | None = None
+        for line in output.splitlines():
+            line = line.strip()
+            if not line.startswith("CODER_PROBE "):
+                continue
+            body = line[len("CODER_PROBE ") :]
+            if body in ("no_key", "unreachable"):
+                return {
+                    "alive": False,
+                    "served_model_id": None,
+                    "detail": f"remote vLLM probe: {body}",
+                }
+            try:
+                payload = json.loads(body)
+            except ValueError:
+                return {
+                    "alive": False,
+                    "served_model_id": None,
+                    "detail": "remote vLLM probe: response was not JSON",
+                }
+            data = payload.get("data") if isinstance(payload, dict) else None
+            if isinstance(data, list) and data and isinstance(data[0], dict):
+                served_model_id = data[0].get("id")
+            alive = served_model_id == model.repo_id
+            return {
+                "alive": alive,
+                "served_model_id": served_model_id,
+                "detail": (
+                    f"remote vLLM serving {served_model_id!r}"
+                    if alive
+                    else (
+                        f"remote vLLM serves {served_model_id!r}, "
+                        f"expected {model.repo_id!r}"
+                    )
+                ),
+            }
+        return {
+            "alive": False,
+            "served_model_id": None,
+            "detail": "remote vLLM probe produced no CODER_PROBE line",
+        }
 
     def start(
         self,

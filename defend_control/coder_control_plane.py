@@ -18,12 +18,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import socket
 import time
 import uuid
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from pathlib import Path
 from typing import Any, Callable, Literal
 
 from .coder_deployment import (
@@ -79,6 +81,12 @@ class CoderPolicy:
     default_min_gpu_ram_mb: int = 81_920
     heavy_min_gpu_ram_mb: int = 81_920
     heavy_num_gpus: int = 2
+    # Acquisition-only CUDA/runtime capability floor (provider cuda_max_good,
+    # e.g. 13.0 for torch cu130 serving images). NEVER constrains a retained
+    # instance being resumed — acquisition and lifecycle stay separate.
+    # Default 13.0 matches the pinned vllm-openai v0.27.1 (torch cu130,
+    # driver >= 570); None disables the filter.
+    min_cuda_max_good: Decimal | None = Decimal("13.0")
     default_gpu_families: tuple[str, ...] = (
         "A100",
         "H100",
@@ -118,6 +126,8 @@ class CoderPolicy:
             raise ValueError("heavy_escalation_after_failures must be >= 1")
         if self.default_min_gpu_ram_mb < 1 or self.heavy_min_gpu_ram_mb < 1:
             raise ValueError("min GPU RAM must be positive")
+        if self.min_cuda_max_good is not None and self.min_cuda_max_good <= 0:
+            raise ValueError("min_cuda_max_good must be positive or None")
 
 
 def resource_profile(alias: str, policy: CoderPolicy) -> ResourceProfile:
@@ -126,6 +136,11 @@ def resource_profile(alias: str, policy: CoderPolicy) -> ResourceProfile:
     DEFEND AI's identity chat ResourceProfile (>= 140 GB) is untouched.
     """
     resolve_alias(alias)
+    cuda = (
+        float(policy.min_cuda_max_good)
+        if policy.min_cuda_max_good is not None
+        else None
+    )
     if alias == _HEAVY_ALIAS:
         return ResourceProfile(
             min_gpu_ram_mb=policy.heavy_min_gpu_ram_mb,
@@ -134,6 +149,7 @@ def resource_profile(alias: str, policy: CoderPolicy) -> ResourceProfile:
             min_reliability=policy.min_reliability,
             min_disk_gb=policy.min_disk_gb,
             max_model_len=resolve_deployment(alias).max_model_len,
+            min_cuda_max_good=cuda,
         )
     return ResourceProfile(
         min_gpu_ram_mb=policy.default_min_gpu_ram_mb,
@@ -142,6 +158,7 @@ def resource_profile(alias: str, policy: CoderPolicy) -> ResourceProfile:
         min_reliability=policy.min_reliability,
         min_disk_gb=policy.min_disk_gb,
         max_model_len=policy.max_model_len,
+        min_cuda_max_good=cuda,
     )
 
 
@@ -345,6 +362,7 @@ class CoderLiveSmokePlan:
     launch_runtype: str
     local_port: int
     offer_id: int | None
+    offer_cuda_max_good: float | None
     status: str
     plan_id: str
     plan_hash: str
@@ -381,6 +399,7 @@ class CoderLiveSmokePlan:
             "launch_runtype": self.launch_runtype,
             "local_port": self.local_port,
             "offer_id": self.offer_id,
+            "offer_cuda_max_good": self.offer_cuda_max_good,
             "status": self.status,
             "plan_id": self.plan_id,
             "plan_hash": self.plan_hash,
@@ -455,6 +474,11 @@ def _plan_fingerprint(plan: CoderLiveSmokePlan, offer: VastOffer | None) -> str:
                 "offer_gpu_ram_mb": offer.gpu_ram_mb,
                 "offer_dph_total": str(offer.dph_total),
                 "offer_reliability": str(offer.reliability),
+                "offer_cuda_max_good": (
+                    str(offer.cuda_max_good)
+                    if offer.cuda_max_good is not None
+                    else None
+                ),
             }
         )
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
@@ -472,6 +496,83 @@ def _as_decimal(raw: object) -> Decimal | None:
 
 def _default_clock() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _endpoint_to_record(endpoint: ActiveCoderEndpoint) -> dict[str, Any]:
+    """Serialize an endpoint for durable lifecycle-ownership persistence.
+
+    Contains NO credentials, NO SSH material, NO secrets — only ownership
+    and billing-identity fields needed to reattach or stop the retained
+    instance after a restart.
+    """
+    return {
+        "alias": endpoint.alias,
+        "provider": endpoint.provider,
+        "endpoint": endpoint.endpoint,
+        "state": endpoint.state,
+        "provisioned_at": endpoint.provisioned_at.isoformat(),
+        "last_used_at": endpoint.last_used_at.isoformat(),
+        "model_ready_at": (
+            endpoint.model_ready_at.isoformat()
+            if endpoint.model_ready_at is not None
+            else None
+        ),
+        "instance_id": endpoint.instance_id,
+        "provider_run_id": endpoint.provider_run_id,
+        "gpu_type": endpoint.gpu_type,
+        "hourly_price": (
+            format(endpoint.hourly_price, "f")
+            if endpoint.hourly_price is not None
+            else None
+        ),
+        "user_id": endpoint.user_id,
+        "session_id": endpoint.session_id,
+    }
+
+
+def _endpoint_from_record(
+    alias: str, record: Mapping[str, Any]
+) -> ActiveCoderEndpoint:
+    """Rebuild an endpoint from a persisted record (strict field checks)."""
+    instance_id = record.get("instance_id")
+    if not isinstance(instance_id, int) or instance_id <= 0:
+        raise ValueError("record instance_id is invalid")
+
+    def _iso(value: object, name: str) -> datetime:
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"record {name} is invalid")
+        parsed = datetime.fromisoformat(value)
+        if parsed.tzinfo is None:
+            raise ValueError(f"record {name} must carry a timezone")
+        return parsed
+
+    def _optional_iso(value: object, name: str) -> datetime | None:
+        if value is None or value == "":
+            return None
+        return _iso(value, name)
+
+    provider = record.get("provider")
+    if not isinstance(provider, str) or not provider:
+        raise ValueError("record provider is invalid")
+    endpoint = record.get("endpoint")
+    if not isinstance(endpoint, str) or not endpoint:
+        raise ValueError("record endpoint is invalid")
+    hourly = record.get("hourly_price")
+    return ActiveCoderEndpoint(
+        alias=alias,
+        provider=provider,
+        endpoint=endpoint,
+        state="retained",
+        provisioned_at=_iso(record.get("provisioned_at"), "provisioned_at"),
+        last_used_at=_iso(record.get("last_used_at"), "last_used_at"),
+        model_ready_at=_optional_iso(record.get("model_ready_at"), "model_ready_at"),
+        instance_id=instance_id,
+        provider_run_id=record.get("provider_run_id"),
+        gpu_type=record.get("gpu_type"),
+        hourly_price=_as_decimal(hourly),
+        user_id=record.get("user_id"),
+        session_id=record.get("session_id"),
+    )
 
 
 def _default_port_available(port: int) -> bool:
@@ -503,6 +604,12 @@ class CoderControlPlane:
     offer_provider: Callable[[str], tuple[VastOffer, ...]] | None = None
     offer_chooser: Callable[[tuple[VastOffer, ...]], VastOffer] | None = None
     lifecycle_log: Callable[[str], None] | None = None
+    # Directory for the durable lifecycle-ownership file. When set, every
+    # endpoint mutation is persisted atomically so a Control Center restart
+    # never loses knowledge of a retained instance; records load back as
+    # state="retained" (identity is re-verified before "ready" is reported).
+    # None keeps the legacy in-memory-only behavior.
+    state_directory: str | None = None
     # Ownership identity stamped onto leases/endpoints when the launching
     # session is known; None means operator-owned (Control Center launch).
     owner_user_id: str | None = None
@@ -524,6 +631,63 @@ class CoderControlPlane:
             raise ValueError("base_port must be in 1..65535")
         if self.clock is None:
             self.clock = _default_clock
+        self._load_persisted_state()
+
+    def _state_file(self) -> Path | None:
+        if not self.state_directory:
+            return None
+        return Path(self.state_directory) / "coder-lifecycle.json"
+
+    def _load_persisted_state(self) -> None:
+        """Rehydrate retained-instance knowledge after a restart.
+
+        Records are NEVER trusted as ready: state is forced to "retained"
+        and the endpoint is re-verified (instance identity, served model
+        identity, workspace) before any use.
+        """
+        state_file = self._state_file()
+        if state_file is None or not state_file.is_file():
+            return
+        try:
+            payload = json.loads(state_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        endpoints = payload.get("endpoints") if isinstance(payload, dict) else None
+        if not isinstance(endpoints, dict):
+            return
+        for alias, record in endpoints.items():
+            if not isinstance(record, dict):
+                continue
+            try:
+                endpoint = _endpoint_from_record(alias, record)
+            except (TypeError, ValueError):
+                continue
+            if endpoint.instance_id is None:
+                continue
+            endpoint.state = "retained"
+            self._active[alias] = endpoint
+
+    def _persist_state(self) -> None:
+        state_file = self._state_file()
+        if state_file is None:
+            return
+        payload = {
+            "schema": 1,
+            "endpoints": {
+                alias: _endpoint_to_record(endpoint)
+                for alias, endpoint in self._active.items()
+            },
+        }
+        try:
+            state_file.parent.mkdir(parents=True, exist_ok=True)
+            temporary = state_file.with_suffix(".json.tmp")
+            temporary.write_text(
+                json.dumps(payload, sort_keys=True, indent=2),
+                encoding="utf-8",
+            )
+            os.replace(temporary, state_file)
+        except OSError:
+            pass
 
     @property
     def mode(self) -> CoderMode:
@@ -581,12 +745,119 @@ class CoderControlPlane:
         )
         endpoint = self._endpoint_from_result(alias, now, result)
         self._active[alias] = endpoint
+        self._persist_state()
         return EndpointLease(
             alias=alias,
             endpoint=endpoint.endpoint,
             instance_id=endpoint.instance_id,
             provider_run_id=endpoint.provider_run_id,
             reused=False,
+            user_id=endpoint.user_id,
+            session_id=endpoint.session_id,
+        )
+
+    def reattach_retained(
+        self,
+        alias: str,
+        *,
+        launch_runtype: str | None = None,
+    ) -> EndpointLease | None:
+        """Reattach a RETAINED instance after a control-process restart.
+
+        Lifecycle-management path — operates ONLY on the recorded instance
+        identity (or a single unambiguous labeled instance) and NEVER
+        re-enters offer selection or applies the current acquisition-price
+        ceiling to the retained instance. The retained instance is started
+        in place when stopped (provider-level transition), bootstrapped
+        only when inference is not already alive, and the tunnel is
+        re-established without reprovisioning. Success requires identity
+        verification: recorded instance identity, and the served-model
+        identity behind the endpoint.
+
+        Returns None when no retained instance exists (fresh provisioning
+        may proceed); raises fail-closed on ambiguity or when identity
+        verification fails (the retained runtime is never destroyed).
+        """
+        model = resolve_alias(alias)
+        now = self._now()
+
+        existing = self._active.get(alias)
+        if existing is not None and existing.state == "ready":
+            existing.touch(now)
+            return EndpointLease(
+                alias=alias,
+                endpoint=existing.endpoint,
+                instance_id=existing.instance_id,
+                provider_run_id=existing.provider_run_id,
+                reused=True,
+                user_id=existing.user_id,
+                session_id=existing.session_id,
+            )
+        if existing is not None and existing.state != "retained":
+            self._active.pop(alias, None)
+
+        runtype = (
+            launch_runtype
+            if launch_runtype is not None
+            else _launch_runtype_for(alias)
+        )
+
+        report = self.preflight(alias)
+        if not report.all_ok:
+            failed = ", ".join(
+                check.name for check in report.checks if not check.ok
+            )
+            raise CoderProvisionBlocked(
+                f"preflight failed for {alias!r}: {failed}"
+            )
+
+        recorded = self._active.get(alias)
+        candidate = self.backend.retained_candidate(
+            recorded_instance_id=(
+                recorded.instance_id if recorded is not None else None
+            ),
+            launch_runtype=runtype,
+            approved_ceiling=self.policy.max_hourly_usd,
+        )
+        if candidate is None:
+            return None
+
+        self._emit(f"reattaching retained instance {candidate.instance_id}")
+        local_port = self.base_port + len(self._active)
+        result = self.backend.start(
+            model,
+            local_port=local_port,
+            session_budget_usd=self.session_budget_usd,
+            launch_runtype=runtype,
+            resume_instance=candidate,
+            destroy_on_failure=False,
+        )
+        endpoint = self._endpoint_from_result(alias, now, result)
+
+        # Identity gate: served-model identity must match the requested
+        # model BEFORE the endpoint is reported ready. IP addresses,
+        # tunnel URLs, and generic HTTP 200s are never sufficient.
+        try:
+            smoke = self.backend.smoke(endpoint.endpoint, model)
+        except Exception as exc:
+            raise CoderProvisionBlocked(
+                f"reattach identity verification failed "
+                f"({type(exc).__name__})"
+            ) from exc
+        if not bool(smoke.get("ok")):
+            raise CoderProvisionBlocked(
+                f"reattach identity verification failed: "
+                f"{smoke.get('detail') or 'smoke failed'}"
+            )
+
+        self._active[alias] = endpoint
+        self._persist_state()
+        return EndpointLease(
+            alias=alias,
+            endpoint=endpoint.endpoint,
+            instance_id=endpoint.instance_id,
+            provider_run_id=endpoint.provider_run_id,
+            reused=True,
             user_id=endpoint.user_id,
             session_id=endpoint.session_id,
         )
@@ -657,6 +928,7 @@ class CoderControlPlane:
         )
         endpoint = self._endpoint_from_result(alias, now, result)
         self._active[alias] = endpoint
+        self._persist_state()
         return EndpointLease(
             alias=alias,
             endpoint=endpoint.endpoint,
@@ -952,6 +1224,9 @@ class CoderControlPlane:
             ),
             local_port=self.base_port + len(self._active),
             offer_id=offer.offer_id if offer is not None else None,
+            offer_cuda_max_good=(
+                offer.cuda_max_good if offer is not None else None
+            ),
             status="requires_approval",
             plan_id=uuid.uuid4().hex,
             plan_hash="",
@@ -1050,6 +1325,7 @@ class CoderControlPlane:
         self.last_provision_failure = None
         endpoint = self._endpoint_from_result(alias, now, result)
         self._active[alias] = endpoint
+        self._persist_state()
         return EndpointLease(
             alias=alias,
             endpoint=endpoint.endpoint,
@@ -1189,7 +1465,10 @@ class CoderControlPlane:
 
         Removes the endpoint from the active set and stops it (or destroys
         the provider instance when destroy=True). Safe to call when nothing
-        is active. Returns the backend stop result.
+        is active: a retained record loaded after a restart is stopped by
+        its recorded instance identity. Destroy also removes the durable
+        record; a stop keeps it (storage billing may continue until
+        destroy). Returns the backend stop result.
         """
         resolve_alias(alias)
         endpoint = self._active.pop(alias, None)
@@ -1198,6 +1477,8 @@ class CoderControlPlane:
                 "state": "stopped",
                 "message": f"no active coder endpoint for {alias!r}",
             }
+        # Restart path: a rehydrated record carries state="retained" but the
+        # recorded instance identity is authoritative for stop/destroy.
         if destroy and endpoint.instance_id is not None:
             self._emit(f"destroying instance {endpoint.instance_id}")
         result = self.backend.stop(
@@ -1207,6 +1488,10 @@ class CoderControlPlane:
         )
         if destroy and result.get("state") == "stopped":
             self._emit("cleanup confirmed")
+        else:
+            endpoint.state = str(result.get("state") or "stopped")
+            self._active[alias] = endpoint
+        self._persist_state()
         backend_failure = getattr(
             self.backend, "last_provision_failure", None
         )
@@ -1249,6 +1534,8 @@ class CoderControlPlane:
                 )
                 endpoint.state = str(result.get("state") or "stopped")
                 reaped.append(alias)
+        if reaped:
+            self._persist_state()
         return tuple(reaped)
 
     def should_escalate(self, alias: str, consecutive_failures: int) -> bool:

@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from defend_control.coder_m0 import CoderM0Service, CoderModelRef, resolve_alias
+from defend_control.coder_deployment import resolve_deployment
 from defend_control.coder_remote_vllm import (
     CoderRemoteVllmBootstrap,
     CoderRemoteVllmError,
@@ -894,3 +895,572 @@ def test_default_smoke_rejects_non_json_body(monkeypatch):
 
     assert result["ok"] is False
     assert "not JSON" in result["detail"]
+
+
+class StoppedResumableVast(FakeVast):
+    """FakeVast with a retained stopped/exited instance that starts in place."""
+
+    def __init__(self, *, instance_id=555900, status="stopped", rate="1.10"):
+        super().__init__()
+        self._instance_id = instance_id
+        self._status = status
+        self._rate = Decimal(rate)
+        self.labeled_ids = (instance_id,)
+        self.wait_kwargs = []
+        self._started = False
+
+    def show_instance(self, instance_id):
+        status = "running" if self._started else self._status
+        return VastInstance(
+            instance_id,
+            status,
+            "ssh.example",
+            22,
+            "A100 SXM4",
+            81920,
+            self._rate,
+        )
+
+    def set_state(self, instance_id, state):
+        self.states.append((instance_id, state))
+        assert state == "running"
+        self._started = True
+        return True
+
+    def wait_until_running(self, instance_id, *, allow_stopped_transition=False):
+        self.wait_kwargs.append(allow_stopped_transition)
+        assert allow_stopped_transition is True
+        return self.show_instance(instance_id)
+
+
+class DirectVast(FakeVast):
+    def show_instance(self, instance_id):
+        return VastInstance(
+            instance_id,
+            "running",
+            "ssh.example",
+            22,
+            "A100 SXM4",
+            81920,
+            Decimal("1.10"),
+            direct_ssh_host="10.0.0.5",
+            direct_ssh_port=22,
+            image_runtype="ssh_direct",
+        )
+
+
+def _instance(instance_id=555001, *, status="running", rate="1.10"):
+    return VastInstance(
+        instance_id,
+        status,
+        "ssh.example",
+        22,
+        "A100 SXM4",
+        81920,
+        Decimal(rate),
+    )
+
+
+def test_vast_coder_backend_reattach_transitions_stopped_retained_to_running_in_place():
+    vast, bootstrap, backend = _backend(vast=StoppedResumableVast())
+    result = backend.start(
+        resolve_alias("defendcoder-default"),
+        local_port=8003,
+        session_budget_usd=Decimal("5.00"),
+        resume_instance=_instance(555900, status="stopped"),
+    )
+    assert result["state"] == "ready"
+    assert vast.created == []
+    assert vast.destroyed == []
+    assert vast.states == [(555900, "running")]
+    assert vast.wait_kwargs == [True]
+    assert bootstrap.starts == [(555900, "defendcoder-default", 8000, False)]
+
+
+def test_vast_coder_backend_reattach_transitions_exited_retained_to_running_in_place():
+    vast, bootstrap, backend = _backend(vast=StoppedResumableVast(status="exited"))
+    result = backend.start(
+        resolve_alias("defendcoder-default"),
+        local_port=8003,
+        session_budget_usd=Decimal("5.00"),
+        resume_instance=_instance(555900, status="exited"),
+    )
+    assert result["state"] == "ready"
+    assert vast.states == [(555900, "running")]
+    assert vast.destroyed == []
+
+
+def test_vast_coder_backend_reattach_skips_bootstrap_when_remote_vllm_alive():
+    probes = []
+
+    def probe(instance, model, *, remote_port=8000, prefer_direct=False):
+        probes.append((instance.instance_id, model.alias, remote_port, prefer_direct))
+        return {"alive": True, "served_model_id": model.repo_id, "detail": "serving"}
+
+    vast, bootstrap, backend = _backend(
+        vast=ResumableVast(instance_id=555902),
+        remote_probe=probe,
+    )
+    result = backend.start(
+        resolve_alias("defendcoder-default"),
+        local_port=8003,
+        session_budget_usd=Decimal("5.00"),
+        resume_instance=_instance(555902),
+    )
+    assert result["state"] == "ready"
+    assert bootstrap.starts == []
+    assert probes == [(555902, "defendcoder-default", 8000, False)]
+
+
+def test_vast_coder_backend_reattach_bootstraps_when_probe_not_alive():
+    vast, bootstrap, backend = _backend(
+        vast=ResumableVast(instance_id=555903),
+        remote_probe=lambda instance, model, *, remote_port=8000, prefer_direct=False: {
+            "alive": False,
+            "served_model_id": None,
+            "detail": "no CODER_PROBE line",
+        },
+    )
+    result = backend.start(
+        resolve_alias("defendcoder-default"),
+        local_port=8003,
+        session_budget_usd=Decimal("5.00"),
+        resume_instance=_instance(555903),
+    )
+    assert result["state"] == "ready"
+    assert bootstrap.starts == [(555903, "defendcoder-default", 8000, False)]
+
+
+def test_vast_coder_backend_reattach_bootstraps_when_probe_serves_wrong_model():
+    vast, bootstrap, backend = _backend(
+        vast=ResumableVast(instance_id=555906),
+        remote_probe=lambda instance, model, *, remote_port=8000, prefer_direct=False: {
+            "alive": False,
+            "served_model_id": "other/model",
+            "detail": "serves other/model",
+        },
+    )
+    result = backend.start(
+        resolve_alias("defendcoder-default"),
+        local_port=8003,
+        session_budget_usd=Decimal("5.00"),
+        resume_instance=_instance(555906),
+    )
+    assert result["state"] == "ready"
+    assert bootstrap.starts == [(555906, "defendcoder-default", 8000, False)]
+
+
+def test_vast_coder_backend_reattach_probe_failure_falls_back_to_bootstrap():
+    def boom(instance, model, *, remote_port=8000, prefer_direct=False):
+        raise OSError("ssh dead")
+
+    vast, bootstrap, backend = _backend(
+        vast=ResumableVast(instance_id=555904),
+        remote_probe=boom,
+    )
+    result = backend.start(
+        resolve_alias("defendcoder-default"),
+        local_port=8003,
+        session_budget_usd=Decimal("5.00"),
+        resume_instance=_instance(555904),
+    )
+    assert result["state"] == "ready"
+    assert bootstrap.starts == [(555904, "defendcoder-default", 8000, False)]
+
+
+def test_vast_coder_backend_reattach_ssh_direct_never_probes_and_bootstraps():
+    def probe(*args, **kwargs):
+        raise AssertionError("ssh_direct reattach must never probe")
+
+    vast, bootstrap, backend = _backend(
+        vast=DirectVast(),
+        remote_probe=probe,
+    )
+    result = backend.start(
+        resolve_alias("defendcoder-default"),
+        local_port=8003,
+        session_budget_usd=Decimal("5.00"),
+        launch_runtype="ssh_direct",
+        resume_instance=_instance(555905),
+    )
+    assert result["state"] == "ready"
+    assert bootstrap.starts == [(555905, "defendcoder-default", 8000, True)]
+
+
+def test_vast_coder_backend_reattach_tunnel_failure_never_destroys_retained_instance():
+    vast, bootstrap, backend = _backend(
+        vast=ResumableVast(instance_id=555901),
+        local_verify=lambda endpoint: False,
+    )
+    with pytest.raises(CoderVastBackendError, match="not listening"):
+        backend.start(
+            resolve_alias("defendcoder-default"),
+            local_port=8003,
+            session_budget_usd=Decimal("5.00"),
+            resume_instance=_instance(555901),
+        )
+    assert vast.destroyed == []
+    assert bootstrap.starts == [(555901, "defendcoder-default", 8000, False)]
+
+
+def test_vast_coder_backend_resume_default_never_destroys_retained_on_tunnel_failure():
+    vast, bootstrap, backend = _backend(
+        vast=ResumableVast(instance_id=555921),
+        local_verify=lambda endpoint: False,
+    )
+    service = CoderM0Service(backend=backend)
+    with pytest.raises(CoderVastBackendError, match="not listening"):
+        service.start(
+            "defendcoder-default",
+            resume_instance=vast.show_instance(555921),
+        )
+    assert vast.destroyed == []
+
+
+def test_vast_coder_backend_fresh_acquisition_still_destroys_on_tunnel_failure():
+    vast, bootstrap, backend = _backend(
+        local_verify=lambda endpoint: False,
+    )
+    service = CoderM0Service(backend=backend)
+    with pytest.raises(CoderVastBackendError, match="not listening"):
+        service.start("defendcoder-default")
+    assert vast.destroyed == [555001]
+
+
+class CudaAwareVast(FakeVast):
+    def __init__(self):
+        super().__init__()
+        self.searched = []
+
+    def search_offers(self, max_hourly, profile=None, *,
+     require_direct_ports=False):
+        self.searched.append(
+            profile.min_cuda_max_good if profile is not None else None
+        )
+        return (
+            VastOffer(
+                201,
+                "A100 SXM4",
+                81920,
+                Decimal("1.10"),
+                Decimal("0.99"),
+                cuda_max_good=12.2,
+            ),
+            VastOffer(
+                202,
+                "A100 SXM4",
+                81920,
+                Decimal("1.20"),
+                Decimal("0.99"),
+                cuda_max_good=13.0,
+            ),
+            VastOffer(
+                203,
+                "H100 SXM",
+                81920,
+                Decimal("1.30"),
+                Decimal("0.99"),
+            ),
+        )
+
+
+def test_vast_coder_backend_acquisition_filters_offers_by_cuda_capability():
+    vast, bootstrap, backend = _backend(vast=CudaAwareVast())
+    result = backend.start(
+        resolve_alias("defendcoder-default"),
+        local_port=8003,
+        session_budget_usd=Decimal("5.00"),
+        profile=ResourceProfile(min_cuda_max_good=13.0),
+    )
+    assert result["state"] == "ready"
+    assert result["instance_id"] == 555001
+    assert vast.created == [(202, "defendcoder-vllm")]
+    assert vast.searched == [13.0]
+
+
+def test_vast_coder_backend_acquisition_no_eligible_cuda_fails_closed():
+    class BelowCudaVast(CudaAwareVast):
+        def search_offers(self, max_hourly, profile=None, *,
+         require_direct_ports=False):
+            self.searched.append(profile.min_cuda_max_good)
+            return (
+                VastOffer(
+                    201,
+                    "A100 SXM4",
+                    81920,
+                    Decimal("1.10"),
+                    Decimal("0.99"),
+                    cuda_max_good=12.2,
+                ),
+            )
+
+    vast, bootstrap, backend = _backend(vast=BelowCudaVast())
+    with pytest.raises(CoderVastBackendError, match="no eligible coder GPU"):
+        backend.start(
+            resolve_alias("defendcoder-default"),
+            local_port=8003,
+            session_budget_usd=Decimal("5.00"),
+            profile=ResourceProfile(min_cuda_max_good=13.0),
+        )
+    assert vast.created == []
+
+
+def test_vast_coder_backend_search_offers_for_filters_by_cuda():
+    vast, bootstrap, backend = _backend(vast=CudaAwareVast())
+    offers = backend.search_offers_for(
+        resolve_alias("defendcoder-default"),
+        ResourceProfile(min_cuda_max_good=13.0),
+    )
+    assert [offer.offer_id for offer in offers] == [202, 203]
+    assert vast.searched == [13.0]
+
+
+def test_vast_coder_backend_absent_cuda_field_never_rejects_alone():
+    vast, bootstrap, backend = _backend(vast=CudaAwareVast())
+    offers = backend.search_offers_for(
+        resolve_alias("defendcoder-default"),
+        ResourceProfile(min_cuda_max_good=13.0),
+    )
+    assert offers[1].cuda_max_good is None
+    assert offers[1].offer_id == 203
+
+
+def test_retained_candidate_returns_recorded_stopped_instance():
+    vast, bootstrap, backend = _backend(
+        vast=ResumableVast(instance_id=555910, status="exited"),
+    )
+    candidate = backend.retained_candidate(
+        recorded_instance_id=555910,
+        launch_runtype="ssh_proxy",
+        approved_ceiling=Decimal("2.00"),
+    )
+    assert candidate.instance_id == 555910
+    assert candidate.actual_status == "exited"
+
+
+def test_retained_candidate_none_when_nothing_labeled():
+    vast, bootstrap, backend = _backend(vast=FakeVast())
+    candidate = backend.retained_candidate(
+        recorded_instance_id=555913,
+        launch_runtype="ssh_proxy",
+        approved_ceiling=Decimal("2.00"),
+    )
+    assert candidate is None
+
+
+def test_retained_candidate_none_when_recorded_id_not_in_labeled_fleet():
+    vast = ResumableVast(instance_id=555914)
+    vast.labeled_ids = ()
+    vast, bootstrap, backend = _backend(vast=vast)
+    candidate = backend.retained_candidate(
+        recorded_instance_id=555914,
+        launch_runtype="ssh_proxy",
+        approved_ceiling=Decimal("2.00"),
+    )
+    assert candidate is None
+
+
+def test_retained_candidate_single_unrecorded_labeled_instance_returned():
+    vast, bootstrap, backend = _backend(
+        vast=ResumableVast(instance_id=555915, status="stopped"),
+    )
+    candidate = backend.retained_candidate(
+        recorded_instance_id=None,
+        launch_runtype="ssh_proxy",
+        approved_ceiling=Decimal("2.00"),
+    )
+    assert candidate.instance_id == 555915
+
+
+def test_retained_candidate_fails_closed_when_other_instance_labeled():
+    vast = ResumableVast(instance_id=555911)
+    vast.labeled_ids = (555911, 555912)
+    vast, bootstrap, backend = _backend(vast=vast)
+    with pytest.raises(CoderVastBackendError) as captured:
+        backend.retained_candidate(
+            recorded_instance_id=555911,
+            launch_runtype="ssh_proxy",
+            approved_ceiling=Decimal("2.00"),
+        )
+    assert captured.value.category == "duplicate_runtime"
+    assert "not" in str(captured.value)
+
+
+def test_retained_candidate_rate_above_owner_ceiling_fails_closed():
+    vast, bootstrap, backend = _backend(
+        vast=ResumableVast(instance_id=555917, rate="4.20"),
+    )
+    with pytest.raises(CoderVastBackendError) as captured:
+        backend.retained_candidate(
+            recorded_instance_id=555917,
+            launch_runtype="ssh_proxy",
+            approved_ceiling=Decimal("2.00"),
+        )
+    assert captured.value.category == "rate_exceeded"
+
+
+def test_retained_candidate_accepts_recorded_rate_below_owner_ceiling():
+    vast, bootstrap, backend = _backend(
+        vast=ResumableVast(instance_id=555916, rate="1.10"),
+    )
+    candidate = backend.retained_candidate(
+        recorded_instance_id=555916,
+        launch_runtype="ssh_proxy",
+        approved_ceiling=Decimal("2.00"),
+    )
+    assert candidate.dph_total == Decimal("1.10")
+
+
+def test_retained_candidate_terminal_state_fails_closed():
+    vast, bootstrap, backend = _backend(
+        vast=ResumableVast(instance_id=555918, status="offline"),
+    )
+    with pytest.raises(CoderVastBackendError) as captured:
+        backend.retained_candidate(
+            recorded_instance_id=555918,
+            launch_runtype="ssh_proxy",
+            approved_ceiling=Decimal("2.00"),
+        )
+    assert captured.value.category == "duplicate_runtime"
+    assert "terminal" in str(captured.value)
+
+
+def test_retained_candidate_runtype_mismatch_fails_closed():
+    vast, bootstrap, backend = _backend(
+        vast=ResumableVast(instance_id=555919, image_runtype="ssh_direct"),
+    )
+    with pytest.raises(CoderVastBackendError) as captured:
+        backend.retained_candidate(
+            recorded_instance_id=555919,
+            launch_runtype="ssh_proxy",
+            approved_ceiling=Decimal("2.00"),
+        )
+    assert captured.value.category == "duplicate_runtime"
+    assert "not ssh_proxy" in str(captured.value)
+
+
+def test_bootstrap_script_contains_reattach_guard_and_key_persistence():
+    boot = CoderRemoteVllmBootstrap(
+        ssh_exe=Path("ssh"),
+        known_hosts=Path("known_hosts"),
+        key_path=Path("key"),
+    )
+    model = resolve_alias("defendcoder-default")
+    artifact = resolve_deployment("defendcoder-default")
+    script = boot._script(model, artifact, "hf", "vk", 8000).decode("ascii")
+    assert "coder already ready" in script
+    assert ".vllm_api_key" in script
+    assert "chmod 600" in script
+    assert "curl -sf -m 8" in script
+    assert "vllm_start" in script
+
+
+class ProbeRunner:
+    def __init__(self, stdout=b"", stderr=b"", error=None):
+        self.stdout = stdout
+        self.stderr = stderr
+        self.error = error
+        self.calls = []
+
+    def __call__(self, argv, *, stdin, timeout, cancelled=None):
+        self.calls.append((argv, stdin, timeout))
+        if self.error is not None:
+            raise self.error
+        return self._result(self.returncode, self.stdout, self.stderr)
+
+    @property
+    def returncode(self):
+        return 0
+
+
+def _probe_boot(runner):
+    return CoderRemoteVllmBootstrap(
+        command_runner=runner,
+        ssh_exe=Path("ssh"),
+        known_hosts=Path("known_hosts"),
+        key_path=Path("key"),
+    )
+
+
+def test_probe_remote_alive_when_served_model_matches():
+    from defend_control.ssh_tunnel import CommandResult
+
+    class Runner(ProbeRunner):
+        def _result(self, returncode, stdout, stderr):
+            return CommandResult(returncode, stdout, stderr)
+
+    runner = Runner(
+        stdout=b'CODER_PROBE {"data": [{"id": "Qwen/Qwen3-Coder-30B-A3B-Instruct"}]}'
+    )
+    boot = _probe_boot(runner)
+    result = boot.probe_remote(
+        _instance(555930),
+        resolve_alias("defendcoder-default"),
+    )
+    assert result["alive"] is True
+    assert result["served_model_id"] == "Qwen/Qwen3-Coder-30B-A3B-Instruct"
+    assert b"vllm_api_key" in runner.calls[0][1]
+
+
+def test_probe_remote_not_alive_when_served_model_mismatches():
+    from defend_control.ssh_tunnel import CommandResult
+
+    class Runner(ProbeRunner):
+        def _result(self, returncode, stdout, stderr):
+            return CommandResult(returncode, stdout, stderr)
+
+    runner = Runner(stdout=b'CODER_PROBE {"data": [{"id": "other/model"}]}')
+    boot = _probe_boot(runner)
+    result = boot.probe_remote(
+        _instance(555931),
+        resolve_alias("defendcoder-default"),
+    )
+    assert result["alive"] is False
+    assert result["served_model_id"] == "other/model"
+    assert "expected" in result["detail"]
+
+
+def test_probe_remote_not_alive_when_no_key_on_box():
+    from defend_control.ssh_tunnel import CommandResult
+
+    class Runner(ProbeRunner):
+        def _result(self, returncode, stdout, stderr):
+            return CommandResult(returncode, stdout, stderr)
+
+    runner = Runner(stdout=b"CODER_PROBE no_key")
+    boot = _probe_boot(runner)
+    result = boot.probe_remote(
+        _instance(555932),
+        resolve_alias("defendcoder-default"),
+    )
+    assert result["alive"] is False
+    assert result["served_model_id"] is None
+    assert "no_key" in result["detail"]
+
+
+def test_probe_remote_ssh_failure_raises_ssh_connect_phase():
+    from defend_control.ssh_tunnel import CommandResult
+
+    class Runner(ProbeRunner):
+        def __init__(self):
+            super().__init__(error=OSError("ssh dead"))
+
+    runner = Runner()
+    boot = _probe_boot(runner)
+    with pytest.raises(CoderRemoteVllmError) as captured:
+        boot.probe_remote(_instance(555933), resolve_alias("defendcoder-default"))
+    assert captured.value.phase == "ssh_connect"
+
+
+def test_probe_remote_timeout_raises_remote_probe_phase():
+    from defend_control.ssh_tunnel import CommandResult
+
+    class Runner(ProbeRunner):
+        def __init__(self):
+            super().__init__(error=TimeoutError("slow box"))
+
+    runner = Runner()
+    boot = _probe_boot(runner)
+    with pytest.raises(CoderRemoteVllmError) as captured:
+        boot.probe_remote(_instance(555934), resolve_alias("defendcoder-default"))
+    assert captured.value.phase == "remote_probe"
