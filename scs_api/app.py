@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from scs_data.identity import ScsIdentityStore
 from scs_data.config import ScsPaths
@@ -17,6 +18,17 @@ from .employee_routes import build_employee_router
 def build_scs_app(context: ApplicationContext, identity: ScsIdentityStore, mailer: object, *, customers=None, memberships=None, jobs=None) -> FastAPI:
     ScsPaths.from_context(context)
     app = FastAPI(title="Sunshine Climate Solutions Operations API", version="0.1.0")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            context.public_origin,
+            "http://localhost:3100",
+            "http://127.0.0.1:3100",
+        ],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
     app.include_router(build_auth_router(context, identity, mailer))
     app.include_router(build_employee_router(context, identity))
     if customers is not None:

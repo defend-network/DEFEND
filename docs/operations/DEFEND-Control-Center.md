@@ -72,14 +72,14 @@ health route but still treats duplicate local listeners conservatively.
 
 1. Open `Start-DEFEND.cmd`.
 2. Select Local Ollama.
-3. Click Start DEFEND.
+3. Click Start.
 4. Wait for Model, API, Frontend, and Cloudflare to show ready.
-5. Use Open Public Site or open the configured HTTPS origin.
+5. Use Open DEFEND or open the configured HTTPS origin.
 6. Click Stop Local when finished.
 
 ## Vast.ai launch
 
-1. Open `Start-DEFEND.cmd`, select Vast.ai, and click Start DEFEND.
+1. Open `Start-DEFEND.cmd`, select Vast.ai, and click Start.
 2. Review the exact offer ID, GPU, GPU RAM, reliability, hourly compute price,
    and any returned storage price. Declining creates nothing.
 3. After explicit approval, one instance is created. Billing may now be active.

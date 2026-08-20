@@ -90,6 +90,49 @@ class ChatOut(BaseModel):
 
 
 
+def _execution_summary(execution) -> dict[str, Any] | None:
+    """Non-sensitive execution trace: tool names, statuses, error codes, latency.
+
+    Tool arguments and result payloads are intentionally omitted (redacted).
+    """
+    if execution is None:
+        return None
+    try:
+        steps: list[dict[str, Any]] = []
+        for step_id, step in (execution.steps or {}).items():
+            latency_ms: float | None = None
+            if step.started_at is not None and step.finished_at is not None:
+                latency_ms = round(
+                    (step.finished_at - step.started_at).total_seconds() * 1000, 1
+                )
+            error_code = None
+            ok = None
+            if step.tool_result is not None:
+                ok = bool(step.tool_result.ok)
+                err = step.tool_result.error
+                if err is not None:
+                    error_code = getattr(getattr(err, "code", None), "value", None)
+            steps.append(
+                {
+                    "step_id": step_id,
+                    "tool_name": step.tool_name,
+                    "status": getattr(step.status, "value", str(step.status)),
+                    "attempts": step.attempts,
+                    "ok": ok,
+                    "error_code": error_code,
+                    "latency_ms": latency_ms,
+                }
+            )
+        return {
+            "plan_status": getattr(execution.status, "value", str(execution.status)),
+            "tool_calls": execution.tool_calls,
+            "cost_usd": round(float(execution.cost_usd or 0.0), 6),
+            "steps": steps,
+        }
+    except Exception:
+        return None
+
+
 def _pack_response(resp) -> dict[str, Any]:
     meta = resp.metadata or {}
     sources: list[dict[str, Any]] = []
@@ -113,6 +156,7 @@ def _pack_response(resp) -> dict[str, Any]:
         "recovery_attempts": meta.get("recovery_attempts"),
         "sources": sources,
         "metadata": meta,
+        "execution": _execution_summary(getattr(resp, "plan_execution", None)),
         "status": "done",
         "job_id": None,
     }
@@ -169,6 +213,7 @@ def _conversation_store_assistant(req: AgentRequest, resp, packed: dict[str, Any
             "research_status": meta.get("research_status"),
             "execution_status": meta.get("execution_status"),
             "job_id": packed.get("job_id"),
+            "execution": _execution_summary(getattr(resp, "plan_execution", None)),
         },
     )
     if req.user_id:
@@ -414,6 +459,7 @@ async def _health_payload() -> dict[str, Any]:
             model_ok = False
     return {
         "ok": ok and model_ok,
+        "application_id": "defend",
         "model": MODEL_NAME,
         "tools": list(state.cp.tools.keys()) if state.cp else [],
     }
@@ -422,6 +468,47 @@ async def _health_payload() -> dict[str, Any]:
 @app.get("/health")
 async def public_health():
     return await _health_payload()
+
+
+@app.get("/live")
+async def public_live():
+    """Liveness: the API process is up and its core components initialized."""
+    return {
+        "ok": state.cp is not None and state.model is not None and state.data is not None,
+        "application_id": "defend",
+        "model": MODEL_NAME,
+    }
+
+
+@app.get("/ready")
+async def public_ready():
+    """Readiness: components required to serve a real request are usable.
+
+    Model readiness checks inference capability of the configured identity
+    (loaded model or advertised served alias) without a full generation.
+    """
+    checks: dict[str, bool] = {
+        "control_plane": state.cp is not None,
+        "data_core": state.data is not None,
+        "tool_registry": bool(state.cp and state.cp.tools),
+        "model_configured": state.model is not None,
+    }
+    model_ready = False
+    if state.model is not None:
+        try:
+            if hasattr(state.model, "readiness_check"):
+                model_ready = bool(await state.model.readiness_check())
+            elif hasattr(state.model, "healthcheck"):
+                model_ready = bool(await state.model.healthcheck())
+        except Exception:
+            model_ready = False
+    checks["model_inference_ready"] = model_ready
+    return {
+        "ok": all(checks.values()),
+        "application_id": "defend",
+        "model": MODEL_NAME,
+        "checks": checks,
+    }
 
 
 @app.get("/api/admin/system/health")

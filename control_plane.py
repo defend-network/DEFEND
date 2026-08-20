@@ -1297,7 +1297,10 @@ class ControlPlane:
             get_system_prompt()
             + "\n\nYou are the tool-selection component of DEFEND-AI.\n"
             "Decide whether a single tool is needed. Return SingleToolDecision only.\n"
-            "Prefer direct answers when tools are unnecessary."
+            "Prefer direct answers when tools are unnecessary.\n"
+            "Choose tool names and arguments ONLY from the available tools below.\n\n"
+            "Available tools:\n"
+            + json.dumps(available, ensure_ascii=False)
         )
 
         messages = [
@@ -1341,7 +1344,10 @@ class ControlPlane:
             "Break the user request into a minimal sequence of tool calls if tools are needed.\n"
             "Return a ProposedPlan. Prefer the smallest number of steps that achieves the objective.\n"
             "Use depends_on when one step needs the output of a previous step.\n"
-            "If no tools are needed, return a plan with an empty steps list."
+            "If no tools are needed, return a plan with an empty steps list.\n"
+            "Choose tool names and arguments ONLY from the available tools below.\n\n"
+            "Available tools:\n"
+            + json.dumps(available, ensure_ascii=False)
         )
 
         messages = [
@@ -1737,6 +1743,7 @@ class ControlPlane:
         step_exec = StepExecution(
             step_id=step.id,
             call_id=step.call.call_id,
+            tool_name=step.call.tool_name,
             status=StepStatus.RUNNING,
             started_at=datetime.now(timezone.utc),
             attempts=0,

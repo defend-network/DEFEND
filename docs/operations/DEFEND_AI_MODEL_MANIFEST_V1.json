@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "product": "defend-ai",
+  "canonical_model": {
+    "adapter_repo": "Defend-network/defend-qwen-32b-lora",
+    "adapter_revision": "92c790d248012a5e6adac980b9759fb76bc7adda",
+    "base_repo": "unsloth/Qwen2.5-32B-Instruct-bnb-4bit",
+    "base_revision": "aa79e3472818bdec779075d80928602591d9f2a0",
+    "base_architecture": "Qwen2ForCausalLM",
+    "base_dtype": "bfloat16",
+    "base_quantization": "bnb-4bit nf4 double-quant, compute dtype bfloat16",
+    "base_context": 32768,
+    "peft_type": "LORA",
+    "lora_rank": 16,
+    "lora_alpha": 16,
+    "lora_dropout": 0,
+    "lora_bias": "none",
+    "target_modules": ["gate_proj", "down_proj", "q_proj", "o_proj", "k_proj", "v_proj", "up_proj"],
+    "task_type": "CAUSAL_LM",
+    "peft_version": "0.20.0",
+    "tokenizer": {
+      "source": "adapter repo bundles tokenizer.json + tokenizer_config.json + chat_template.jinja at pinned adapter revision; base tokenizer is Qwen2.5-32B (vocab 152064)",
+      "bundled_with_adapter": true
+    },
+    "runtime": {
+      "engine": "vLLM OpenAI-compatible (remote Vast.ai instance)",
+      "image": "vllm/vllm-openai:v0.10.0",
+      "max_model_len": 8192,
+      "served_alias": "defend-ai",
+      "lora_module": "defend-ai=<adapter snapshot>",
+      "min_gpu_ram_mb": 140000,
+      "gpu_families": ["A100", "H100", "H200", "B200"],
+      "client": "openai_compatible_client.OpenAICompatibleModelClient (DEFEND_MODEL_BACKEND=vllm, DEFEND_MODEL_BASE_URL=http://127.0.0.1:8001/v1)"
+    },
+    "system_prompt": {
+      "source": "defend_system.py get_system_prompt()",
+      "sha256": "85f9ba6a40be7ba29774f00067b7d22e9f9da1834dc17997edfb313f790655b9",
+      "sha256_stripped": "4343a7e5dd81ba7238c2480858cca48959f620cab412e2c0776d4b0fc711f341",
+      "chars": 15007
+    }
+  },
+  "aliases": {
+    "canonical": "defend-ai",
+    "local_dev": "defend-ai:latest",
+    "local_dev_role": "API plumbing, frontend integration, tool protocol testing, database testing, deterministic unit/integration tests. NOT evidence of canonical model quality, LoRA behavior, production reasoning, production latency, or production throughput.",
+    "local_dev_base": "qwen2.5:14b-instruct-q4_K_M",
+    "local_dev_source": "Modelfile (repo root), SYSTEM block generated from defend_system.get_system_prompt()"
+  },
+  "provenance": {
+    "resolved_at": "2026-08-20",
+    "resolved_via": "defend_control.huggingface.HuggingFaceClient.resolve_adapter against huggingface.co with authorized token (in-memory only)",
+    "adapter_last_modified": "2026-08-08T13:57:46.000Z",
+    "conflict_note": "Directive asserted the canonical base is a Qwen3 30B-class checkpoint. Authoritative immutable metadata (adapter_config.json at pinned adapter revision 92c790d...) declares base_model_name_or_path = unsloth/Qwen2.5-32B-Instruct-bnb-4bit. Per the conflict-resolution rule the immutable adapter metadata prevails; the canonical base is Qwen2.5-32B-Instruct (bnb-4bit). Repo tokenizer archives for qwen3-30b-a3b-instruct-2507 are experimental artifacts, not the canonical stack."
+  },
+  "verification_contracts": [
+    "tests/test_canonical_model_manifest.py",
+    "Modelfile SYSTEM block hash equals canonical system prompt sha256 (drift guard)"
+  ]
+}
