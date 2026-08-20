@@ -399,3 +399,41 @@ def test_request_started_callback_fires_before_transport_call():
     )
 
     assert started == ["started"]
+
+
+def test_chat_clamps_max_tokens_to_context_window():
+    """Regression: vLLM rejects (HTTP 400) requests whose input + max_tokens
+    exceed max_model_len; long conversations must shrink the output budget
+    instead of failing the whole run."""
+    opener = FakeOpener(FakeResponse(_long_body()))
+    client = AgentChatClient(
+        CoderModelConfig(
+            base_url="http://127.0.0.1:8001/v1",
+        ),
+        max_tokens=4096,
+        max_model_len=8192,
+        urlopen=opener,
+    )
+
+    long_messages = [{"role": "user", "content": "x" * 40_000}]
+    client.chat(long_messages)
+
+    body = opener.calls[0][1]
+    assert body["max_tokens"] == 64  # 8192 - 10000 (est) - 128 margin, floored at 64
+
+
+def test_chat_keeps_max_tokens_when_input_is_small():
+    opener = FakeOpener(FakeResponse(_long_body()))
+    client = AgentChatClient(
+        CoderModelConfig(
+            base_url="http://127.0.0.1:8001/v1",
+        ),
+        max_tokens=4096,
+        max_model_len=8192,
+        urlopen=opener,
+    )
+
+    client.chat([{"role": "user", "content": "hi"}])
+
+    body = opener.calls[0][1]
+    assert body["max_tokens"] == 4096

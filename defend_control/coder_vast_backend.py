@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal
+import json
 import socket
 import time
 import urllib.error
@@ -335,6 +336,12 @@ class VastCoderBackend:
 
         if offer is not None:
             offers: tuple[VastOffer, ...] = (offer,)
+        elif resume_instance is not None:
+            # Resume never re-searches the current offer pool: the instance
+            # being resumed was already approved at its creation under the
+            # owner max_hourly ceiling, and a cheaper offer appearing since
+            # must never become the approval basis (or destroy the runtime).
+            offers = ()
         else:
             resolved_profile = profile if profile is not None else self.profile
             try:
@@ -348,13 +355,14 @@ class VastCoderBackend:
                     str(exc),
                     category=classify_vast_error(exc),
                 ) from exc
-        if not offers:
+        if not offers and resume_instance is None:
             raise CoderVastBackendError(
                 "no eligible coder GPU offers under budget",
                 category="no_qualifying_offer",
             )
 
-        offer = self.offer_chooser(offers) if self.offer_chooser else offers[0]
+        if offers:
+            offer = self.offer_chooser(offers) if self.offer_chooser else offers[0]
         artifact = resolve_deployment(model.alias)
         prefer_direct = launch_runtype == "ssh_direct"
         launch = LaunchSpec(
@@ -465,7 +473,13 @@ class VastCoderBackend:
 
         # F3: post-creation rate verification against the owner-approved basis.
         # The actual provider rate comes from the show payload, not the offer.
-        approved_ceiling = offer.dph_total if offer is not None else self.max_hourly
+        # On resume the approval basis is the owner max_hourly ceiling, never
+        # a re-fetched (possibly cheaper) offer.
+        approved_ceiling = (
+            offer.dph_total
+            if offer is not None and resume_instance is None
+            else self.max_hourly
+        )
         if instance.dph_total > approved_ceiling:
             raise fail(
                 "instance_running_wait",
@@ -846,8 +860,33 @@ def _default_smoke(endpoint: str, api_key: str, model: CoderModelRef) -> dict[st
             "latency_ms": latency,
             "detail": f"smoke HTTP {status}",
         }
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        return {
+            "ok": False,
+            "latency_ms": latency,
+            "detail": "smoke response was not JSON",
+        }
+    data = payload.get("data") if isinstance(payload, dict) else None
+    served = None
+    if isinstance(data, list) and data and isinstance(data[0], dict):
+        served = data[0].get("id")
+    if served != model.repo_id:
+        return {
+            "ok": False,
+            "latency_ms": latency,
+            "detail": (
+                f"smoke served model id {served!r} != expected "
+                f"{model.repo_id!r}"
+            ),
+            "served_model_id": served,
+        }
     return {
         "ok": True,
         "latency_ms": latency,
-        "detail": f"models endpoint ok for {model.alias} ({len(body)} bytes)",
+        "served_model_id": served,
+        "detail": (
+            f"models endpoint ok for {model.alias} ({len(body)} bytes)"
+        ),
     }

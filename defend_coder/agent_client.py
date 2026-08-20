@@ -150,6 +150,7 @@ class AgentChatClient:
         timeout_seconds: float | None = None,
         connect_timeout_seconds: float | None = None,
         max_tokens: int = 4096,
+        max_model_len: int = 8192,
         temperature: float = 0.3,
         urlopen: Any = None,
         clock: Callable[[], float] = time.monotonic,
@@ -176,6 +177,7 @@ class AgentChatClient:
             ),
         )
         self._max_tokens = max(1, int(max_tokens))
+        self._max_model_len = max(64, int(max_model_len))
         self._temperature = float(temperature)
         if urlopen is None:
             self._urlopen = _HttpClientTransport(self._connect_timeout)
@@ -279,15 +281,32 @@ class AgentChatClient:
         max_tokens: int | None = None,
         on_request_started: Callable[[], None] | None = None,
     ) -> AgentChatResponse:
+        max_tokens = (
+            max(1, int(max_tokens))
+            if max_tokens is not None
+            else self._max_tokens
+        )
+        # Context-window clamp: vLLM rejects (HTTP 400) any request whose
+        # input + max_tokens exceed max_model_len, which the agent could
+        # never distinguish from a real model failure. Estimate the input
+        # conservatively (chars/4) and reserve a margin; long runs grow the
+        # conversation, so the output budget must shrink as context grows.
+        estimated_input = sum(
+            len(str(message.get("content") or ""))
+            + len(str(message.get("tool_calls") or ""))
+            for message in messages
+        ) // 4
+        for schema in tools or []:
+            estimated_input += len(str(schema)) // 4
+        headroom = max(64, self._max_model_len - estimated_input - 128)
+        max_tokens = min(max_tokens, headroom)
+        max_tokens = max(16, max_tokens)
+
         payload: dict[str, Any] = {
             "model": self._config.model_name,
             "messages": messages,
             "temperature": self._temperature,
-            "max_tokens": (
-                max(1, int(max_tokens))
-                if max_tokens is not None
-                else self._max_tokens
-            ),
+            "max_tokens": max_tokens,
         }
         if tools:
             payload["tools"] = tools

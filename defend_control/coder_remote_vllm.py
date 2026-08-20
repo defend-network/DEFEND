@@ -193,6 +193,10 @@ class CoderRemoteVllmBootstrap:
             "  --host 127.0.0.1",
             f"  --port {int(remote_port)}",
             f"  --max-model-len {int(artifact.max_model_len)}",
+            # The public logical model name (registry repo_id) is what the
+            # coder API sends as the OpenAI "model" field; serve under that
+            # exact id instead of the on-disk checkpoint path.
+            f"  --served-model-name {shlex.quote(model.repo_id)}",
         ]
         if artifact.enable_auto_tool_choice:
             flag_lines.append("  --enable-auto-tool-choice")
@@ -208,9 +212,7 @@ class CoderRemoteVllmBootstrap:
             flag_lines.append("  --enforce-eager")
         if artifact.disable_custom_all_reduce:
             flag_lines.append("  --disable-custom-all-reduce")
-        flag_lines.extend(
-            ("  --disable-log-requests", "  --disable-uvicorn-access-log")
-        )
+        flag_lines.extend(("  --disable-uvicorn-access-log",))
         flags_block = " \\\n".join(flag_lines)
         script = f"""#!/usr/bin/env bash
 set -euo pipefail

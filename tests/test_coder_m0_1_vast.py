@@ -694,6 +694,52 @@ def test_vast_coder_backend_resume_skips_create_and_bootstraps():
     assert bootstrap.starts == [(555801, "defendcoder-default", 8000, False)]
 
 
+def test_vast_coder_backend_resume_never_uses_current_offer_as_rate_ceiling():
+    """Regression: a cheaper offer appearing in the pool after creation must
+    never become the approval basis for resuming the running instance (the
+    live acceptance test hit this: the running instance was destroyed because
+    a cheaper offer appeared at resume time)."""
+    class ChurnedPoolVast(ResumableVast):
+        def __init__(self):
+            super().__init__(instance_id=555810, rate="1.10")
+
+        def search_offers(self, max_hourly, profile=None, *,
+         require_direct_ports=False):
+            self.search_kwargs.append(require_direct_ports)
+            return (
+                VastOffer(
+                    102,
+                    "A100 SXM4",
+                    81920,
+                    Decimal("0.84"),
+                    Decimal("0.99"),
+                ),
+            )
+
+    vast, bootstrap, backend = _backend(vast=ChurnedPoolVast())
+    service = CoderM0Service(backend=backend)
+
+    status = service.start(
+        "defendcoder-default",
+        resume_instance=VastInstance(
+            555810,
+            "running",
+            "ssh.example",
+            22,
+            "A100 SXM4",
+            81920,
+            Decimal("1.10"),
+        ),
+    )
+
+    assert status.state == "ready"
+    assert status.instance_id == 555810
+    assert vast.created == []
+    assert vast.destroyed == []
+    assert vast.search_kwargs == []
+    assert bootstrap.starts == [(555810, "defendcoder-default", 8000, False)]
+
+
 def test_vast_coder_backend_duplicate_guard_refuses_second_instance():
     vast, bootstrap, backend = _backend(
         vast=ResumableVast(instance_id=555802),
@@ -766,3 +812,85 @@ def test_vast_coder_backend_resume_fails_closed_on_runtype_mismatch():
     assert captured.value.category == "duplicate_runtime"
     assert "not ssh_proxy" in str(captured.value)
     assert vast.created == []
+
+def _smoke_response(body):
+    import json as _json
+
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self, n):
+            return _json.dumps(body).encode()
+
+    return FakeResponse()
+
+
+def test_default_smoke_accepts_matching_served_model_id(monkeypatch):
+    from defend_control.coder_vast_backend import _default_smoke
+
+    monkeypatch.setattr(
+        "defend_control.coder_vast_backend.urllib.request.urlopen",
+        lambda request, timeout=30: _smoke_response(
+            {"data": [{"id": "Qwen/Qwen3-Coder-Next"}]}
+        ),
+    )
+
+    result = _default_smoke(
+        "http://127.0.0.1:8003/v1", "synthetic-key", resolve_alias("defendcoder-heavy")
+    )
+
+    assert result["ok"] is True
+    assert result["served_model_id"] == "Qwen/Qwen3-Coder-Next"
+
+
+def test_default_smoke_rejects_mismatched_served_model_id(monkeypatch):
+    from defend_control.coder_vast_backend import _default_smoke
+
+    monkeypatch.setattr(
+        "defend_control.coder_vast_backend.urllib.request.urlopen",
+        lambda request, timeout=30: _smoke_response(
+            {"data": [{"id": "/workspace/defendcoder/model"}]}
+        ),
+    )
+
+    result = _default_smoke(
+        "http://127.0.0.1:8003/v1", "synthetic-key", resolve_alias("defendcoder-heavy")
+    )
+
+    assert result["ok"] is False
+    assert "/workspace/defendcoder/model" in result["detail"]
+    assert "Qwen/Qwen3-Coder-Next" in result["detail"]
+
+
+def test_default_smoke_rejects_non_json_body(monkeypatch):
+    from defend_control.coder_vast_backend import _default_smoke
+
+    class TextResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self, n):
+            return b"not json"
+
+    monkeypatch.setattr(
+        "defend_control.coder_vast_backend.urllib.request.urlopen",
+        lambda request, timeout=30: TextResponse(),
+    )
+
+    result = _default_smoke(
+        "http://127.0.0.1:8003/v1", "synthetic-key", resolve_alias("defendcoder-heavy")
+    )
+
+    assert result["ok"] is False
+    assert "not JSON" in result["detail"]
