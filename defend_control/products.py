@@ -18,6 +18,7 @@ from .coder_control_plane import (
 from .coder_m0 import (
     CODER_MAX_HOURLY_UPPER_USD,
     parse_max_hourly_budget,
+    resolve_alias,
 )
 from .coder_provisioning import (
     CoderProvisionFailure,
@@ -73,6 +74,22 @@ class SmokeResult:
     detail: str
 
 
+def parse_cuda_floor_env(raw: str | None) -> Decimal | None:
+    """Parse CODER_MIN_CUDA_MAX_GOOD; None/'none'/empty disables the filter."""
+    if raw is None or not raw.strip():
+        return Decimal("13.0")
+    value = raw.strip().casefold()
+    if value in ("none", "0", "off", "disabled"):
+        return None
+    try:
+        parsed = Decimal(value)
+    except (ValueError, TypeError, ArithmeticError):
+        return Decimal("13.0")
+    if parsed <= 0:
+        return None
+    return parsed
+
+
 @dataclass(frozen=True)
 class ProductsSettings:
     sports_api_port: int = 8200
@@ -82,6 +99,7 @@ class ProductsSettings:
     scs_api_port: int = 8100
     scs_web_port: int = 3100
     scs_public_origin: str = "https://ai.sunshineclimatesolutions.com"
+    scs_data_root: Path = Path(r"C:\SCS_DATA")
 
     scs_ai_api_port: int = 8300
     scs_ai_web_port: int = 3300
@@ -102,6 +120,11 @@ class ProductsSettings:
     coder_workspace_root: Path = Path(r"C:\DEFEND_CODER_DATA")
     coder_database_url: str | None = field(default=None, repr=False)
     coder_max_hourly_usd: Decimal = Decimal("4.50")
+    # Acquisition-side CUDA capability floor (provider cuda_max_good): the
+    # pinned serving image (vllm-openai v0.27.1, torch cu130) needs CUDA
+    # >= 13.0 (driver >= 570); incompatible A100 hosts are filtered before
+    # rental. None disables the filter. Never applies to retained instances.
+    coder_min_cuda_max_good: Decimal | None = Decimal("13.0")
     coder_config_errors: tuple[str, ...] = ()
     sports_database_url: str | None = field(default=None, repr=False)
 
@@ -160,6 +183,9 @@ class ProductsSettings:
                 "SCS_AI_PUBLIC_ORIGIN",
                 "https://ai.sunshineclimatesolutions.com",
             ),
+            scs_data_root=Path(
+                text("SCS_DATA_ROOT", str(Path(r"C:\SCS_DATA")))
+            ),
             scs_ai_model_alias=text(
                 "SCS_AI_MODEL_ALIAS", ""
             ) or None,
@@ -205,6 +231,9 @@ class ProductsSettings:
             ),
             coder_database_url=os.environ.get("CODER_DATABASE_URL"),
             coder_max_hourly_usd=coder_max_hourly_usd,
+            coder_min_cuda_max_good=parse_cuda_floor_env(
+                os.environ.get("CODER_MIN_CUDA_MAX_GOOD")
+            ),
             coder_config_errors=tuple(coder_config_errors),
             sports_database_url=os.environ.get("SPORTS_DATABASE_URL"),
         )
@@ -244,6 +273,14 @@ def coder_model_status_file() -> str:
     )
 
 
+def _canonical_model_name(alias: str) -> str:
+    """Canonical logical model name for an alias (registry repo_id)."""
+    try:
+        return resolve_alias(alias).repo_id
+    except ValueError:
+        return ""
+
+
 def build_coder_api_process_spec(
     settings: ProductsSettings,
     repository: Path,
@@ -261,7 +298,10 @@ def build_coder_api_process_spec(
             settings.coder_workspace_root
         ),
         "CODER_MODEL_ALIAS": settings.coder_model_alias,
-        "CODER_MODEL_NAME": settings.coder_model_name or "",
+        "CODER_MODEL_NAME": (
+            settings.coder_model_name
+            or _canonical_model_name(settings.coder_model_alias)
+        ),
         "CODER_MODEL_BASE_URL": (
             settings.coder_model_base_url
             or "http://127.0.0.1:8001/v1"
@@ -346,6 +386,39 @@ def prepare_standalone_web(repository: Path) -> Path:
         if source.is_dir():
             shutil.copytree(source, destination, dirs_exist_ok=True)
     return server
+
+
+def build_scs_api_process_spec(
+    settings: ProductsSettings,
+    repository: Path,
+    python_executable: str,
+) -> ProcessSpec:
+    """SCS core operations API (scs_api.runtime) on the SCS lane."""
+    return ProcessSpec(
+        name="scs:api",
+        argv=(
+            str(python_executable),
+            "-m",
+            "uvicorn",
+            "scs_api.runtime:app",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(settings.scs_api_port),
+        ),
+        cwd=Path(repository),
+        env={
+            "SCS_DATA_ROOT": str(settings.scs_data_root),
+            "SCS_PUBLIC_ORIGIN": settings.scs_public_origin,
+            "SCS_SESSION_COOKIE": "scs_employee_session",
+            "SCS_API_PORT": str(settings.scs_api_port),
+            "SCS_WEB_PORT": str(settings.scs_web_port),
+        },
+        health_url=(
+            f"http://127.0.0.1:"
+            f"{settings.scs_api_port}/health"
+        ),
+    )
 
 
 def build_scs_ai_process_spec(
@@ -469,6 +542,17 @@ class DefendService:
             (
                 "Owned services",
                 ", ".join(state.owned_services) if state.owned_services else "â€”",
+            ),
+            ("Serving alias", os.getenv("DEFEND_MODEL", "defend-ai:latest")),
+            ("Provider", os.getenv("DEFEND_MODEL_BACKEND", "ollama")),
+            (
+                "Adapter",
+                os.getenv("DEFEND_MODEL_ADAPTER_REPO")
+                or ("built-in local Modelfile" if os.getenv("DEFEND_MODEL_BACKEND", "ollama") == "ollama" else "not reported"),
+            ),
+            (
+                "Adapter revision",
+                os.getenv("DEFEND_MODEL_ADAPTER_REVISION") or "runtime (unpinned)",
             ),
         )
         return self._row(
@@ -698,6 +782,16 @@ class ScsService:
 
         return False
 
+    def _core_api_running(self) -> bool:
+        if not self._lifecycle_enabled:
+            return False
+
+        for snapshot in self._supervisor.snapshot():
+            if snapshot.name == "scs:api":
+                return bool(snapshot.running)
+
+        return False
+
     def _web_running(self) -> bool:
         if not self._lifecycle_enabled:
             return False
@@ -732,13 +826,14 @@ class ScsService:
             return "running" if result.ok else "not configured"
 
         api = self._api_running()
+        core_api = self._core_api_running()
         web = self._web_running()
         tunnel_state = self._tunnel.status().state
 
-        if api and web and tunnel_state == "connected":
+        if api and core_api and web and tunnel_state == "connected":
             return "running"
 
-        if api or web or tunnel_state in {"starting", "connected"}:
+        if api or core_api or web or tunnel_state in {"starting", "connected"}:
             return "degraded"
 
         return "stopped"
@@ -748,6 +843,15 @@ class ScsService:
             return self.status()
 
         try:
+            if not self._core_api_running():
+                self._supervisor.start(
+                    build_scs_api_process_spec(
+                        self._settings,
+                        self._repository,
+                        self._python_executable,
+                    )
+                )
+
             if not self._api_running():
                 self._supervisor.start(
                     build_scs_ai_process_spec(
@@ -809,6 +913,14 @@ class ScsService:
                     f"api stop failed ({type(error).__name__})"
                 )
 
+        if self._core_api_running():
+            try:
+                self._supervisor.stop("scs:api")
+            except Exception as error:
+                errors.append(
+                    f"core api stop failed ({type(error).__name__})"
+                )
+
         self._last_error = (
             "; ".join(errors)
             if errors
@@ -851,6 +963,9 @@ class ScsService:
             )
 
         api = "running" if self._api_running() else "stopped"
+        core_api = (
+            "running" if self._core_api_running() else "stopped"
+        )
         web = "running" if self._web_running() else "stopped"
         tunnel = self._tunnel.status()
 
@@ -859,11 +974,13 @@ class ScsService:
         if self._last_error:
             status_text = self._last_error
         elif state == "running":
-            status_text = "SCS AI API, web, and tunnel running"
+            status_text = (
+                "Core API, AI API, web, and tunnel running"
+            )
         elif state == "degraded":
-            status_text = "SCS AI partially running"
+            status_text = "SCS partially running"
         else:
-            status_text = "SCS AI stopped"
+            status_text = "SCS stopped"
 
         return ProductStatus(
             application_id=self.application_id,
@@ -871,11 +988,14 @@ class ScsService:
             state=state,
             status_text=status_text,
             details=(
-                ("API", api),
                 ("Web", web),
+                ("Core API", core_api),
+                ("AI API", api),
+                ("AI model", self._ai_model_state()),
                 ("Tunnel", str(tunnel.state)),
-                ("API port", str(self._settings.scs_ai_api_port)),
-                ("Web port", str(self._settings.scs_ai_web_port)),
+                ("API port", str(self._settings.scs_api_port)),
+                ("AI API port", str(self._settings.scs_ai_api_port)),
+                ("Web port", str(self._settings.scs_web_port)),
                 ("Public origin", self._settings.scs_ai_public_origin),
             ),
             open_url=self._resolve_open_url(),
@@ -886,15 +1006,32 @@ class ScsService:
             last_error=self._last_error,
         )
 
-    def health(self) -> bool:
-        api_port = (
-            self._settings.scs_ai_api_port
-            if self._lifecycle_enabled
-            else self._settings.scs_api_port
-        )
+    def _ai_model_state(self) -> str:
+        """Report the AI API's configured model gateway state."""
+        if not self._api_running():
+            return "stopped"
+        try:
+            health = self._probe(
+                (
+                    f"http://127.0.0.1:"
+                    f"{self._settings.scs_ai_api_port}/health"
+                ),
+                2.0,
+            )
+            if not health.ok:
+                return "unreachable"
+            payload = getattr(health, "payload", None) or {}
+            gateway = payload.get("model_gateway") or {}
+            return str(gateway.get("state", "unknown"))
+        except Exception:
+            return "unknown"
 
+    def health(self) -> bool:
         result = self._probe(
-            f"http://127.0.0.1:{api_port}/health",
+            (
+                f"http://127.0.0.1:"
+                f"{self._settings.scs_api_port}/health"
+            ),
             2.0,
         )
 

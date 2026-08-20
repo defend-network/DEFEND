@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from tools.defend_control_center import _Runtime, _RuntimeCoordinator
+from defend_control.model_registry import ADAPTER_REPO
 from defend_control.settings import ControlSettings
 
 
@@ -95,7 +96,7 @@ def settings(tmp_path: Path, *, model="old-model") -> ControlSettings:
         cloudflared_exe=tmp_path / "cloudflared.exe",
         cloudflared_config=tmp_path / "config.yml",
         cloudflared_tunnel="defend-ai",
-        adapter_repo="Defend-network/defend-qwen-32b-lora",
+        adapter_repo=ADAPTER_REPO,
         local_model=model,
         vast_max_hourly=Decimal("3.00"),
     )

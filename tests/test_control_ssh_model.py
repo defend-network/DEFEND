@@ -18,6 +18,7 @@ from defend_control.ssh_tunnel import (
     run_command,
 )
 from defend_control.model_probe import ModelProbe, ModelProbeError, ProbeResponse
+from defend_control.model_registry import ADAPTER_REPO
 from defend_control.remote_vllm import RemoteVllmBootstrap, RemoteVllmError
 from defend_control.types import AdapterSpec, ModelReady, VastInstance
 from defend_control.vast import VastClient
@@ -631,7 +632,7 @@ def test_native_command_runner_terminates_on_oversized_output():
 
 def adapter_spec() -> AdapterSpec:
     return AdapterSpec(
-        adapter_repo="Defend-network/defend-qwen-32b-lora",
+        adapter_repo=ADAPTER_REPO,
         adapter_revision="a" * 40,
         base_repo="Qwen/example-32B",
         base_revision="b" * 40,

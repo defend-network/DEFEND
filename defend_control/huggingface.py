@@ -9,12 +9,12 @@ from urllib.error import HTTPError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
+from .model_registry import ADAPTER_REPO as _ADAPTER_REPO
+from .model_registry import GGUF_REPO as _GGUF_REPO
 from .types import AdapterSpec
 
 
 _HUB_ROOT = "https://huggingface.co"
-_ADAPTER_REPO = "Defend-network/defend-qwen-32b-lora"
-_GGUF_REPO = "Defend-network/defend-qwen-32b-gguf"
 _MAX_RESPONSE_BYTES = 64 * 1024
 _TIMEOUT_SECONDS = 30.0
 _REVISION = re.compile(r"^[0-9a-fA-F]{40,64}$")

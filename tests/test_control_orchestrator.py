@@ -5,6 +5,7 @@ import threading
 import pytest
 
 from defend_control.health import HealthResult
+from defend_control.model_registry import ADAPTER_REPO
 from defend_control.orchestrator import (
     AlreadyRunning,
     ExternalCloudflaredDetector,
@@ -107,7 +108,7 @@ def make_settings(tmp_path):
         cloudflared_exe=tmp_path / "cloudflared.exe",
         cloudflared_config=tmp_path / "config.yml",
         cloudflared_tunnel="defend-ai",
-        adapter_repo="Defend-network/defend-qwen-32b-lora",
+        adapter_repo=ADAPTER_REPO,
         local_model="defend-ai:latest",
         vast_max_hourly=Decimal("3.00"),
     )
@@ -415,7 +416,7 @@ class FakeHuggingFace:
     def resolve_adapter(self, repo, token):
         self.calls += 1
         self.events.append("hf:resolve")
-        assert repo == "Defend-network/defend-qwen-32b-lora"
+        assert repo == ADAPTER_REPO
         assert token == "hf_synthetic"
         return AdapterSpec(
             repo,

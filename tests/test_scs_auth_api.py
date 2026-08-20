@@ -121,3 +121,47 @@ def test_activation_login_session_and_logout_round_trip(api):
 def test_activation_url_rejects_non_scs_origin():
     with pytest.raises(ValueError, match="SCS origin"):
         invitation_activation_url("https://ai.defend-network.org", "scsinvite_private")
+
+
+def test_cors_allows_scs_web_origin_and_credentials(api):
+    client, _identity, _owner, _mailer = api
+    response = client.get(
+        "/api/scs/auth/session",
+        headers={"Origin": "http://127.0.0.1:3100"},
+    )
+    assert response.headers["access-control-allow-origin"] == "http://127.0.0.1:3100"
+    assert response.headers["access-control-allow-credentials"] == "true"
+
+
+def test_cors_preflight_accepts_login_from_scs_web(api):
+    client, _identity, _owner, _mailer = api
+    response = client.options(
+        "/api/scs/auth/login",
+        headers={
+            "Origin": "http://localhost:3100",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type",
+        },
+    )
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://localhost:3100"
+    assert "POST" in response.headers["access-control-allow-methods"]
+    assert "content-type" in response.headers["access-control-allow-headers"].lower()
+
+
+def test_cors_rejects_foreign_origins(api):
+    client, _identity, _owner, _mailer = api
+    response = client.get(
+        "/api/scs/auth/session",
+        headers={"Origin": "https://evil.example.com"},
+    )
+    assert "access-control-allow-origin" not in response.headers
+
+
+def test_cors_allows_scs_public_origin(api):
+    client, _identity, _owner, _mailer = api
+    response = client.get(
+        "/api/scs/auth/session",
+        headers={"Origin": "https://ai.sunshineclimatesolutions.com"},
+    )
+    assert response.headers["access-control-allow-origin"] == "https://ai.sunshineclimatesolutions.com"

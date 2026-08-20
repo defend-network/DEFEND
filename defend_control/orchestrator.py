@@ -717,7 +717,9 @@ class StackOrchestrator:
             raise
         self._check_cancelled(cancellation)
         self._set_component("model", "ready")
-        return build_remote_process_specs(self._settings, secrets, ready)
+        return build_remote_process_specs(
+            self._settings, secrets, ready, adapter=self._vast_adapter
+        )
 
     def _wait_healthy(
         self,

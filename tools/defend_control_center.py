@@ -20,6 +20,7 @@ from defend_control.admin_surface import (
 from defend_control.controller import ControlController
 from defend_control.health import probe_http
 from defend_control.local_model import LocalOllamaBackend
+from defend_control.model_registry import ADAPTER_REPO
 from defend_control.orchestrator import StackOrchestrator
 from defend_control.preflight import CheckResult, PreflightRunner
 from defend_control.processes import ProcessSupervisor
@@ -76,6 +77,7 @@ def _build_coder_plane(
     secret_source,
     supervisor,
     confirmer: _CoderFingerprintConfirmer | None = None,
+    state_directory: Path | None = None,
 ):
     """Build the DEFENDcoder control plane; None when Vast is not configured.
 
@@ -85,6 +87,7 @@ def _build_coder_plane(
     from defend_control.coder_control_plane import (
         CoderControlPlane,
         CoderPolicy,
+        resource_profile,
     )
     from defend_control.coder_remote_vllm import CoderRemoteVllmBootstrap
     from defend_control.coder_vast_backend import VastCoderBackend
@@ -92,7 +95,6 @@ def _build_coder_plane(
         HostFingerprintConfirmation,
         SshTunnel,
     )
-    from defend_control.types import ResourceProfile
     from defend_control.vast import VastClient
 
     secrets = _load_coder_secrets(secret_source)
@@ -175,19 +177,24 @@ def _build_coder_plane(
     )
     policy = CoderPolicy(
         max_hourly_usd=products_settings.coder_max_hourly_usd,
+        min_cuda_max_good=products_settings.coder_min_cuda_max_good,
     )
     backend = VastCoderBackend(
         vast=VastClient(secrets["VAST_API_KEY"]),
         secrets=secrets,
         bootstrap=bootstrap,
         max_hourly=policy.max_hourly_usd,
-        profile=ResourceProfile.coder_default(),
+        profile=resource_profile("defendcoder-default", policy),
         tunnel_start=tunnel_start,
         host_prepare=host_prepare,
+        remote_probe=bootstrap.probe_remote,
     )
     plane = CoderControlPlane(
         backend=backend,
         token_provider=lambda: secrets.get("HF_TOKEN"),
+        state_directory=(
+            str(state_directory) if state_directory is not None else None
+        ),
     )
     plane.fingerprint_confirmer = active_confirmer.confirm
     return plane
@@ -579,7 +586,7 @@ def _default_settings(repo_root: Path) -> ControlSettings:
         cloudflared_exe=Path(program_files) / "cloudflared" / "cloudflared.exe",
         cloudflared_config=Path(user_profile) / ".cloudflared" / "config.yml",
         cloudflared_tunnel="defend-ai",
-        adapter_repo="Defend-network/defend-qwen-32b-lora",
+        adapter_repo=ADAPTER_REPO,
         local_model="defend-ai:latest",
         vast_max_hourly=Decimal("3.00"),
     )
@@ -638,6 +645,7 @@ def _build_runtime(
             secret_source=secret_source,
             supervisor=supervisor,
             confirmer=confirmer,
+            state_directory=Path(settings.data_root) / "coder-lifecycle",
         )
 
         products = build_products(

@@ -4,6 +4,7 @@ from pathlib import Path
 import sqlite3
 
 import defend_control.preflight as preflight_module
+from defend_control.model_registry import ADAPTER_REPO
 from defend_control.preflight import CheckResult, PreflightRunner
 from defend_control.settings import ControlSettings
 
@@ -16,7 +17,7 @@ def settings(tmp_path: Path) -> ControlSettings:
         cloudflared_exe=tmp_path / "cloudflared.exe",
         cloudflared_config=tmp_path / "cloudflared.yml",
         cloudflared_tunnel="defend-ai",
-        adapter_repo="Defend-network/defend-qwen-32b-lora",
+        adapter_repo=ADAPTER_REPO,
         local_model="defend-ai:latest",
         vast_max_hourly=Decimal("3.00"),
     )

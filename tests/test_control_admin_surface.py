@@ -18,6 +18,7 @@ from defend_control.admin_surface import (
     resolve_setup_target,
 )
 from defend_control.health import HealthResult
+from defend_control.model_registry import ADAPTER_REPO
 from defend_control.orchestrator import StackOrchestrator, StartFailed
 from defend_control.preflight import CheckResult, PreflightRunner
 from defend_control.settings import ControlSettings
@@ -32,7 +33,7 @@ def settings(tmp_path: Path) -> ControlSettings:
         cloudflared_exe=tmp_path / "cloudflared.exe",
         cloudflared_config=tmp_path / "config.yml",
         cloudflared_tunnel="defend-ai",
-        adapter_repo="Defend-network/defend-qwen-32b-lora",
+        adapter_repo=ADAPTER_REPO,
         local_model="defend-ai:latest",
         vast_max_hourly=Decimal("3.00"),
     )

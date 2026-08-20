@@ -9,6 +9,7 @@ import sys
 import pytest
 
 import defend_control.secrets as secrets_module
+from defend_control.model_registry import ADAPTER_REPO
 from defend_control.redaction import redact_text
 from defend_control.secrets import DpapiSecretStore
 from defend_control.settings import ControlSettings, JsonSettingsStore
@@ -38,7 +39,7 @@ def valid_settings(tmp_path: Path) -> dict[str, object]:
         "cloudflared_exe": r"C:\Program Files (x86)\cloudflared\cloudflared.exe",
         "cloudflared_config": r"C:\Users\operator\.cloudflared\config.yml",
         "cloudflared_tunnel": "defend-ai",
-        "adapter_repo": "Defend-network/defend-qwen-32b-lora",
+        "adapter_repo": ADAPTER_REPO,
         "local_model": "defend-ai:latest",
         "vast_max_hourly": "3.00",
     }
@@ -209,7 +210,7 @@ def test_json_settings_store_round_trip(tmp_path):
     assert store.load() == expected
     persisted = json.loads(path.read_text(encoding="utf-8"))
     assert persisted["vast_max_hourly"] == "3.00"
-    assert persisted["adapter_repo"] == "Defend-network/defend-qwen-32b-lora"
+    assert persisted["adapter_repo"] == ADAPTER_REPO
 
 
 def test_secret_store_rejects_non_string_values(tmp_path):

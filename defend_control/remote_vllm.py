@@ -8,6 +8,7 @@ import re
 import shlex
 from typing import Protocol
 
+from .model_registry import ADAPTER_REPO
 from .processes import ProcessSpec
 from .settings import ControlSettings
 from .ssh_tunnel import CommandResult, run_command
@@ -75,7 +76,7 @@ def _validate_adapter(adapter: AdapterSpec) -> None:
     if not isinstance(adapter, AdapterSpec):
         raise ValueError("adapter must be an AdapterSpec")
     if (
-        adapter.adapter_repo != "Defend-network/defend-qwen-32b-lora"
+        adapter.adapter_repo != ADAPTER_REPO
         or adapter.peft_type != "LORA"
         or not _REPOSITORY.fullmatch(adapter.base_repo)
         or not _REVISION.fullmatch(adapter.adapter_revision)
@@ -274,6 +275,7 @@ def build_remote_process_specs(
     settings: ControlSettings,
     secrets: Mapping[str, str],
     model_ready: ModelReady,
+    adapter: AdapterSpec | None = None,
 ) -> RemoteProcessSpecs:
     if model_ready != ModelReady(
         "defend-ai", "openai_compatible", "http://127.0.0.1:8001/v1"
@@ -287,6 +289,15 @@ def build_remote_process_specs(
         for name, value in secrets.items()
         if name in _API_ENV_NAMES and isinstance(value, str) and value
     }
+    adapter_env: dict[str, str] = {}
+    if adapter is not None:
+        _validate_adapter(adapter)
+        adapter_env = {
+            "DEFEND_MODEL_ADAPTER_REPO": adapter.adapter_repo,
+            "DEFEND_MODEL_ADAPTER_REVISION": adapter.adapter_revision,
+            "DEFEND_MODEL_BASE_REPO": adapter.base_repo,
+            "DEFEND_MODEL_BASE_REVISION": adapter.base_revision,
+        }
     api_env = {
         "DEFEND_MODEL_BACKEND": "openai_compatible",
         "DEFEND_MODEL": "defend-ai",
@@ -309,6 +320,7 @@ def build_remote_process_specs(
         "DEFEND_CORS_ORIGINS": settings.public_web_origin,
         "DEFEND_TRUST_CLOUDFLARE": "true",
         "DEFEND_COOKIE_SECURE": "true",
+        **adapter_env,
         **secret_env,
     }
     repo = settings.repo_root

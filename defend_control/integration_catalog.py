@@ -207,6 +207,11 @@ SECRET_CATALOG: tuple[SecretDefinition, ...] = (
         IntegrationOwner.SPORTS,
     ),
     SecretDefinition(
+        "ODDSPAPI_API_KEY",
+        "OddsPapi API key",
+        IntegrationOwner.SPORTS,
+    ),
+    SecretDefinition(
         "BETFAIR_APP_KEY",
         "Betfair app key",
         IntegrationOwner.SPORTS,
@@ -432,6 +437,18 @@ INTEGRATION_CATALOG: tuple[IntegrationDefinition, ...] = (
         False,
         StartupCheck.MANUAL,
         ("sports",),
+    ),
+    IntegrationDefinition(
+        "oddspapi",
+        "OddsPapi",
+        IntegrationOwner.SPORTS,
+        "Odds",
+        ("historical_odds", "tt_fixtures", "odds_snapshots"),
+        CostClass.FREE_TIER,
+        ("ODDSPAPI_API_KEY",),
+        False,
+        StartupCheck.MANUAL,
+        ("defendmarkets",),
     ),
     IntegrationDefinition(
         "sportradar",

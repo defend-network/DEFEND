@@ -482,9 +482,23 @@ async def _health_payload() -> dict[str, Any]:
             model_ok = bool(await state.model.healthcheck())
         except Exception:
             model_ok = False
+    backend = os.getenv("DEFEND_MODEL_BACKEND", "ollama").strip().lower()
+    if ok and model_ok:
+        model_state = "ready"
+    elif state.model is not None:
+        model_state = "offline"
+    else:
+        model_state = "failed"
     return {
         "ok": ok and model_ok,
+        "application_id": "defend",
         "model": MODEL_NAME,
+        "model_state": model_state,
+        "provider": backend,
+        "adapter_repo": os.getenv("DEFEND_MODEL_ADAPTER_REPO") or None,
+        "adapter_revision": os.getenv("DEFEND_MODEL_ADAPTER_REVISION") or None,
+        "base_repo": os.getenv("DEFEND_MODEL_BASE_REPO") or None,
+        "base_revision": os.getenv("DEFEND_MODEL_BASE_REVISION") or None,
         "tools": list(state.cp.tools.keys()) if state.cp else [],
     }
 

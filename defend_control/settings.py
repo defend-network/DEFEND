@@ -8,10 +8,11 @@ from pathlib import Path
 import tempfile
 from urllib.parse import urlsplit
 
+from .model_registry import ADAPTER_REPO
 from .types import ResourceProfile
 
 
-_ADAPTER_REPO = "Defend-network/defend-qwen-32b-lora"
+_ADAPTER_REPO = ADAPTER_REPO
 _DEFAULT_GPU_FAMILIES = ("A100", "H100", "H200", "B200")
 _MIN_GPU_RAM_FLOOR = 140_000
 

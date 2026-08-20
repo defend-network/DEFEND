@@ -87,6 +87,11 @@ class ResourceProfile:
     min_reliability: Decimal = Decimal("0.98")
     min_disk_gb: int = 160
     max_model_len: int = 8192
+    # Minimum CUDA major.minor the host driver must support (provider's
+    # cuda_max_good), e.g. 13.0 for torch cu130 images. None means the
+    # caller does not constrain by CUDA capability (absent offer fields
+    # never alone reject — the provider-side filter is the enforcement).
+    min_cuda_max_good: float | None = None
 
     @classmethod
     def coder_default(cls) -> "ResourceProfile":
@@ -111,6 +116,9 @@ class VastOffer:
     storage_cost_per_gb_month: Decimal | None = None
     storage_total_hourly: Decimal | None = None
     direct_port_count: int | None = None
+    # Provider-reported CUDA capability of the host driver (major.minor),
+    # e.g. 13.0. None when the provider did not echo the field.
+    cuda_max_good: float | None = None
 
 
 @dataclass(frozen=True)
