@@ -29,6 +29,11 @@ from defend_markets.models import (
 from defend_markets.pipeline import DecisionPipeline, LoopOutcome
 from defend_markets.quality import HealthGate
 from defend_markets.repositories import MarketsRepository
+from defend_markets.shadow import (
+    POST_COMMENCE,
+    evaluation_report,
+    last_valid_prematch,
+)
 from defend_markets.sports_adapter import SportsSelectionQuote
 from defend_markets.store import MarketsStore, PostgresMarketsStore
 from defend_markets.strategies import StrategyRegistry, build_default_registry
@@ -54,6 +59,7 @@ class MarketsDependencies:
     reasoners: ReasonerRegistry | None = None
     models: ModelRegistry | None = None
     clock: Callable[[], datetime] | None = None
+    shadow: Any = None
 
     def build(self) -> "MarketsDependencies":
         store = self.store
@@ -101,6 +107,7 @@ class MarketsDependencies:
             reasoners=reasoners,
             models=models,
             clock=self.clock,
+            shadow=self.shadow,
         )
 
 
@@ -751,6 +758,168 @@ def build_markets_app(dependencies: MarketsDependencies) -> FastAPI:
                 [row for row in no_actions if str(row.get("decision")) == "NO_ACTION"]
             ),
             "total_prediction_records": len(no_actions),
+        }
+
+    @app.get("/v1/sports/tt/shadow/overview")
+    def sports_tt_shadow_overview() -> dict[str, object]:
+        """Phase D shadow engine overview (read-only, honest)."""
+        if deps.shadow is None:
+            raise HTTPException(status_code=503, detail="Shadow engine not configured")
+        store = deps.shadow
+        now = _now(deps)
+        events = store.list_forward_events()
+        by_state: dict[str, int] = {}
+        matched = ambiguous = unmatched = 0
+        prematch_obs = postcommence_obs = 0
+        bookmakers: set[str] = set()
+        m5_ready = m5_insufficient = 0
+        stale_events = 0
+        for event in events:
+            by_state[event["state"]] = by_state.get(event["state"], 0) + 1
+            level = event.get("match_level")
+            if level == "AMBIGUOUS":
+                ambiguous += 1
+            elif level is None:
+                unmatched += 1
+            else:
+                matched += 1
+            canonical_id = event.get("canonical_event_id")
+            if not canonical_id:
+                continue
+            for obs in store.list_observations(canonical_id):
+                if obs["observation_class"] == POST_COMMENCE:
+                    postcommence_obs += 1
+                else:
+                    prematch_obs += 1
+                bookmakers.add(obs.get("bookmaker", ""))
+            prediction = store.m5_prediction(canonical_id)
+            if prediction is not None:
+                if prediction.get("availability") == "AVAILABLE":
+                    m5_ready += 1
+                else:
+                    m5_insufficient += 1
+            if (
+                event.get("scheduled_commence") <= now
+                and event.get("last_odds_poll_at") is not None
+                and (now - event["last_odds_poll_at"]) > timedelta(minutes=5)
+            ):
+                stale_events += 1
+        report = evaluation_report(store.evaluation_rows())
+        return {
+            "as_of": now.isoformat(),
+            "collector": {
+                "events_discovered": len(events),
+                "events_matched": matched,
+                "events_ambiguous": ambiguous,
+                "events_unmatched": unmatched,
+                "prematch_observations": prematch_obs,
+                "postcommence_rejected": postcommence_obs,
+                "bookmakers": sorted(b for b in bookmakers if b),
+                "stale_events": stale_events,
+            },
+            "m5": {"available": m5_ready, "insufficient_history": m5_insufficient},
+            "evaluation": report,
+        }
+
+    @app.get("/v1/sports/tt/shadow/events")
+    def sports_tt_shadow_events(
+        state: str | None = None, limit: int = 100
+    ) -> dict[str, object]:
+        """Phase D forward events with live status (read-only)."""
+        if deps.shadow is None:
+            raise HTTPException(status_code=503, detail="Shadow engine not configured")
+        store = deps.shadow
+        now = _now(deps)
+        rows: list[dict[str, object]] = []
+        for event in store.list_forward_events(state=state)[:limit]:
+            canonical_id = event.get("canonical_event_id")
+            observations = (
+                store.list_observations(canonical_id) if canonical_id else []
+            )
+            prematch_obs = [o for o in observations if o["observation_class"] != POST_COMMENCE]
+            last_prematch = last_valid_prematch(observations)
+            status = "UNMATCHED"
+            if event.get("match_level") == "AMBIGUOUS":
+                status = "AMBIGUOUS"
+            elif canonical_id:
+                if event["state"] == "SETTLED":
+                    status = "SETTLED"
+                elif event.get("scheduled_commence") <= now:
+                    status = "LIVE"
+                elif not prematch_obs:
+                    status = "UNMATCHED"
+                elif (
+                    event.get("last_odds_poll_at") is not None
+                    and (now - event["last_odds_poll_at"]) > timedelta(minutes=5)
+                ):
+                    status = "STALE"
+                else:
+                    status = "PREMATCH"
+            prediction = store.m5_prediction(canonical_id) if canonical_id else None
+            rows.append(
+                {
+                    "forward_event_id": event["forward_event_id"],
+                    "provider": event.get("provider"),
+                    "provider_event_id": event.get("provider_event_id"),
+                    "canonical_event_id": canonical_id,
+                    "match_level": event.get("match_level"),
+                    "competition": event.get("competition"),
+                    "player_a": event.get("player_a_name"),
+                    "player_b": event.get("player_b_name"),
+                    "scheduled_commence": (
+                        event.get("scheduled_commence").isoformat()
+                        if event.get("scheduled_commence")
+                        else None
+                    ),
+                    "status": status,
+                    "last_odds_poll_at": (
+                        event.get("last_odds_poll_at").isoformat()
+                        if event.get("last_odds_poll_at")
+                        else None
+                    ),
+                    "observation_count": len(prematch_obs),
+                    "last_valid_prematch_at": (
+                        last_prematch["observed_at"].isoformat()
+                        if last_prematch
+                        else None
+                    ),
+                    "m5_p_a": prediction["p_a"] if prediction else None,
+                    "m5_availability": (
+                        prediction["availability"] if prediction else None
+                    ),
+                    "model_market_disagreement": (
+                        store.list_ruler_rows(canonical_id)[-1].get("model_market_disagreement")
+                        if canonical_id and store.list_ruler_rows(canonical_id)
+                        else None
+                    ),
+                }
+            )
+        return {"as_of": now.isoformat(), "events": rows}
+
+    @app.get("/v1/sports/tt/shadow/evaluation")
+    def sports_tt_shadow_evaluation(
+        limit: int = 200,
+    ) -> dict[str, object]:
+        """Phase D shadow evaluation rows (read-only, real settled data)."""
+        if deps.shadow is None:
+            raise HTTPException(status_code=503, detail="Shadow engine not configured")
+        store = deps.shadow
+        rows = store.evaluation_rows()[-limit:]
+        return {
+            "as_of": _now(deps).isoformat(),
+            "evaluation": evaluation_report(rows),
+            "recent": [
+                {
+                    "canonical_event_id": row["canonical_event_id"],
+                    "result_id": row["result_id"],
+                    "reference_class": row["reference_class"],
+                    "settled_at": row["settled_at"].isoformat(),
+                    "m5_p_a": row["m5_p_a"],
+                    "market_no_vig_p_a": row["market_no_vig_p_a"],
+                    "actual": row["actual"],
+                }
+                for row in rows
+            ],
         }
 
     @app.get("/v1/sports/table-tennis")

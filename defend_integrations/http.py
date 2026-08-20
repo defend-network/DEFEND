@@ -34,6 +34,7 @@ class FetchResult:
     body: str | None = None
     retries: int = 0
     headers: dict[str, str] | None = None
+    truncated: bool = False
 
 
 class _NoRedirectHandler(HTTPRedirectHandler):
@@ -96,20 +97,23 @@ def _request_once(
     url: str,
     headers: dict[str, str] | None,
     timeout_seconds: float,
-) -> tuple[int | None, str | None, str, dict[str, str]]:
+    max_response_bytes: int,
+) -> tuple[int | None, str | None, str, dict[str, str], bool]:
     """Perform one bounded GET inside the caller's thread."""
     request = Request(url, method="GET", headers=headers or {})
     opener = build_opener(_NoRedirectHandler())
     with opener.open(request, timeout=float(timeout_seconds)) as response:
         raw_status = getattr(response, "status", None)
         status_code = int(raw_status) if raw_status is not None else None
-        body = response.read(_MAX_RESPONSE_BYTES).decode("utf-8", errors="replace")
+        raw = response.read(max_response_bytes + 1)
+        truncated = len(raw) > max_response_bytes
+        body = raw[:max_response_bytes].decode("utf-8", errors="replace")
         response_headers = {
             key: value
             for key, value in response.headers.items()
             if key.isascii()
         }
-    return status_code, None, body, response_headers
+    return status_code, None, body, response_headers, truncated
 
 
 def fetch(
@@ -121,6 +125,7 @@ def fetch(
     backoff_seconds: float = _DEFAULT_BACKOFF_SECONDS,
     known_secrets: tuple[str, ...] = (),
     capture_error_body: bool = False,
+    max_response_bytes: int = _MAX_RESPONSE_BYTES,
 ) -> FetchResult:
     """Bounded GET with centralized retry/backoff and sanitized errors.
 
@@ -153,40 +158,40 @@ def fetch(
         return FetchResult(False, None, 0, "ProbeCapacityExceeded")
 
     completed = threading.Event()
-    outcome: list[tuple[int | None, str | None, str | None, int, dict[str, str]]] = []
+    outcome: list[tuple[int | None, str | None, str | None, int, dict[str, str], bool]] = []
 
     def run() -> None:
         attempts = retries + 1
         try:
             for attempt in range(attempts):
                 try:
-                    status_code, error_type, body, response_headers = _request_once(
-                        url, headers, timeout_seconds
+                    status_code, error_type, body, response_headers, truncated = _request_once(
+                        url, headers, timeout_seconds, max_response_bytes
                     )
                     ok = status_code is not None and 200 <= status_code < 300
-                    outcome.append((status_code, None if ok else error_type, body if ok else None, attempt, response_headers))
+                    outcome.append((status_code, None if ok else error_type, body if ok else None, attempt, response_headers, truncated))
                     return
                 except HTTPError as error:
                     status_code = error.code if isinstance(error.code, int) else None
                     error_body = None
                     if capture_error_body:
                         try:
-                            error_body = error.read(_MAX_RESPONSE_BYTES).decode(
+                            error_body = error.read(max_response_bytes).decode(
                                 "utf-8", errors="replace"
                             )
                         except Exception:
                             error_body = None
                     if status_code in (429, 401, 403, 404) or attempt + 1 >= attempts:
-                        outcome.append((status_code, None, error_body, attempt, {}))
+                        outcome.append((status_code, None, error_body, attempt, {}, False))
                         return
                 except Exception as error:
                     error_type = _safe_error_type(error)
                     if attempt + 1 >= attempts:
-                        outcome.append((None, error_type, None, attempt, {}))
+                        outcome.append((None, error_type, None, attempt, {}, False))
                         return
                 if attempt + 1 < attempts:
                     time.sleep(backoff_seconds * (2**attempt))
-            outcome.append((None, "Failed", None, attempts - 1, {}))
+            outcome.append((None, "Failed", None, attempts - 1, {}, False))
         finally:
             completed.set()
 
@@ -206,7 +211,7 @@ def fetch(
         return FetchResult(False, None, latency_ms, "TimeoutError")
 
     _CAPACITY.release()
-    status_code, error_type, body, attempts, response_headers = outcome[0]
+    status_code, error_type, body, attempts, response_headers, truncated = outcome[0]
     latency_ms = max(0, int((time.monotonic() - started) * 1000))
     sanitized = None
     if body is not None:
@@ -219,6 +224,7 @@ def fetch(
         body=sanitized,
         retries=attempts,
         headers=response_headers,
+        truncated=truncated,
     )
 
 

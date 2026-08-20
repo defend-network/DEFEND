@@ -1,0 +1,102 @@
+{
+  "artifact_id": "TT_HISTORICAL_PAID_RESEARCH_V1",
+  "generated_at": "2026-08-20T00:00:00Z",
+  "phase": "D",
+  "purpose": "P7 paid-provider research for historical TT data. No purchase is made by this artifact.",
+  "context": {
+    "phase_c_corpus": "tt_match_results via odds_api_io (api.odds-api.io/v3) — 149,672 rows, canonical event keys oaio:<id>, source_provider='odds_api_io', frozen baseline aa2ef12d...",
+    "phase_d_forward": "OddsPapi (api.oddspapi.io/v4) — live forward fixtures + odds, sportId 25, ODDSPAPI_API_KEY in DPAPI SecretRegistry, 250 free requests/month",
+    "m5": "frozen at TT_M5_LIVE_WEIGHTS_V1.json (sha 54affc960a34), no refits",
+    "constraints": "budget <= $50 preferred / $100 ceiling; trial 20-50 canonical events on 8 metrics; recommendation only if it materially improves Phase C coverage; no auto-purchase"
+  },
+  "providers_evaluated": [
+    {
+      "provider": "Odds-API.io",
+      "base_url": "https://api.odds-api.io/v3",
+      "relation": "ALREADY_THE_PHASE_C_PROVIDER — same canonical corpus (oaio:<id> keys)",
+      "free_tier": "100 req/hour, 500/day, 2 recreational bookmakers, all endpoints incl. /v3/historical/events and /v3/historical/odds",
+      "paid_plans": [
+        { "plan": "Solo", "price": "GBP 49/mo (~USD 63-66)", "bookmakers": 2, "sharp_and_exchange": true, "requests_per_hour": 5000 },
+        { "plan": "Starter", "price": "GBP 99/mo (~USD 127-132)", "bookmakers": 5, "requests_per_hour": 5000 },
+        { "plan": "Growth", "price": "GBP 179/mo", "bookmakers": 10, "requests_per_hour": 5000 },
+        { "plan": "Pro", "price": "GBP 229/mo", "bookmakers": 15, "requests_per_hour": 5000 }
+      ],
+      "paid_gate": "/v3/historical/closing-lines is PAID-only (403 on free); closing odds back to December 2025; bulk endpoint: 30 bookmakers/request, 100 events/response, 366-day window, league+date sweep in ~20 requests for a season",
+      "tt_coverage": "Table tennis included (Phase C corpus proves it); market mapping must be re-verified (2-way moneyline) — feedback board shows historical tennis/handball market mapping bugs, so MARKET_MAPPING_INTEGRITY is a mandatory trial metric",
+      "upside": "SAME provider + SAME canonical event ids as Phase C: unlocks TRUE_CLOSE (closing lines Dec 2025+) for ~40k+ TT matches, flips TRUE_CLOSE_AVAILABLE to YES, strengthens LAST_VALID_PREMATCH verification for the shadow evaluation",
+      "trial_cost": "0 (free tier covers /v3/historical/events and /v3/historical/odds for the 20-50 event sample)"
+    },
+    {
+      "provider": "OddsPapi",
+      "base_url": "https://api.oddspapi.io/v4",
+      "relation": "ALREADY_THE_PHASE_D_FORWARD_PROVIDER",
+      "free_tier": "250 requests/month, historical odds INCLUDED on free tier (no credit multiplier), 350+ bookmakers incl. Pinnacle/Singbet",
+      "paid_plans": "custom quote only (per-request; B2C/B2B tiers have no published $<100 price) — cannot be budgeted under the $100 ceiling without a quote",
+      "tt_coverage": "sportId 25 confirmed live (Phase D discovery uses it)",
+      "upside": "historical odds at no multiplier could provide per-event line history for forward events once they settle; but no published sub-$100 tier, so deferred until volume need is proven by the soak",
+      "trial_cost": "already running (Phase D soak consumes its 250 free requests)"
+    },
+    {
+      "provider": "The Odds API (the-odds-api.com)",
+      "base_url": "https://api.the-odds-api.com",
+      "paid_plans": [
+        { "plan": "20K", "price": "$30/mo", "credits": 20000 },
+        { "plan": "100K", "price": "$59/mo", "credits": 100000 }
+      ],
+      "note": "historical odds cost 10x credits; NO table tennis coverage (tennis = ATP/WTA only) — does not improve Phase C coverage; rejected",
+      "trial_cost": "n/a"
+    },
+    {
+      "provider": "SportsGameOdds",
+      "paid_plans": [
+        { "plan": "Rookie", "price": "$99/mo (or $99/mo annual from $149 monthly)", "objects": 100000 }
+      ],
+      "note": "no crypto books (1xBet/GG.BET absent); table tennis coverage unverified; entry price at the $100 ceiling with unproven TT depth; rejected until Odds-API.io trial shows a gap",
+      "trial_cost": "n/a"
+    }
+  ],
+  "trial_plan": {
+    "scope": "20-50 canonical TT events from the Phase C corpus (oaio:<id>) with commence_at >= 2025-12-01 (closing-line availability window)",
+    "endpoints": [
+      "/v3/historical/events?sport=table-tennis&league=<tt-league>&from=<iso>&to=<iso>",
+      "/v3/historical/odds?eventId=<oaio-id-without-prefix>",
+      "/v3/historical/closing-lines?sport=table-tennis&leagues=<slug>&from=<iso>&to=<iso> (expect 403 on free tier — that 403 IS the paid-gate probe)"
+    ],
+    "cost": "$0 (free tier, within the 100 req/hour / 500 per day budget)",
+    "eight_metrics": [
+      { "metric": "EVENT_MATCH_RATE", "definition": "fraction of sampled canonical oaio: ids recoverable from /v3/historical/events" },
+      { "metric": "ODDS_AVAILABILITY", "definition": "fraction of events whose /v3/historical/odds returns non-empty bookmakers" },
+      { "metric": "BOOKMAKER_DEPTH", "definition": "distinct bookmakers per event (free tier caps at 2; paid 30)" },
+      { "metric": "CLOSING_LINE_AVAILABILITY", "definition": "closing-lines rows returned vs 403 paid-gate probe" },
+      { "metric": "PRICE_TIMESTAMP_GRANULARITY", "definition": "presence + precision of createdAt/updatedAt on odds entries" },
+      { "metric": "COMMENCE_ACCURACY", "definition": "|startTime - canonical commence_at| over the sample" },
+      { "metric": "SETTLEMENT_VERIFICATION", "definition": "historical scores/status agree with tt_match_results for sampled events" },
+      { "metric": "MARKET_MAPPING_INTEGRITY", "definition": "2-way moneyline mapping clean for TT (no cross-market leakage like the reported tennis set-spread bug)" }
+    ],
+    "decision_rule": "purchase Odds-API.io Solo if and only if: EVENT_MATCH_RATE >= 90%, ODDS_AVAILABILITY >= 80%, CLOSING_LINE_AVAILABILITY confirms Dec-2025+ closing rows, and MARKET_MAPPING_INTEGRITY is clean on all sampled events"
+  },
+  "recommendation": {
+    "recommended_tier": "Odds-API.io Solo",
+    "expected_cost": "GBP 49/mo (approx USD 63-66) — above the $50 preferred band, within the $100 ceiling; one-month purchase is the smallest unit",
+    "why_worth_buying": [
+      "Same provider and same canonical event ids as Phase C — no new identity establishment risk (Phase D's MATCH_RATE gate stays intact)",
+      "Unlocks /v3/historical/closing-lines: closing odds for every settled TT event from December 2025 (a season-length bulk sweep in ~20 requests)",
+      "Makes TRUE_CLOSE available for prematch evaluation — currently TRUE_CLOSE_AVAILABLE=NO and shadow evaluation only uses OPEN/INTERMEDIATE/LAST_VALID_PREMATCH",
+      "Closing lines let Phase D verify LAST_VALID_PREMATCH fidelity and give the Phase E wager gate its required market-reference integrity check",
+      "Free tier already covers the whole trial, so the purchase decision is evidence-based, not speculative"
+    ],
+    "deferred": "OddsPapi paid tier — no published sub-$100 plan; revisit only after the soak proves >250 requests/month are needed for forward collection",
+    "purchase_gate": "NOT_PURCHASED — this artifact authorizes the $0 free-tier trial; any purchase requires owner sign-off and a separate purchase record"
+  },
+  "risks": [
+    "Odds-API.io historically reported market-mapping bugs for tennis/handball (set spreads vs game spreads, 3-way vs 2-way) — TT 2-way moneyline must be re-verified in the trial before trusting closing lines",
+    "Closing lines only cover events from December 2025 onward; pre-Dec-2025 Phase C corpus remains without TRUE_CLOSE",
+    "GBP pricing exposes the Solo plan to FX drift (49 GBP currently ~USD 63-66); budget must tolerate up to the $100 ceiling",
+    "Free-tier rate limits (100 req/hour) make bulk backfills slow; the trial sample of 20-50 events stays well within limits"
+  ],
+  "artifacts": {
+    "baseline_sha256": "aa2ef12d... (M5 baseline, unchanged)",
+    "weights_sha256": "54affc960a34 (TT_M5_LIVE_WEIGHTS_V1.json, unchanged)",
+    "stop_gate_parent": "Phase D stop gate follows this artifact"
+  }
+}

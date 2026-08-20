@@ -1,0 +1,33 @@
+{
+  "schema": "TT_M5_LIVE_WEIGHTS",
+  "model_id": "M5_REGULARIZED_LOGISTIC",
+  "feature_names": [
+    "home_indicator",
+    "elo_diff",
+    "recency_elo_diff",
+    "form5_diff",
+    "log_depth_diff",
+    "rest_diff_days",
+    "h2h_winrate_diff",
+    "same_day_diff",
+    "degree_diff"
+  ],
+  "lam": 1.0,
+  "intercept": -0.007273,
+  "weights": {
+    "home_indicator": 0.0,
+    "elo_diff": 0.002699,
+    "recency_elo_diff": -0.00037,
+    "form5_diff": -0.177587,
+    "log_depth_diff": 0.027271,
+    "rest_diff_days": -0.01371,
+    "h2h_winrate_diff": 0.041969,
+    "same_day_diff": 0.014129,
+    "degree_diff": -0.001871
+  },
+  "fit_n": 148474,
+  "cutoff": "2026-08-15T20:00:00Z",
+  "fit_brier": 0.242291,
+  "fit_log_loss": 0.677174,
+  "sha256": "54affc960a3434575d1b4b7e536f9413c2b1978fd020433490ac2020d13a15f8"
+}

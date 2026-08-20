@@ -12,6 +12,8 @@ _MIGRATIONS = (
     (3, Path(__file__).with_name("migrations") / "0003_decision_model.sql"),
     (4, Path(__file__).with_name("migrations") / "0004_markets_prediction.sql"),
     (5, Path(__file__).with_name("migrations") / "0005_markets_rating_history.sql"),
+    (6, Path(__file__).with_name("migrations") / "0006_forward_market.sql"),
+    (7, Path(__file__).with_name("migrations") / "0007_shadow_evaluation.sql"),
 )
 
 

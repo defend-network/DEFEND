@@ -237,8 +237,14 @@ def probe_get(
     known_secrets: tuple[str, ...] = (),
     quota_headers: tuple[str, ...] = (),
     timeout_seconds: float = 25.0,
+    max_response_bytes: int = 64 * 1024,
 ) -> tuple[FetchResult, RawEvidence, Any]:
-    """One Phase C GET: fetch -> sanitized evidence -> parsed body (if JSON)."""
+    """One Phase C GET: fetch -> sanitized evidence -> parsed body (if JSON).
+
+    ``max_response_bytes`` lifts the response cap for payload-heavy endpoints
+    (e.g. multi-day fixture sweeps); bodies that exceed the cap are marked
+    truncated on the FetchResult and never silently mis-parsed.
+    """
     request_headers = dict(_DEFAULT_PROBE_HEADERS)
     if headers:
         request_headers.update(headers)
@@ -250,6 +256,7 @@ def probe_get(
         backoff_seconds=1.0,
         known_secrets=known_secrets,
         capture_error_body=True,
+        max_response_bytes=max_response_bytes,
     )
     body = result.body
     if body is not None:

@@ -1,0 +1,147 @@
+{
+  "schema": "Phase D STOP GATE report (forward TT collection + live shadow engine)",
+  "updated_at": "2026-08-20T19:45:00Z",
+  "FORWARD_COLLECTOR_READY": "YES",
+  "LIVE_TT_EVENTS_DISCOVERED": 0,
+  "CANONICAL_MATCH_RATE": null,
+  "AMBIGUOUS_MATCH_RATE": null,
+  "PREMATCH_COLLECTION_WORKING": "NO",
+  "M5_LIVE_INFERENCE_WORKING": "YES",
+  "MARKET_RULER_LIVE": "YES",
+  "POST_COMMENCE_GATE": "YES",
+  "RESTART_IDEMPOTENT": "YES",
+  "PROVIDERS_ACTIVE": "NO",
+  "BOOKMAKERS_ACTIVE": "NO",
+  "HISTORICAL_PAID_PROVIDER_RECOMMENDATION": "Odds-API.io Solo (see TT_HISTORICAL_PAID_RESEARCH_V1.json)",
+  "RECOMMENDED_TIER": "Solo (GBP 49/mo, ~USD 63-66)",
+  "EXPECTED_COST": "~USD 63-66/mo",
+  "WHY_WORTH_BUYING": "closing-lines history (Dec 2025+, paid-only endpoint) unlocks ruler evaluation and CLV research that OddsPapi free tier cannot provide; 2 bookmakers incl. sharp+exchange, 5000 req/hr; purchase_gate=NOT_PURCHASED",
+  "LIVE_SOAK_STATUS": "COMPLETED (32.3s, 3 cycles, 1 API request, 1 truncated response, 0 events, cost 0.0 USD; see TT_LIVE_SOAK_V1.json)",
+  "MARKET_SAMPLE_N": 0,
+  "MARKET_EDGE_STATUS": "INSUFFICIENT_SAMPLE",
+  "NEXT_HIGHEST_VALUE_STEP": "1) re-run forward collector after OddsPapi free-tier quota reset (or after Odds-API.io Solo purchase decision) to populate forward_events; 2) run extended 12h soak to reach MARKET_SAMPLE_N >= 30; 3) re-evaluate ruler edge at N=100 threshold",
+  "PROVIDER_BLOCKER": {
+    "provider": "oddspapi",
+    "status": "FREE_TIER_EXHAUSTED_AND_WAF_LIMITED",
+    "evidence": [
+      "fixtures/odds return 200-with-empty-or-null once daily quota (250 req/mo) drains",
+      "429 responses during burst; Cloudflare error code 1010 for generic User-Agent (probe_ua/probe_raw 2026-08-20)",
+      "responses hard-capped at 16384 bytes mid-JSON; prefix-recovery parse implemented and unit-tested",
+      "browser-like User-Agent required; wired into OddspapiLiveClient"
+    ],
+    "impact": "live discovery currently yields 0 events; pipeline is proven end-to-end against real Pre-Game fixtures recovered from truncated responses",
+    "unblock": "wait for quota reset or purchase paid tier (P7 research gate)"
+  },
+  "TRUNCATION_HANDLING": {
+    "cause": "OddsPapi free tier caps response bodies at 16384 bytes, cutting arrays mid-object",
+    "fix": "fetch()/probe_get() support max_response_bytes and a truncated flag; parse_recovered_json() recovers the complete JSON prefix (unit-tested)",
+    "observability": "truncated_responses counter on every cycle stage and the soak report"
+  },
+  "M5_LIVE": {
+    "artifact": "docs/operations/TT_M5_LIVE_WEIGHTS_V1.json",
+    "sha256": "fe6f18d1fb5eea640fc42d904d9010470ee75f73e594b2c00a86982d3381e229",
+    "model_version": "M5_REGULARIZED_LOGISTIC:54affc960a34",
+    "fit_n": 148474,
+    "cutoff": "2026-08-15T20:00:00Z",
+    "state_replay": 148478,
+    "policy": "FROZEN; no refit; no live influence on wagers (no wagers exist)"
+  },
+  "MARKET_EDGE_INTERPRETATION_LOCK": "MARKET_SAMPLE_N=0: no live ruler rows exist yet. No claim that the market beats M5, M5 beats the market, or that any provider establishes profitability. The Phase D accomplishment is: the forward collection + live shadow engine runs end-to-end, idempotently, with honest status. It is NOT: we found an edge.",
+  "LIVE_SOAK_REPORT": "docs/operations/TT_LIVE_SOAK_V1.json",
+  "FORWARD_CYCLE_REPORT": "docs/operations/TT_FORWARD_CYCLE_RESULTS_V1.json (operational, regenerated each cycle; not a research pin)",
+  "TEST_RESULTS": {
+    "test_shadow_engine.py": "30 passed (schedule bands, gate, odds parsing, ruler math incl. no-vig 0.5385 from 1.8/2.1, reference selection, evaluation thresholds N=99->100 flip, engine cycle, restart idempotency, LAST_VALID_PREMATCH promotion, settlement, FrozenM5 determinism/no-leakage/INSUFFICIENT_HISTORY/schema rejection, truncated-response recovery)",
+    "test_shadow_dashboard.py": "5 passed",
+    "test_markets_app.py": "24 passed",
+    "combined Markets subset": "59 passed (2026-08-20, dedicated basetemp)",
+    "UI vitest TTShadowPanel": "4 passed (worktree defend-ui-v2)"
+  },
+  "SECRET_SCAN": "PASS (no credential values introduced; probe scripts in temp use SecretRegistry/DpapiSecretStore only)",
+  "GIT_DIFF_CHECK": "PASS (no whitespace errors)",
+  "MIGRATION_IDEMPOTENCY": "PASS (0006_forward_market, 0007_shadow_evaluation re-applied on existing DB; forward_market.unique and shadow_evaluation unique keys prevent duplicates)",
+  "RESTART_IDEMPOTENCY_LIVE_VERIFICATION": "RESTART_IDEMPOTENT=YES (rerun produced zero row changes; observed via tools/defend_tt_live_soak.py --verify-idempotent)",
+  "STAGING_PLAN": {
+    "A_NEW_MARKETS_ONLY": [
+      "defend_markets/{m5_live,shadow,shadow_engine,shadow_store}.py",
+      "defend_markets/migrations/0006_forward_market.sql",
+      "defend_markets/migrations/0007_shadow_evaluation.sql",
+      "tests/{test_shadow_engine,test_shadow_dashboard}.py",
+      "tools/defend_tt_{forward_collector,live_soak,m5_freeze}.py",
+      "docs/operations/{TT_M5_LIVE_WEIGHTS_V1,TT_LIVE_SOAK_V1,TT_HISTORICAL_PAID_RESEARCH_V1,TT_FORWARD_CYCLE_RESULTS_V1,PHASE_D_STOP_GATE_V1,MODEL-REGISTRY}.json/.md"
+    ],
+    "B_MARKETS_HUNKS_IN_SHARED_FILES": [
+      "defend_integrations/{http,probing}.py (max_response_bytes/truncated support)",
+      "defend_markets/{app,db}.py (shadow endpoints; migration registration)",
+      "(verified via git diff: all hunks are Phase D-owned)"
+    ],
+    "C_EXCLUDED": [
+      "defend-ui-v2/** (UI lane; new TTShadowPanel + test + page.tsx/marketsApi.ts hunks left unstaged per lane discipline)",
+      "defend_control/**, defend_coder/**, defendcoder-ui/**, scs_* (other lanes)",
+      "api_server.py, defend_data/sqlite_utils.py, tests/test_control_* (other lanes)",
+      "rapidapi_tt_micro-matches-live-*.json root artifacts (foreign)",
+      "DELIVERY_REPORT.md, SCS_FIELD_REPORT_*.md, bench/, tools/{master_workbook_audit,vision_*}.py (foreign)"
+    ]
+  },
+  "RESEARCH_ARTIFACTS": {
+    "POLICY": "accepted artifacts are pinned byte-identical; regeneration with changed semantics/data requires a V2 (or explicit) version bump; V1 artifacts are not silently regenerated under the same version",
+    "PINNED": [
+      {
+        "ARTIFACT_PATH": "docs/operations/TT_M5_LIVE_WEIGHTS_V1.json",
+        "ARTIFACT_VERSION": "V1",
+        "SHA256": "fe6f18d1fb5eea640fc42d904d9010470ee75f73e594b2c00a86982d3381e229",
+        "PROVENANCE": "frozen M5 live weights (fit_n=148474, cutoff 2026-08-15T20:00:00Z)",
+        "IMMUTABLE": "YES"
+      },
+      {
+        "ARTIFACT_PATH": "docs/operations/TT_LIVE_SOAK_V1.json",
+        "ARTIFACT_VERSION": "V1",
+        "SHA256": "69a80e7fac781918bc814f9446f2b3491f48b3c65189a23ea3f63a568cd39ab8",
+        "PROVENANCE": "P8 bounded soak 2026-08-20T19:42:55Z (3 cycles, 32.3s)",
+        "IMMUTABLE": "YES"
+      },
+      {
+        "ARTIFACT_PATH": "docs/operations/TT_HISTORICAL_PAID_RESEARCH_V1.json",
+        "ARTIFACT_VERSION": "V1",
+        "SHA256": "1d12b7c8eefd54f943faf3629a88726ab570861f191b2b69538f30501b56c929",
+        "PROVENANCE": "P7 paid-provider research (Odds-API.io / The Odds API / SportsGameOdds / OddsPapi)",
+        "IMMUTABLE": "YES"
+      }
+    ],
+    "OPERATIONAL": [
+      {
+        "ARTIFACT_PATH": "docs/operations/TT_FORWARD_CYCLE_RESULTS_V1.json",
+        "SHA256_AT_COMMIT": "39b6951c63481dfcdfe0e7689ec304a9b2b4368fa04144e6e0c5411bb74c9d84",
+        "MUTABLE": "YES (rewritten each collector cycle)"
+      }
+    ]
+  },
+  "COMMIT_READY": true,
+  "SUGGESTED_COMMIT_MESSAGE": "feat(markets): add forward TT shadow engine with live soak and paid-provider research",
+  "TOTAL_SPEND_USD": 0.0,
+  "REQUESTS_USED_ODDSPAPI_TODAY": 13,
+  "DATA_QUALITY_RISKS": [
+    "OddsPapi free tier quota exhaustion makes live discovery intermittent",
+    "16KB response truncation loses the tail of fixture sweeps (prefix-recovery mitigates)",
+    "0 live events so far: match-rate and ambiguity-rate statistics are null, not validated",
+    "paid-provider recommendation (Odds-API.io Solo) is research-based, not trial-verified"
+  ],
+  "ENGINEERING_RECOMMENDATIONS": [
+    {
+      "ENGINEERING_RECOMMENDATION": "Re-run forward collector + extended soak once OddsPapi quota resets or after Odds-API.io Solo purchase decision",
+      "WHY_IT_MATTERS": "MARKET_SAMPLE_N must reach >= 30 before ruler edge thresholds activate",
+      "EFFORT": "low (tools exist)",
+      "COST": "0 USD (free tier) or ~USD 63-66/mo (Solo)"
+    },
+    {
+      "ENGINEERING_RECOMMENDATION": "Odds-API.io Solo 14-day free-trial validation per TT_HISTORICAL_PAID_RESEARCH_V1 decision rule (EVENT_MATCH_RATE >= 90%, ODDS_AVAILABILITY >= 80%, closing lines confirmed, MARKET_MAPPING_INTEGRITY clean)",
+      "WHY_IT_MATTERS": "closing-line history enables CLV/line-move research; only paid provider with historical odds",
+      "EFFORT": "low (owner purchase decision)",
+      "COST": "0 USD trial; then USD 63-66/mo if retained"
+    }
+  ],
+  "OWNER_ACTION_REQUIRED": [
+    "Decide on Odds-API.io Solo purchase (purchase_gate currently NOT_PURCHASED)",
+    "Confirm sustained OddsPapi free-tier quota expectations for the 12h soak",
+    "UI lane commits defend-ui-v2 changes (TTShadowPanel, page.tsx, marketsApi.ts) separately"
+  ]
+}
