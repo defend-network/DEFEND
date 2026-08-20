@@ -87,6 +87,180 @@ def fetch_odds(self, provider_event_id: str) -> tuple[int | None, Any, bool]:
         return result.status_code, payload, recovered
 
 
+_OAIO_BASE = "https://api.odds-api.io/v3"
+
+# Odds-API.io free tier: fixture discovery returns pending/settled events
+# (response hard-capped at 16384 bytes like OddsPapi); odds are only served
+# for the account's two selected recreational bookmakers and the selection
+# is dashboard-locked (PUT /bookmakers/selected is a no-op on free tier).
+# When an event carried no odds in the sweep, fetch_odds returns the empty
+# payload WITHOUT a network call to conserve the 100 req/hr budget.
+_OAIO_SELECTED_BOOKMAKERS = ("22Bet", "888Sport")
+
+
+def _oaio_event_to_fixture(event: dict[str, Any]) -> dict[str, Any]:
+    league = event.get("league") or {}
+    return {
+        "sportId": 25,
+        "fixtureId": str(event.get("id", "")),
+        "tournamentName": str(league.get("name") or ""),
+        "participant1Name": str(event.get("home") or ""),
+        "participant2Name": str(event.get("away") or ""),
+        "startTime": str(event.get("date") or ""),
+        "statusName": str(event.get("status") or ""),
+        "hasOdds": bool(event.get("bookmakers")),
+        "raw_provider": "odds_api_io",
+    }
+
+
+def _oaio_price(value: Any) -> float | None:
+    """Odds-API.io returns decimal odds as strings; engine parser needs floats."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _oaio_odds_to_oddspapi_shape(event: dict[str, Any]) -> dict[str, Any]:
+    """Normalize /v3/odds event payload into the OddsPapi /odds shape.
+
+    Odds-API.io markets are flat: {bookmakers: {name: [{name, odds:
+    [{home, away, ...}]}]}}. We keep only 2-way match-winner markets and
+    rekey them into the nested markets/outcomes/players shape that
+    parse_oddspapi_odds consumes, using the participant names as player keys.
+    """
+    bookmakers: dict[str, Any] = {}
+    home_name = str(event.get("home") or "")
+    away_name = str(event.get("away") or "")
+    for bname, markets in (event.get("bookmakers") or {}).items():
+        winner_markets: list[dict[str, Any]] = []
+        for market in markets or []:
+            name = str(market.get("name") or "")
+            if name.upper() not in {"ML", "MONEYLINE", "MONEY LINE", "MATCH WINNER", "1X2"}:
+                continue
+            home_price = away_price = None
+            for entry in market.get("odds") or []:
+                if not isinstance(entry, dict):
+                    continue
+                if entry.get("home") is not None:
+                    home_price = entry.get("home")
+                if entry.get("away") is not None:
+                    away_price = entry.get("away")
+            players: dict[str, Any] = {}
+            if home_price is not None and home_name:
+                players[home_name] = {"price": _oaio_price(home_price)}
+            if away_price is not None and away_name:
+                players[away_name] = {"price": _oaio_price(away_price)}
+            if players:
+                updated_at = market.get("updatedAt")
+                winner_markets.append(
+                    {"outcomes": {"winner": {"players": players}},
+                     "updatedAt": updated_at}
+                )
+        if winner_markets:
+            bookmakers[str(bname)] = {
+                "markets": {f"m{i}": m for i, m in enumerate(winner_markets)}
+            }
+    return {"fixtureId": str(event.get("id", "")), "bookmakers": bookmakers}
+
+
+class OddsApiIOLiveClient:
+    """Odds-API.io live client, normalized to the engine's OddsPapi shape.
+
+    Discovery uses /v3/events (sport=table-tennis, from/to window); odds use
+    /v3/odds per event with the account's selected bookmakers. Responses are
+    stored redacted via probe_get; truncated bodies are prefix-recovered.
+    """
+
+    def __init__(self, key: str) -> None:
+        self._key = key
+        self._secrets = (key,)
+        self._events: dict[str, dict[str, Any]] = {}
+
+    def _bookmakers_param(self) -> str:
+        return ",".join(_OAIO_SELECTED_BOOKMAKERS)
+
+    def fetch_fixtures(self, *, from_iso: str, to_iso: str) -> tuple[int | None, Any, bool]:
+        """Two sweeps per call: upcoming events plus a recent settled slice.
+
+        The canonical corpus is frozen at the M5 cutoff but is refreshed by
+        the Phase C backfill loader; /v3/events retention only serves the last
+        few days, so the second sweep targets yesterday's settled events
+        (EXACT_ID by provider event id once the refresh covers them).
+        """
+        url = (
+            f"{_OAIO_BASE}/events?sport=table-tennis&from={from_iso}&to={to_iso}"
+            f"&apiKey={self._key}"
+        )
+        result, evidence, parsed = probe_get(
+            "odds_api_io", "events", url,
+            known_secrets=self._secrets,
+            headers=_WAF_HEADERS,
+            max_response_bytes=8 * 1024 * 1024,
+        )
+        payload, recovered = parse_recovered_json(evidence.body or "")
+        if payload is None:
+            payload = parsed
+        fixtures: list[dict[str, Any]] = []
+        if isinstance(payload, list):
+            for event in payload:
+                if not isinstance(event, dict) or (event.get("sport") or {}).get("slug") != "table-tennis":
+                    continue
+                self._events[str(event.get("id"))] = event
+                fixtures.append(_oaio_event_to_fixture(event))
+        try:
+            base_from = datetime.fromisoformat(from_iso.replace("Z", "+00:00"))
+            recent_from = base_from - timedelta(hours=24)
+            recent_to = base_from - timedelta(hours=22)
+        except ValueError:
+            recent_from = recent_to = None
+        if recent_from is not None:
+            url2 = (
+                f"{_OAIO_BASE}/events?sport=table-tennis"
+                f"&from={recent_from.isoformat().replace('+00:00', 'Z')}"
+                f"&to={recent_to.isoformat().replace('+00:00', 'Z')}"
+                f"&apiKey={self._key}"
+            )
+            result2, evidence2, parsed2 = probe_get(
+                "odds_api_io", "events-settled", url2,
+                known_secrets=self._secrets,
+                headers=_WAF_HEADERS,
+                max_response_bytes=8 * 1024 * 1024,
+            )
+            payload2, _recovered2 = parse_recovered_json(evidence2.body or "")
+            if payload2 is None:
+                payload2 = parsed2
+            if isinstance(payload2, list):
+                for event in payload2:
+                    if not isinstance(event, dict) or (event.get("sport") or {}).get("slug") != "table-tennis":
+                        continue
+                    self._events[str(event.get("id"))] = event
+                    fixtures.append(_oaio_event_to_fixture(event))
+        return result.status_code, fixtures, recovered
+
+    def fetch_odds(self, provider_event_id: str) -> tuple[int | None, Any, bool]:
+        event = self._events.get(provider_event_id)
+        if event is not None and not event.get("bookmakers"):
+            return 200, {"fixtureId": provider_event_id, "bookmakers": {}}, False
+        url = (
+            f"{_OAIO_BASE}/odds?eventId={provider_event_id}"
+            f"&bookmakers={self._bookmakers_param()}&markets=ML&apiKey={self._key}"
+        )
+        result, evidence, parsed = probe_get(
+            "odds_api_io", "odds", url,
+            known_secrets=self._secrets,
+            headers=_WAF_HEADERS,
+            max_response_bytes=8 * 1024 * 1024,
+        )
+        payload, recovered = parse_recovered_json(evidence.body or "")
+        if isinstance(payload, dict) and payload.get("bookmakers") is None and isinstance(parsed, dict):
+            payload = parsed
+        if isinstance(payload, dict):
+            self._events[provider_event_id] = payload
+            return result.status_code, _oaio_odds_to_oddspapi_shape(payload), recovered
+        return result.status_code, payload, recovered
+
+
 def canonical_events_map(db_url: str) -> dict[str, dict[str, Any]]:
     conn = psycopg.connect(db_url, connect_timeout=5)
     try:
@@ -101,10 +275,14 @@ def canonical_events_map(db_url: str) -> dict[str, dict[str, Any]]:
     for event_key, league_key, hk, ak, ts in rows:
         out[str(event_key)] = {
             "event_key": str(event_key),
-            "league_key": league_key,
-            "home_participant_key": hk,
-            "away_participant_key": ak,
-            "completed_at": ts,
+            # match_event expects this shape (participant_keys, competition,
+            # commence_at, provider_event_id); previously home/away keys were
+            # emitted under names matching never reads, so EVENTS_MATCHED was
+            # structurally 0 even when the corpus contained the event.
+            "provider_event_id": str(event_key).removeprefix("oaio:"),
+            "participant_keys": [hk, ak],
+            "competition": league_key,
+            "commence_at": ts.isoformat() if ts else None,
         }
     return out
 
@@ -164,9 +342,17 @@ def load_state_builder(db_url: str) -> M5StateBuilder:
 
 def build_engine() -> ShadowEngine:
     reg = SecretRegistry(DpapiSecretStore(default_secret_path()))
-    key = reg.get("ODDSPAPI_API_KEY")
-    if not key:
-        raise SystemExit("ODDSPAPI_API_KEY missing (DPAPI store or env)")
+    provider = os.environ.get("TT_FORWARD_PROVIDER", "oddspapi")
+    if provider == "odds_api_io":
+        key = reg.get("ODDS_API_IO_API_KEY")
+        if not key:
+            raise SystemExit("ODDS_API_IO_API_KEY missing (DPAPI store or env)")
+        client: Any = OddsApiIOLiveClient(key)
+    else:
+        key = reg.get("ODDSPAPI_API_KEY")
+        if not key:
+            raise SystemExit("ODDSPAPI_API_KEY missing (DPAPI store or env)")
+        client = OddspapiLiveClient(key)
     db_url = os.environ.get("MARKETS_DATABASE_URL")
     if not db_url:
         raise SystemExit("MARKETS_DATABASE_URL is required")
@@ -179,8 +365,9 @@ def build_engine() -> ShadowEngine:
     engine = ShadowEngine(
         store=PostgresShadowStore(db),
         m5=m5,
-        client=OddspapiLiveClient(key),
+        client=client,
         settled=settled_reader(db_url),
+        provider_label=provider,
     )
     engine.set_state_builder(load_state_builder(db_url))
     return engine

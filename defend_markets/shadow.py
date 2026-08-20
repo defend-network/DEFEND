@@ -482,11 +482,11 @@ class ForwardFixture:
 def parse_recovered_json(body: str) -> tuple[Any, bool]:
     """Parse a possibly truncated JSON body, recovering complete prefix objects.
 
-    OddsPapi's free tier caps response bodies at 16384 bytes, cutting the
-    array mid-object. A truncated body is still a valid JSON prefix, so we
-    cut at the last complete object boundary and close the array. Returns
-    ``(payload, recovered)`` where ``recovered`` is True when the body was
-    truncated and only the complete prefix was parsed.
+    Providers that cap response bodies mid-array (OddsPapi and Odds-API.io
+    both hard-cap at 16384 bytes) still return a valid JSON prefix, so we cut
+    at the last complete top-level element boundary and close the array.
+    Returns ``(payload, recovered)`` where ``recovered`` is True when the body
+    was truncated and only the complete prefix was parsed.
     """
     if not body:
         return None, False
@@ -496,17 +496,37 @@ def parse_recovered_json(body: str) -> tuple[Any, bool]:
         return json.loads(body), False
     except Exception:
         pass
-    boundary = body.rfind("},")
-    if boundary <= 0:
-        return None, True
-    try:
-        return json.loads(body[: boundary + 1] + "]"), True
-    except Exception:
-        return None, True
+    ends: list[int] = []
+    depth = 0
+    in_str = False
+    esc = False
+    for index, ch in enumerate(body):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch in "[{":
+            depth += 1
+        elif ch in "]}":
+            depth -= 1
+            if depth == 1 and ch == "}":
+                ends.append(index)
+    for index in reversed(ends):
+        try:
+            return json.loads(body[: index + 1] + "]"), True
+        except Exception:
+            continue
+    return None, True
 
 
 def forward_fixtures_from_oddspapi(
-    payload: Any, *, ingested_at: datetime | None = None
+    payload: Any, *, ingested_at: datetime | None = None, provider: str = "oddspapi"
 ) -> list[ForwardFixture]:
     """Map /v4/fixtures payload to ForwardFixture (sportId 25 = table tennis)."""
     fixtures: list[ForwardFixture] = []
@@ -520,7 +540,7 @@ def forward_fixtures_from_oddspapi(
             continue
         fixtures.append(
             ForwardFixture(
-                provider="oddspapi",
+                provider=provider,
                 provider_event_id=str(fx.get("fixtureId", "")),
                 competition=str(fx.get("tournamentName") or fx.get("tournamentSlug") or ""),
                 player_a=str(fx.get("participant1Name") or ""),

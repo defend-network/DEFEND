@@ -107,12 +107,14 @@ class ShadowEngine:
         settled: SettledResult | None = None,
         config: ShadowConfig | None = None,
         now: Callable[[], datetime] | None = None,
+        provider_label: str = "oddspapi",
     ) -> None:
         self._store = store
         self._m5 = m5
         self._client = client
         self._settled = settled or (lambda _key: None)
         self._config = config or ShadowConfig()
+        self._provider_label = provider_label
         self._now = now or (lambda: datetime.now(timezone.utc))
         self._state_builder: M5StateBuilder | None = None
         self._last_discovery_at: datetime | None = None
@@ -167,8 +169,8 @@ class ShadowEngine:
                 metrics.rate_limit_events += 1
             self._last_discovery_at = now
             return metrics
-        self._record_raw("oddspapi", "fixtures", now, status, payload, metrics)
-        fixtures = forward_fixtures_from_oddspapi(payload)
+        self._record_raw(self._provider_label, "fixtures", now, status, payload, metrics)
+        fixtures = forward_fixtures_from_oddspapi(payload, provider=self._provider_label)
         for fixture in fixtures:
             canonical_key, match_level = self._canonicalize(
                 fixture, canonical_events=canonical_events

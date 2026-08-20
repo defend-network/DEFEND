@@ -15,12 +15,19 @@ export type ProviderState =
   | "DISABLED"
   | "PLANNED"
   | "NEEDS_CREDENTIAL"
+  | "NOT_CONFIGURED"
+  | "CREDENTIAL_PRESENT"
+  | "ADAPTER_NOT_IMPLEMENTED"
   | "READY_TO_TEST"
   | "HEALTHY"
   | "DEGRADED"
   | "RATE_LIMITED"
   | "AUTH_FAILED"
-  | "UNAVAILABLE";
+  | "PLAN_REQUIRED"
+  | "UNAVAILABLE"
+  | "UNSUPPORTED_FOR_TT"
+  | "CONTRACT_DRIFT"
+  | "UNKNOWN";
 
 export type HealthBadge =
   | "NOT_CONFIGURED"
@@ -63,15 +70,53 @@ export type ProviderView = {
   health_badge: HealthBadge;
   enabled: boolean;
   requires_credentials?: boolean;
+  credential_configured?: boolean;
   credentials_configured?: boolean;
+  test_supported?: boolean;
   credentials: CredentialState[];
   config: Record<string, string>;
   detected?: Record<string, string>;
   optional_config: string[];
   products: string[];
   docs_url?: string | null;
+  host?: string | null;
+  contract_version?: string | null;
   rate_limits: RateLimits;
   license: ProviderLicense;
+  capabilities?: {
+    live_odds?: string;
+    historical_odds?: string;
+    completed_results?: string;
+    historical_results?: string;
+    live_scores?: string;
+    player_ids?: string;
+    event_ids?: string;
+    bookmaker_detail?: string;
+    odds_movements?: string;
+    multi_snapshot?: string;
+    timestamped_odds?: string;
+    pagination?: string;
+    rate_limit?: string;
+    cost_quota?: string;
+    earliest_history?: string | null;
+    adapter_status?: string;
+    tt_live_odds?: string;
+    tt_historical_odds?: string;
+    tt_results?: string;
+    tt_live_scores?: string;
+    tt_fixtures?: string;
+    tt_player_data?: string;
+    tt_rankings?: string;
+    tt_stats?: string;
+    tt_form_h2h?: string;
+    tt_live_state?: string;
+    tt_bookmakers?: string;
+    tt_probabilities?: string;
+    tt_opening_line?: string;
+    tt_closing_line?: string;
+    contract_drift?: string;
+    historical_odds_plan_requirement?: string | null;
+  };
   tested_at?: string | null;
   last_success_at?: string | null;
   last_test_detail?: string | null;
@@ -79,6 +124,7 @@ export type ProviderView = {
   last_latency_ms?: number | null;
   remaining_quota?: number | null;
   quota_reset_at?: string | null;
+  last_error_class?: string | null;
   notes?: string | null;
 };
 
