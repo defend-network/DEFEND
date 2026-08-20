@@ -33,11 +33,13 @@ class FakeOpener:
     def __init__(self, behavior):
         self.behavior = behavior
         self.calls: list[tuple[str, dict, dict]] = []
+        self.timeouts: list[float | None] = []
 
     def __call__(self, request, timeout=None):
         self.calls.append(
             (request.full_url, json.loads(request.data), dict(request.headers))
         )
+        self.timeouts.append(timeout)
         behavior = self.behavior
         if callable(behavior):
             behavior = behavior(request)
@@ -261,3 +263,139 @@ def test_client_rejects_non_loopback_via_config():
 def test_client_requires_base_url():
     with pytest.raises(ValueError, match="base_url"):
         AgentChatClient(CoderModelConfig(base_url=None))
+
+
+class FakeClock:
+    """Deterministic monotonic clock for timeout-policy tests."""
+
+    def __init__(self, start: float = 0.0) -> None:
+        self.now = float(start)
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+class FakeSlowResponse(FakeResponse):
+    """Response whose read() simulates a slow healthy generation by
+    advancing the fake clock before returning the body."""
+
+    def __init__(self, body: bytes, clock: FakeClock, elapsed: float) -> None:
+        super().__init__(body)
+        self._clock = clock
+        self._elapsed = elapsed
+
+    def read(self) -> bytes:
+        self._clock.advance(self._elapsed)
+        return self._body
+
+
+def _long_body(text: str = "Done.") -> bytes:
+    return json.dumps(
+        {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": text,
+                    }
+                }
+            ]
+        }
+    ).encode("utf-8")
+
+
+def _client_with_clock(opener, clock, timeout=600.0, connect=15.0):
+    return AgentChatClient(
+        CoderModelConfig(
+            alias="defendcoder-heavy",
+            model_name="Qwen/Qwen3-Coder-Next",
+            base_url="http://127.0.0.1:8001/v1",
+            api_key="secret-api-key",
+            timeout_seconds=timeout,
+            connect_timeout_seconds=connect,
+        ),
+        urlopen=opener,
+        clock=clock,
+    )
+
+
+def test_generation_longer_than_old_180s_but_within_budget_succeeds():
+    """B: a 200s healthy decode must succeed under the 600s policy even
+    though it would have died under the old 180s assumption."""
+    clock = FakeClock()
+    opener = FakeOpener(FakeSlowResponse(_long_body(), clock, elapsed=200.0))
+    client = _client_with_clock(opener, clock)
+
+    response = client.chat([{"role": "user", "content": "hi"}])
+
+    assert response.content == "Done."
+    assert clock.now == 200.0
+
+
+def test_generation_exceeding_configured_budget_raises_model_timeout():
+    """C: a decode past the configured budget fails honestly as MODEL_TIMEOUT."""
+    clock = FakeClock()
+    opener = FakeOpener(FakeSlowResponse(_long_body(), clock, elapsed=700.0))
+    client = _client_with_clock(opener, clock)
+
+    with pytest.raises(ModelTimeoutError, match="timed out after 600s"):
+        client.chat([{"role": "user", "content": "hi"}])
+    assert clock.now == 700.0
+
+
+def test_connection_timeout_surfaces_as_model_unavailable():
+    """D: a connect-phase timeout is unreachable, not a generation timeout."""
+    opener = FakeOpener(ConnectionError("model endpoint connection timed out"))
+    client = _client_with_clock(opener, FakeClock())
+
+    with pytest.raises(ModelUnavailableError):
+        client.chat([{"role": "user", "content": "hi"}])
+
+    client_socket = _client_with_clock(
+        FakeOpener(socket.timeout("connect timed out")), FakeClock()
+    )
+    with pytest.raises(ModelTimeoutError):
+        client_socket.chat([{"role": "user", "content": "hi"}])
+
+
+def test_client_timeout_defaults_come_from_config():
+    """F: the timeout policy propagates from the authoritative config."""
+    config = CoderModelConfig(
+        base_url="http://127.0.0.1:8001/v1",
+        timeout_seconds=777.0,
+        connect_timeout_seconds=42.0,
+    )
+    client = AgentChatClient(config, urlopen=FakeOpener(
+        FakeResponse(_long_body())
+    ))
+
+    assert client.timeout_seconds == 777.0
+    assert client.connect_timeout_seconds == 42.0
+
+
+def test_chat_per_call_timeout_override_is_passed_to_transport():
+    opener = FakeOpener(FakeResponse(_long_body()))
+    client = _client_with_clock(opener, FakeClock())
+
+    client.chat(
+        [{"role": "user", "content": "hi"}],
+        timeout_seconds=123.0,
+    )
+
+    assert opener.timeouts == [123.0]
+
+
+def test_request_started_callback_fires_before_transport_call():
+    started: list[str] = []
+    opener = FakeOpener(FakeResponse(_long_body()))
+    client = _client_with_clock(opener, FakeClock())
+
+    client.chat(
+        [{"role": "user", "content": "hi"}],
+        on_request_started=lambda: started.append("started"),
+    )
+
+    assert started == ["started"]

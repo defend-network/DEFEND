@@ -478,6 +478,8 @@ describe("DEFENDcoder workspace shell", () => {
               workspace_id: "ws-1",
               prompt: "Build an ops dashboard.",
               status: "running",
+              phase: "waiting_for_model",
+              reason: null,
               error: null,
               created_at: "2026-01-01T00:00:00Z",
               finished_at: null,
@@ -497,6 +499,8 @@ describe("DEFENDcoder workspace shell", () => {
           workspace_id: "ws-1",
           prompt: "Build an ops dashboard.",
           status: "succeeded",
+          phase: "completed",
+          reason: "natural_completion",
           error: null,
           created_at: "2026-01-01T00:00:00Z",
           finished_at: "2026-01-01T00:00:05Z",
@@ -759,6 +763,68 @@ describe("DEFENDcoder workspace shell", () => {
     expect(
       await screen.findByRole("alert")
     ).toHaveTextContent("already active");
+  });
+
+  it("shows the terminal reason on a failed run", async () => {
+    const failedRun = {
+      run_id: "run-3",
+      workspace_id: "ws-1",
+      prompt: "Build it.",
+      status: "partial_success",
+      phase: "failed",
+      reason: "action_limit",
+      error: "reached the maximum of 3 agent steps",
+      created_at: "2026-01-01T00:00:00Z",
+      finished_at: "2026-01-01T00:00:05Z",
+    };
+    const fetchMock = routedFetch({
+      "/v1/workspaces/ws-1/runs": async (init) => {
+        if (init && init.method === "POST") {
+          return { run: failedRun };
+        }
+        return { runs: [] };
+      },
+      "/v1/workspaces/ws-1/runs/run-3": async () => ({
+        run: failedRun,
+        messages: [
+          {
+            seq: 1,
+            role: "log",
+            content:
+              "reached the maximum of 3 agent steps; attempting the reserved finalization turn.",
+            created_at: "2026-01-01T00:00:01Z",
+          },
+        ],
+      }),
+      "/v1/workspaces/ws-1/files": async () => ({
+        path: ".",
+        kind: "directory",
+        entries: [],
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    sessionStorage.setItem("defendcoder_csrf", "csrf-token-value");
+
+    renderShell({
+      runtime: { state: "ready" },
+      workspaces: TEST_WORKSPACES,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /alpha/ }));
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Coding task")).not.toBeDisabled();
+    });
+
+    fireEvent.change(
+      screen.getByLabelText("Coding task"),
+      { target: { value: "Build it." } }
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    expect(
+      await screen.findByText("Partial — action limit reached")
+    ).toBeInTheDocument();
   });
 
   it("shows the workspace file tree and navigates directories", async () => {

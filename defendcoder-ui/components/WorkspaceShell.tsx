@@ -89,11 +89,75 @@ function runStatusLabel(status: RunRecord["status"]): string {
       return "Running";
     case "succeeded":
       return "Succeeded";
+    case "partial_success":
+      return "Partial";
     case "failed":
       return "Failed";
+    case "cancelled":
+      return "Cancelled";
     default:
       return status;
   }
+}
+
+function runReasonLabel(reason: RunRecord["reason"] | null): string | null {
+  if (!reason || reason === "unknown") {
+    return null;
+  }
+  switch (reason) {
+    case "natural_completion":
+      return "Completed";
+    case "finalized":
+      return "Completed (step limit, finalized)";
+    case "action_limit":
+      return "Partial — action limit reached";
+    case "step_limit":
+      return "Partial — step limit reached";
+    case "wall_clock_limit":
+      return "Partial — wall-clock limit reached";
+    case "model_timeout":
+      return "Failed — model timed out";
+    case "model_unavailable":
+      return "Failed — model unavailable";
+    case "model_error":
+      return "Failed — model error";
+    case "tool_error":
+      return "Failed — tool error";
+    case "user_cancel":
+      return "Cancelled";
+    default:
+      return reason.replaceAll("_", " ");
+  }
+}
+
+function phaseLabel(phase: RunRecord["phase"] | null): string {
+  switch (phase) {
+    case "waiting_for_model":
+    case "waiting_for_model_after_tool":
+      return "Waiting for model";
+    case "model_generating":
+      return "Model is generating";
+    case "executing_tool":
+      return "Executing tool";
+    case "finalizing":
+      return "Finalizing";
+    case "queued":
+      return "Queued";
+    default:
+      return "Running";
+  }
+}
+
+function runElapsedSeconds(run: RunRecord, now: number): number | null {
+  const start = run.created_at ? Date.parse(run.created_at) : NaN;
+  if (!Number.isFinite(start)) {
+    return null;
+  }
+  const end = run.finished_at ? Date.parse(run.finished_at) : now;
+  if (!Number.isFinite(end)) {
+    return null;
+  }
+  return Math.max(0, Math.round((end - start) / 1000));
 }
 
 function display(value: string | number | null | undefined): string {
@@ -472,11 +536,22 @@ export default function WorkspaceShell({
 
   const agentStateNotice = (() => {
     if (runActive) {
-      return `Agent is ${runStatusLabel(activeRun!.run.status).toLowerCase()}…`;
+      const phase = activeRun!.run.phase ?? null;
+      const label = phaseLabel(phase);
+      const elapsed = runElapsedSeconds(activeRun!.run, Date.now());
+      return elapsed === null
+        ? `${label}…`
+        : `${label}… (${elapsed}s)`;
     }
     if (activeRun?.run.status === "failed") {
+      const reason = activeRun.run.reason ?? null;
+      const reasonText =
+        reason && reason !== "unknown"
+          ? ` (${reason.replaceAll("_", " ")})`
+          : "";
       return (
         "Agent run failed" +
+        reasonText +
         (activeRun.run.error ? `: ${activeRun.run.error}` : ".")
       );
     }
@@ -791,6 +866,15 @@ export default function WorkspaceShell({
                     {runStatusLabel(activeRun.run.status)}
                   </span>
                   <span className="run-prompt-text">{userPrompt}</span>
+                  {!runActive &&
+                    ["failed", "partial_success", "cancelled"].includes(
+                      activeRun.run.status
+                    ) &&
+                    runReasonLabel(activeRun.run.reason) && (
+                      <span className="run-reason">
+                        {runReasonLabel(activeRun.run.reason)}
+                      </span>
+                    )}
                 </div>
 
                 {conversation.length === 0 ? (

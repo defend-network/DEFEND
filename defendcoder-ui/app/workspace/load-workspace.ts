@@ -24,13 +24,47 @@ export type RuntimeStatus = {
   detail?: string | null;
 };
 
-export type RunStatus = "queued" | "running" | "succeeded" | "failed";
+export type RunStatus =
+  | "queued"
+  | "running"
+  | "succeeded"
+  | "partial_success"
+  | "failed"
+  | "cancelled";
+
+export type RunPhase =
+  | "queued"
+  | "waiting_for_model"
+  | "model_generating"
+  | "executing_tool"
+  | "waiting_for_model_after_tool"
+  | "finalizing"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export type RunReason =
+  | "unknown"
+  | "natural_completion"
+  | "finalized"
+  | "action_limit"
+  | "step_limit"
+  | "wall_clock_limit"
+  | "model_timeout"
+  | "model_unavailable"
+  | "model_error"
+  | "tool_error"
+  | "user_cancel"
+  | "internal_error"
+  | "invalid_prompt";
 
 export type RunRecord = {
   run_id: string;
   workspace_id: string;
   prompt: string;
   status: RunStatus;
+  phase: RunPhase | null;
+  reason: RunReason | null;
   error: string | null;
   created_at: string;
   finished_at: string | null;

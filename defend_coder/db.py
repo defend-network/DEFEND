@@ -9,6 +9,13 @@ from typing import Any, Iterator
 _MIGRATIONS = (
     (1, Path(__file__).with_name("migrations") / "0001_foundation.sql"),
     (2, Path(__file__).with_name("migrations") / "0002_runs.sql"),
+    (3, Path(__file__).with_name("migrations") / "0003_run_phase.sql"),
+    (4, Path(__file__).with_name("migrations") / "0004_run_reason.sql"),
+    (
+        5,
+        Path(__file__).with_name("migrations")
+        / "0005_completion_state_telemetry.sql",
+    ),
 )
 
 

@@ -7,6 +7,8 @@ import pytest
 
 from defend_coder.db import CoderDatabase
 from defend_coder.repositories import CoderRepository
+from defend_coder.runs import RunsRepository
+from defend_coder.telemetry import build_call_record
 
 
 pytestmark = pytest.mark.skipif(
@@ -42,8 +44,8 @@ def repo(db):
 
 
 def test_migrate_is_idempotent(db):
-    assert db.migrate() == 1
-    assert db.migrate() == 1
+    assert db.migrate() == 5
+    assert db.migrate() == 5
 
 
 def test_health_reports_ready_after_migration(db):
@@ -52,7 +54,7 @@ def test_health_reports_ready_after_migration(db):
     assert health == {
         "ok": True,
         "application_id": "coder",
-        "schema_version": 1,
+        "schema_version": 5,
         "database": "ready",
     }
 
@@ -234,3 +236,138 @@ def test_database_repr_does_not_leak_url():
 
     assert "super-secret" not in repr(db)
     assert url not in repr(db)
+
+
+def _seeded_run(db):
+    repo = CoderRepository(db)
+    account = repo.create_account(
+        username="telemetry-user",
+        email=None,
+        password_hash="synthetic-hash",
+        role="consumer",
+    )
+    workspace = repo.create_workspace(
+        owner_account_id=account.account_id,
+        name="telemetry-project",
+        workspace_root=r"C:\DEFEND_CODER_DATA\telemetry-project",
+    )
+    runs = RunsRepository(db)
+    run = runs.create_run(workspace=workspace, prompt="Do work.")
+    runs.update_run_status(run.run_id, status="running")
+    return runs, run
+
+
+def test_model_calls_round_trip_and_aggregate(db):
+    runs, run = _seeded_run(db)
+    runs.record_model_call(
+        run.run_id,
+        build_call_record(
+            step=1,
+            phase="tool_work",
+            roundtrip_seconds=4.0,
+            max_tokens_requested=4096,
+            tool_calls_requested=1,
+            remaining_action_budget=5,
+            content="calling",
+            usage={"prompt_tokens": 100, "completion_tokens": 40},
+            finish_reason="tool_calls",
+        ),
+    )
+    runs.record_model_call(
+        run.run_id,
+        build_call_record(
+            step=2,
+            phase="tool_work",
+            roundtrip_seconds=6.0,
+            max_tokens_requested=4096,
+            tool_calls_requested=0,
+            remaining_action_budget=4,
+            content="done",
+            usage={"prompt_tokens": 120, "completion_tokens": 20},
+            finish_reason="stop",
+        ),
+    )
+    calls = runs.model_calls_for_run(run.run_id)
+    assert len(calls) == 2
+    assert calls[0].step == 1
+    assert calls[0].input_tokens == 100
+    assert calls[1].finish_reason == "stop"
+
+    agg = runs.aggregate_model_calls(run.run_id)
+    assert agg["call_count"] == 2
+    assert agg["total_request_roundtrip_seconds"] == 10.0
+    assert agg["total_output_tokens"] == 60
+    assert agg["finish_reasons"] == {"tool_calls": 1, "stop": 1}
+    assert agg["error_classes"] == {"ok": 2}
+
+
+def test_model_call_records_error_class(db):
+    runs, run = _seeded_run(db)
+    runs.record_model_call(
+        run.run_id,
+        build_call_record(
+            step=1,
+            phase="tool_work",
+            roundtrip_seconds=90.0,
+            max_tokens_requested=4096,
+            tool_calls_requested=0,
+            remaining_action_budget=5,
+            error_class="ModelTimeoutError",
+        ),
+    )
+    calls = runs.model_calls_for_run(run.run_id)
+    assert calls[0].error_class == "ModelTimeoutError"
+    assert calls[0].output_tokens is None
+    agg = runs.aggregate_model_calls(run.run_id)
+    assert agg["error_classes"] == {"ModelTimeoutError": 1}
+
+
+def test_wall_clock_accounting_persists(db):
+    runs, run = _seeded_run(db)
+    runs.append_message(
+        run.run_id,
+        role="assistant",
+        content="first",
+        tool_arguments=[{"name": "read_logs"}],
+    )
+    runs.append_message(
+        run.run_id,
+        role="tool",
+        content="output",
+        tool_call_id="call_1",
+        tool_name="read_logs",
+        ok=True,
+    )
+    runs.record_model_call(
+        run.run_id,
+        build_call_record(
+            step=1,
+            phase="tool_work",
+            roundtrip_seconds=2.0,
+            max_tokens_requested=4096,
+            tool_calls_requested=1,
+            remaining_action_budget=5,
+        ),
+    )
+    runs.update_run_status(run.run_id, status="succeeded", reason="natural_completion")
+
+    accounting = runs.wall_clock_accounting(
+        run.run_id, persistence_seconds=0.5
+    )
+    assert accounting["request_roundtrip_seconds"] == 2.0
+    assert accounting["queue_wait_seconds"] is not None
+    assert accounting["tool_execution_seconds"] >= 0
+    assert accounting["persistence_seconds"] == 0.5
+    assert accounting["total_wall_seconds"] >= 0
+    assert accounting["model_generation_seconds"] is None
+    assert accounting["accounted_wall_clock_percent"] > 0
+
+    runs.record_wall_clock_accounting(run.run_id, accounting)
+    with db.connect() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT accounting FROM coder_runs WHERE run_id = %s",
+                (run.run_id,),
+            )
+            stored = cursor.fetchone()[0]
+    assert stored["request_roundtrip_seconds"] == 2.0
