@@ -25,3 +25,6 @@ research.json
 .worktrees/
 defend-ui-v2/.npm-cache/
 *.tsbuildinfo
+.pytest_cache/
+*-tokenizer-archive/
+rapidapi_tt_micro-matches-live-*.json
