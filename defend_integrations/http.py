@@ -120,12 +120,18 @@ def fetch(
     retries: int = 2,
     backoff_seconds: float = _DEFAULT_BACKOFF_SECONDS,
     known_secrets: tuple[str, ...] = (),
+    capture_error_body: bool = False,
 ) -> FetchResult:
     """Bounded GET with centralized retry/backoff and sanitized errors.
 
     Retries only on transient network failures (429 and 5xx are not retried
     beyond the single documented policy: 429 maps to RATE_LIMITED by the
     service layer). Error strings are redacted against ``known_secrets``.
+
+    ``capture_error_body`` additionally retains the (sanitized) response
+    body on non-2xx responses; Phase C probe adapters use it to classify
+    structured business errors (e.g. OddsPapi's JSON ``NOT_FOUND`` /
+    ``TOO_MANY_BOOKMAKERS`` payloads). Default behavior is unchanged.
     """
     started = time.monotonic()
     if (
@@ -162,8 +168,16 @@ def fetch(
                     return
                 except HTTPError as error:
                     status_code = error.code if isinstance(error.code, int) else None
+                    error_body = None
+                    if capture_error_body:
+                        try:
+                            error_body = error.read(_MAX_RESPONSE_BYTES).decode(
+                                "utf-8", errors="replace"
+                            )
+                        except Exception:
+                            error_body = None
                     if status_code in (429, 401, 403, 404) or attempt + 1 >= attempts:
-                        outcome.append((status_code, None, None, attempt, {}))
+                        outcome.append((status_code, None, error_body, attempt, {}))
                         return
                 except Exception as error:
                     error_type = _safe_error_type(error)

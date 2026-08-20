@@ -1,0 +1,14 @@
+{
+  "auth_scheme": "query apiKey",
+  "capability_summary": "175 sports; NO table tennis sport key (probe: /table_tennis/odds + /scores -> 404 UNKNOWN_SPORT). Existing integration's hardcoded table_tennis key would 404 - tech debt.",
+  "contract_type": "official_docs",
+  "endpoint_count": null,
+  "notes": "Empirical probe 2026-08-20 (evidence in session). No TT coverage; do not route TT ingestion here.",
+  "provider_id": "the_odds_api",
+  "provider_version_if_known": "v4",
+  "rate_limit_notes": "Quota 500/500 remaining at probe 2026-08-20; resets daily.",
+  "retrieved_at": "2026-08-20T14:43:32Z",
+  "schema_version": null,
+  "sha256": null,
+  "source_url_or_origin": "https://the-odds-api.com/docs"
+}

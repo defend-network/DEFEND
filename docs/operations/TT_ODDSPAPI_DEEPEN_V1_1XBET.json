@@ -1,0 +1,328 @@
+{
+  "SAMPLE_EVENTS": 9,
+  "EVENTS_WITH_ODDS": 2,
+  "EVENTS_WITH_ODDS_RATE": 0.2222,
+  "EVENT_MATCH_RATE": 0.4444,
+  "AMBIGUOUS_MATCH_RATE": 0.2222,
+  "UNMATCHED_RATE": 0.3333,
+  "SNAPSHOTS_PER_EVENT": {
+    "min": 28,
+    "median": 63.0,
+    "p90": 98.0,
+    "max": 98
+  },
+  "BOOKMAKERS_PER_EVENT": {
+    "min": 1,
+    "median": 1.0,
+    "max": 1
+  },
+  "VALID_PREMATCH_RATE": 0.1582,
+  "VALID_CLOSE_RATE": 1.0,
+  "LAST_PREMATCH_GAP_HOURS": {
+    "min": 0.15,
+    "median": 1.54,
+    "p90": 2.93,
+    "max": 2.93
+  },
+  "POST_COMMENCE_CONTAMINATION_RATE": 0.8418,
+  "MARKET_WINNER_COVERAGE": 0.0,
+  "OTHER_MARKETS_AVAILABLE": [
+    "253",
+    "255"
+  ],
+  "PRICE_CHANGE_COUNT": {
+    "min": 24,
+    "median": 59.0,
+    "max": 94
+  },
+  "MEDIAN_LINE_MOVES_PER_EVENT": 59.0,
+  "REQUESTS_USED_THIS_RUN": 9,
+  "REQUESTS_USED_SPRINT_TOTAL": 13,
+  "per_event": [
+    {
+      "era": "early",
+      "league": "czech-liga-pro",
+      "fixture_id": "id2503634962663581",
+      "participants": [
+        "Gireth, Pavel",
+        "Turek, Tomas"
+      ],
+      "commence_at": "2025-08-07T15:00:00.000Z",
+      "bookmakers_requested": [
+        "1xbet"
+      ],
+      "status": 404,
+      "error_class": "not_found",
+      "observations": 0,
+      "bookmakers_with_data": [],
+      "markets_seen": [],
+      "market_winner_251": false,
+      "prematch_snapshots": 0,
+      "post_commence_snapshots": 0,
+      "last_prematch_gap_hours": null,
+      "price_changes": 0,
+      "match": {
+        "level": "UNMATCHED",
+        "matched_event_key": null,
+        "candidate_keys": [],
+        "note": "no deterministic candidate"
+      }
+    },
+    {
+      "era": "early",
+      "league": "tt-cup",
+      "fixture_id": "id2503212962517690",
+      "participants": [
+        "Salcido, Francisco",
+        "Cano, Jose"
+      ],
+      "commence_at": "2025-08-02T08:40:00.000Z",
+      "bookmakers_requested": [
+        "1xbet"
+      ],
+      "status": 404,
+      "error_class": "not_found",
+      "observations": 0,
+      "bookmakers_with_data": [],
+      "markets_seen": [],
+      "market_winner_251": false,
+      "prematch_snapshots": 0,
+      "post_commence_snapshots": 0,
+      "last_prematch_gap_hours": null,
+      "price_changes": 0,
+      "match": {
+        "level": "UNMATCHED",
+        "matched_event_key": null,
+        "candidate_keys": [],
+        "note": "no deterministic candidate"
+      }
+    },
+    {
+      "era": "early",
+      "league": "tt-elite-series",
+      "fixture_id": "id2503637762514310",
+      "participants": [
+        "Piecowski, Milosz",
+        "Misiak, Mateusz"
+      ],
+      "commence_at": "2025-08-02T17:25:00.000Z",
+      "bookmakers_requested": [
+        "1xbet"
+      ],
+      "status": 404,
+      "error_class": "not_found",
+      "observations": 0,
+      "bookmakers_with_data": [],
+      "markets_seen": [],
+      "market_winner_251": false,
+      "prematch_snapshots": 0,
+      "post_commence_snapshots": 0,
+      "last_prematch_gap_hours": null,
+      "price_changes": 0,
+      "match": {
+        "level": "UNMATCHED",
+        "matched_event_key": null,
+        "candidate_keys": [],
+        "note": "no deterministic candidate"
+      }
+    },
+    {
+      "era": "mid",
+      "league": "czech-liga-pro",
+      "fixture_id": "id2503634969610104",
+      "participants": [
+        "Vejvoda, Viktor",
+        "Louda, Jiri"
+      ],
+      "commence_at": "2026-03-06T23:00:00.000Z",
+      "bookmakers_requested": [
+        "1xbet"
+      ],
+      "status": 200,
+      "error_class": "unavailable",
+      "observations": 98,
+      "bookmakers_with_data": [
+        "1xbet"
+      ],
+      "markets_seen": [
+        "253",
+        "255"
+      ],
+      "market_winner_251": false,
+      "prematch_snapshots": 24,
+      "post_commence_snapshots": 74,
+      "last_prematch_gap_hours": 2.93,
+      "price_changes": 94,
+      "match": {
+        "level": "NORMALIZED",
+        "matched_event_key": "oaio:69610104",
+        "candidate_keys": [
+          "oaio:69610104"
+        ],
+        "note": ""
+      }
+    },
+    {
+      "era": "mid",
+      "league": "tt-cup",
+      "fixture_id": "id2503212969767046",
+      "participants": [
+        "Balcar, Frantisek",
+        "Vojna, Daniel"
+      ],
+      "commence_at": "2026-03-10T12:50:00.000Z",
+      "bookmakers_requested": [
+        "1xbet"
+      ],
+      "status": 200,
+      "error_class": "unavailable",
+      "observations": 28,
+      "bookmakers_with_data": [
+        "1xbet"
+      ],
+      "markets_seen": [
+        "253",
+        "255"
+      ],
+      "market_winner_251": false,
+      "prematch_snapshots": 2,
+      "post_commence_snapshots": 26,
+      "last_prematch_gap_hours": 0.15,
+      "price_changes": 24,
+      "match": {
+        "level": "NORMALIZED",
+        "matched_event_key": "oaio:69767046",
+        "candidate_keys": [
+          "oaio:69767046"
+        ],
+        "note": ""
+      }
+    },
+    {
+      "era": "mid",
+      "league": "tt-elite-series",
+      "fixture_id": "id2503637769756928",
+      "participants": [
+        "Zochniak, Jakub",
+        "Glanowski, Jakub"
+      ],
+      "commence_at": "2026-03-10T10:25:00.000Z",
+      "bookmakers_requested": [
+        "1xbet"
+      ],
+      "status": 404,
+      "error_class": "not_found",
+      "observations": 0,
+      "bookmakers_with_data": [],
+      "markets_seen": [],
+      "market_winner_251": false,
+      "prematch_snapshots": 0,
+      "post_commence_snapshots": 0,
+      "last_prematch_gap_hours": null,
+      "price_changes": 0,
+      "match": {
+        "level": "AMBIGUOUS",
+        "matched_event_key": null,
+        "candidate_keys": [
+          "oaio:69756862",
+          "oaio:69756928"
+        ],
+        "note": "multiple canonical candidates; fails closed"
+      }
+    },
+    {
+      "era": "recent",
+      "league": "czech-liga-pro",
+      "fixture_id": "id2503634973574340",
+      "participants": [
+        "Pusch, Frantisek",
+        "Zuzanek, Jiri"
+      ],
+      "commence_at": "2026-08-09T13:30:00.000Z",
+      "bookmakers_requested": [
+        "1xbet"
+      ],
+      "status": 404,
+      "error_class": "not_found",
+      "observations": 0,
+      "bookmakers_with_data": [],
+      "markets_seen": [],
+      "market_winner_251": false,
+      "prematch_snapshots": 0,
+      "post_commence_snapshots": 0,
+      "last_prematch_gap_hours": null,
+      "price_changes": 0,
+      "match": {
+        "level": "AMBIGUOUS",
+        "matched_event_key": null,
+        "candidate_keys": [
+          "oaio:73540956",
+          "oaio:73574340"
+        ],
+        "note": "multiple canonical candidates; fails closed"
+      }
+    },
+    {
+      "era": "recent",
+      "league": "tt-cup",
+      "fixture_id": "id2503212973578226",
+      "participants": [
+        "Flesar, Milan",
+        "Lovl, Jan"
+      ],
+      "commence_at": "2026-08-09T17:05:00.000Z",
+      "bookmakers_requested": [
+        "1xbet"
+      ],
+      "status": 404,
+      "error_class": "not_found",
+      "observations": 0,
+      "bookmakers_with_data": [],
+      "markets_seen": [],
+      "market_winner_251": false,
+      "prematch_snapshots": 0,
+      "post_commence_snapshots": 0,
+      "last_prematch_gap_hours": null,
+      "price_changes": 0,
+      "match": {
+        "level": "NORMALIZED",
+        "matched_event_key": "oaio:73562678",
+        "candidate_keys": [
+          "oaio:73562678"
+        ],
+        "note": ""
+      }
+    },
+    {
+      "era": "recent",
+      "league": "tt-elite-series",
+      "fixture_id": "id2503637773493668",
+      "participants": [
+        "Lukaszewski, Mikolaj",
+        "Golaszewski, Kuba"
+      ],
+      "commence_at": "2026-08-08T00:35:00.000Z",
+      "bookmakers_requested": [
+        "1xbet"
+      ],
+      "status": 404,
+      "error_class": "not_found",
+      "observations": 0,
+      "bookmakers_with_data": [],
+      "markets_seen": [],
+      "market_winner_251": false,
+      "prematch_snapshots": 0,
+      "post_commence_snapshots": 0,
+      "last_prematch_gap_hours": null,
+      "price_changes": 0,
+      "match": {
+        "level": "NORMALIZED",
+        "matched_event_key": "oaio:73493668",
+        "candidate_keys": [
+          "oaio:73493668"
+        ],
+        "note": ""
+      }
+    }
+  ]
+}

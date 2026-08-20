@@ -1,0 +1,11 @@
+{
+  "provider_id": "oddspapi",
+  "endpoint": "historical-odds",
+  "status_code": 403,
+  "latency_ms": 414,
+  "retrieved_at": "2026-08-20T15:52:37Z",
+  "url_sanitized": "https://api.oddspapi.io/v4/historical-odds?fixtureId=id2503634962693655&bookmakers=bet365,1xbet&apiKey=[REDACTED]",
+  "body": "error code: 1010\n",
+  "body_sha256": "2938e9f1284180959e33ab1718d0793a72ff6e4cdb8108c34dcd14e69446de5c",
+  "headers_kept": {}
+}

@@ -821,7 +821,9 @@ class MarketsRepository:
                 ),
             )
 
-    def list_tt_results(self, connection: Any, limit: int = 2000) -> list[dict[str, object]]:
+    def list_tt_results(
+        self, connection: Any, limit: int = 2000, offset: int = 0
+    ) -> list[dict[str, object]]:
         with connection.cursor() as cursor:
             cursor.execute(
                 """
@@ -829,9 +831,9 @@ class MarketsRepository:
                        away_participant_key, home_score, away_score, completed_at,
                        source_provider, raw_ref
                 FROM tt_match_results
-                ORDER BY completed_at DESC LIMIT %s
+                ORDER BY completed_at DESC LIMIT %s OFFSET %s
                 """,
-                (limit,),
+                (limit, offset),
             )
             return [
                 {

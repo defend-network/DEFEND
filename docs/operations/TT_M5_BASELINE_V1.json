@@ -1,0 +1,238 @@
+{
+  "benchmark_name": "TT_M5_BASELINE_V1",
+  "frozen_at": "2026-08-18T19:53:32Z",
+  "immutable": true,
+  "purpose": "Frozen reference benchmark for the corrected M5 regularized-logistic TT model. Future models must be compared against this benchmark, not quietly replace it. Any legitimate future change to the evaluation contract is a new BENCHMARK_V2; V1 is never overwritten.",
+  "status": {
+    "M5_STATUS": "PROMISING",
+    "PRODUCTION_STATUS": "NOT_READY",
+    "MARKET_EDGE_STATUS": "UNKNOWN"
+  },
+  "reference_numbers": {
+    "N_POOLED": 100191,
+    "M0A_BRIER": 0.250000,
+    "M0A_LOG_LOSS": 0.693147,
+    "M0B_BRIER": 0.249997,
+    "M0B_LOG_LOSS": 0.693141,
+    "M1_ELO_BRIER": 0.242879,
+    "M1_ELO_LOG_LOSS": 0.678344,
+    "M5_BRIER": 0.241604,
+    "M5_LOG_LOSS": 0.675735,
+    "WEIGHTED_ACE": 0.0109,
+    "M5_DELTA_VS_M0A_BRIER": -0.008396,
+    "M5_DELTA_VS_M0A_CI": [-0.009046, -0.007773],
+    "M5_DELTA_VS_M0B_BRIER": -0.008393,
+    "M5_DELTA_VS_M0B_CI": [-0.009042, -0.007764],
+    "M5_DELTA_VS_M1_BRIER": -0.001274,
+    "M5_DELTA_VS_M1_CI": [-0.001457, -0.001083],
+    "WINDOW_DELTAS_M5_VS_M0A": {
+      "W00": -0.007071, "W01": -0.006795, "W02": -0.007927,
+      "W03": -0.009038, "W04": -0.010506, "W05": -0.009755
+    },
+    "OOS_INTEGRITY": "PASS",
+    "M0A_SANITY_EXACT": "PASS"
+  },
+  "dataset": {
+    "EVAL_MANIFEST_SHA256": "17dcf00c59b1fb9882d1bb045f0cba2f3252a1333063fc884bec120df298ba08",
+    "FEATURE_SNAPSHOT_ID": "ae4d5e9c702a09a849294b3ddd6c41477775a946",
+    "EVENT_SET_HASH": "17dcf00c59b1fb9882d1bb045f0cba2f3252a1333063fc884bec120df298ba08",
+    "TT_MATCHES": 149672,
+    "TT_PLAYERS": 1164,
+    "REPAIR_PREVIEW_SHA256_FINAL": "fdff31971424595f16629f3c73f3d8f81e675dd77e9e331ee5b3667a1058bb2e",
+    "REPAIR_IDEMPOTENT": "PASS",
+    "REPAIR_DUPLICATE_REGRESSION": "PASS"
+  },
+  "canonical_parser": {
+    "name": "parse_tt_final_result",
+    "version": "TT_FINAL_RESULT_PARSER_V1",
+    "file_sha256": "137b504e2f7fc9023fd5272afbc733f3fe4ab07e7f40e81ed6fc8262346b3197"
+  },
+  "label_policy": {
+    "version": "TT_LABEL_POLICY_V1",
+    "source": "defend_sports/providers/odds_api_io.py (parse_tt_final_result) + defend_sports/backfill.py (_persist_results)",
+    "file_sha256_parser": "137b504e2f7fc9023fd5272afbc733f3fe4ab07e7f40e81ed6fc8262346b3197",
+    "file_sha256_backfill": "b9343caebc41067ac2ec4a1b4d200c0f51afc42f8a19c0aa5cab67d79d4ad7ea",
+    "rules": [
+      "FT present and unequal -> VERIFIED (source PERIODS_FT), ft authoritative over periods and top-level scores",
+      "FT equal -> VOID (FT_EQUAL)",
+      "No FT, >=2 legal periods (max>=11, gap>=2), clear majority -> VERIFIED (DERIVED_PERIODS); majority conflicting with a plausible 0-3 top -> VOID (TOP_PERIODS_CONFLICT)",
+      "No FT, >=2 legal periods tied -> VOID (PERIODS_TIED)",
+      "No FT, 1 legal period + plausible top game count 0-3 consistent -> VERIFIED (TOP_LEVEL_FALLBACK)",
+      "No FT, 1 legal period + top inconsistent/implausible -> VOID (TOP_GAME_CONFLICT) or VERIFIED (SINGLE_GAME) on game evidence alone",
+      "No FT, top 0-3 unequal, no usable periods -> VERIFIED (TOP_LEVEL_FALLBACK)",
+      "Top equal or indeterminate -> VOID (TOP_EQUAL)",
+      "No usable evidence -> UNRESOLVED (NO_SCORE_DATA / TOP_IMPLAUSIBLE) - never invents a winner",
+      "VOID/UNRESOLVED rows are persisted with equal scores so the eval suite excludes them"
+    ]
+  },
+  "identity_policy": {
+    "version": "TT_IDENTITY_POLICY_V1",
+    "source": "tools/defend_tt_identity_gate.py",
+    "file_sha256": "49ca7a90f5f2ce30417e73b171f26064fd5fdbbba692723a2fb5ba2b1d713c72",
+    "counts": {
+      "IDENTITY_EXACT_MATCHES": 1164,
+      "IDENTITY_NORMALIZED_MATCHES": 1164,
+      "IDENTITY_AMBIGUITIES": 5,
+      "IDENTITY_COLLISIONS": 0,
+      "UNRESOLVED_PLAYERS": 0,
+      "DUPLICATE_EVENTS": 0
+    }
+  },
+  "rating_history": {
+    "version": "TT_RATING_HISTORY_V1",
+    "source": "defend_markets/tt_rating.py (rebuild_rating_history)",
+    "file_sha256": "fa9a695322d2c4eb7a0ca695438d3f1555fd6d76b2f8d631c3021ce295caa1c8",
+    "rebuilt_at": "2026-08-18T19:40:00Z",
+    "rows": 299344,
+    "distinct_matches": 149672
+  },
+  "feature_schema": {
+    "version": "TT_FEATURE_SCHEMA_V1",
+    "snapshot_id": "ae4d5e9c702a09a849294b3ddd6c41477775a946",
+    "files": ["defend_markets/features.py", "defend_markets/forecast.py"]
+  },
+  "model": {
+    "name": "M5_REGULARIZED_LOGISTIC",
+    "version": "M5_V1",
+    "implementation": "regularized logistic regression on Elo-derived features",
+    "hyperparameters": {
+      "ridge_lambda": 1.0,
+      "min_games": 5,
+      "elo_window": 100,
+      "eval_start": "2026-03-08",
+      "bootstrap_iters": 2000,
+      "seed": 20260818
+    }
+  },
+  "evaluation": {
+    "suite": "tools/defend_tt_research_suite.py",
+    "file_sha256": "d7cba5cdd7c775a24b556b932580202c994d379730ce5857ec839efe279b85b8",
+    "walk_forward_definition": "strict chronological walk-forward; training window 100 most recent eligible events per participant pair; eval start 2026-03-08; min 5 prior games; binary outcomes only; paired deltas blocked by day",
+    "bootstrap_seed": 20260818,
+    "bootstrap_iters": 2000,
+    "reproducibility": "two identical runs 2026-08-18T19:46:40Z and 2026-08-18T19:53:32Z (identical manifest SHA256, identical numbers)"
+  },
+  "data_completion": {
+    "czech": {"matches": 40491, "raw_settled": 40491, "void": 415},
+    "international-tt-cup": {"matches": 35976, "raw_settled": 35976, "void": 491},
+    "international-tt-elite-series": {"matches": 73205, "raw_settled": 73218, "void": 288},
+    "wtt_feeder_berlin": "SKIPPED - probe found 0 historical events in 3 sampled windows (no provider coverage)"
+  },
+  "evaluation_contract": {
+    "version": "TT_EVAL_CONTRACT_V1",
+    "event_set": {
+      "source": "tt_match_results rows with a complete outcome (draws excluded: 1194 equal-score rows)",
+      "eligibility": "binary labels only (actual in {0,1}); side A = home; min_games >= 5 prior eligible events per participant; event ts >= 2026-03-08 (eval_start)",
+      "pooled_n": 100191,
+      "draws_excluded": 1194,
+      "event_set_hash": "sha256 of '|'.join(sorted event keys) = 17dcf00c59b1fb9882d1bb045f0cba2f3252a1333063fc884bec120df298ba08",
+      "dataset_snapshot_id": "sha1 of the dataset record json = ae4d5e9c702a09a849294b3ddd6c41477775a946"
+    },
+    "split_definition": {
+      "walk_forward": "strict chronological; cutoffs every 30 days from eval_start; final window ends at last record + 1 day",
+      "window_train": "events with ts < window start; M5 is fit per window on this train set only",
+      "window_test": "events with ts in [window start, window end) and eligible (available=True)",
+      "min_train_for_m5": "n_train >= 200, otherwise M5 emits no predictions for that window (fail-safe, no silent retrain)",
+      "windows": "W00..W05 (6 windows, boundaries recorded per window in the run manifest)",
+      "duplicate_guard": "duplicate event key inside a window raises RuntimeError"
+    },
+    "metric_definitions": {
+      "brier": "(p - actual)^2 per event, averaged over the evaluation set; rounded to 6dp in reports",
+      "log_loss": "-log(p) when actual = 1, -log(1 - p) when actual = 0; p clipped to [1e-9, 1 - 1e-9]; averaged; rounded to 6dp",
+      "accuracy": "share of (p > 0.5 and actual > 0.5) or (p < 0.5 and actual < 0.5); NOT_APPLICABLE when every p is exactly 0.5",
+      "implementation": "defend_tt_research_suite.py _brier_loss / _log_loss / _aggregate",
+      "M0A_CONSTANT_0_5": "p = 0.5 exactly (sanity anchor; its log loss must equal -ln(0.5) = 0.693147)",
+      "M0B_TRAIN_BASE_RATE": "per-window base rate = wins/n_train when n_train >= 100 else 0.5; clipped to [0.001, 0.999]",
+      "M1_CURRENT_ELO": "Elo probability from current ratings (K=32, window=100)"
+    },
+    "model_fit_recipe": {
+      "algorithm": "L2-regularized logistic regression via Newton-Raphson (numpy only), explicit intercept column",
+      "ridge_lambda": 1.0,
+      "iterations": "max 40, early stop at max |step| < 1e-7",
+      "features": ["home_indicator", "elo_diff", "recency_elo_diff", "form5_diff", "log_depth_diff", "rest_diff_days", "h2h_winrate_diff", "same_day_diff", "degree_diff"],
+      "weights_documentation": "M5_V1 has NO single frozen weight vector: weights are per-window fits recorded in the run output (intercept + 9 feature weights, model_version = '<code>@2026-08-18-audit>:<sha256(weights)[:12]>' per window); reproducibility comes from deterministic fit + fixed seed, not from one artifact",
+      "m5_prediction": "p = sigmoid(intercept + weights @ feature_vector)"
+    },
+    "calibration_recipe": {
+      "buckets": ["<0.50", "0.50-0.55", "0.55-0.60", "0.60-0.65", "0.65-0.70", "0.70-0.80", "0.80+"],
+      "bucket_assignment": "first bucket whose upper edge strictly exceeds p",
+      "minimum_bucket_n": 30,
+      "bucket_status": "INSUFFICIENT_SAMPLE below min n; OK when |observed - mean_p| < 0.05; OVERCONFIDENT when observed < mean_p; UNDERCONFIDENT otherwise",
+      "weighted_ace": "sum(n * |observed_win_rate - mean_predicted_p|) / sum(n) over populated buckets with n >= 30; reference value 0.0109",
+      "implementation": "defend_tt_research_suite.py _calibration_table"
+    },
+    "bootstrap_recipe": {
+      "purpose": "95% CI for paired model deltas (M5 vs M0A / M0B / M1) over the common event-key intersection",
+      "pairing": "per-event paired difference; pairwise event sets must be identical (only_m5 / only_base -> RuntimeError)",
+      "blocking": "resample DAY blocks with replacement (block = competition when <= 2 distinct day blocks); within-block dependence preserved",
+      "iterations": 2000,
+      "seed": 20260818,
+      "interval": "2.5 / 97.5 percentiles of resampled block means",
+      "implementation": "defend_tt_research_suite.py _blocked_bootstrap_ci"
+    },
+    "leakage_rules": [
+      "Strict chronological walk-forward: a window's M5 fit sees only events with ts < window start; nothing from the future is used to fit",
+      "All features (Elo, recency Elo window 100, form 5, h2h, rest, degree) are computed from history strictly before the event's own timestamp",
+      "Labels are binary only; equal-score (draw) rows are excluded from the label domain - never soft labels",
+      "M5 predictions require n_train >= 200 (no silent retrain on thin windows)",
+      "Duplicate event keys within a window raise RuntimeError; pairwise delta sets must be exactly equal",
+      "M0A constant 0.5 acts as the sanity anchor (exact log loss 0.693147)"
+    ],
+    "eval_code_path": {
+      "suite": "tools/defend_tt_research_suite.py",
+      "suite_file_sha256": "d7cba5cdd7c775a24b556b932580202c994d379730ce5857ec839efe279b85b8",
+      "label_provenance": "defend_sports/providers/odds_api_io.py parse_tt_final_result (sha 137b504e2f7fc9023fd5272afbc733f3fe4ab07e7f40e81ed6fc8262346b3197) + defend_sports/backfill.py _persist_results (sha b9343caebc41067ac2ec4a1b4d200c0f51afc42f8a19c0aa5cab67d79d4ad7ea)",
+      "identity_provenance": "tools/defend_tt_identity_gate.py (sha 49ca7a90f5f2ce30417e73b171f26064fd5fdbbba692723a2fb5ba2b1d713c72)",
+      "rating_history_provenance": "defend_markets/tt_rating.py rebuild_rating_history (sha fa9a695322d2c4eb7a0ca695438d3f1555fd6d76b2f8d631c3021ce295caa1c8)",
+      "data_label_fix_provenance": "tools/defend_tt_repair_results.py build_plan/collect_repair_results (preview sha fdff31971424595f16629f3c73f3d8f81e675dd77e9e331ee5b3667a1058bb2e, idempotent PASS)"
+    },
+    "immutability_policy": [
+      "This file and its hashes are frozen; any legitimate future change to the contract is BENCHMARK_V2 and never edits V1",
+      "M5_V1 must not be retrained or silently replaced; comparison against V1 numbers requires the identical contract",
+      "BENCHMARK_MUTATIONS must be NONE"
+    ]
+  },
+  "identity_merges": {
+    "version": "TT_IDENTITY_MERGES_V1",
+    "policy": "reversible canonicalization only: explicit aliases in tt_participant_aliases with provider evidence (shared Odds-API.io participant ID); no fuzzy name merging",
+    "applied_at": "2026-08-18T20:00:00Z",
+    "merges": [
+      {
+        "merge_id": "M1",
+        "canonical_name": "Havel, Ladislav",
+        "aliases": ["Havel, Ladislav (1956)"],
+        "evidence": "shared provider participant id 899515",
+        "events_affected": 289,
+        "reverse_if": "DELETE alias rows for participant from tt_participant_aliases"
+      },
+      {
+        "merge_id": "M2",
+        "canonical_name": "Bayer, Ales",
+        "aliases": ["Bayer, Alesh"],
+        "evidence": "shared provider participant id 728577",
+        "events_affected": 599,
+        "reverse_if": "DELETE alias rows for participant from tt_participant_aliases"
+      },
+      {
+        "merge_id": "M3",
+        "canonical_name": "Sebl, Jachym",
+        "aliases": ["Sebl"],
+        "evidence": "shared provider participant id 941929",
+        "events_affected": 305,
+        "reverse_if": "DELETE alias rows for participant from tt_participant_aliases"
+      }
+    ],
+    "benchmark_inputs_untouched": true,
+    "benchmark_note": "tt_match_results / tt_rating_history / labels are NOT rewritten by merges; the canonical identity layer is tt_participants + tt_participant_aliases (forecast_store.participant_by_normalized resolves alias names to the canonical participant)"
+  },
+  "uniqueness_invariant": {
+    "approved": "UNIQUE (provider, sport_key, provider_event_id)",
+    "migration": "defend_sports/migrations/0004_raw_provider_uniqueness.sql",
+    "schema_version": 4,
+    "index": "raw_provider_events_sport_key_unique ON raw_provider_events (source_id, COALESCE(payload->'sport'->>'slug',''), provider_event_id)",
+    "idempotent": "CREATE UNIQUE INDEX IF NOT EXISTS; re-migrate returns 4",
+    "audit": "0 violations at time of application",
+    "row_counts_unchanged": {"raw_provider_events": 149686, "tt_match_results": 149672, "tt_rating_history": 299344},
+    "ingestion": "ON CONFLICT (source_id, provider_event_id) DO NOTHING preserved unchanged"
+  }
+}

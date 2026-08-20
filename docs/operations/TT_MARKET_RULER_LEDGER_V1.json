@@ -1,0 +1,252 @@
+{
+  "schema": "P3/P4 market-ruler inclusion/exclusion ledger",
+  "updated_at": "2026-08-20T18:23:32Z",
+  "evaluation_version": "MARKET_RULER_V1",
+  "policy": "every candidate event entering market evaluation receives a persistent machine-readable disposition; rows are never silently dropped",
+  "disposition_codes": [
+    "INCLUDED",
+    "EXCLUDED_NO_CANONICAL_MATCH",
+    "EXCLUDED_AMBIGUOUS_MATCH",
+    "EXCLUDED_NO_M5_PREDICTION",
+    "EXCLUDED_NO_PREMATCH_ODDS",
+    "EXCLUDED_POSTCOMMENCE_ONLY",
+    "EXCLUDED_INVALID_MARKET",
+    "EXCLUDED_RESULT_UNAVAILABLE",
+    "EXCLUDED_IDENTITY_CONFLICT",
+    "EXCLUDED_OTHER"
+  ],
+  "rows": [
+    {
+      "provider_event_id": "id2503634973488400",
+      "canonical_event_id": "oaio:73488400",
+      "disposition": "INCLUDED",
+      "reason_code": "canonical match + M5 prediction + prematch odds available",
+      "evidence_ref": "oddspapi-empirical-2026-08-20.json#r2_czech_1xbet",
+      "evaluation_version": "MARKET_RULER_V1"
+    },
+    {
+      "provider_event_id": "id2503212973530802",
+      "canonical_event_id": null,
+      "disposition": "EXCLUDED_NO_CANONICAL_MATCH",
+      "reason_code": "no deterministic canonical match (settlement lag)",
+      "evidence_ref": "oddspapi-empirical-2026-08-20.json#r3_cup_bet365",
+      "evaluation_version": "MARKET_RULER_V1"
+    },
+    {
+      "provider_event_id": "id2503634962693655",
+      "canonical_event_id": null,
+      "disposition": "EXCLUDED_OTHER",
+      "reason_code": "NO_HISTORICAL_ODDS_AVAILABLE (provider returned no odds history)",
+      "evidence_ref": "TT_ODDSPAPI_DEEPEN_V1.json#id2503634962693655",
+      "evaluation_version": "MARKET_RULER_V1"
+    },
+    {
+      "provider_event_id": "id2503634962663545",
+      "canonical_event_id": null,
+      "disposition": "EXCLUDED_OTHER",
+      "reason_code": "NO_HISTORICAL_ODDS_AVAILABLE (provider returned no odds history)",
+      "evidence_ref": "TT_ODDSPAPI_DEEPEN_V1.json#id2503634962663545",
+      "evaluation_version": "MARKET_RULER_V1"
+    },
+    {
+      "provider_event_id": "id2503212962731669",
+      "canonical_event_id": null,
+      "disposition": "EXCLUDED_OTHER",
+      "reason_code": "NO_HISTORICAL_ODDS_AVAILABLE (provider returned no odds history)",
+      "evidence_ref": "TT_ODDSPAPI_DEEPEN_V1.json#id2503212962731669",
+      "evaluation_version": "MARKET_RULER_V1"
+    },
+    {
+      "provider_event_id": "id2503212962641305",
+      "canonical_event_id": null,
+      "disposition": "EXCLUDED_OTHER",
+      "reason_code": "NO_HISTORICAL_ODDS_AVAILABLE (provider returned no odds history)",
+      "evidence_ref": "TT_ODDSPAPI_DEEPEN_V1.json#id2503212962641305",
+      "evaluation_version": "MARKET_RULER_V1"
+    },
+    {
+      "provider_event_id": "id2503637762669349",
+      "canonical_event_id": null,
+      "disposition": "EXCLUDED_OTHER",
+      "reason_code": "NO_HISTORICAL_ODDS_AVAILABLE (provider returned no odds history)",
+      "evidence_ref": "TT_ODDSPAPI_DEEPEN_V1.json#id2503637762669349",
+      "evaluation_version": "MARKET_RULER_V1"
+    },
+    {
+      "provider_event_id": "id2503637762720949",
+      "canonical_event_id": null,
+      "disposition": "EXCLUDED_OTHER",
+      "reason_code": "NO_HISTORICAL_ODDS_AVAILABLE (provider returned no odds history)",
+      "evidence_ref": "TT_ODDSPAPI_DEEPEN_V1.json#id2503637762720949",
+      "evaluation_version": "MARKET_RULER_V1"
+    },
+    {
+      "provider_event_id": "id2503634969653052",
+      "canonical_event_id": null,
+      "disposition": "EXCLUDED_OTHER",
+      "reason_code": "NO_HISTORICAL_ODDS_AVAILABLE (provider returned no odds history)",
+      "evidence_ref": "TT_ODDSPAPI_DEEPEN_V1.json#id2503634969653052",
+      "evaluation_version": "MARKET_RULER_V1"
+    },
+    {
+      "provider_event_id": "id2503634969609498",
+      "canonical_event_id": "oaio:69609498",
+      "disposition": "EXCLUDED_INVALID_MARKET",
+      "reason_code": "match-winner market not identifiable (market ids vary)",
+      "evidence_ref": "TT_ODDSPAPI_DEEPEN_V1.json#id2503634969609498",
+      "evaluation_version": "MARKET_RULER_V1"
+    },
+    {
+      "provider_event_id": "id2503212969748892",
+      "canonical_event_id": "oaio:69748892",
+      "disposition": "EXCLUDED_INVALID_MARKET",
+      "reason_code": "match-winner market not identifiable (market ids vary)",
+      "evidence_ref": "TT_ODDSPAPI_DEEPEN_V1.json#id2503212969748892",
+      "evaluation_version": "MARKET_RULER_V1"
+    },
+    {
+      "provider_event_id": "id2503212969623098",
+      "canonical_event_id": null,
+      "disposition": "EXCLUDED_OTHER",
+      "reason_code": "NO_HISTORICAL_ODDS_AVAILABLE (provider returned no odds history)",
+      "evidence_ref": "TT_ODDSPAPI_DEEPEN_V1.json#id2503212969623098",
+      "evaluation_version": "MARKET_RULER_V1"
+    },
+    {
+      "provider_event_id": "id2503637769616152",
+      "canonical_event_id": null,
+      "disposition": "EXCLUDED_OTHER",
+      "reason_code": "NO_HISTORICAL_ODDS_AVAILABLE (provider returned no odds history)",
+      "evidence_ref": "TT_ODDSPAPI_DEEPEN_V1.json#id2503637769616152",
+      "evaluation_version": "MARKET_RULER_V1"
+    },
+    {
+      "provider_event_id": "id2503637769685818",
+      "canonical_event_id": null,
+      "disposition": "EXCLUDED_OTHER",
+      "reason_code": "NO_HISTORICAL_ODDS_AVAILABLE (provider returned no odds history)",
+      "evidence_ref": "TT_ODDSPAPI_DEEPEN_V1.json#id2503637769685818",
+      "evaluation_version": "MARKET_RULER_V1"
+    },
+    {
+      "provider_event_id": "id2503634973681124",
+      "canonical_event_id": null,
+      "disposition": "EXCLUDED_OTHER",
+      "reason_code": "NO_HISTORICAL_ODDS_AVAILABLE (provider returned no odds history)",
+      "evidence_ref": "TT_ODDSPAPI_DEEPEN_V1.json#id2503634973681124",
+      "evaluation_version": "MARKET_RULER_V1"
+    },
+    {
+      "provider_event_id": "id2503634973647050",
+      "canonical_event_id": null,
+      "disposition": "EXCLUDED_OTHER",
+      "reason_code": "NO_HISTORICAL_ODDS_AVAILABLE (provider returned no odds history)",
+      "evidence_ref": "TT_ODDSPAPI_DEEPEN_V1.json#id2503634973647050",
+      "evaluation_version": "MARKET_RULER_V1"
+    },
+    {
+      "provider_event_id": "id2503212973721954",
+      "canonical_event_id": null,
+      "disposition": "EXCLUDED_OTHER",
+      "reason_code": "NO_HISTORICAL_ODDS_AVAILABLE (provider returned no odds history)",
+      "evidence_ref": "TT_ODDSPAPI_DEEPEN_V1.json#id2503212973721954",
+      "evaluation_version": "MARKET_RULER_V1"
+    },
+    {
+      "provider_event_id": "id2503212973721752",
+      "canonical_event_id": null,
+      "disposition": "EXCLUDED_OTHER",
+      "reason_code": "NO_HISTORICAL_ODDS_AVAILABLE (provider returned no odds history)",
+      "evidence_ref": "TT_ODDSPAPI_DEEPEN_V1.json#id2503212973721752",
+      "evaluation_version": "MARKET_RULER_V1"
+    },
+    {
+      "provider_event_id": "id2503637773711242",
+      "canonical_event_id": null,
+      "disposition": "EXCLUDED_OTHER",
+      "reason_code": "NO_HISTORICAL_ODDS_AVAILABLE (provider returned no odds history)",
+      "evidence_ref": "TT_ODDSPAPI_DEEPEN_V1.json#id2503637773711242",
+      "evaluation_version": "MARKET_RULER_V1"
+    },
+    {
+      "provider_event_id": "id2503637773735710",
+      "canonical_event_id": null,
+      "disposition": "EXCLUDED_OTHER",
+      "reason_code": "NO_HISTORICAL_ODDS_AVAILABLE (provider returned no odds history)",
+      "evidence_ref": "TT_ODDSPAPI_DEEPEN_V1.json#id2503637773735710",
+      "evaluation_version": "MARKET_RULER_V1"
+    },
+    {
+      "provider_event_id": "id2503634962663581",
+      "canonical_event_id": null,
+      "disposition": "EXCLUDED_OTHER",
+      "reason_code": "NO_HISTORICAL_ODDS_AVAILABLE (provider returned no odds history)",
+      "evidence_ref": "TT_ODDSPAPI_DEEPEN_V1_1XBET.json#id2503634962663581",
+      "evaluation_version": "MARKET_RULER_V1"
+    },
+    {
+      "provider_event_id": "id2503212962517690",
+      "canonical_event_id": null,
+      "disposition": "EXCLUDED_OTHER",
+      "reason_code": "NO_HISTORICAL_ODDS_AVAILABLE (provider returned no odds history)",
+      "evidence_ref": "TT_ODDSPAPI_DEEPEN_V1_1XBET.json#id2503212962517690",
+      "evaluation_version": "MARKET_RULER_V1"
+    },
+    {
+      "provider_event_id": "id2503637762514310",
+      "canonical_event_id": null,
+      "disposition": "EXCLUDED_OTHER",
+      "reason_code": "NO_HISTORICAL_ODDS_AVAILABLE (provider returned no odds history)",
+      "evidence_ref": "TT_ODDSPAPI_DEEPEN_V1_1XBET.json#id2503637762514310",
+      "evaluation_version": "MARKET_RULER_V1"
+    },
+    {
+      "provider_event_id": "id2503634969610104",
+      "canonical_event_id": "oaio:69610104",
+      "disposition": "EXCLUDED_INVALID_MARKET",
+      "reason_code": "match-winner market not identifiable (market ids vary)",
+      "evidence_ref": "TT_ODDSPAPI_DEEPEN_V1_1XBET.json#id2503634969610104",
+      "evaluation_version": "MARKET_RULER_V1"
+    },
+    {
+      "provider_event_id": "id2503212969767046",
+      "canonical_event_id": "oaio:69767046",
+      "disposition": "EXCLUDED_INVALID_MARKET",
+      "reason_code": "match-winner market not identifiable (market ids vary)",
+      "evidence_ref": "TT_ODDSPAPI_DEEPEN_V1_1XBET.json#id2503212969767046",
+      "evaluation_version": "MARKET_RULER_V1"
+    },
+    {
+      "provider_event_id": "id2503637769756928",
+      "canonical_event_id": null,
+      "disposition": "EXCLUDED_OTHER",
+      "reason_code": "NO_HISTORICAL_ODDS_AVAILABLE (provider returned no odds history)",
+      "evidence_ref": "TT_ODDSPAPI_DEEPEN_V1_1XBET.json#id2503637769756928",
+      "evaluation_version": "MARKET_RULER_V1"
+    },
+    {
+      "provider_event_id": "id2503634973574340",
+      "canonical_event_id": null,
+      "disposition": "EXCLUDED_OTHER",
+      "reason_code": "NO_HISTORICAL_ODDS_AVAILABLE (provider returned no odds history)",
+      "evidence_ref": "TT_ODDSPAPI_DEEPEN_V1_1XBET.json#id2503634973574340",
+      "evaluation_version": "MARKET_RULER_V1"
+    },
+    {
+      "provider_event_id": "id2503212973578226",
+      "canonical_event_id": null,
+      "disposition": "EXCLUDED_OTHER",
+      "reason_code": "NO_HISTORICAL_ODDS_AVAILABLE (provider returned no odds history)",
+      "evidence_ref": "TT_ODDSPAPI_DEEPEN_V1_1XBET.json#id2503212973578226",
+      "evaluation_version": "MARKET_RULER_V1"
+    },
+    {
+      "provider_event_id": "id2503637773493668",
+      "canonical_event_id": null,
+      "disposition": "EXCLUDED_OTHER",
+      "reason_code": "NO_HISTORICAL_ODDS_AVAILABLE (provider returned no odds history)",
+      "evidence_ref": "TT_ODDSPAPI_DEEPEN_V1_1XBET.json#id2503637773493668",
+      "evaluation_version": "MARKET_RULER_V1"
+    }
+  ]
+}

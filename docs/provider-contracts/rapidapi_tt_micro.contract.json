@@ -1,0 +1,14 @@
+{
+  "auth_scheme": "X-RapidAPI-Key + X-RapidAPI-Host (rapidapi) / Bearer (direct table-tennis.sportmicro.com)",
+  "capability_summary": "Sportmicro Table Tennis v1.0 REST: classes, countries, leagues, tournaments, seasons, rounds, teams, players, standings, cup-bracket, matches (+by-date/live/lineups/statistics/incidents/highlights/weather/tv-channels/graphs), odds (moneyline/spread/totals/asian-handicaps/odd-even/correct-score), bookmakers, news, media.",
+  "contract_type": "openapi",
+  "endpoint_count": 43,
+  "notes": "Authoritative OpenAPI spec downloaded 2026-08-20 from docs.sportmicro.com/openapi/table-tennis.json.",
+  "provider_id": "rapidapi_tt_micro",
+  "provider_version_if_known": "1.0",
+  "rate_limit_notes": "offset/limit pagination; default 50, cap 50; PostgREST filters; free trial 300 req/day per sportmicro.com",
+  "retrieved_at": "2026-08-20T15:24:01Z",
+  "schema_version": null,
+  "sha256": "d14b8960e8af7b8f8fb211c969b2a83c1112958574e47319d7b3c0943d76bc33",
+  "source_url_or_origin": "https://docs.sportmicro.com/openapi/table-tennis.json"
+}

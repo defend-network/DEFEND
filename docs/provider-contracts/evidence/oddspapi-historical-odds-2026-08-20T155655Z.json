@@ -1,0 +1,11 @@
+{
+  "provider_id": "oddspapi",
+  "endpoint": "historical-odds",
+  "status_code": 404,
+  "latency_ms": 429,
+  "retrieved_at": "2026-08-20T15:56:55Z",
+  "url_sanitized": "https://api.oddspapi.io/v4/historical-odds?fixtureId=id2503634962663545&bookmakers=pinnacle,1xbet&apiKey=[REDACTED]",
+  "body": "{\"error\":{\"message\":\"No historical odds found.\",\"code\":\"NOT_FOUND\",\"details\":\"Please check the provided filters and try again.\"}}",
+  "body_sha256": "acbaa488a90bf7535096e959c4b26134c1fcd01ad0506f7389b85474cc8f65f1",
+  "headers_kept": {}
+}

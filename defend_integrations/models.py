@@ -36,22 +36,35 @@ class AdapterKind(str, Enum):
 class ProviderState(str, Enum):
     """Lifecycle state shown on a provider card (computed, not stored).
 
-    The four semantic dimensions stay separate in the provider view:
+    The semantic dimensions stay separate in the provider view:
     implementation (``PLANNED`` vs real), credentials
     (``NEEDS_CREDENTIAL``), enabled (``DISABLED``), and health (the badge
     states). A saved credential alone never implies operational health —
     ``READY_TO_TEST`` is the bridge state before the first probe.
+
+    ``NOT_CONFIGURED`` reports that a real adapter exists but no credential
+    is saved yet. ``CREDENTIAL_PRESENT`` reports the inverse: a credential
+    is saved but no adapter is implemented, so the card never claims
+    readiness. ``ADAPTER_NOT_IMPLEMENTED`` is the dominant fact for
+    placeholder providers with no credential.
     """
 
     DISABLED = "DISABLED"
     PLANNED = "PLANNED"
     NEEDS_CREDENTIAL = "NEEDS_CREDENTIAL"
+    NOT_CONFIGURED = "NOT_CONFIGURED"
+    CREDENTIAL_PRESENT = "CREDENTIAL_PRESENT"
+    ADAPTER_NOT_IMPLEMENTED = "ADAPTER_NOT_IMPLEMENTED"
     READY_TO_TEST = "READY_TO_TEST"
     HEALTHY = "HEALTHY"
     DEGRADED = "DEGRADED"
     RATE_LIMITED = "RATE_LIMITED"
     AUTH_FAILED = "AUTH_FAILED"
+    PLAN_REQUIRED = "PLAN_REQUIRED"
     UNAVAILABLE = "UNAVAILABLE"
+    UNSUPPORTED_FOR_TT = "UNSUPPORTED_FOR_TT"
+    CONTRACT_DRIFT = "CONTRACT_DRIFT"
+    UNKNOWN = "UNKNOWN"
 
 
 class HealthBadge(str, Enum):
@@ -64,6 +77,7 @@ class HealthBadge(str, Enum):
     RATE_LIMITED = "RATE_LIMITED"
     UNAVAILABLE = "UNAVAILABLE"
     AUTH_FAILED = "AUTH_FAILED"
+    PLAN_REQUIRED = "PLAN_REQUIRED"
 
 
 @dataclass(frozen=True)
@@ -101,6 +115,86 @@ class ProviderLicense:
 
 
 @dataclass(frozen=True)
+class ProviderCapabilities:
+    """Declared capability matrix for a provider card.
+
+    Every cell is declarative metadata (what the provider's API documents),
+    never a health claim. ``adapter_status`` is the honest adapter
+    implementation state: a capability may be documented by the vendor while
+    our adapter is still ``not_implemented``.
+    """
+
+    live_odds: str = "unknown"
+    historical_odds: str = "unknown"
+    completed_results: str = "unknown"
+    historical_results: str = "unknown"
+    live_scores: str = "unknown"
+    player_ids: str = "unknown"
+    event_ids: str = "unknown"
+    bookmaker_detail: str = "unknown"
+    odds_movements: str = "unknown"
+    multi_snapshot: str = "unknown"
+    timestamped_odds: str = "unknown"
+    pagination: str = "unknown"
+    rate_limit: str = "unknown"
+    cost_quota: str = "unknown"
+    earliest_history: str | None = None
+    adapter_status: str = "not_implemented"
+    tt_live_odds: str = "unknown"
+    tt_historical_odds: str = "unknown"
+    tt_results: str = "unknown"
+    tt_live_scores: str = "unknown"
+    tt_fixtures: str = "unknown"
+    tt_player_data: str = "unknown"
+    tt_rankings: str = "unknown"
+    tt_stats: str = "unknown"
+    tt_form_h2h: str = "unknown"
+    tt_live_state: str = "unknown"
+    tt_bookmakers: str = "unknown"
+    tt_probabilities: str = "unknown"
+    tt_opening_line: str = "unknown"
+    tt_closing_line: str = "unknown"
+    contract_drift: str = "unknown"
+    historical_odds_plan_requirement: str | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "live_odds": self.live_odds,
+            "historical_odds": self.historical_odds,
+            "completed_results": self.completed_results,
+            "historical_results": self.historical_results,
+            "live_scores": self.live_scores,
+            "player_ids": self.player_ids,
+            "event_ids": self.event_ids,
+            "bookmaker_detail": self.bookmaker_detail,
+            "odds_movements": self.odds_movements,
+            "multi_snapshot": self.multi_snapshot,
+            "timestamped_odds": self.timestamped_odds,
+            "pagination": self.pagination,
+            "rate_limit": self.rate_limit,
+            "cost_quota": self.cost_quota,
+            "earliest_history": self.earliest_history,
+            "adapter_status": self.adapter_status,
+            "tt_live_odds": self.tt_live_odds,
+            "tt_historical_odds": self.tt_historical_odds,
+            "tt_results": self.tt_results,
+            "tt_live_scores": self.tt_live_scores,
+            "tt_fixtures": self.tt_fixtures,
+            "tt_player_data": self.tt_player_data,
+            "tt_rankings": self.tt_rankings,
+            "tt_stats": self.tt_stats,
+            "tt_form_h2h": self.tt_form_h2h,
+            "tt_live_state": self.tt_live_state,
+            "tt_bookmakers": self.tt_bookmakers,
+            "tt_probabilities": self.tt_probabilities,
+            "tt_opening_line": self.tt_opening_line,
+            "tt_closing_line": self.tt_closing_line,
+            "contract_drift": self.contract_drift,
+            "historical_odds_plan_requirement": self.historical_odds_plan_requirement,
+        }
+
+
+@dataclass(frozen=True)
 class ProviderDefinition:
     """Declarative registry entry. One source of truth for provider metadata."""
 
@@ -114,9 +208,12 @@ class ProviderDefinition:
     optional_secrets: tuple[str, ...] = ()
     optional_config: tuple[str, ...] = ()
     docs_url: str | None = None
+    host: str | None = None
+    contract_version: str | None = None
     products: tuple[str, ...] = ()
     rate_limits: ProviderRateLimits = ProviderRateLimits()
     license: ProviderLicense = ProviderLicense()
+    capabilities: ProviderCapabilities = ProviderCapabilities()
     enabled_default: bool = True
     notes: str | None = None
 
@@ -132,9 +229,12 @@ class ProviderDefinition:
             "optional_secrets": list(self.optional_secrets),
             "optional_config": list(self.optional_config),
             "docs_url": self.docs_url,
+            "host": self.host,
+            "contract_version": self.contract_version,
             "products": list(self.products),
             "rate_limits": self.rate_limits.to_dict(),
             "license": self.license.to_dict(),
+            "capabilities": self.capabilities.to_dict(),
             "enabled_default": self.enabled_default,
             "notes": self.notes,
         }
@@ -182,6 +282,7 @@ class ProviderConfiguration:
     last_latency_ms: int | None = None
     remaining_quota: int | None = None
     quota_reset_at: str | None = None
+    last_error_class: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -195,6 +296,7 @@ class ProviderConfiguration:
             "last_latency_ms": self.last_latency_ms,
             "remaining_quota": self.remaining_quota,
             "quota_reset_at": self.quota_reset_at,
+            "last_error_class": self.last_error_class,
         }
 
 
@@ -225,6 +327,7 @@ class AdapterProbe:
     authenticated: bool | None = None
     remaining_quota: int | None = None
     quota_reset_at: str | None = None
+    error_class: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -235,6 +338,7 @@ class AdapterProbe:
             "authenticated": self.authenticated,
             "remaining_quota": self.remaining_quota,
             "quota_reset_at": self.quota_reset_at,
+            "error_class": self.error_class,
         }
 
 
@@ -245,8 +349,19 @@ def utc_now_iso() -> str:
 
 
 def badge_from_probe(probe: AdapterProbe) -> HealthBadge:
-    """Map a sanitized probe to the health taxonomy."""
+    """Map a sanitized probe to the health taxonomy.
 
+    ``error_class`` from the adapter takes precedence so explicit plan /
+    quota / auth findings classify exactly; otherwise the status code and
+    authentication flag decide.
+    """
+
+    if probe.error_class == "plan_required":
+        return HealthBadge.PLAN_REQUIRED
+    if probe.error_class == "rate_limited":
+        return HealthBadge.RATE_LIMITED
+    if probe.error_class == "auth_failed":
+        return HealthBadge.AUTH_FAILED
     if not probe.ok:
         if probe.status_code == 429:
             return HealthBadge.RATE_LIMITED
@@ -270,6 +385,7 @@ def state_from_badge(badge: HealthBadge) -> ProviderState:
         HealthBadge.DEGRADED: ProviderState.DEGRADED,
         HealthBadge.RATE_LIMITED: ProviderState.RATE_LIMITED,
         HealthBadge.AUTH_FAILED: ProviderState.AUTH_FAILED,
+        HealthBadge.PLAN_REQUIRED: ProviderState.PLAN_REQUIRED,
         HealthBadge.UNAVAILABLE: ProviderState.UNAVAILABLE,
     }.get(badge, ProviderState.READY_TO_TEST)
 

@@ -312,6 +312,128 @@ class TestTableTennisBoard:
         assert event["decision"]["reason_codes"] == ["costs_unaccounted"]
 
 
+class _NamedParticipantsReader(FakeSportsReader):
+    def tt_event_participants(self, event_key: str) -> list[str]:
+        return ["Alice", "Bob"]
+
+
+def _history_rows(home_key: str, away_key: str, count: int) -> list[dict[str, object]]:
+    return [
+        {
+            "event_key": f"tt-history-{index:03d}",
+            "league_key": "table_tennis",
+            "home_participant_key": home_key,
+            "away_participant_key": away_key,
+            "home_score": 3 if index % 2 == 0 else 1,
+            "away_score": 1 if index % 2 == 0 else 3,
+            "completed_at": NOW,
+            "source_provider": "the_odds_api_tt",
+            "raw_ref": f"table_tennis:tt-history-{index:03d}@scores",
+        }
+        for index in range(count)
+    ]
+
+
+def _dependencies_with_store(reader: FakeSportsReader, store: InMemoryStore) -> MarketsDependencies:
+    dependencies = _build_dependencies(reader)
+    return MarketsDependencies(
+        settings=dependencies.settings,
+        database=dependencies.database,
+        sports_database=dependencies.sports_database,
+        reader=reader,
+        store=store,
+        journal=InMemoryJournal(),
+        registry=build_default_registry(),
+        reasoners=ReasonerRegistry(),
+        clock=lambda: NOW,
+    )
+
+
+class TestTtDataStatus:
+    def test_data_status_unconfigured_key_reports_entry_point(self, monkeypatch):
+        monkeypatch.delenv("THE_ODDS_API_KEY", raising=False)
+        monkeypatch.setattr(app_module, "odds_api_key", lambda: None)
+        app = app_module.build_markets_app(_build_dependencies(FakeSportsReader()))
+        body = TestClient(app).get("/v1/sports/tt/data-status").json()
+
+        assert body["key"]["configured"] is False
+        assert body["key"]["source"] is None
+        assert body["key"]["entry_point"] == "Setup & Integrations -> The Odds API -> THE_ODDS_API_KEY"
+        assert body["results_feed"]["provider_id"] == "the_odds_api_tt"
+        assert body["results_feed"]["status"] == "UNREGISTERED"
+        assert body["odds_feed"]["status"] == "NOT_POLLED"
+        assert body["model_history"]["ready"] is False
+        assert "credit" in body["note"]
+
+    def test_data_status_key_from_environment_flows_into_feeds(self, monkeypatch):
+        monkeypatch.setenv("THE_ODDS_API_KEY", "test-key")
+        monkeypatch.setattr(app_module, "odds_api_key", lambda: "test-key")
+        store = InMemoryStore()
+        store.upsert_feed(FeedDefinition("the_odds_api_tt", "The Odds API TT Results"))
+        store.record_probe(
+            FeedProbeResult(provider_id="the_odds_api_tt", ok=False, status="UNCONFIGURED", latency_ms=None),
+            observed_at=NOW,
+        )
+        reader = FakeSportsReader()
+        reader._health["the_odds_api"] = {"status": "HEALTHY", "observed_at": NOW}
+        app = app_module.build_markets_app(_dependencies_with_store(reader, store))
+        body = TestClient(app).get("/v1/sports/tt/data-status").json()
+
+        assert body["key"]["configured"] is True
+        assert body["key"]["source"] == "environment"
+        assert body["results_feed"]["status"] == "UNCONFIGURED"
+        assert body["results_feed"]["configured"] is True
+        assert body["odds_feed"]["status"] == "HEALTHY"
+        assert body["odds_feed"]["live_events"] == 1
+
+    def test_data_status_model_ready_when_two_players_have_history(self):
+        store = InMemoryStore()
+        store.seed_tt_results(_history_rows("tabletennis:alice", "tabletennis:bob", 6))
+        app = app_module.build_markets_app(_dependencies_with_store(FakeSportsReader(), store))
+        body = TestClient(app).get("/v1/sports/tt/data-status").json()
+
+        history = body["model_history"]
+        assert history["completed_matches"] == 6
+        assert history["players_with_history"] == 2
+        assert history["min_games_per_player"] == 5
+        assert history["players_over_threshold"] == 2
+        assert history["ready"] is True
+        assert history["top_players"][0]["participant_key"] == "tabletennis:alice"
+        assert history["top_players"][0]["games"] == 6
+
+    def test_board_model_keys_fall_back_to_selection_keys_without_names(self):
+        reader = FakeSportsReader(
+            quotes={("tt-live-001", "match_winner"): arb_pair()}
+        )
+        app = app_module.build_markets_app(_build_dependencies(reader))
+        event = TestClient(app).get("/v1/sports/table-tennis").json()["events"][0]
+
+        assert event["model"] is not None
+        assert event["model"]["available"] is False
+        assert event["model"]["home_participant_key"] == "table_tennis:playera"
+        assert event["model"]["away_participant_key"] == "table_tennis:playerb"
+        assert event["model_probability_available"] is False
+        assert event["model_probability"] is None
+
+    def test_board_evaluates_model_on_real_participant_names(self):
+        reader = _NamedParticipantsReader(
+            quotes={("tt-live-001", "match_winner"): arb_pair(selection_keys=("home", "away"))}
+        )
+        store = InMemoryStore()
+        store.seed_tt_results(_history_rows("table_tennis:alice", "table_tennis:bob", 6))
+        app = app_module.build_markets_app(_dependencies_with_store(reader, store))
+        event = TestClient(app).get("/v1/sports/table-tennis").json()["events"][0]
+
+        assert event["model"] is not None
+        assert event["model"]["available"] is True
+        assert event["model"]["home_participant_key"] == "table_tennis:alice"
+        assert event["model"]["away_participant_key"] == "table_tennis:bob"
+        assert event["model"]["home_games"] == 6
+        assert event["model"]["away_games"] == 6
+        assert event["model_probability_available"] is True
+        assert event["model_probability"] is not None
+
+
 class TestPerformance:
     def test_performance_reports_empty_sample_size_honestly(self):
         app = app_module.build_markets_app(_build_dependencies())

@@ -1,0 +1,14 @@
+{
+  "auth_scheme": "X-RapidAPI-Key + X-RapidAPI-Host",
+  "capability_summary": "8 sports: basketball, baseball, cricket, rugby, ice hockey, american football, handball, volleyball. NO table tennis listed. Multi-sport host; TT unverified -> phase C probe.",
+  "contract_type": "official_docs",
+  "endpoint_count": null,
+  "notes": "Host allsportsapi2.p.rapidapi.com. Same endpoint structure as allscores/basketapi1.",
+  "provider_id": "rapidapi_allsportsapi2",
+  "provider_version_if_known": null,
+  "rate_limit_notes": "Free (Basic) plan hard limit 50-100 req/day; Pro ~$19.99/mo unlimited (anwp.pro docs).",
+  "retrieved_at": "2026-08-20T14:43:32Z",
+  "schema_version": null,
+  "sha256": null,
+  "source_url_or_origin": "https://rapidapi.com/fluis.lacasse/api/allsportsapi2"
+}

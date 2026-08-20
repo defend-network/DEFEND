@@ -1,0 +1,101 @@
+{
+  "applied_at": "2026-08-18T20:29:20.908761+00:00",
+  "artifact": "TT_IDENTITY_MERGES_V1",
+  "benchmark_note": "BENCHMARK_V1 inputs (tt_match_results, tt_rating_history, labels) are NOT modified; impact measured only",
+  "impact": {
+    "M1": {
+      "participant_keys": [
+        "table_tennis:havelladislav",
+        "table_tennis:havelladislav1956"
+      ],
+      "rows_any_variant": 289,
+      "rows_per_key": {
+        "table_tennis:havelladislav": 51,
+        "table_tennis:havelladislav1956": 238
+      }
+    },
+    "M2": {
+      "participant_keys": [
+        "table_tennis:bayerales",
+        "table_tennis:bayeralesh"
+      ],
+      "rows_any_variant": 599,
+      "rows_per_key": {
+        "table_tennis:bayerales": 79,
+        "table_tennis:bayeralesh": 520
+      }
+    },
+    "M3": {
+      "participant_keys": [
+        "table_tennis:sebljachym",
+        "table_tennis:sebl"
+      ],
+      "rows_any_variant": 305,
+      "rows_per_key": {
+        "table_tennis:sebl": 67,
+        "table_tennis:sebljachym": 238
+      }
+    },
+    "_tt_match_results_total": 149672
+  },
+  "merges": [
+    {
+      "aliases": [
+        {
+          "alias_name": "Havel, Ladislav (1956)",
+          "normalized_name": "havel ladislav 1956"
+        }
+      ],
+      "canonical_name": "Havel, Ladislav",
+      "evidence": {
+        "shared_provider_participant_id": "899515"
+      },
+      "identity_state_after": "CONFIRMED",
+      "merge_id": "M1",
+      "normalized_name": "havel ladislav",
+      "participant_id": 1,
+      "provider": "odds_api_io",
+      "reason_code": "SHARED_PROVIDER_ID",
+      "reverse_if": "DELETE the alias rows for this participant from tt_participant_aliases"
+    },
+    {
+      "aliases": [
+        {
+          "alias_name": "Bayer, Alesh",
+          "normalized_name": "bayer alesh"
+        }
+      ],
+      "canonical_name": "Bayer, Ales",
+      "evidence": {
+        "shared_provider_participant_id": "728577"
+      },
+      "identity_state_after": "CONFIRMED",
+      "merge_id": "M2",
+      "normalized_name": "bayer ales",
+      "participant_id": 2,
+      "provider": "odds_api_io",
+      "reason_code": "SHARED_PROVIDER_ID",
+      "reverse_if": "DELETE the alias rows for this participant from tt_participant_aliases"
+    },
+    {
+      "aliases": [
+        {
+          "alias_name": "Sebl",
+          "normalized_name": "sebl"
+        }
+      ],
+      "canonical_name": "Sebl, Jachym",
+      "evidence": {
+        "shared_provider_participant_id": "941929"
+      },
+      "identity_state_after": "CONFIRMED",
+      "merge_id": "M3",
+      "normalized_name": "sebl jachym",
+      "participant_id": 3,
+      "provider": "odds_api_io",
+      "reason_code": "SHARED_PROVIDER_ID",
+      "reverse_if": "DELETE the alias rows for this participant from tt_participant_aliases"
+    }
+  ],
+  "policy": "TT_IDENTITY_POLICY_V1 (reversible canonicalization via tt_participant_aliases)"
+}

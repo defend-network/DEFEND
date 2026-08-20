@@ -74,6 +74,14 @@ class NoActionReason(Enum):
     NO_ELIGIBLE_DATA = "no_eligible_data"
     STRATEGY_NOT_ELIGIBLE = "strategy_not_eligible"
     INSUFFICIENT_MODEL_HISTORY = "insufficient_model_history"
+    LOW_IDENTITY_CONFIDENCE = "low_identity_confidence"
+    STALE_MARKET = "stale_market"
+    LOW_BOOK_COUNT = "low_book_count"
+    PROVIDER_DEGRADED = "provider_degraded"
+    MODEL_NOT_READY = "model_not_ready"
+    MODEL_UNCALIBRATED = "model_uncalibrated"
+    OUT_OF_DISTRIBUTION = "out_of_distribution"
+    QUOTA_PROTECTED = "quota_protected"
 
 
 def _require_text(name: str, value: object) -> str:

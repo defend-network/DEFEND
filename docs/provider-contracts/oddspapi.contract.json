@@ -1,0 +1,14 @@
+{
+  "auth_scheme": "query api_key",
+  "capability_summary": "sportId 25 = table tennis; /v4/fixtures ISO from/to <=10 days; /v4/odds pregame+live only (odds dropped at completion); CONFIRMED /v4/historical-odds?fixtureId=<id>&bookmakers=<name> (bookmakers param REQUIRED - omitting it returns 400 TOO_MANY_BOOKMAKERS): returns {fixtureId, bookmakers:{name:{markets:{mid:{outcomes:{oid:{players:{key:[{createdAt,price,limit,active,exchangeMeta}]}}}}}}}} with full line-move history (89 snapshots over ~2 days for 1xbet match-winner on a Czech Liga Pro fixture; archive from Jan 2026). Coverage varies by bookmaker: bet365 404 NOT_FOUND for TT Elite Series, 200 for TT Cup.",
+  "contract_type": "official_docs",
+  "endpoint_count": null,
+  "notes": "Empirical evidence 2026-08-20: oddspapi-empirical-2026-08-20.json sha256=f4dc62cf7487223efa4b7494fe36b642c5c175ba07114dd1d96d4c2a05daab58 (4 calls, 2x200 with data, 1x404 NOT_FOUND, 1x400 no-bookmakers). See docs/operations/TT_ODDSPAPI_PROBE_V1.json for the correction probe.",
+  "provider_id": "oddspapi",
+  "provider_version_if_known": "v4",
+  "rate_limit_notes": "429 after ~5 rapid calls; ~4.5s window; space >=6s. v4 key does not auth on v5 (401 invalid_api_key).",
+  "retrieved_at": "2026-08-20T14:43:32Z",
+  "schema_version": null,
+  "sha256": null,
+  "source_url_or_origin": "https://docs.oddsapi.io (blog post 2026-04-11) + empirical probe"
+}

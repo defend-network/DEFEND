@@ -1,7 +1,9 @@
 from datetime import datetime, timezone
+import types
 
 import pytest
 
+import defend_markets.feeds as feeds_module
 from defend_markets.domain import TTMatchResult
 from defend_markets.feeds import (
     BinancePublicFeedProvider,
@@ -175,6 +177,7 @@ def test_binance_poll_healthy(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_odds_api_unconfigured_without_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("THE_ODDS_API_KEY", raising=False)
+    monkeypatch.setattr("defend_markets.feeds._odds_api_key", lambda: "")
     result = TheOddsApiTTResultsFeedProvider().poll(_NOW)
     assert result.ok is False
     assert result.status == "UNCONFIGURED"
@@ -263,6 +266,7 @@ def test_feed_service_poll_persists_everything(monkeypatch: pytest.MonkeyPatch) 
 
 def test_feed_service_records_unavailable_on_error(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("THE_ODDS_API_KEY", raising=False)
+    monkeypatch.setattr("defend_markets.feeds._odds_api_key", lambda: "")
     sink = InMemoryFeedSink()
     service = FeedService(
         sink,
@@ -312,3 +316,123 @@ def test_feed_record_validation() -> None:
         FeedRecord(record_key="k", payload={}, observed_at=datetime(2026, 1, 1))
     valid = FeedRecord(record_key="k", payload={"a": 1}, observed_at=_NOW)
     assert valid.record_key == "k"
+
+
+class TestOddsApiKeyResolution:
+    def test_odds_api_key_prefers_process_environment(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("THE_ODDS_API_KEY", "env-key")
+        monkeypatch.setattr(feeds_module, "_resolve_secret_from_store", lambda name: "store-key")
+        assert feeds_module.odds_api_key() == "env-key"
+
+    def test_odds_api_key_falls_back_to_secret_store(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("THE_ODDS_API_KEY", raising=False)
+        monkeypatch.setattr(feeds_module, "_resolve_secret_from_store", lambda name: "store-key")
+        assert feeds_module.odds_api_key() == "store-key"
+
+    def test_odds_api_key_empty_when_unconfigured(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("THE_ODDS_API_KEY", raising=False)
+        monkeypatch.setattr(feeds_module, "_resolve_secret_from_store", lambda name: None)
+        assert feeds_module.odds_api_key() == ""
+
+    def test_resolver_bridges_setup_integrations_store(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import sys
+        import types
+
+        calls: list[object] = []
+
+        class _Registry:
+            def __init__(self, backend: object) -> None:
+                calls.append(backend)
+                self._secrets = {"THE_ODDS_API_KEY": "store-key"}
+
+            def get(self, name: str) -> str | None:
+                return self._secrets.get(name)
+
+        stores_module = types.ModuleType("defend_integrations.stores")
+        stores_module.SecretRegistry = _Registry
+        stores_module.default_secret_path = lambda: "C:\\fake\\secrets.dpapi"
+        secrets_module = types.ModuleType("defend_control.secrets")
+
+        class _DpapiSecretStore:
+            def __init__(self, path: str) -> None:
+                calls.append(path)
+
+        secrets_module.DpapiSecretStore = _DpapiSecretStore
+        monkeypatch.setitem(sys.modules, "defend_integrations.stores", stores_module)
+        monkeypatch.setitem(sys.modules, "defend_control.secrets", secrets_module)
+
+        assert feeds_module._resolve_secret_from_store("THE_ODDS_API_KEY") == "store-key"
+        assert len(calls) == 2
+        assert calls[0] == "C:\\fake\\secrets.dpapi"
+        assert isinstance(calls[1], _DpapiSecretStore)
+
+    def test_resolver_returns_none_when_store_unavailable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import sys
+
+        stores_module = types.ModuleType("defend_integrations.stores")
+
+        def boom() -> object:
+            raise RuntimeError("secrets unavailable")
+
+        stores_module.SecretRegistry = boom
+        stores_module.default_secret_path = boom
+        monkeypatch.setitem(sys.modules, "defend_integrations.stores", stores_module)
+        monkeypatch.setitem(sys.modules, "defend_control.secrets", types.ModuleType("defend_control.secrets"))
+
+        assert feeds_module._resolve_secret_from_store("THE_ODDS_API_KEY") is None
+
+
+class TestOddsApiQuotaProbe:
+    def test_probe_reports_quota_headers_and_tt_keys(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import json
+        import urllib.request
+
+        sports = [
+            {"key": "tabletennis_superliga", "title": "Table Tennis"},
+            {"key": "soccer_epl", "title": "Soccer"},
+        ]
+
+        class FakeResponse:
+            def __init__(self) -> None:
+                self.headers = {
+                    "x-requests-remaining": "482",
+                    "x-requests-used": "18",
+                    "x-requests-last": "2026-08-17T10:00:00Z",
+                }
+
+            def read(self, limit: int = -1) -> bytes:
+                return json.dumps(sports).encode()
+
+            def __enter__(self) -> FakeResponse:
+                return self
+
+            def __exit__(self, *exc_info: object) -> None:
+                return None
+
+        def fake_urlopen(request: object, timeout: float = 20.0) -> FakeResponse:
+            url = str(getattr(request, "full_url", request))
+            assert url.startswith("https://api.the-odds-api.com/v4/sports/?apiKey=")
+            return FakeResponse()
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        result = feeds_module.probe_odds_api_quota("test-key")
+        assert result["status"] == 200
+        assert result["sport_count"] == 2
+        assert result["tt_sport_keys"] == ["tabletennis_superliga"]
+        assert result["requests_remaining"] == "482"
+        assert result["requests_used"] == "18"
+        assert result["requests_last"] == "2026-08-17T10:00:00Z"
+
+    def test_probe_raises_feed_error_on_rejection(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import urllib.error
+        import urllib.request
+
+        def fake_urlopen(request: object, timeout: float = 20.0) -> object:
+            raise urllib.error.HTTPError(
+                "https://api.the-odds-api.com/v4/sports/?apiKey=x", 401, "Unauthorized", None, None
+            )
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        with pytest.raises(FeedError) as exc:
+            feeds_module.probe_odds_api_quota("bad-key")
+        assert exc.value.status_code == 401

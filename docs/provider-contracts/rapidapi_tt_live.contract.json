@@ -1,0 +1,14 @@
+{
+  "auth_scheme": "X-RapidAPI-Key + X-RapidAPI-Host",
+  "capability_summary": "UNKNOWN - name suggests live scores/stats/odds/predictions. No verifiable public catalog found on 2026-08-20.",
+  "contract_type": "official_docs",
+  "endpoint_count": null,
+  "notes": "Host table-tennis-api-live-scores-stats-odds-predictions.p.rapidapi.com. CONTRACT UNVERIFIED; resolve empirically in Phase C with shared RAPIDAPI_KEY (<=40 requests).",
+  "provider_id": "rapidapi_tt_live",
+  "provider_version_if_known": null,
+  "rate_limit_notes": null,
+  "retrieved_at": "2026-08-20T14:43:32Z",
+  "schema_version": null,
+  "sha256": null,
+  "source_url_or_origin": "hostname from directive; catalog page not located via web search"
+}

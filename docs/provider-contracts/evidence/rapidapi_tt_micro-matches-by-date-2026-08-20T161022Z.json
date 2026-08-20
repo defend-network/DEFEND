@@ -1,0 +1,11 @@
+{
+  "provider_id": "rapidapi_tt_micro",
+  "endpoint": "matches-by-date",
+  "status_code": 400,
+  "latency_ms": 2575,
+  "retrieved_at": "2026-08-20T16:10:22Z",
+  "url_sanitized": "https://table-tennis-micro.p.rapidapi.com/matches-by-date?date={date}",
+  "body": "{\"code\":\"4A702AC885\",\"message\":\"Unsupported operator\"}",
+  "body_sha256": "b09d5a09422761434d36b1839e782483a33f8d8e06bb200d4e64e1965094be95",
+  "headers_kept": {}
+}

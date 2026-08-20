@@ -51,6 +51,7 @@ SECRET_VALUES = {
     "FRED_API_KEY": "super-secret-fred-value-abc123",
     "CONGRESS_API_KEY": "super-secret-congress-value-abc123",
     "THE_ODDS_API_KEY": "super-secret-odds-value-abc123",
+    "ODDS_API_IO_API_KEY": "super-secret-oaio-value-abc123",
     "DEFEND_OWNER_USER": "super-secret-owner-user-abc123",
 }
 
@@ -121,7 +122,7 @@ def test_remove_secret_flips_configured_state(tmp_path):
     assert result["configured"] is False
     assert result["masked"] is None
     view = service.provider_view("fred")
-    assert view["state"] == "NEEDS_CREDENTIAL"
+    assert view["state"] == "NOT_CONFIGURED"
     assert view["health_badge"] == "NOT_CONFIGURED"
     assert view["requires_credentials"] is True
     assert view["credentials_configured"] is False
@@ -189,7 +190,7 @@ def test_placeholder_provider_is_not_testable(tmp_path):
         service.test("api_sports")
     assert config_store.get("api_sports").health_badge is HealthBadge.NOT_TESTED
     view = service.provider_view("api_sports")
-    assert view["state"] == "PLANNED"
+    assert view["state"] == "CREDENTIAL_PRESENT"
     assert view["credentials_configured"] is True
 
 
@@ -212,15 +213,15 @@ def test_test_all_configured_skips_placeholders_and_disabled(tmp_path):
         service._secrets.save({name: value})
     config_store.set_enabled("world_bank", False)
     result = service.test_all_configured()
-    assert result["tested"] == 7  # eight real adapters minus disabled world_bank
-    assert len(result["results"]) == 7
+    assert result["tested"] == 8  # nine real adapters minus disabled world_bank
+    assert len(result["results"]) == 8
     assert all(item["badge"] == "HEALTHY" for item in result["results"])
     summary = result["summary"]
-    assert summary["tested"] == 7
-    assert summary["healthy"] == 7
+    assert summary["tested"] == 8
+    assert summary["healthy"] == 8
     assert summary["degraded"] == 0
     assert summary["failed"] == 0
-    assert summary["skipped"] == 1
+    assert summary["skipped"] == 2
     from defend_integrations.registry import PROVIDERS
 
     assert summary["planned"] == sum(
@@ -229,6 +230,7 @@ def test_test_all_configured_skips_placeholders_and_disabled(tmp_path):
     reasons = {item["provider_id"]: item["reason"] for item in result["skipped"]}
     assert reasons["api_sports"] == "adapter not implemented"
     assert reasons["world_bank"] == "disabled"
+    assert reasons["oddspapi"] == "missing credentials"
     assert "fred" not in reasons
     for item in result["results"]:
         assert "super-secret" not in dump_payloads(item)
@@ -247,8 +249,8 @@ def test_test_all_summary_buckets_failures_and_degraded(tmp_path):
     )
     result = service.test_all_configured()
     summary = result["summary"]
-    assert summary["tested"] == 8
-    assert summary["degraded"] == 8
+    assert summary["tested"] == 9
+    assert summary["degraded"] == 9
     assert summary["healthy"] == 0
     adapter._probe = AdapterProbe(
         ok=False,
@@ -258,7 +260,7 @@ def test_test_all_summary_buckets_failures_and_degraded(tmp_path):
         authenticated=False,
     )
     result = service.test_all_configured()
-    assert result["summary"]["failed"] == 8
+    assert result["summary"]["failed"] == 9
 
 
 def test_test_all_configured_skips_missing_credentials(tmp_path):
@@ -330,7 +332,7 @@ def test_unknown_provider_view_raises_key_error(tmp_path):
 
 def test_state_progression_needs_credential_to_ready_to_test_to_healthy(tmp_path):
     service, _, _, _ = make_service(tmp_path)
-    assert service.provider_view("fred")["state"] == "NEEDS_CREDENTIAL"
+    assert service.provider_view("fred")["state"] == "NOT_CONFIGURED"
     service.save_secret("fred", "FRED_API_KEY", "progression-key")
     view = service.provider_view("fred")
     assert view["state"] == "READY_TO_TEST"
@@ -367,14 +369,14 @@ def test_auth_failure_state_progression(tmp_path):
     assert view["health_badge"] == "AUTH_FAILED"
 
 
-def test_placeholder_state_is_planned_regardless_of_credentials(tmp_path):
+def test_placeholder_state_is_adapter_not_implemented_then_credential_present(tmp_path):
     service, _, _, _ = make_service(tmp_path)
     view = service.provider_view("api_sports")
-    assert view["state"] == "PLANNED"
+    assert view["state"] == "ADAPTER_NOT_IMPLEMENTED"
     assert view["health_badge"] == "NOT_TESTED"
     service.save_secret("api_sports", "API_SPORTS_API_KEY", "preloaded-key")
     view = service.provider_view("api_sports")
-    assert view["state"] == "PLANNED"
+    assert view["state"] == "CREDENTIAL_PRESENT"
     assert view["credentials_configured"] is True
 
 
@@ -383,7 +385,7 @@ def test_disabled_placeholder_still_planned_after_enable(tmp_path):
     config_store.set_enabled("api_sports", False)
     assert service.provider_view("api_sports")["state"] == "DISABLED"
     config_store.set_enabled("api_sports", True)
-    assert service.provider_view("api_sports")["state"] == "PLANNED"
+    assert service.provider_view("api_sports")["state"] == "ADAPTER_NOT_IMPLEMENTED"
 
 
 def test_runtime_detected_values_are_exposed_per_provider(tmp_path):
@@ -435,5 +437,5 @@ def test_diagnostics_distinguishes_state_dimensions(tmp_path):
     assert wb["state"] == "DISABLED"
     planned = rows["api_sports"]
     assert planned["implemented"] is False
-    assert planned["state"] == "PLANNED"
+    assert planned["state"] == "ADAPTER_NOT_IMPLEMENTED"
     assert planned["credentials_configured"] is False

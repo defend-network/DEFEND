@@ -19,6 +19,8 @@ REAL_PROVIDER_IDS = {
     "fred",
     "congress_gov",
     "the_odds_api",
+    "odds_api_io",
+    "oddspapi",
     "sec_edgar",
     "world_bank",
     "polymarket",
@@ -150,3 +152,132 @@ def test_rate_limit_and_license_metadata_present_on_real_providers():
             "restricted",
             "unknown",
         )
+
+
+def test_tt_provider_cards_and_capability_matrix():
+    for provider_id, secret in (
+        ("odds_api_io", "ODDS_API_IO_API_KEY"),
+        ("betsapi_tt", "BETSAPI_API_KEY"),
+        ("sportsapi_pro", "SPORTSAPI_PRO_API_KEY"),
+        ("sportmicro_tt", "SPORTMICRO_API_KEY"),
+        ("rapidapi_tabletennis", "RAPIDAPI_KEY"),
+        ("rapidapi_tt_live", "RAPIDAPI_KEY"),
+        ("rapidapi_tt_micro", "RAPIDAPI_KEY"),
+        ("sportradar_tt", "SPORTRADAR_API_KEY"),
+        ("sports_game_odds", "SPORTS_GAME_ODDS_API_KEY"),
+    ):
+        provider = find_provider(provider_id)
+        assert provider is not None, provider_id
+        assert provider.category == "table_tennis", provider_id
+        assert secret in provider.required_secrets, provider_id
+        assert secret in REGISTRY_SECRET_NAMES, secret
+        capabilities = provider.capabilities.to_dict()
+        for column in (
+            "live_odds",
+            "historical_odds",
+            "completed_results",
+            "historical_results",
+            "live_scores",
+            "player_ids",
+            "event_ids",
+            "bookmaker_detail",
+            "odds_movements",
+            "pagination",
+            "rate_limit",
+            "cost_quota",
+            "adapter_status",
+            "tt_live_odds",
+            "tt_historical_odds",
+            "tt_results",
+            "tt_live_scores",
+            "tt_fixtures",
+            "tt_player_data",
+            "tt_rankings",
+            "tt_stats",
+            "tt_form_h2h",
+            "tt_live_state",
+            "tt_bookmakers",
+            "tt_probabilities",
+            "tt_opening_line",
+            "tt_closing_line",
+            "contract_drift",
+            "historical_odds_plan_requirement",
+        ):
+            assert column in capabilities, provider_id
+
+    odds_api_io = find_provider("odds_api_io")
+    assert odds_api_io is not None
+    assert odds_api_io.adapter_kind is AdapterKind.REAL
+    assert odds_api_io.capabilities.earliest_history == "2025-12"
+    assert odds_api_io.capabilities.adapter_status == "partial"
+    assert "SPORTS_ODDS_PRIMARY_API_KEY" not in odds_api_io.required_secrets
+    for provider_id in (
+        "betsapi_tt", "sportsapi_pro", "sportmicro_tt",
+        "rapidapi_tabletennis", "rapidapi_tt_live", "rapidapi_tt_micro",
+        "sportradar_tt", "sports_game_odds",
+    ):
+        provider = find_provider(provider_id)
+        assert provider is not None
+        assert provider.adapter_kind is AdapterKind.PLACEHOLDER, provider_id
+        assert provider.capabilities.adapter_status == "not_implemented", provider_id
+
+
+def test_rapidapi_providers_share_one_credential_with_hosts():
+    rapidapi_ids = (
+        "rapidapi_tabletennis",
+        "rapidapi_tt_live",
+        "rapidapi_tt_micro",
+        "rapidapi_allsportsapi2",
+        "rapidapi_allscores",
+    )
+    expected_hosts = {
+        "rapidapi_tabletennis": "https://tabletennisapi.p.rapidapi.com",
+        "rapidapi_tt_live": "https://table-tennis-api-live-scores-stats-odds-predictions.p.rapidapi.com",
+        "rapidapi_tt_micro": "https://table-tennis-micro.p.rapidapi.com",
+        "rapidapi_allsportsapi2": "https://allsportsapi2.p.rapidapi.com",
+        "rapidapi_allscores": "https://allscores.p.rapidapi.com",
+    }
+    for provider_id in rapidapi_ids:
+        provider = find_provider(provider_id)
+        assert provider is not None, provider_id
+        assert provider.required_secrets == ("RAPIDAPI_KEY",), provider_id
+        assert provider.host == expected_hosts[provider_id], provider_id
+    assert REGISTRY_SECRET_NAMES == frozenset(
+        name
+        for provider in PROVIDERS
+        for name in (*provider.required_secrets, *provider.optional_secrets)
+    )
+    assert "RAPIDAPI_KEY" in REGISTRY_SECRET_NAMES
+    assert "SPORTS_GAME_ODDS_API_KEY" in REGISTRY_SECRET_NAMES
+
+
+def test_tt_capabilities_are_truthful_verified_values():
+    odds_api_io = find_provider("odds_api_io")
+    assert odds_api_io is not None
+    caps = odds_api_io.capabilities
+    assert caps.tt_results == "yes (verified)"
+    assert caps.tt_historical_odds == "not_available"
+    assert caps.tt_live_odds == "no (verified: empty bookmakers on free tier)"
+    assert caps.historical_odds_plan_requirement is not None
+    assert "not_available" not in {
+        "live_odds": caps.live_odds,
+        "historical_odds": caps.historical_odds,
+    }
+    for provider_id in (
+        "betsapi_tt",
+        "sportsapi_pro",
+        "sportmicro_tt",
+        "rapidapi_tabletennis",
+        "rapidapi_tt_live",
+        "rapidapi_tt_micro",
+        "sportradar_tt",
+        "sports_game_odds",
+        "sportdevs_tt",
+        "tabt",
+    ):
+        provider = find_provider(provider_id)
+        assert provider is not None
+        # Placeholders must never claim a verified TT capability.
+        for column in ("tt_results", "tt_live_odds", "tt_historical_odds", "tt_live_scores"):
+            value = getattr(provider.capabilities, column)
+            assert "(verified)" not in value, (provider_id, column)

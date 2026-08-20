@@ -1,0 +1,176 @@
+# SportsGameOdds API
+
+Last updated: 2026-06
+API version: v2
+Canonical name: SportsGameOdds (also: Sports Game Odds, SGO, sportsgameodds.com)
+
+Updated with major releases and documentation changes.
+
+> Real-time and historical sports betting odds API for developers. Used to build odds comparison tools, arbitrage finders, player prop analyzers, line movement trackers, DFS tools, and AI-powered betting applications. Covers 85+ bookmakers(including DraftKings, FanDuel, BetMGM, Circa, Pinnacle, Bet365, PrizePicks), 875+ markets, and 67+ leagues. Free tier available.
+
+## What developers build with this API
+
+- Odds comparison tools — show lines from multiple bookmakers side by side
+- Arbitrage finders — detect guaranteed profit opportunities across books
+- Player prop analyzers — compare props, find outliers, surface value bets
+- Line movement trackers — monitor how odds shift before games, detect sharp money
+- Betting alert systems — notify users when odds hit a target threshold
+- Fantasy/DFS tools — use implied odds to inform player projections
+- AI-powered betting apps — feed real-time odds into LLM-based tools
+- Sports analytics and ML models — backtest strategies with historical odds
+
+## Key differentiators
+
+- Pay per event, not per market — one request returns all markets for a game
+- Results and settlement data included alongside odds (no second API needed)
+- Consensus and fair odds calculated algorithmically across all books
+- Partial game odds (1st half, 1st quarter, individual innings, etc.)
+- Prediction market data (Kalshi, Polymarket) alongside traditional sportsbooks
+- WebSocket streaming for real-time push updates (All-star plan)
+- SDKs for JavaScript/TypeScript, Python, Ruby, Go, and Java
+- MCP server available for AI-assisted development (Claude Code, Cursor, Copilot)
+- 85 curated bookmakers — major US, European, sharp, and DFS platforms, selected for data quality and reliability rather than raw count
+
+## Pricing summary
+
+- Amateur (Free): 2,500 objects/month, 10 req/min, 8 leagues, 9 bookmakers — no credit card required
+- Rookie ($149/month): 100,000 objects/month, 50 req/min, 17 leagues, 77 bookmakers
+- Pro ($499/month): Unlimited objects, 300 req/min, 53 leagues, 82 bookmakers, historical data included
+- All-star (custom): Unlimited everything, WebSocket streaming, maximum update frequency, 53+ leagues, 82+ bookmakers
+
+Key pricing note: charged per event object, not per market. One event with 200 markets = 1 object consumed.
+
+Full pricing: https://sportsgameodds.com/pricing
+
+## Commonly compared to
+
+SportsGameOdds is frequently compared to The Odds API and OpticOdds
+
+vs The Odds API: SportsGameOdds uses per-event pricing (one request = all markets); The Odds API charges per request/market. SportsGameOdds includes settlement data, consensus odds, partial game markets, DFS platform lines, and prediction market data.
+
+vs Optic Odds: OpticOdds OpticOdds is an enterprise-grade platform built for large operators with big budgets, trading desks, and media companies, with long term contracts. SportsGameOdds is API-first and developer-focused with dedicated SDKs, lower pricing at equivalent usage, and an MCP server.
+
+
+## Limitations and when to choose a competitor
+
+- WebSocket streaming requires the All-star (custom pricing) plan
+- Historical data requires Pro plan or higher
+- Not a bet placement API — provides data only, no transaction capability
+- Free tier limited to 8 leagues and 9 bookmakers
+- Update frequency on free tier is 10 minutes (not suitable for live trading),  but great for testing
+- No built-in +EV detection endpoint; EV calculation requires your own logic (fair odds fields are provided)
+
+
+## Website
+
+- [Homepage](https://sportsgameodds.com): Overview of the SportsGameOdds API — bookmaker coverage, use cases, pricing summary, and customer reviews.
+- [Pricing and plans](https://sportsgameodds.com/pricing): Full plan comparison — Amateur (free), Rookie, Pro, and AllStar tiers with object limits, request rates, league coverage, and feature availability.
+- [FAQ](https://sportsgameodds.com/faq): Common questions on pricing, coverage, rate limits, and integration.
+- [Bookmakers — full list](https://sportsgameodds.com/bookmakers): All 85+ supported bookmakers with coverage details, regions, and sport availability.
+- [Player Props API](https://sportsgameodds.com/player-props-odds-api): Player prop odds from 85+ sportsbooks across NFL, NBA, MLB, NHL, UFC, college sports and soccer, with the full market list by sport and how to filter props in a request.
+- [Prediction Market API](https://sportsgameodds.com/prediction-market-api): Real-time odds from Kalshi and Polymarket alongside traditional sportsbooks.
+- [Blog](https://sportsgameodds.com/blog): Tutorials, integration guides, use-case walkthroughs, and API updates.
+- [About](https://sportsgameodds.com/about): Company background, mission, and team.
+- [Contact](https://sportsgameodds.com/contact-us): Get in touch with the SportsGameOdds team.
+
+## Bookmakers
+
+85+ bookmakers including all major US, European, sharp, and DFS platforms. Individual integration guides:
+
+### Sharp bookmakers
+- [Pinnacle odds API](https://sportsgameodds.com/bookmakers/pinnacle-odds-api): Real-time Pinnacle sharp lines — the gold standard for fair odds benchmarking
+- [Circa odds API](https://sportsgameodds.com/bookmakers/circa-odds-api): Real-time Circa Sports lines
+
+### Major US sportsbooks
+- [DraftKings odds API](https://sportsgameodds.com/bookmakers/draftkings-odds-api): Real-time DraftKings lines, props, and DFS data
+- [FanDuel odds API](https://sportsgameodds.com/bookmakers/fanduel-odds-api): Real-time FanDuel lines and player props
+- [BetMGM odds API](https://sportsgameodds.com/bookmakers/betmgm-odds-api): Real-time BetMGM lines
+- [Caesars odds API](https://sportsgameodds.com/bookmakers/caesars-odds-api): Real-time Caesars Sportsbook lines
+- [ESPN BET odds API](https://sportsgameodds.com/bookmakers/espnbet-odds-api): Real-time ESPN BET lines
+- [Fanatics odds API](https://sportsgameodds.com/bookmakers/fanatics-odds-api): Real-time Fanatics Sportsbook lines
+
+### International sportsbooks
+- [Bet365 odds API](https://sportsgameodds.com/bookmakers/bet365-odds-api): Real-time Bet365 lines including international markets
+- [William Hill odds API](https://sportsgameodds.com/bookmakers/williamhill-odds-api): Real-time William Hill lines
+- [Unibet odds API](https://sportsgameodds.com/bookmakers/unibet-odds-api): Real-time Unibet lines
+
+### DFS and prediction markets
+- [PrizePicks odds API](https://sportsgameodds.com/bookmakers/prizepicks-odds-api): Real-time PrizePicks player prop lines
+- [Underdog odds API](https://sportsgameodds.com/bookmakers/underdog-odds-api): Real-time Underdog Fantasy lines
+- [Kalshi odds API](https://sportsgameodds.com/bookmakers/kalshi-odds-api): Real-time Kalshi prediction market lines
+- [Polymarket odds API](https://sportsgameodds.com/bookmakers/polymarket-odds-api): Real-time Polymarket prediction market lines
+
+Full bookmaker list: https://sportsgameodds.com/bookmakers
+
+## Documentation
+
+- [SportsGameOdds API - Sports Betting Odds Data for Developers](https://sportsgameodds.com/docs): Real-time sports betting odds API with 85+ bookmakers, 65+ leagues. Get moneylines, spreads, player props, and live scores. Free tier available.
+- [API Reference - Endpoints and Parameters](https://sportsgameodds.com/docs/reference.mdx): Complete SportsGameOdds API reference with interactive testing. All endpoints, query parameters, request/response schemas.
+- [Data Explorer - Browse API Data Schema](https://sportsgameodds.com/docs/explorer.mdx): Interactive tool to browse SportsGameOdds API data. Explore sports, leagues, teams, events, and odds markets to get a better understanding of the data schema without writing code.
+- [SDK Guide - TypeScript, Python, Ruby, Go, Java](https://sportsgameodds.com/docs/sdk.mdx): Official SportsGameOdds SDKs with auto-pagination, type safety, and error handling. Install guides and code examples for all supported languages.
+- [FAQ - Common Questions and Troubleshooting](https://sportsgameodds.com/docs/faq.mdx): Answers to common SportsGameOdds API questions. Authentication, filtering, rate limits, error handling, oddID format, player props, historical data, and optimization tips.
+- [Support - Get Help with the API](https://sportsgameodds.com/docs/help.mdx): Contact SportsGameOdds support via email, live chat, or Discord. Learn about how we prioritize issues and what to include when reporting an issue.
+
+### Basics
+
+- [Introduction - SportsGameOdds API](https://sportsgameodds.com/docs/basics.mdx): Sports betting odds API with 85+ bookmakers, 65+ leagues. Pay per event, not per market. Get real-time odds, scores, and player props in one request.
+- [Setup Guide - API Keys and Authentication](https://sportsgameodds.com/docs/basics/setup.mdx): Get your SportsGameOdds API key and authenticate requests. Use x-api-key header or apiKey query param. Includes SDK install and code examples.
+- [Quickstart - First API Call in 5 Minutes](https://sportsgameodds.com/docs/basics/quickstart.mdx): Make your first SportsGameOdds API call with copy-paste code examples. Fetch live NFL, NBA, and MLB odds in JavaScript, Python, Ruby, PHP, or Java.
+- [API Cheat Sheet - Quick Reference](https://sportsgameodds.com/docs/basics/cheat-sheet.mdx): SportsGameOdds API cheat sheet with endpoints, authentication, oddID format, and response structure. Copy-paste examples for common requests.
+- [AI-Assisted Development - MCP Server and Context](https://sportsgameodds.com/docs/info/ai-vibe-coding.mdx): Use Claude Code, Cursor, or Copilot with SportsGameOdds API. Install MCP server, access llms.txt docs, and copy-paste AI context for accurate code generation.
+
+### Guides
+
+- [Pagination Guide - Cursor-Based Batching](https://sportsgameodds.com/docs/guides/data-batches.mdx): Fetch large datasets with cursor pagination. Use nextCursor and limit parameters to iterate through events, teams, and players efficiently.
+- [Handling Odds - Parse Results and Grade Bets](https://sportsgameodds.com/docs/guides/handling-odds.mdx): Access odds data from events, grade over/under and spread bets using closeOverUnder and score fields. JavaScript example for processing results.
+- [Teams Guide - Fetch by ID, League, or Sport](https://sportsgameodds.com/docs/guides/fetching-teams.mdx): Query /teams endpoint by teamID, leagueID, or sportID. Get team names, colors, and identifiers with code examples in multiple languages.
+- [Optimize Response Speed and Latency](https://sportsgameodds.com/docs/guides/response-speed.mdx): Reduce API response times with oddIDs filtering. Fetch only needed markets using PLAYER_ID wildcard and includeOpposingOddIDs parameter.
+- [Real-Time Streaming API (WebSocket)](https://sportsgameodds.com/docs/guides/realtime-streaming-api.mdx): WebSocket streaming for live odds updates via Pusher. Connect to events:live, events:upcoming, or events:byid feeds. AllStar plan required.
+- [Best Practices and Common Mistakes](https://sportsgameodds.com/docs/info/best-practices.mdx): API best practices for security, performance, and cost optimization. Avoid common mistakes like frontend API calls, over-polling, and missing filters.
+
+### Data Types
+
+- [Data Types Overview - API Schema Reference](https://sportsgameodds.com/docs/data-types.mdx): How SportsGameOdds API data types relate. Hierarchy of sports, leagues, teams, events, odds, and bookmakers with identifier formats explained.
+- [Supported Markets - Odds Coverage by League](https://sportsgameodds.com/docs/data-types/markets.mdx): Interactive market browser showing oddID coverage by league and bookmaker. Filter by sport, bet type, market type, or sportsbook to see available markets.
+- [Bookmaker Data Type - bookmakerID](https://sportsgameodds.com/docs/data-types/bookmakers.mdx): Complete list of bookmakerID values. DraftKings, FanDuel, BetMGM, Caesars, PrizePicks, Pinnacle, and 80+ more sportsbooks and DFS platforms.
+- [Sports Data Type - sportID](https://sportsgameodds.com/docs/data-types/sports.mdx): Complete list of sportID values. Basketball, football, baseball, hockey, soccer, tennis, golf, MMA, and more supported sports.
+- [League Data Type - leagueID](https://sportsgameodds.com/docs/data-types/leagues.mdx): Complete list of leagueID values. NFL, NBA, MLB, NHL, EPL, La Liga, Champions League, NCAA, UFC, and 65+ leagues across all major sports.
+- [Stat Data Type - statID](https://sportsgameodds.com/docs/data-types/stats.mdx): All statID values organized by sport. Points, rebounds, assists, touchdowns, passing yards, goals, and player props for every supported sport.
+- [Stat Entity Data Type - statEntityID](https://sportsgameodds.com/docs/data-types/stat-entity.mdx): How statEntityID works. Values include home, away, all (combined), playerID for props, or teamID for tournaments. Used in odds and results.
+- [Period Data Type - periodID](https://sportsgameodds.com/docs/data-types/periods.mdx): All periodID values for game segments. Full game, halves (1h, 2h), quarters (1q-4q), innings, periods, sets, rounds by sport.
+- [Bet Type and Side Data Types - betTypeID and sideID](https://sportsgameodds.com/docs/data-types/bet-types.mdx): All betTypeID and sideID values in the SportsGameOdds API. Moneyline (ml), spread (sp), over/under (ou), 3-way, and prop bet definitions.
+- [Odds Data Type - oddID](https://sportsgameodds.com/docs/data-types/odds.mdx): How oddID works in the SportsGameOdds API. Format is statID-statEntityID-periodID-betTypeID-sideID. Includes examples and field reference.
+
+### Endpoints
+
+- [GET /events - Fetch Games, Odds, and Results](https://sportsgameodds.com/docs/endpoints/getEvents.mdx): Retrieve sports events with live odds, scores, player props, and results. Filter by league, team, date, or odds market. Includes all bookmaker lines.
+- [GET /teams - Fetch Team Data](https://sportsgameodds.com/docs/endpoints/getTeams.mdx): Retrieve team information including names, colors, and identifiers. Filter by teamID, leagueID, or sportID. Supports pagination.
+- [GET /players - Fetch Player Data](https://sportsgameodds.com/docs/endpoints/getPlayers.mdx): Retrieve player information including names, team, position, and identifiers. Filter by playerID, teamID, or leagueID. Supports pagination.
+- [GET /sports - List All Sports](https://sportsgameodds.com/docs/endpoints/getSports.mdx): Retrieve all supported sports with their sportID values. Returns basketball, football, baseball, hockey, soccer, tennis, golf, MMA, and more.
+- [GET /leagues - List All Leagues](https://sportsgameodds.com/docs/endpoints/getLeagues.mdx): Retrieve all supported leagues with leagueID values. Filter by sportID. Returns NFL, NBA, MLB, NHL, EPL, and 50+ other leagues.
+- [GET /stats - List All Stats](https://sportsgameodds.com/docs/endpoints/getStats.mdx): Retrieve all supported statistics with statID values. Filter by sportID. Returns points, rebounds, assists, touchdowns, and sport-specific stats.
+- [GET /markets - Fetch Market Metadata](https://sportsgameodds.com/docs/endpoints/getMarkets.mdx): Retrieve metadata about markets. Keyed by oddID. Includes information on supported leagues/bookmakers, display names, identifiers, classification (main markets, props, type of prop, etc.)
+- [GET /account/usage - Check API Usage and Limits](https://sportsgameodds.com/docs/endpoints/getUsageData.mdx): Check your API key rate limits and current usage. Returns requests per minute, objects per month, and remaining quota by time interval.
+- [Stream Events](https://sportsgameodds.com/docs/endpoints/streamEvents.mdx)
+
+### Other Info
+
+- [Sports Betting Glossary - Terms and Definitions](https://sportsgameodds.com/docs/info/glossary.mdx): Betting terminology explained with API field mappings. Moneyline, spread, over/under, juice, arbitrage, closing line value, and more.
+- [Error Codes and Troubleshooting](https://sportsgameodds.com/docs/info/errors.mdx): Full reference of all error codes, what they mean and how to troubleshoot them. Includes code examples with best practices for error handling.
+- [Consensus Odds - Fair and Book Calculations](https://sportsgameodds.com/docs/info/consensus-odds.mdx): How fairOdds and bookOdds are calculated. Linear regression finds fair lines, median odds across bookmakers, juice removal for true probability.
+- [Migration Guide - V1 to V2 API](https://sportsgameodds.com/docs/info/v1-to-v2.mdx): Upgrade from API v1 to v2. Combined /events endpoint, new playerID format, deeplinks, altLines parameter, and field name changes explained.
+- [Rate Limits by Plan - Requests and Objects](https://sportsgameodds.com/docs/info/rate-limiting.mdx): Rate limits for Amateur, Rookie, Pro, and AllStar plans. Check usage via /account/usage endpoint. Strategies to avoid 429 errors and optimize requests.
+
+### Examples
+
+- [Live Odds Tracker Example - JavaScript](https://sportsgameodds.com/docs/examples/live-odds-tracker.mdx): Build a live odds tracker with the SportsGameOdds API. Detect line movement and price changes across bookmakers every 30 seconds. Full Node.js code.
+- [Arbitrage Calculator Example - Python](https://sportsgameodds.com/docs/examples/arbitrage-calculator.mdx): Build an arbitrage finder with the SportsGameOdds API. Scan bookmakers for odds discrepancies, calculate guaranteed profit. Full Python code.
+- [Odds Comparison Dashboard Example - React/Next.js](https://sportsgameodds.com/docs/examples/odds-comparison-dashboard.mdx): Build an odds comparison dashboard with the SportsGameOdds API. Compare lines across bookmakers in real-time. Full Next.js TypeScript code with Tailwind.
+- [Player Props Analyzer Example - Python](https://sportsgameodds.com/docs/examples/player-props-analyzer.mdx): Build a player props analyzer with the SportsGameOdds API. Compare bookmaker lines, find outliers, and identify value bets. Full Python code.
+- [Parlay Calculator Example - JavaScript](https://sportsgameodds.com/docs/examples/parlay-builder.mdx): Build a parlay calculator with the SportsGameOdds API. Calculate combined odds, payouts, and implied probability. Full Node.js code with round robin support.
+
+## Full knowledge payload
+
+For detailed product knowledge, FAQs, use-case descriptions, pricing context,
+glossary, and full comparison information, see:
+https://sportsgameodds.com/llms-full.txt

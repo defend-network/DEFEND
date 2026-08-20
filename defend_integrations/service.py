@@ -137,9 +137,12 @@ class SetupIntegrationsService:
         if not config.enabled:
             state = ProviderState.DISABLED.value
         elif definition.adapter_kind is AdapterKind.PLACEHOLDER:
-            state = ProviderState.PLANNED.value
+            if configured:
+                state = ProviderState.CREDENTIAL_PRESENT.value
+            else:
+                state = ProviderState.ADAPTER_NOT_IMPLEMENTED.value
         elif not configured:
-            state = ProviderState.NEEDS_CREDENTIAL.value
+            state = ProviderState.NOT_CONFIGURED.value
         elif config.tested_at is None:
             state = ProviderState.READY_TO_TEST.value
         else:
@@ -167,6 +170,8 @@ class SetupIntegrationsService:
             "health_badge": badge.value,
             "enabled": config.enabled,
             "requires_credentials": requires_credentials,
+            "credential_configured": configured,
+            "test_supported": definition.adapter_kind is AdapterKind.REAL,
             "credentials_configured": configured,
             "credentials": credentials,
             "config": public_config,
@@ -174,8 +179,11 @@ class SetupIntegrationsService:
             "optional_config": list(definition.optional_config),
             "products": list(definition.products),
             "docs_url": definition.docs_url,
+            "host": definition.host,
+            "contract_version": definition.contract_version,
             "rate_limits": definition.rate_limits.to_dict(),
             "license": definition.license.to_dict(),
+            "capabilities": definition.capabilities.to_dict(),
             "tested_at": config.tested_at,
             "last_success_at": config.last_success_at,
             "last_test_detail": config.last_test_detail,
@@ -183,6 +191,7 @@ class SetupIntegrationsService:
             "last_latency_ms": config.last_latency_ms,
             "remaining_quota": config.remaining_quota,
             "quota_reset_at": config.quota_reset_at,
+            "last_error_class": config.last_error_class,
             "notes": definition.notes,
         }
 
@@ -202,9 +211,11 @@ class SetupIntegrationsService:
         if not config.enabled:
             return ProviderState.DISABLED
         if definition.adapter_kind is AdapterKind.PLACEHOLDER:
-            return ProviderState.PLANNED
+            if configured:
+                return ProviderState.CREDENTIAL_PRESENT
+            return ProviderState.ADAPTER_NOT_IMPLEMENTED
         if not configured:
-            return ProviderState.NEEDS_CREDENTIAL
+            return ProviderState.NOT_CONFIGURED
         if config.tested_at is None:
             return ProviderState.READY_TO_TEST
         return state_from_badge(config.health_badge)
@@ -438,6 +449,7 @@ class SetupIntegrationsService:
             remaining_quota=probe.remaining_quota,
             quota_reset_at=probe.quota_reset_at,
             default_enabled=definition.enabled_default,
+            last_error_class=None if probe.ok else (probe.error_class or badge.value),
         )
         return {
             "provider_id": definition.provider_id,

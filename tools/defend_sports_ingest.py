@@ -14,7 +14,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 import time
 from pathlib import Path
@@ -22,6 +21,7 @@ from pathlib import Path
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from defend_markets.feeds import odds_api_key
 from defend_sports.config import SportsSettings
 from defend_sports.db import SportsDatabase
 from defend_sports.ingestion import IngestionService
@@ -62,9 +62,11 @@ def main() -> None:
     database.migrate()
     service = IngestionService(database)
 
-    api_key = os.environ.get("THE_ODDS_API_KEY", "").strip()
+    api_key = odds_api_key()
     if not api_key:
         print("the_odds_api UNCONFIGURED missing THE_ODDS_API_KEY")
+        print("enter it in Setup & Integrations -> The Odds API -> THE_ODDS_API_KEY")
+        print("(or set the THE_ODDS_API_KEY environment variable)")
         sys.exit(2)
 
     provider = TheOddsApiSportsProvider(api_key=api_key)

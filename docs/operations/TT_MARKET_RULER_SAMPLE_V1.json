@@ -1,0 +1,101 @@
+{
+  "schema": "P3 market-ruler sample + P4 market baseline smoke",
+  "updated_at": "2026-08-20T17:00:41Z",
+  "evidence_source": "oddspapi-empirical-2026-08-20.json",
+  "probe_source": "TT_ODDSPAPI_PROBE_V1.json",
+  "database": "read-only (tt_match_results, tt_rating_history)",
+  "canonical_matches": {
+    "r2_czech_1xbet": {
+      "level": "NORMALIZED",
+      "matched_event_key": "oaio:73488400",
+      "candidate_keys": [
+        "oaio:73488400"
+      ],
+      "note": ""
+    }
+  },
+  "excluded_events": [
+    {
+      "label": "r3_cup_bet365",
+      "reason": "canonical event not in corpus (settlement lag; probe found 28/40 recent-era matches); odds evidence intact but no M5 join possible"
+    }
+  ],
+  "M5_MARKET_MATCHED_N": 1,
+  "M5_BRIER": 0.290844,
+  "MARKET_BRIER": 0.260928,
+  "M5_LOG_LOSS": 0.775008,
+  "MARKET_LOG_LOSS": 0.715006,
+  "M5_MINUS_MARKET_BRIER": 0.029917,
+  "MARKET_BASELINE_STATUS": "INFRASTRUCTURE_READY_INSUFFICIENT_SAMPLE",
+  "notes": "N=1 < 30: Brier/log-loss reported as RESEARCH_PRELIMINARY only; TRUE_CLOSE unavailable (no closing feed), LAST_VALID_PREMATCH used as best available reference",
+  "rows": [
+    {
+      "canonical_event_id": "oaio:73488400",
+      "commence_ts": "2026-08-08T00:00:00Z",
+      "player_a": "Sobisek, Martin",
+      "player_b": "Chlebecek, Marek",
+      "m5_probability": 0.4607,
+      "bookmaker": "1xbet",
+      "raw_decimal_odds_a": 2.06,
+      "raw_decimal_odds_b": 1.68,
+      "raw_implied_p_a": 0.485437,
+      "raw_implied_p_b": 0.595238,
+      "overround": 0.080675,
+      "no_vig_market_p_a": 0.449198,
+      "no_vig_market_p_b": 0.550802,
+      "observation_ts": "2026-08-06T13:55:38Z",
+      "seconds_before_commence": 122661,
+      "market_observation_class": "OPEN",
+      "actual_result": "home_won",
+      "raw_market_ref": "oddspapi-empirical-2026-08-20.json#r2_czech_1xbet@market 251",
+      "m5_feature_snapshot_ref": "tt_rating_history.history_id=859255",
+      "model_version": "1.0.0"
+    },
+    {
+      "canonical_event_id": "oaio:73488400",
+      "commence_ts": "2026-08-08T00:00:00Z",
+      "player_a": "Sobisek, Martin",
+      "player_b": "Chlebecek, Marek",
+      "m5_probability": 0.4607,
+      "bookmaker": "1xbet",
+      "raw_decimal_odds_a": 2.085,
+      "raw_decimal_odds_b": 1.68,
+      "raw_implied_p_a": 0.479616,
+      "raw_implied_p_b": 0.595238,
+      "overround": 0.074854,
+      "no_vig_market_p_a": 0.446215,
+      "no_vig_market_p_b": 0.553785,
+      "observation_ts": "2026-08-07T06:52:13Z",
+      "seconds_before_commence": 61666,
+      "market_observation_class": "INTERMEDIATE",
+      "actual_result": "home_won",
+      "raw_market_ref": "oddspapi-empirical-2026-08-20.json#r2_czech_1xbet@market 251",
+      "m5_feature_snapshot_ref": "tt_rating_history.history_id=859255",
+      "model_version": "1.0.0"
+    },
+    {
+      "canonical_event_id": "oaio:73488400",
+      "commence_ts": "2026-08-08T00:00:00Z",
+      "player_a": "Sobisek, Martin",
+      "player_b": "Chlebecek, Marek",
+      "m5_probability": 0.4607,
+      "bookmaker": "1xbet",
+      "raw_decimal_odds_a": 1.89,
+      "raw_decimal_odds_b": 1.81,
+      "raw_implied_p_a": 0.529101,
+      "raw_implied_p_b": 0.552486,
+      "overround": 0.081587,
+      "no_vig_market_p_a": 0.489189,
+      "no_vig_market_p_b": 0.510811,
+      "observation_ts": "2026-08-07T23:58:57Z",
+      "seconds_before_commence": 62,
+      "market_observation_class": "LAST_VALID_PREMATCH",
+      "actual_result": "home_won",
+      "raw_market_ref": "oddspapi-empirical-2026-08-20.json#r2_czech_1xbet@market 251",
+      "m5_feature_snapshot_ref": "tt_rating_history.history_id=859255",
+      "model_version": "1.0.0",
+      "m5_log_loss_row": 0.775008,
+      "market_log_loss_row": 0.715006
+    }
+  ]
+}
