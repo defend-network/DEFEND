@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import json
+from types import SimpleNamespace
+
 from defend_integrations.matching import match_event
 from defend_markets.shadow import forward_fixtures_from_oddspapi
 from tools.defend_tt_forward_collector import (
+    OddsApiIOLiveClient,
     _oaio_event_to_fixture,
     _oaio_odds_to_oddspapi_shape,
 )
@@ -146,6 +150,47 @@ class TestForwardMatchPipeline:
             window_hours=3.0,
         )
         assert match.matched_event_key is None
+
+
+class TestOddsApiIoClient:
+    def test_uses_attested_selected_bookmakers(self):
+        client = OddsApiIOLiveClient("synthetic-key")
+        assert client._bookmakers_param() == "Sbobet,SingBet"
+
+    def test_pending_empty_embedded_books_still_fetches_odds(self, monkeypatch):
+        calls = []
+
+        def fake_probe(provider, endpoint, url, **kwargs):
+            calls.append((provider, endpoint, url))
+            payload = {
+                "id": 73870732,
+                "home": "Kowalewski, Kamil",
+                "away": "Bucko, Damian",
+                "bookmakers": {},
+            }
+            evidence = SimpleNamespace(
+                body=json.dumps(payload), status_code=200
+            )
+            result = SimpleNamespace(status_code=200)
+            return result, evidence, payload
+
+        monkeypatch.setattr(
+            "tools.defend_tt_forward_collector.probe_get", fake_probe
+        )
+        client = OddsApiIOLiveClient("synthetic-key")
+        client._events["73870732"] = {
+            "id": 73870732,
+            "status": "pending",
+            "bookmakers": {},
+        }
+
+        status, payload, truncated = client.fetch_odds("73870732")
+
+        assert status == 200
+        assert truncated is False
+        assert calls and calls[0][1] == "odds"
+        assert "bookmakers=Sbobet,SingBet" in calls[0][2]
+        assert payload["bookmakers"] == {}
 
     def test_new_canonical_shape_matches_by_exact_id(self):
         shaped = {

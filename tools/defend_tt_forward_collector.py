@@ -56,8 +56,10 @@ class OddspapiLiveClient:
     def __init__(self, key: str) -> None:
         self._key = key
         self._secrets = (key,)
+        self.last_request_count = 0
 
     def fetch_fixtures(self, *, from_iso: str, to_iso: str) -> tuple[int | None, Any, bool]:
+        self.last_request_count = 1
         url = (
             f"{_ODDSPAPI_BASE}/fixtures?sportId=25&from={from_iso}&to={to_iso}"
             f"&apiKey={self._key}"
@@ -73,7 +75,8 @@ class OddspapiLiveClient:
             payload = parsed
         return result.status_code, payload, recovered
 
-def fetch_odds(self, provider_event_id: str) -> tuple[int | None, Any, bool]:
+    def fetch_odds(self, provider_event_id: str) -> tuple[int | None, Any, bool]:
+        self.last_request_count = 1
         url = f"{_ODDSPAPI_BASE}/odds?fixtureId={provider_event_id}&apiKey={self._key}"
         result, evidence, parsed = probe_get(
             "oddspapi", "odds", url,
@@ -89,13 +92,14 @@ def fetch_odds(self, provider_event_id: str) -> tuple[int | None, Any, bool]:
 
 _OAIO_BASE = "https://api.odds-api.io/v3"
 
-# Odds-API.io free tier: fixture discovery returns pending/settled events
-# (response hard-capped at 16384 bytes like OddsPapi); odds are only served
-# for the account's two selected recreational bookmakers and the selection
-# is dashboard-locked (PUT /bookmakers/selected is a no-op on free tier).
-# When an event carried no odds in the sweep, fetch_odds returns the empty
-# payload WITHOUT a network call to conserve the 100 req/hr budget.
-_OAIO_SELECTED_BOOKMAKERS = ("22Bet", "888Sport")
+# Odds-API.io discovery responses are hard-capped at 16384 bytes like OddsPapi.
+# Bookmaker selection is account-scoped; the exact labels below were attested
+# through /v3/bookmakers/selected. /v3/events may omit embedded odds, so a
+# pending event must still receive a per-event /odds request.
+# Account-selected Solo bookmaker labels returned by
+# /v3/bookmakers/selected. Keep the exact provider spelling; the endpoint
+# accepts these labels as the bookmaker query values.
+_OAIO_SELECTED_BOOKMAKERS = ("Sbobet", "SingBet")
 
 
 def _oaio_event_to_fixture(event: dict[str, Any]) -> dict[str, Any]:
@@ -176,6 +180,7 @@ class OddsApiIOLiveClient:
         self._key = key
         self._secrets = (key,)
         self._events: dict[str, dict[str, Any]] = {}
+        self.last_request_count = 0
 
     def _bookmakers_param(self) -> str:
         return ",".join(_OAIO_SELECTED_BOOKMAKERS)
@@ -188,6 +193,7 @@ class OddsApiIOLiveClient:
         few days, so the second sweep targets yesterday's settled events
         (EXACT_ID by provider event id once the refresh covers them).
         """
+        self.last_request_count = 2
         url = (
             f"{_OAIO_BASE}/events?sport=table-tennis&from={from_iso}&to={to_iso}"
             f"&apiKey={self._key}"
@@ -240,8 +246,10 @@ class OddsApiIOLiveClient:
 
     def fetch_odds(self, provider_event_id: str) -> tuple[int | None, Any, bool]:
         event = self._events.get(provider_event_id)
-        if event is not None and not event.get("bookmakers"):
+        if event is not None and event.get("status") == "settled" and not event.get("bookmakers"):
+            self.last_request_count = 0
             return 200, {"fixtureId": provider_event_id, "bookmakers": {}}, False
+        self.last_request_count = 1
         url = (
             f"{_OAIO_BASE}/odds?eventId={provider_event_id}"
             f"&bookmakers={self._bookmakers_param()}&markets=ML&apiKey={self._key}"

@@ -36,10 +36,12 @@ from defend_markets.shadow_store import ShadowStore
 
 
 class OddsClient(Protocol):
-    def fetch_fixtures(self, *, from_iso: str, to_iso: str) -> tuple[int | None, Any]:
+    def fetch_fixtures(
+        self, *, from_iso: str, to_iso: str
+    ) -> tuple[int | None, Any, bool]:
         ...
 
-    def fetch_odds(self, provider_event_id: str) -> tuple[int | None, Any]:
+    def fetch_odds(self, provider_event_id: str) -> tuple[int | None, Any, bool]:
         ...
 
 
@@ -160,7 +162,7 @@ class ShadowEngine:
         from_iso = now.isoformat().replace("+00:00", "Z")
         to_iso = (now + timedelta(hours=self._config.discovery_window_hours)).isoformat().replace("+00:00", "Z")
         status, payload, truncated = self._client.fetch_fixtures(from_iso=from_iso, to_iso=to_iso)
-        metrics.api_requests += 1
+        metrics.api_requests += int(getattr(self._client, "last_request_count", 1))
         if truncated:
             metrics.truncated_responses += 1
         if status is not None and status >= 400:
@@ -232,7 +234,7 @@ class ShadowEngine:
         now = self._now()
         for event in self._due_events(now):
             status, payload, truncated = self._client.fetch_odds(event["provider_event_id"])
-            metrics.api_requests += 1
+            metrics.api_requests += int(getattr(self._client, "last_request_count", 1))
             if truncated:
                 metrics.truncated_responses += 1
             if status is not None and status >= 400:
@@ -241,7 +243,12 @@ class ShadowEngine:
                     metrics.rate_limit_events += 1
                 continue
             self._record_raw(
-                "oddspapi", f"odds:{event['provider_event_id']}", now, status, payload, metrics
+                self._provider_label,
+                f"odds:{event['provider_event_id']}",
+                now,
+                status,
+                payload,
+                metrics,
             )
             self._ingest_odds(event, payload, now, metrics)
             self._store.set_last_odds_poll(int(event["forward_event_id"]), now)

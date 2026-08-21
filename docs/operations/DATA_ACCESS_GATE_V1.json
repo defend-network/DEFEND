@@ -1,0 +1,176 @@
+{
+  "schema": "DEFENDMARKETS_DATA_ACCESS_GATE",
+  "version": 1,
+  "captured_at": "2026-08-20T23:50:23Z",
+  "status": "PARTIAL",
+  "blocker": "BLOCKED_NO_MARKET_OPPORTUNITY",
+  "workstream": {
+    "branch": "platform/control-center-v2-integrate",
+    "local_head": "d37a5ae64a67b49ea44356fbf1b2e1883c1b84d8",
+    "remote_ref": "origin/platform/control-center-v2-integrate",
+    "remote_head": "d37a5ae64a67b49ea44356fbf1b2e1883c1b84d8",
+    "foreign_changes_touched": false
+  },
+  "database": {
+    "source": "Windows user environment HKCU Environment SPORTS_DATABASE_URL",
+    "resolution_method": "Loaded the existing user-level value into the command context without printing it",
+    "connect": "PASS",
+    "database_name": "defendmarkets",
+    "schema": "public",
+    "markets_schema_version": 7,
+    "sports_schema_version": 4,
+    "canonical_results_storage": "tt_match_results",
+    "canonical_event_storage": "sport_events plus tt_forward_events",
+    "market_observation_storage": "tt_market_observations",
+    "model_prediction_storage": "tt_m5_live_predictions",
+    "paper_decision_storage": "market_decisions and tt_predictions"
+  },
+  "provider": {
+    "provider_id": "odds_api_io",
+    "auth": "PASS",
+    "provider_state": "HEALTHY",
+    "selected_endpoint_http_status": 200,
+    "selected_endpoint_latency_ms": 636,
+    "selected_bookmakers": ["Sbobet", "SingBet"],
+    "bookmaker_catalog_http_status": 200,
+    "bookmaker_catalog_count": 275,
+    "selected_bookmakers_active": {
+      "Sbobet": true,
+      "SingBet": true
+    },
+    "provider_bookmaker_ids": {
+      "Sbobet": "Sbobet",
+      "SingBet": "SingBet"
+    },
+    "quota_remaining": null,
+    "quota_reset": null,
+    "quota_note": "Provider did not expose remaining quota in observed responses"
+  },
+  "provider_attestation": {
+    "sports_http_status": 200,
+    "events_http_status": 200,
+    "events_latency_ms": 602,
+    "events_response_truncated": true,
+    "events_discovered_in_attestation": 51,
+    "live_events_http_status": 200,
+    "live_events_count": 6,
+    "odds_pending_http_status": 200,
+    "odds_live_http_status": 200,
+    "historical_odds_http_status": 200,
+    "odds_response_latency_ms": 436,
+    "odds_bookmakers_returned": [],
+    "market_families_returned": [],
+    "coverage_classification": "AUTHENTICATED_EVENTS_WITHOUT_USABLE_TT_ODDS",
+    "evidence": [
+      "Selected account endpoint returned Sbobet and SingBet",
+      "Bookmaker catalog marked both selected books active",
+      "40 collector per-event odds requests returned HTTP 200 with empty bookmakers",
+      "Pending, live, and historical TT odds probes all returned empty bookmakers"
+    ]
+  },
+  "refresh": {
+    "type": "bounded_post_cutoff_result_refresh",
+    "loader": "tools/defend_tt_backfill.py",
+    "range_start": "2026-08-16T00:00:00Z",
+    "range_end": "2026-08-20T23:59:59Z",
+    "requests_first_run": 5,
+    "events_seen_first_run": 1524,
+    "events_persisted_first_run": 1519,
+    "results_persisted_first_run": 1524,
+    "odds_persisted_first_run": 0,
+    "errors_first_run": 0,
+    "identity_rows_added": 0,
+    "post_cutoff_rows_added": 1519,
+    "frozen_pre_cutoff_rows_before": 149672,
+    "frozen_pre_cutoff_rows_after": 149672,
+    "second_run_requests": 0,
+    "second_run_new_rows": 0,
+    "m5_frozen_rows_mutated": 0,
+    "future_result_feature_leakage": false
+  },
+  "canonical_matching": {
+    "events_discovered": 83,
+    "matched_exact_provider_id": 19,
+    "matched_exact_participants": 0,
+    "matched_normalized": 0,
+    "matched_total": 19,
+    "ambiguous": 0,
+    "unmatched": 64,
+    "match_rate": 0.228916,
+    "match_levels_observed": {
+      "EXACT_ID": 19,
+      "UNMATCHED": 64
+    },
+    "unmatched_classification": {
+      "new_post_cutoff_provider_event": 64,
+      "ambiguous": 0,
+      "schema_mismatch": 0,
+      "normalization_failure": 0
+    },
+    "canonical_matching_status": "PASS_AFTER_MAP_SHAPING_AND_BOUNDED_REFRESH"
+  },
+  "market_ingestion": {
+    "collector_odds_requests": 40,
+    "events_with_any_odds": 0,
+    "events_with_sbobet_odds": 0,
+    "events_with_singbet_odds": 0,
+    "events_with_both_books": 0,
+    "observations_received": 0,
+    "observations_written": 0,
+    "price_changes": 0,
+    "duplicates_suppressed": 0,
+    "stale_observations": 0,
+    "comparable_markets": 0,
+    "price_pairs": 0,
+    "market_normalization": "BLOCKED_NO_BOOKMAKER_PAYLOAD"
+  },
+  "model": {
+    "model_id": "M5_REGULARIZED_LOGISTIC",
+    "model_version": "M5_REGULARIZED_LOGISTIC:54affc960a34",
+    "artifact": "docs/operations/TT_M5_LIVE_WEIGHTS_V1.json",
+    "artifact_sha256": "fe6f18d1fb5eea640fc42d904d9010470ee75f73e594b2c00a86982d3381e229",
+    "artifact_declared_cutoff": "2026-08-15T20:00:00Z",
+    "owner_authoritative_cutoff": "2026-08-16T00:00:00Z",
+    "cutoff_discrepancy_preserved": true,
+    "feature_schema_version": 1,
+    "strategy_version": 1,
+    "artifact_unchanged": true,
+    "model_eligible_events": 0,
+    "available_model_predictions": 0,
+    "insufficient_history_prediction_rows": 19,
+    "inference_status": "BLOCKED_NO_ELIGIBLE_EVENTS"
+  },
+  "paper_shadow": {
+    "paper_decisions": 0,
+    "status": "PASS_NO_QUALIFIED_EVENTS",
+    "qualification_blocker": "NO_MARKET_OBSERVATIONS"
+  },
+  "activation": {
+    "pre_soak_gate": "BLOCKED_NO_MARKET_OPPORTUNITY",
+    "ten_minute_smoke": "NOT_RUN_PRE_SOAK_GATE",
+    "sixty_minute_soak": "BLOCKED_NO_MARKET_OPPORTUNITY",
+    "no_silent_failures": true,
+    "real_money_execution": false,
+    "websocket_upgrade": "NOT_NEEDED_YET"
+  },
+  "request_accounting": {
+    "collector_network_requests": 42,
+    "collector_network_request_shape": "2 event sweeps plus 40 per-event odds requests",
+    "reported_metric_before_accounting_fix": 41,
+    "solo_plan_cap_per_hour": 5000,
+    "projected_requests_per_hour_at_default_cycle": 84,
+    "projected_monthly_requests_at_default_cycle": 60480,
+    "quota_headroom_per_hour": 4916
+  },
+  "failure_containment": {
+    "api_errors": 0,
+    "rate_limits": 0,
+    "parse_errors": 0,
+    "schema_drift_events": 0,
+    "match_errors": 0,
+    "database_errors": 0,
+    "raw_provider_credentials_persisted": false
+  },
+  "owner_action_required": "Ask Odds-API.io support to confirm that the Solo account's Sbobet and SingBet selections include current Table Tennis pre-match markets; do not purchase another plan or wager.",
+  "next_highest_value_step": "When either selected book returns a complete TT pre-match odds payload, rerun the bounded activation smoke before authorizing a 60-minute soak."
+}

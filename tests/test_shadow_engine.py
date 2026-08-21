@@ -360,6 +360,22 @@ class TestEngineCycle:
         assert by_id["id2"]["canonical_event_id"] is None
         assert store.raw_evidence, "raw evidence must be persisted"
 
+    def test_provider_label_is_used_for_raw_evidence(self):
+        store = InMemoryShadowStore()
+        client = FakeClient()
+        client.fixture_payload = _fixture_payload()
+        engine = ShadowEngine(
+            store=store,
+            m5=FakeM5(),
+            client=client,
+            provider_label="odds_api_io",
+            now=lambda: NOW,
+        )
+
+        engine.discover(canonical_events={})
+
+        assert store.raw_evidence[0]["provider"] == "odds_api_io"
+
     def test_odds_poll_gate_and_ruler_flow(self):
         store, client, engine = self._engine(now=NOW)
         engine.discover(canonical_events={
