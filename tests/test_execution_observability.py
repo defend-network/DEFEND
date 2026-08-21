@@ -26,6 +26,7 @@ def _step(
     error_code=None,
     attempts=1,
     latency_seconds=1.25,
+    data=None,
 ):
     err = None
     if error_code:
@@ -36,7 +37,17 @@ def _step(
     if ok is not None:
         from types import SimpleNamespace
 
-        result = SimpleNamespace(ok=ok, error=err)
+        result = SimpleNamespace(
+            ok=ok,
+            error=err,
+            data=data,
+            metadata=SimpleNamespace(
+                duration_ms=12,
+                cached=False,
+                attempts=attempts,
+                source_count=None,
+            ),
+        )
     start = datetime.now(timezone.utc)
     finish = start + timedelta(seconds=latency_seconds)
     return StepExecution(
@@ -81,6 +92,19 @@ def test_execution_summary_none_handling():
     from api_server import _execution_summary
 
     assert _execution_summary(None) is None
+
+
+def test_execution_summary_exposes_bounded_result_counts():
+    from api_server import _execution_summary
+    from types import SimpleNamespace
+
+    ex = _fake_execution(
+        [_step("s1", "documents.search", data=SimpleNamespace(hits=[object()]))]
+    )
+    result_metadata = _execution_summary(ex)["steps"][0]["result_metadata"]
+    assert result_metadata["hits_count"] == 1
+    assert result_metadata["duration_ms"] == 12
+    assert "text" not in result_metadata
 
 
 def test_step_execution_carries_tool_name():

@@ -34,6 +34,15 @@ def _truthy_env(name: str, default: str = "false") -> bool:
     return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def cookie_secure() -> bool:
+    """Resolve cookie transport policy with a fail-closed standalone default."""
+    configured = os.getenv("DEFEND_COOKIE_SECURE")
+    if configured is not None:
+        return _truthy_env("DEFEND_COOKIE_SECURE")
+    environment = os.getenv("DEFEND_ENV", "production").strip().lower()
+    return environment not in {"development", "dev", "local", "test"}
+
+
 def _trust_cloudflare() -> bool:
     return os.getenv("DEFEND_TRUST_CLOUDFLARE", "false").strip().lower() == "true"
 
@@ -44,7 +53,7 @@ def _set_cookie(response: Response, name: str, value: str) -> None:
         value,
         max_age=COOKIE_MAX_AGE,
         httponly=True,
-        secure=_truthy_env("DEFEND_COOKIE_SECURE", "true"),
+        secure=cookie_secure(),
         samesite="lax",
         path="/",
     )

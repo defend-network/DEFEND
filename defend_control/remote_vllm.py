@@ -288,6 +288,7 @@ def build_remote_process_specs(
         if name in _API_ENV_NAMES and isinstance(value, str) and value
     }
     api_env = {
+        "DEFEND_ENV": "production",
         "DEFEND_MODEL_BACKEND": "openai_compatible",
         "DEFEND_MODEL": "defend-ai",
         "DEFEND_MODEL_BASE_URL": model_ready.endpoint,

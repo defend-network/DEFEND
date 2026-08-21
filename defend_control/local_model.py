@@ -115,6 +115,7 @@ def build_local_process_specs(
         if name in _API_ENV_NAMES and isinstance(value, str) and value
     }
     api_env = {
+        "DEFEND_ENV": "development",
         "DEFEND_MODEL_BACKEND": "ollama",
         "DEFEND_MODEL": model_ready.model,
         "OLLAMA_HOST": model_ready.endpoint,
@@ -134,7 +135,7 @@ def build_local_process_specs(
         "DEFEND_PUBLIC_WEB_ORIGIN": settings.public_web_origin,
         "DEFEND_CORS_ORIGINS": settings.public_web_origin,
         "DEFEND_TRUST_CLOUDFLARE": "true",
-        "DEFEND_COOKIE_SECURE": "true",
+        "DEFEND_COOKIE_SECURE": "false",
         **secret_env,
     }
     repo = settings.repo_root

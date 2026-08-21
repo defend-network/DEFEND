@@ -93,3 +93,16 @@ def test_compile_rejects_hallucinated_tool_name():
     except ValueError:
         return
     raise AssertionError("hallucinated tool name must raise ValueError")
+
+
+def test_classifier_routes_explicit_calculation_and_time_sequence_to_planner():
+    cp = _build_cp(SpyClient())
+    request = AgentRequest(
+        request_id="r",
+        message="First compute 3*4, then tell me today's date and time using the time tool.",
+    )
+
+    decision = asyncio.run(cp.classify(request))
+
+    assert decision.route.value == "COMPLEX"
+    assert decision.reason_code == "multi_tool_request"

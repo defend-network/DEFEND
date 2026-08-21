@@ -4,9 +4,18 @@
 Operator document, not DEFEND AI training language. Never ingest into RAG,
 memory, prompts, or model training data.
 
-Audit date: 2026-08-20. Model: `defend-ai:latest` (Qwen2.5 14B Q4_K_M,
-num_ctx 8192, temp 0.65). GPU: NVIDIA RTX 4050 Laptop 6 GB (4.19 GB model
-footprint, partial offload).
+Audit date: 2026-08-20. **All generation benchmarks below are
+`LOCAL_LEGACY_DEV_BASELINE` / `NON_CANONICAL_MODEL_RESULT`.** Model:
+`defend-ai:latest` (Qwen2.5 14B Q4_K_M, num_ctx 8192, temp 0.65). GPU:
+NVIDIA RTX 4050 Laptop 6 GB (4.19 GB model footprint, partial offload).
+
+Canonical model fingerprint is in
+`DEFEND_AI_MODEL_MANIFEST_V1.json`: private adapter
+`Defend-network/defend-qwen-32b-lora@92c790d…` over
+`unsloth/Qwen2.5-32B-Instruct-bnb-4bit@aa79e347…`, served by remote vLLM as
+`defend-ai`. Canonical live inference is
+`BLOCKED_PENDING_AUTHORIZED_CANONICAL_COMPUTE`; no legacy measurement is a
+canonical quality or latency claim.
 
 ## P13 benchmark (direct model, system prompt, temp 0.2)
 
@@ -93,4 +102,20 @@ secrets or API keys leaked in any run (refusal or system-prompt text only).
    (530) so the production browser path is unverified.
 4. Model tool-selection consistency is low; dependent-step $ref resolution
    fragile (recovered honestly in all observed cases).
-5. Debug `print("Installed models:", …)` left in `ollama_client.py:60`.
+5. Previous debug print in `ollama_client.py:60` was removed; readiness now has
+   separate `/live` and `/ready` contracts.
+
+## Continuation validation
+
+| Area | Result | Evidence |
+|---|---|---|
+| Tool schemas | VERIFIED | `tests/test_control_plane_tools.py`; user-path execution traces |
+| Multi-tool routing | VERIFIED for explicit calc+time | `COMPLEX`, two successful calls, trace `8501368e-…` |
+| Local cookie policy | VERIFIED | development specs set Secure=false; production specs set Secure=true; live loopback headers omit Secure |
+| RAG persistence | PARTIALLY_VERIFIED | fixture indexed and `documents.search` executed before/after restart; model prose contradicted tool/index state |
+| Observability | VERIFIED | redacted execution summary includes tool/result counts and latency |
+| Research job durability | DEFERRED_WITH_REASON | `_JOBS` remains in-memory; durable state requires separate architecture work |
+
+The canonical Qwen3 assertion in the continuation directive was not adopted:
+authoritative adapter metadata resolves the canonical base to Qwen2.5-32B and
+the conflict is preserved in the manifest rather than guessed away.

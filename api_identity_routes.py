@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from admin_auth import AdminPrincipal, require_admin
+from api_batch3_routes import cookie_secure
 from defend_data.identity_mailer import (
     DeliveryResult,
     GmailInvitationMailer,
@@ -548,7 +549,7 @@ def account_login(
         max_age=ttl,
         expires=ttl,
         path="/",
-        secure=True,
+        secure=cookie_secure(),
         httponly=True,
         samesite="lax",
     )

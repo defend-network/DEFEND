@@ -32,6 +32,8 @@
       "gpu_families": ["A100", "H100", "H200", "B200"],
       "client": "openai_compatible_client.OpenAICompatibleModelClient (DEFEND_MODEL_BACKEND=vllm, DEFEND_MODEL_BASE_URL=http://127.0.0.1:8001/v1)"
     },
+    "live_inference_status": "BLOCKED_PENDING_AUTHORIZED_CANONICAL_COMPUTE",
+    "local_validation_status": "PLUMBING_ONLY_NON_CANONICAL",
     "system_prompt": {
       "source": "defend_system.py get_system_prompt()",
       "sha256": "85f9ba6a40be7ba29774f00067b7d22e9f9da1834dc17997edfb313f790655b9",

@@ -64,6 +64,7 @@ def build_admin_surface_specs(
         raise ValueError("python_executable must be a non-empty string")
     secret_env = _secret_subset(secrets)
     api_env = {
+        "DEFEND_ENV": "development",
         "DEFEND_API_PORT": str(settings.api_port),
         "DEFEND_OWNER_USER": "MASSA",
         "DEFEND_OWNER_EMAIL": "chairman@defend-network.org",
@@ -80,7 +81,7 @@ def build_admin_surface_specs(
         "DEFEND_PUBLIC_WEB_ORIGIN": settings.public_web_origin,
         "DEFEND_CORS_ORIGINS": settings.public_web_origin,
         "DEFEND_TRUST_CLOUDFLARE": "true",
-        "DEFEND_COOKIE_SECURE": "true",
+        "DEFEND_COOKIE_SECURE": "false",
         **secret_env,
     }
     repo = settings.repo_root

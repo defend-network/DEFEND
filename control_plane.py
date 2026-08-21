@@ -258,14 +258,31 @@ class ControlPlane:
         if any(m in msg for m in memory_write_markers):
             return RouteDecision(route=Route.SINGLE_TOOL, reason_code="memory_proposal")
 
-        # Calculator: only clear math, not "what is the rate"
+        # Route explicit multi-intent requests to the planner before the
+        # single-tool shortcuts consume the first recognizable intent.
         calc_markers = ("calculate", "how much is", "math expression", " * ", " + ", " - ", " / ")
-        if any(k in msg for k in calc_markers) or (
+        has_calculation = any(k in msg for k in calc_markers) or (
             re.search(r"\b\d+\s*[\*\+\-\/]\s*\d+\b", msg) is not None
-        ):
+        )
+        time_markers = (
+            "what time",
+            "time is it",
+            "utc now",
+            "current time",
+            "today's date",
+            "today date",
+            "date and time",
+            "time tool",
+            "clock",
+        )
+        has_time = any(k in msg for k in time_markers)
+        has_sequence = any(k in msg for k in ("first", "then", "next", "after that", "followed by"))
+        if has_calculation and has_time and has_sequence:
+            return RouteDecision(route=Route.COMPLEX, reason_code="multi_tool_request")
+        if has_calculation:
             return RouteDecision(route=Route.SINGLE_TOOL, reason_code="calculation")
 
-        if any(k in msg for k in ["what time", "time is it", "utc now", "current time"]):
+        if has_time:
             return RouteDecision(route=Route.SINGLE_TOOL, reason_code="time")
 
         if any(k in msg for k in ["search the web", "fetch url", "read document"]):

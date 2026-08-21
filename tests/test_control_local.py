@@ -104,6 +104,7 @@ def test_local_process_specs_keep_secrets_in_api_environment_only(tmp_path):
     assert dict(specs.cloudflare.env) == {}
 
     expected_api_values = {
+        "DEFEND_ENV": "development",
         "DEFEND_MODEL_BACKEND": "ollama",
         "DEFEND_MODEL": "defend-ai:latest",
         "OLLAMA_HOST": "http://127.0.0.1:11434",
@@ -120,7 +121,7 @@ def test_local_process_specs_keep_secrets_in_api_environment_only(tmp_path):
         "DEFEND_PUBLIC_WEB_ORIGIN": "https://ai.example.test",
         "DEFEND_CORS_ORIGINS": "https://ai.example.test",
         "DEFEND_TRUST_CLOUDFLARE": "true",
-        "DEFEND_COOKIE_SECURE": "true",
+        "DEFEND_COOKIE_SECURE": "false",
         "DEFEND_API_PORT": "8000",
         **secret_values,
     }

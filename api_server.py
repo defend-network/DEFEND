@@ -130,6 +130,7 @@ def _execution_summary(execution) -> dict[str, Any] | None:
                     "ok": ok,
                     "error_code": error_code,
                     "latency_ms": latency_ms,
+                    "result_metadata": _tool_result_metadata(step.tool_result),
                 }
             )
         return {
@@ -140,6 +141,24 @@ def _execution_summary(execution) -> dict[str, Any] | None:
         }
     except Exception:
         return None
+
+
+def _tool_result_metadata(tool_result) -> dict[str, Any] | None:
+    """Expose bounded counts/timing without returning tool payloads."""
+    if tool_result is None:
+        return None
+    metadata: dict[str, Any] = {}
+    tool_metadata = getattr(tool_result, "metadata", None)
+    for name in ("duration_ms", "cached", "attempts", "source_count"):
+        value = getattr(tool_metadata, name, None)
+        if value is not None:
+            metadata[name] = value
+    data = getattr(tool_result, "data", None)
+    for name in ("hits", "results", "sources", "evidence"):
+        value = getattr(data, name, None)
+        if isinstance(value, (list, tuple)):
+            metadata[f"{name}_count"] = len(value)
+    return metadata or None
 
 
 def _pack_response(resp) -> dict[str, Any]:
