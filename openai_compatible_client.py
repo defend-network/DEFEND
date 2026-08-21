@@ -88,6 +88,10 @@ class OpenAICompatibleModelClient:
         except Exception:
             return False
 
+    async def readiness_check(self) -> bool:
+        """True when the served model alias is advertised by the server."""
+        return await self.healthcheck()
+
     async def generate(
         self,
         messages: list[ChatMessage],
