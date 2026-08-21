@@ -6,9 +6,12 @@
   "blocker": "BLOCKED_NO_MARKET_OPPORTUNITY",
   "workstream": {
     "branch": "platform/control-center-v2-integrate",
+    "base_head": "d37a5ae64a67b49ea44356fbf1b2e1883c1b84d8",
     "local_head": "d37a5ae64a67b49ea44356fbf1b2e1883c1b84d8",
+    "completed_commit": "7832bb94e8c1c822f23ddae31dbe403f9c03bd56",
     "remote_ref": "origin/platform/control-center-v2-integrate",
-    "remote_head": "d37a5ae64a67b49ea44356fbf1b2e1883c1b84d8",
+    "remote_head": "7832bb94e8c1c822f23ddae31dbe403f9c03bd56",
+    "remote_verified": true,
     "foreign_changes_touched": false
   },
   "database": {
