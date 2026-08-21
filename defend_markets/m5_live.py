@@ -286,6 +286,11 @@ class FrozenM5:
                 )
             )
         )
+        cutoff_utc = (
+            cutoff.astimezone(timezone.utc)
+            if cutoff.tzinfo is not None
+            else cutoff.replace(tzinfo=timezone.utc)
+        )
         return {
             "schema": "TT_M5_LIVE_WEIGHTS",
             "model_id": MODEL_ID,
@@ -294,7 +299,7 @@ class FrozenM5:
             "intercept": w_map["intercept"],
             "weights": {n: w_map[n] for n in FEATURE_NAMES},
             "fit_n": n_train,
-            "cutoff": cutoff.replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z"),
+            "cutoff": cutoff_utc.isoformat().replace("+00:00", "Z"),
             "fit_brier": round(float(brier), 6),
             "fit_log_loss": round(float(log_loss), 6),
             "sha256": sha,

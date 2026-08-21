@@ -1,0 +1,23 @@
+{
+  "schema": "TT_M5_LIVE_WEIGHTS_METADATA_CORRECTION",
+  "version": 1,
+  "artifact": "docs/operations/TT_M5_LIVE_WEIGHTS_V1.json",
+  "artifact_file_sha256": "fe6f18d1fb5eea640fc42d904d9010470ee75f73e594b2c00a86982d3381e229",
+  "weights_sha256": "54affc960a3434575d1b4b7e536f9413c2b1978fd020433490ac2020d13a15f8",
+  "artifact_literal_cutoff": "2026-08-15T20:00:00Z",
+  "artifact_timezone_marker": "Z",
+  "training_pipeline_source_timezone": "America/New_York",
+  "owner_cutoff_source": "authoritative owner directive plus fit_n/database boundary count",
+  "true_m5_training_cutoff": "2026-08-16T00:00:00Z",
+  "values_intended_to_represent_same_instant": true,
+  "root_cause": "FrozenM5.freeze serialized an aware America/New_York cutoff with replace(tzinfo=UTC), relabeling the wall clock instead of converting the instant.",
+  "evidence": {
+    "fit_n": 148474,
+    "non_draw_rows_before_2026_08_15T20_00_00Z": 148375,
+    "non_draw_rows_before_2026_08_16T00_00_00Z": 148474,
+    "pre_cutoff_rows_mutated": 0
+  },
+  "correction": "Future freeze metadata now uses astimezone(UTC). The V1 artifact bytes and fitted weights remain unchanged; this sidecar is the authoritative provenance correction.",
+  "m5_frozen_artifact_unchanged": true,
+  "retraining_performed": false
+}

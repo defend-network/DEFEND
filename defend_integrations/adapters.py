@@ -13,7 +13,9 @@ headers, and success predicates.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from typing import Protocol
+from urllib.parse import quote
 
 from .http import FetchResult, fetch
 from .models import (
@@ -290,16 +292,123 @@ class OddsApiIoAdapter(_BaseAdapter):
                 detail="missing ODDS_API_IO_API_KEY", authenticated=None,
             )
         url = f"https://api.odds-api.io/v3/sports?apiKey={key}"
-        return self._probe(
+        result = fetch(
             url,
-            secrets,
-            success_predicate=lambda body: isinstance(body, list),
+            timeout_seconds=10.0,
+            headers={"User-Agent": _KNOWN_UA, "Accept": "application/json"},
+            retries=2,
+            backoff_seconds=1.0,
             known_secrets=(key,),
-            quota_headers=(
-                "x-ratelimit-remaining",
-                "ratelimit-remaining",
-            ),
-            quota_reset_header="x-ratelimit-reset",
+        )
+        if not result.ok:
+            return AdapterProbe(
+                ok=False,
+                status_code=result.status_code,
+                latency_ms=result.latency_ms,
+                detail=self._detail_from_result(result),
+                authenticated=None,
+            )
+        body = json.loads(result.body) if result.body else None
+        if not isinstance(body, list):
+            return AdapterProbe(
+                ok=False,
+                status_code=result.status_code,
+                latency_ms=result.latency_ms,
+                detail="authenticated response did not contain a sports list",
+                authenticated=True,
+                coverage_state="UNKNOWN",
+            )
+
+        tt_present = any(
+            isinstance(sport, dict)
+            and (
+                str(sport.get("slug") or "").casefold() == "table-tennis"
+                or str(sport.get("name") or "").casefold() == "table tennis"
+            )
+            for sport in body
+        )
+        coverage_state = "UNKNOWN"
+        coverage_detail = "table_tennis_present=" + str(tt_present).lower()
+        selected_url = f"https://api.odds-api.io/v3/bookmakers/selected?apiKey={key}"
+        selected_result = fetch(
+            selected_url,
+            timeout_seconds=10.0,
+            headers={"User-Agent": _KNOWN_UA, "Accept": "application/json"},
+            retries=1,
+            backoff_seconds=1.0,
+            known_secrets=(key,),
+        )
+        selected_body = json.loads(selected_result.body) if selected_result.body else None
+        selected = []
+        if isinstance(selected_body, dict) and isinstance(selected_body.get("bookmakers"), list):
+            selected = [
+                str(value).strip()
+                for value in selected_body["bookmakers"]
+                if isinstance(value, str) and value.strip()
+            ][:2]
+
+        now = datetime.now(timezone.utc)
+        events_url = (
+            "https://api.odds-api.io/v3/events?sport=table-tennis"
+            f"&from={quote(now.isoformat().replace('+00:00', 'Z'))}"
+            f"&to={quote((now + timedelta(hours=2)).isoformat().replace('+00:00', 'Z'))}"
+            f"&apiKey={key}"
+        )
+        events_result = fetch(
+            events_url,
+            timeout_seconds=10.0,
+            headers={"User-Agent": _KNOWN_UA, "Accept": "application/json"},
+            retries=1,
+            backoff_seconds=1.0,
+            known_secrets=(key,),
+        )
+        events_body = json.loads(events_result.body) if events_result.body else None
+        events = events_body if isinstance(events_body, list) else []
+        bookmaker_keys: list[str] = []
+        market_count = 0
+        odds_status: int | None = None
+        if selected and events and isinstance(events[0], dict):
+            event_id = str(events[0].get("id") or "")
+            odds_url = (
+                "https://api.odds-api.io/v3/odds?eventId=" + quote(event_id)
+                + "&bookmakers=" + quote(",".join(selected))
+                + "&apiKey=" + key
+            )
+            odds_result = fetch(
+                odds_url,
+                timeout_seconds=10.0,
+                headers={"User-Agent": _KNOWN_UA, "Accept": "application/json"},
+                retries=1,
+                backoff_seconds=1.0,
+                known_secrets=(key,),
+            )
+            odds_status = odds_result.status_code
+            odds_body = json.loads(odds_result.body) if odds_result.body else None
+            if isinstance(odds_body, dict) and isinstance(odds_body.get("bookmakers"), dict):
+                bookmaker_keys = sorted(str(key) for key in odds_body["bookmakers"])
+                for value in odds_body["bookmakers"].values():
+                    if isinstance(value, list):
+                        market_count += len(value)
+                    elif isinstance(value, dict) and isinstance(value.get("markets"), dict):
+                        market_count += len(value["markets"])
+        if bookmaker_keys and market_count:
+            coverage_state = "AVAILABLE"
+        elif tt_present and events_result.ok and odds_status in (200, None):
+            coverage_state = "EMPTY"
+        coverage_detail = (
+            f"table_tennis_present={tt_present}; events={len(events)}; "
+            f"selected_books={','.join(selected) or 'none'}; "
+            f"bookmaker_keys={','.join(bookmaker_keys) or 'none'}; "
+            f"market_entries={market_count}; odds_status={odds_status}"
+        )
+        return AdapterProbe(
+            ok=True,
+            status_code=result.status_code,
+            latency_ms=result.latency_ms,
+            detail="authenticated; " + coverage_detail,
+            authenticated=True,
+            coverage_state=coverage_state,
+            coverage_detail=coverage_detail,
         )
 
 

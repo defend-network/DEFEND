@@ -154,6 +154,78 @@ class ShadowEngine:
         )
         return match.matched_event_key, match.level.value
 
+    def _participant_keys_for_match(
+        self,
+        fixture: Any,
+        canonical_event_id: str | None,
+        canonical_events: dict[str, dict[str, Any]],
+    ) -> tuple[str, str]:
+        provider_keys = [compact_name(fixture.player_a), compact_name(fixture.player_b)]
+        if not canonical_event_id:
+            return provider_keys[0], provider_keys[1]
+        candidate = canonical_events.get(canonical_event_id) or {}
+        stored = candidate.get("canonical_participant_keys") or candidate.get(
+            "participant_keys"
+        )
+        if not isinstance(stored, (list, tuple)) or len(stored) != 2:
+            return provider_keys[0], provider_keys[1]
+        stored_keys = [str(stored[0]), str(stored[1])]
+        comparable = [
+            compact_name(value.removeprefix("table_tennis:"))
+            for value in stored_keys
+        ]
+        if comparable == provider_keys:
+            return stored_keys[0], stored_keys[1]
+        if comparable == list(reversed(provider_keys)):
+            return stored_keys[1], stored_keys[0]
+        return provider_keys[0], provider_keys[1]
+
+    @staticmethod
+    def _participant_identity_map(
+        canonical_events: dict[str, dict[str, Any]],
+    ) -> dict[str, set[str]]:
+        identities: dict[str, set[str]] = {}
+        for candidate in canonical_events.values():
+            stored = candidate.get("canonical_participant_keys") or candidate.get(
+                "participant_keys"
+            )
+            if not isinstance(stored, (list, tuple)):
+                continue
+            for value in stored:
+                full_key = str(value)
+                comparable = compact_name(
+                    full_key.removeprefix("table_tennis:")
+                )
+                if comparable:
+                    identities.setdefault(comparable, set()).add(full_key)
+        return identities
+
+    def _new_forward_identity(
+        self,
+        fixture: Any,
+        identities: dict[str, set[str]],
+    ) -> tuple[str, dict[str, Any]] | None:
+        if self._provider_label != "odds_api_io":
+            return None
+        provider_keys = [compact_name(fixture.player_a), compact_name(fixture.player_b)]
+        if not provider_keys[0] or not provider_keys[1] or provider_keys[0] == provider_keys[1]:
+            return None
+        matches = [identities.get(key, set()) for key in provider_keys]
+        if any(len(options) != 1 for options in matches):
+            return None
+        canonical_id = f"oaio:{fixture.provider_event_id}"
+        return canonical_id, {
+            "event_key": canonical_id,
+            "provider_event_id": fixture.provider_event_id,
+            "participant_keys": provider_keys,
+            "canonical_participant_keys": [
+                next(iter(matches[0])), next(iter(matches[1]))
+            ],
+            "competition": fixture.competition,
+            "commence_at": fixture.scheduled_commence.isoformat(),
+            "identity_source": "provider_event_id+unique_known_participants",
+        }
+
     def discover(self, *, canonical_events: dict[str, dict[str, Any]]) -> CycleMetrics:
         metrics = CycleMetrics()
         now = self._now()
@@ -173,21 +245,31 @@ class ShadowEngine:
             return metrics
         self._record_raw(self._provider_label, "fixtures", now, status, payload, metrics)
         fixtures = forward_fixtures_from_oddspapi(payload, provider=self._provider_label)
+        identities = self._participant_identity_map(canonical_events)
         for fixture in fixtures:
             canonical_key, match_level = self._canonicalize(
                 fixture, canonical_events=canonical_events
             )
+            if not canonical_key:
+                forward_identity = self._new_forward_identity(fixture, identities)
+                if forward_identity is not None:
+                    canonical_key, candidate = forward_identity
+                    canonical_events[canonical_key] = candidate
+                    match_level = "IDENTITY_MAP"
             if match_level == "AMBIGUOUS":
                 metrics.ambiguous_events += 1
             if canonical_key:
                 metrics.events_matched += 1
+            player_a_key, player_b_key = self._participant_keys_for_match(
+                fixture, canonical_key, canonical_events
+            )
             self._store.upsert_forward_event(
                 provider=fixture.provider,
                 provider_event_id=fixture.provider_event_id,
                 canonical_event_id=canonical_key,
                 competition=fixture.competition,
-                player_a_key=compact_name(fixture.player_a),
-                player_b_key=compact_name(fixture.player_b),
+                player_a_key=player_a_key,
+                player_b_key=player_b_key,
                 player_a_name=fixture.player_a,
                 player_b_name=fixture.player_b,
                 scheduled_commence=fixture.scheduled_commence,
@@ -297,7 +379,7 @@ class ShadowEngine:
                 price=price.price,
                 observed_at=observed_at,
                 scheduled_commence=commence,
-                raw_provenance="oddspapi:/v4/odds",
+                raw_provenance=f"{self._provider_label}:/odds",
                 raw_evidence_ref=f"tt_raw_evidence:{evidence_ref}",
                 observation_class=obs_class,
             )
@@ -355,6 +437,11 @@ class ShadowEngine:
         for event in self._store.list_forward_events():
             canonical_id = event.get("canonical_event_id")
             if not canonical_id or event["match_level"] == "AMBIGUOUS":
+                continue
+            if event["scheduled_commence"] <= now:
+                # Historical/recent-result sweeps are for identity and
+                # settlement validation; never create a new prediction after
+                # the event has commenced.
                 continue
             if self._store.m5_prediction(canonical_id) is not None:
                 continue

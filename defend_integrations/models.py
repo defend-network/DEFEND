@@ -283,6 +283,8 @@ class ProviderConfiguration:
     remaining_quota: int | None = None
     quota_reset_at: str | None = None
     last_error_class: str | None = None
+    coverage_state: str = "UNKNOWN"
+    coverage_detail: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -297,6 +299,8 @@ class ProviderConfiguration:
             "remaining_quota": self.remaining_quota,
             "quota_reset_at": self.quota_reset_at,
             "last_error_class": self.last_error_class,
+            "coverage_state": self.coverage_state,
+            "coverage_detail": self.coverage_detail,
         }
 
 
@@ -328,6 +332,8 @@ class AdapterProbe:
     remaining_quota: int | None = None
     quota_reset_at: str | None = None
     error_class: str | None = None
+    coverage_state: str = "UNKNOWN"
+    coverage_detail: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -339,6 +345,8 @@ class AdapterProbe:
             "remaining_quota": self.remaining_quota,
             "quota_reset_at": self.quota_reset_at,
             "error_class": self.error_class,
+            "coverage_state": self.coverage_state,
+            "coverage_detail": self.coverage_detail,
         }
 
 

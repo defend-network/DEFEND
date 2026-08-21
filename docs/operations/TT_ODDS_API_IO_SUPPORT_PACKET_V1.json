@@ -1,0 +1,82 @@
+{
+  "schema": "TT_ODDS_API_IO_SUPPORT_PACKET",
+  "version": 1,
+  "account_plan": "Solo",
+  "selected_bookmakers": ["SBOBET", "SingBet"],
+  "sport": "Table Tennis",
+  "sport_id": 25,
+  "events_discovered": 83,
+  "event_ids_tested": ["73859912", "73853632", "73850316"],
+  "request_endpoint_pattern": "/v3/odds?eventId=<event_id>&bookmakers=<selected_book>",
+  "api_version": "Odds-API.io v3",
+  "unfiltered_tt_request": {
+    "event_id": "73859912",
+    "http_status": 400,
+    "response_schema": "object",
+    "error_field": "Missing bookmakers",
+    "bookmaker_keys_present": [],
+    "market_array_length": 0
+  },
+  "raw_tests": {
+    "tt_event_73859912_pending": {
+      "SBOBET": {
+        "identifier_tested": "SBOBET",
+        "http_status": 400,
+        "response_schema": "object",
+        "bookmaker_keys_present": [],
+        "market_array_length": 0,
+        "error_field": "SBOBET is not a valid bookmaker",
+        "message_field": null
+      },
+      "Sbobet": {
+        "identifier_tested": "Sbobet",
+        "http_status": 200,
+        "response_schema": "object",
+        "bookmaker_keys_present": [],
+        "market_array_length": 0,
+        "error_field": null,
+        "message_field": null
+      },
+      "SingBet": {
+        "identifier_tested": "SingBet",
+        "http_status": 200,
+        "response_schema": "object",
+        "bookmaker_keys_present": [],
+        "market_array_length": 0,
+        "error_field": null,
+        "message_field": null
+      }
+    },
+    "tt_event_73853632_live": {
+      "Sbobet": {"http_status": 200, "bookmaker_keys_present": [], "market_array_length": 0},
+      "SingBet": {"http_status": 200, "bookmaker_keys_present": [], "market_array_length": 0}
+    },
+    "tt_event_73850316_settled_historical": {
+      "Sbobet": {"http_status": 200, "bookmaker_keys_present": [], "market_array_length": 0},
+      "SingBet": {"http_status": 200, "bookmaker_keys_present": [], "market_array_length": 0}
+    }
+  },
+  "control_sport": {
+    "sport": "Football",
+    "event_id": "71805368",
+    "SBOBET_identifier": "Sbobet",
+    "SBOBET_control_prices": "PRESENT",
+    "SBOBET_control_markets": ["Correct Score", "ML", "Spread", "Spread HT", "Totals", "Totals HT"],
+    "SingBet_identifier": "SingBet",
+    "SingBet_control_prices": "PRESENT",
+    "SingBet_control_markets": ["ML", "Spread", "Spread HT", "Totals", "Totals HT"],
+    "account_auth": "GOOD",
+    "bookmaker_entitlement": "GOOD",
+    "tt_provider_coverage": "BLOCKED_OR_EMPTY"
+  },
+  "provider_delivery_classification": "TT_FEED_EMPTY",
+  "support_summary": {
+    "authentication": "HTTP 200 authenticated responses",
+    "table_tennis_events": "Current pending/live/settled TT events are returned",
+    "table_tennis_selected_bookmakers": "Both exact selected identifiers return HTTP 200 with zero bookmaker keys and zero markets",
+    "cross_sport_control": "Both exact selected identifiers return real football markets and prices",
+    "documentation_contradiction": "Public provider documentation advertises Table Tennis pre-match/live coverage for both selected bookmakers, while this account currently returns zero TT markets"
+  },
+  "timestamp_utc": "2026-08-21T00:20:00Z",
+  "credential_included": false
+}

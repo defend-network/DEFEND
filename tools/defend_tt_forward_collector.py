@@ -281,6 +281,7 @@ def canonical_events_map(db_url: str) -> dict[str, dict[str, Any]]:
         conn.close()
     out: dict[str, dict[str, Any]] = {}
     for event_key, league_key, hk, ak, ts in rows:
+        canonical_participants = [str(hk or ""), str(ak or "")]
         out[str(event_key)] = {
             "event_key": str(event_key),
             # match_event expects this shape (participant_keys, competition,
@@ -288,7 +289,14 @@ def canonical_events_map(db_url: str) -> dict[str, dict[str, Any]]:
             # emitted under names matching never reads, so EVENTS_MATCHED was
             # structurally 0 even when the corpus contained the event.
             "provider_event_id": str(event_key).removeprefix("oaio:"),
-            "participant_keys": [hk, ak],
+            # Stored M5 keys are namespaced (table_tennis:<player>). Matching
+            # compares provider names, while the engine persists these full
+            # keys so history lookup uses the same identity as the corpus.
+            "participant_keys": [
+                value.removeprefix("table_tennis:")
+                for value in canonical_participants
+            ],
+            "canonical_participant_keys": canonical_participants,
             "competition": league_key,
             "commence_at": ts.isoformat() if ts else None,
         }

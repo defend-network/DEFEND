@@ -185,6 +185,8 @@ class PostgresShadowStore(ShadowStore):
                 ON CONFLICT (provider, provider_event_id)
                 DO UPDATE SET canonical_event_id = COALESCE(EXCLUDED.canonical_event_id,
                                 tt_forward_events.canonical_event_id),
+                              player_a_key = EXCLUDED.player_a_key,
+                              player_b_key = EXCLUDED.player_b_key,
                               scheduled_commence = EXCLUDED.scheduled_commence,
                               match_level = EXCLUDED.match_level,
                               last_seen_at = EXCLUDED.last_seen_at,
@@ -576,6 +578,8 @@ class InMemoryShadowStore(ShadowStore):
             if event["provider"] == provider and event["provider_event_id"] == provider_event_id:
                 event.update(
                     canonical_event_id=canonical_event_id or event["canonical_event_id"],
+                    player_a_key=player_a_key,
+                    player_b_key=player_b_key,
                     scheduled_commence=scheduled_commence,
                     match_level=match_level,
                     last_seen_at=discovered_at,

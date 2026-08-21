@@ -192,6 +192,8 @@ class SetupIntegrationsService:
             "remaining_quota": config.remaining_quota,
             "quota_reset_at": config.quota_reset_at,
             "last_error_class": config.last_error_class,
+            "coverage_state": config.coverage_state,
+            "coverage_detail": config.coverage_detail,
             "notes": definition.notes,
         }
 
@@ -450,6 +452,8 @@ class SetupIntegrationsService:
             quota_reset_at=probe.quota_reset_at,
             default_enabled=definition.enabled_default,
             last_error_class=None if probe.ok else (probe.error_class or badge.value),
+            coverage_state=probe.coverage_state,
+            coverage_detail=probe.coverage_detail,
         )
         return {
             "provider_id": definition.provider_id,
@@ -461,6 +465,8 @@ class SetupIntegrationsService:
             "authenticated": probe.authenticated,
             "remaining_quota": probe.remaining_quota,
             "quota_reset_at": probe.quota_reset_at,
+            "coverage_state": probe.coverage_state,
+            "coverage_detail": probe.coverage_detail,
             "tested_at": now,
         }
 

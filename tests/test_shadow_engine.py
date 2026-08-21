@@ -357,8 +357,118 @@ class TestEngineCycle:
         by_id = {e["provider_event_id"]: e for e in events}
         assert by_id["id1"]["canonical_event_id"] == "oaio:id1"
         assert by_id["id1"]["match_level"] == "EXACT_ID"
+        assert by_id["id1"]["player_a_key"] == "Sobisek Martin"
+        assert by_id["id1"]["player_b_key"] == "Chlebecek Marek"
         assert by_id["id2"]["canonical_event_id"] is None
         assert store.raw_evidence, "raw evidence must be persisted"
+
+    def test_namespaced_canonical_keys_are_retained_for_m5_history(self):
+        store = InMemoryShadowStore()
+        client = FakeClient()
+        client.fixture_payload = [{
+            "sportId": 25,
+            "fixtureId": "namespaced-id",
+            "tournamentName": "International - TT Cup",
+            "participant1Name": "Szymanski, Igor",
+            "participant2Name": "Baron, Mariusz",
+            "startTime": "2026-08-21T00:00:00Z",
+        }]
+        engine = ShadowEngine(
+            store=store,
+            m5=FakeM5(),
+            client=client,
+            now=lambda: NOW,
+        )
+        engine.discover(canonical_events={
+            "oaio:namespaced-id": {
+                "event_key": "oaio:namespaced-id",
+                "provider_event_id": "namespaced-id",
+                "participant_keys": ["szymanskiigor", "baronmariusz"],
+                "canonical_participant_keys": [
+                    "table_tennis:szymanskiigor",
+                    "table_tennis:baronmariusz",
+                ],
+                "competition": "international-tt-cup",
+                "commence_at": "2026-08-21T00:00:00Z",
+            }
+        })
+
+        event = store.forward_event(1)
+        assert event["canonical_event_id"] == "oaio:namespaced-id"
+        assert event["player_a_key"] == "table_tennis:szymanskiigor"
+        assert event["player_b_key"] == "table_tennis:baronmariusz"
+
+    def test_new_event_gets_identity_map_only_for_unique_known_players(self):
+        store = InMemoryShadowStore()
+        client = FakeClient()
+        client.fixture_payload = [{
+            "sportId": 25,
+            "fixtureId": "new-forward-id",
+            "tournamentName": "International - TT Elite Series",
+            "participant1Name": "Szymanski, Igor",
+            "participant2Name": "Baron, Mariusz",
+            "startTime": "2026-08-21T00:00:00Z",
+        }]
+        engine = ShadowEngine(
+            store=store,
+            m5=FakeM5(),
+            client=client,
+            provider_label="odds_api_io",
+            now=lambda: NOW,
+        )
+
+        engine.discover(canonical_events={
+            "oaio:old-event": {
+                "event_key": "oaio:old-event",
+                "provider_event_id": "old-event",
+                "participant_keys": ["szymanskiigor", "baronmariusz"],
+                "canonical_participant_keys": [
+                    "table_tennis:szymanskiigor",
+                    "table_tennis:baronmariusz",
+                ],
+                "competition": "international-tt-cup",
+                "commence_at": "2026-08-01T00:00:00Z",
+            }
+        })
+
+        event = store.forward_event(1)
+        assert event["canonical_event_id"] == "oaio:new-forward-id"
+        assert event["match_level"] == "IDENTITY_MAP"
+        assert event["player_a_key"] == "table_tennis:szymanskiigor"
+
+    def test_inference_skips_events_after_commence(self):
+        store = InMemoryShadowStore()
+        client = FakeClient()
+        client.fixture_payload = [{
+            "sportId": 25,
+            "fixtureId": "past-id",
+            "tournamentName": "Czech Liga Pro",
+            "participant1Name": "Sobisek Martin",
+            "participant2Name": "Chlebecek Marek",
+            "startTime": "2026-08-20T10:00:00Z",
+        }]
+        engine = ShadowEngine(
+            store=store,
+            m5=FakeM5(),
+            client=client,
+            now=lambda: NOW,
+        )
+        engine.set_state_builder(object())
+        engine.discover(canonical_events={
+            "oaio:past-id": {
+                "event_key": "oaio:past-id",
+                "provider_event_id": "past-id",
+                "participant_keys": ["Sobisek Martin", "Chlebecek Marek"],
+                "competition": "Czech Liga Pro",
+                "commence_at": "2026-08-20T10:00:00Z",
+            }
+        })
+
+        metrics = engine.infer_m5()
+
+        assert metrics.m5_predictions == 0
+        assert metrics.m5_insufficient == 0
+        assert store.m5_prediction("oaio:past-id") is None
 
     def test_provider_label_is_used_for_raw_evidence(self):
         store = InMemoryShadowStore()
@@ -536,6 +646,14 @@ class TestFrozenM5:
         assert doc1["sha256"] == doc2["sha256"]
         assert doc1["intercept"] == doc2["intercept"]
         assert doc1["feature_names"] == FEATURE_NAMES
+
+    def test_freeze_serializes_aware_cutoff_as_utc_instant(self):
+        cutoff = datetime(
+            2026, 2, 1, 20, 0, tzinfo=timezone(timedelta(hours=-4))
+        )
+        doc = FrozenM5.freeze(_synthetic_matches(), cutoff=cutoff)
+
+        assert doc["cutoff"] == "2026-02-02T00:00:00Z"
 
     def test_predict_uses_strictly_before_state(self):
         doc = FrozenM5.freeze(

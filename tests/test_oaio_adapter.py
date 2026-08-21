@@ -242,6 +242,40 @@ class TestOddsApiIoClient:
         assert match.matched_event_key == "oaio:99999999"
         assert match.level.value == "NORMALIZED"
 
+    def test_real_provider_names_match_normalized_canonical_candidate(self):
+        shaped = {
+            "oaio:normalized-real-sample": {
+                "event_key": "oaio:normalized-real-sample",
+                "provider_event_id": "different-provider-id",
+                "participant_keys": ["chmelicek martin", "hruby radek"],
+                "competition": "international-tt-cup",
+                "commence_at": "2026-08-19T18:05:00Z",
+            }
+        }
+        fx = forward_fixtures_from_oddspapi(
+            [{
+                **_oaio_event_to_fixture({
+                    "id": 73850316,
+                    "home": "Chmelicek, Martin",
+                    "away": "Hruby, Radek",
+                    "date": "2026-08-19T18:05:00Z",
+                    "league": {"name": "International - TT Cup"},
+                }),
+            }],
+            provider="odds_api_io",
+        )[0]
+        match = match_event(
+            provider_event_id=fx.provider_event_id,
+            provider_prefix=fx.provider,
+            participants=[fx.player_a, fx.player_b],
+            competition=fx.competition,
+            commence_at=fx.scheduled_commence.isoformat().replace("+00:00", "Z"),
+            canonical_events=list(shaped.values()),
+            window_hours=3.0,
+        )
+        assert match.matched_event_key == "oaio:normalized-real-sample"
+        assert match.level.value == "NORMALIZED"
+
     def test_new_canonical_shape_skips_far_future_commence(self):
         shaped = {
             "oaio:99999999": {
