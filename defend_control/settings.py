@@ -80,7 +80,8 @@ class ControlSettings:
     vast_max_hourly: Decimal
     api_port: int = 8000
     web_port: int = 3000
-    model_port: int = 8001
+    model_port: int = 8402
+    defend_ai_api_port: int = 8401
     vllm_image: str = "vllm/vllm-openai:v0.10.0"
     vllm_disk_gb: int = 160
     max_model_len: int = 8192
@@ -175,9 +176,15 @@ class ControlSettings:
 
         api_port = _port(raw.get("api_port", 8000), "api_port")
         web_port = _port(raw.get("web_port", 3000), "web_port")
-        model_port = _port(raw.get("model_port", 8001), "model_port")
-        if len({api_port, web_port, model_port}) != 3:
-            raise ValueError("api_port, web_port, and model_port must be unique")
+        model_port = _port(raw.get("model_port", 8402), "model_port")
+        defend_ai_api_port = _port(
+            raw.get("defend_ai_api_port", 8401), "defend_ai_api_port"
+        )
+        if len({api_port, web_port, model_port, defend_ai_api_port}) != 4:
+            raise ValueError(
+                "api_port, web_port, model_port, and defend_ai_api_port "
+                "must be unique"
+            )
 
         vllm_image = _string(
             raw.get("vllm_image", "vllm/vllm-openai:v0.10.0"), "vllm_image"
@@ -229,6 +236,7 @@ class ControlSettings:
             api_port=api_port,
             web_port=web_port,
             model_port=model_port,
+            defend_ai_api_port=defend_ai_api_port,
             vllm_image=vllm_image,
             vllm_disk_gb=vllm_disk_gb,
             max_model_len=max_model_len,

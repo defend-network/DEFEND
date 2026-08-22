@@ -11,7 +11,7 @@ from defend_control.model_registry import (
     EMBEDDING_MODEL,
     EMBEDDING_REPO,
     GGUF_REPO,
-    LEGACY_ADAPTER_REPO,
+    ALTERNATE_ADAPTER_REPO,
     LOCAL_ALIAS,
     SERVING_ALIAS,
     DefendModelRef,
@@ -51,10 +51,10 @@ def test_resolve_embedding_alias_returns_embedding_entry():
 
 
 def test_existing_repo_ids_are_preserved_read_only():
-    assert ADAPTER_REPO == "Defend-network/defend-identity-lora-v002"
-    assert ADAPTER_REVISION == "46ade1686870210ef0ab4603c32fecb0e563330f"
-    assert LEGACY_ADAPTER_REPO == "Defend-network/defend-qwen-32b-lora"
-    assert LEGACY_ADAPTER_REPO != ADAPTER_REPO
+    assert ADAPTER_REPO == "Defend-network/defend-qwen-32b-lora"
+    assert ADAPTER_REVISION == "92c790d248012a5e6adac980b9759fb76bc7adda"
+    assert ALTERNATE_ADAPTER_REPO == "Defend-network/defend-identity-lora-v002"
+    assert ALTERNATE_ADAPTER_REPO != ADAPTER_REPO
     assert GGUF_REPO == "Defend-network/defend-qwen-32b-gguf"
     assert SERVING_ALIAS == "defend-ai"
     assert LOCAL_ALIAS == "defend-ai:latest"
@@ -62,12 +62,12 @@ def test_existing_repo_ids_are_preserved_read_only():
     assert EMBEDDING_REPO == "Qwen/Qwen3-Embedding-0.6B"
 
 
-def test_legacy_adapter_is_not_a_resolvable_production_entry():
-    # The first-generation adapter is not production: it must not resolve
+def test_alternate_adapter_is_not_a_resolvable_production_entry():
+    # The alternate adapter is not production: it must not resolve
     # through the serving alias, and no registry alias points at it.
     with pytest.raises(ModelRegistryError, match="unknown DEFEND AI model alias"):
-        resolve_defend_alias(LEGACY_ADAPTER_REPO)
-    assert all(ref.repo_id != LEGACY_ADAPTER_REPO for ref in DEFEND_MODEL_REGISTRY.values())
+        resolve_defend_alias(ALTERNATE_ADAPTER_REPO)
+    assert all(ref.repo_id != ALTERNATE_ADAPTER_REPO for ref in DEFEND_MODEL_REGISTRY.values())
 
 
 def test_unknown_alias_fails_loudly():

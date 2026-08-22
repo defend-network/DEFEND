@@ -1,4 +1,4 @@
-from decimal import Decimal
+﻿from decimal import Decimal
 from pathlib import Path
 import threading
 
@@ -121,7 +121,7 @@ def dependencies(tmp_path, *, health=None, external_tunnel_pid=None, ollama=None
     health_by_name.update(health or {})
 
     def health_probe(url, _timeout, **_kwargs):
-        if url.endswith(":8000/health"):
+        if url.endswith(":8401/health"):
             name = "api"
         elif url == "http://127.0.0.1:3000/":
             name = "web"
@@ -262,7 +262,7 @@ def test_stop_during_start_cancels_and_rolls_back_created_services(tmp_path):
     original_probe = kwargs["health_probe"]
 
     def blocking_probe(url, timeout, **options):
-        if url.endswith(":8000/health"):
+        if url.endswith(":8401/health"):
             api_started.set()
             release_api_health.wait(2)
         return original_probe(url, timeout, **options)
@@ -370,7 +370,7 @@ def test_cancelled_start_with_failed_rollback_retains_failed_running_state(tmp_p
     original_probe = kwargs["health_probe"]
 
     def blocking_probe(url, timeout, **options):
-        if url.endswith(":8000/health"):
+        if url.endswith(":8401/health"):
             api_started.set()
             release_api_health.wait(2)
         return original_probe(url, timeout, **options)
@@ -577,7 +577,7 @@ class FakeModelProbe:
         self.events = events
 
     def wait_ready(self, base_url, api_key, model="defend-ai", **options):
-        assert base_url == "http://127.0.0.1:8001/v1"
+        assert base_url == "http://127.0.0.1:8402/v1"
         assert api_key == "vllm_synthetic"
         assert model == "defend-ai"
         assert callable(options["cancelled"])
@@ -695,7 +695,7 @@ def test_vast_start_requires_exact_price_then_exact_fingerprint(tmp_path):
     api_spec = next(spec for spec in supervisor.started if spec.name == "api")
     assert api_spec.env["DEFEND_MODEL_BACKEND"] == "openai_compatible"
     assert api_spec.env["DEFEND_MODEL"] == "defend-ai"
-    assert api_spec.env["DEFEND_MODEL_BASE_URL"] == "http://127.0.0.1:8001/v1"
+    assert api_spec.env["DEFEND_MODEL_BASE_URL"] == "http://127.0.0.1:8402/v1"
     assert api_spec.env["DEFEND_MODEL_API_KEY"] == "vllm_synthetic"
     assert not any("vllm_synthetic" in argument for argument in api_spec.argv)
 

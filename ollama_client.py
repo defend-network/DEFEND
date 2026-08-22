@@ -50,24 +50,20 @@ class OllamaClient:
         await self._client.aclose()
 
     async def healthcheck(self) -> bool:
-    	try:
-        	resp = await self._client.get(f"{self.base_url}/api/tags")
-        	resp.raise_for_status()
-        	data = resp.json()
-        	models = data.get("models", [])
+        try:
+            resp = await self._client.get(f"{self.base_url}/api/tags")
+            resp.raise_for_status()
+            data = resp.json()
+            models = data.get("models", [])
 
-        	# Debug print so we can see exact names
-        	print("Installed models:", [m.get("name") for m in models])
-
-        	target = self.model.lower().removesuffix(":latest")
-        	return any(
-            		target in (m.get("name") or "").lower()
-            		or target in (m.get("model") or "").lower()
-            		for m in models
-        	)
-    	except Exception as e:
-        	print(f"Healthcheck error: {e}")
-        	return False
+            target = self.model.lower().removesuffix(":latest")
+            return any(
+                target in (m.get("name") or "").lower()
+                or target in (m.get("model") or "").lower()
+                for m in models
+            )
+        except Exception:
+            return False
 
     async def generate(
         self,

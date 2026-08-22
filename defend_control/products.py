@@ -10,7 +10,9 @@ from typing import Protocol
 import webbrowser
 
 from .health import JsonResult, fetch_http_json
+from .model_registry import ADAPTER_REPO, ADAPTER_REVISION, LOCAL_ALIAS, SERVING_ALIAS
 from .processes import LogBuffer, LogEntry, ProcessSpec
+from .product_runtime import ProductRuntimeRegistry, PRODUCT_API_PORTS, PRODUCT_FORWARD_PORTS
 from .coder_control_plane import (
     CoderNoQualifyingOffer,
     CoderProvisionBlocked,
@@ -495,9 +497,23 @@ class DefendService:
     application_id = "defend"
     display_name = "DEFEND AI"
 
-    def __init__(self, controller, *, public_origin: str) -> None:
+    def __init__(
+        self,
+        controller,
+        *,
+        public_origin: str,
+        api_port: int = 8401,
+        probe=fetch_http_json,
+        prepare_model_start=None,
+        runtime_registry: ProductRuntimeRegistry | None = None,
+    ) -> None:
         self._controller = controller
         self._public_origin = public_origin
+        self._api_port = int(api_port)
+        self._probe = probe
+        self._prepare_model_start = prepare_model_start
+        self._runtime_registry = runtime_registry
+        self._runtime_probe_cache: tuple[float, JsonResult] | None = None
 
     @property
     def state(self) -> str:
@@ -515,12 +531,23 @@ class DefendService:
                 last_error="No model backend selected",
             )
         try:
+            if self._prepare_model_start is not None:
+                self._prepare_model_start()
+            self._runtime_probe_cache = None
             self._controller.start(mode)
         except Exception as error:
             return self._row(
                 state="failed",
                 status_text=f"Start failed ({type(error).__name__})",
                 last_error=f"start failed ({type(error).__name__})",
+            )
+        if self._runtime_registry is not None:
+            self._runtime_registry.update(
+                "defend-ai",
+                state="starting",
+                provider=mode,
+                product_api_port=self._api_port,
+                model_forward_port=PRODUCT_FORWARD_PORTS["defend-ai"],
             )
         return self.status()
 
@@ -533,33 +560,104 @@ class DefendService:
                 status_text=f"Stop failed ({type(error).__name__})",
                 last_error=f"stop failed ({type(error).__name__})",
             )
+        if self._runtime_registry is not None:
+            self._runtime_registry.update(
+                "defend-ai",
+                state="stopped",
+                provider=None,
+                instance_id=None,
+                gpu=None,
+                hourly_compute_cost=None,
+                model_forward_port=PRODUCT_FORWARD_PORTS["defend-ai"],
+                product_api_port=self._api_port,
+            )
         return self.status()
 
     def status(self) -> ProductStatus:
         state = self._controller.poll_state()
+        runtime_result = self._runtime_health()
+        runtime_data = getattr(runtime_result, "data", None)
+        runtime = runtime_data if isinstance(runtime_data, dict) else {}
+        provider = str(runtime.get("provider") or "unreported")
+        model = str(runtime.get("model") or "unreported")
+        adapter = str(
+            runtime.get("adapter_repo")
+            or ("built-in local Modelfile" if provider == "ollama" else "unreported")
+        )
+        adapter_revision = str(
+            runtime.get("adapter_revision")
+            or ("not applicable" if provider == "ollama" else "unreported")
+        )
+        base_model = str(runtime.get("base_repo") or "unreported")
+        base_revision = str(runtime.get("base_revision") or "unreported")
+        serving_engine = {
+            "ollama": "Ollama",
+            "openai_compatible": "OpenAI-compatible (vLLM expected)",
+            "vllm": "vLLM",
+        }.get(provider.casefold(), provider)
         details = (
             ("Model backend", state.selected_mode or "â€”"),
             (
                 "Owned services",
                 ", ".join(state.owned_services) if state.owned_services else "â€”",
             ),
-            ("Serving alias", os.getenv("DEFEND_MODEL", "defend-ai:latest")),
-            ("Provider", os.getenv("DEFEND_MODEL_BACKEND", "ollama")),
-            (
-                "Adapter",
-                os.getenv("DEFEND_MODEL_ADAPTER_REPO")
-                or ("built-in local Modelfile" if os.getenv("DEFEND_MODEL_BACKEND", "ollama") == "ollama" else "not reported"),
-            ),
-            (
-                "Adapter revision",
-                os.getenv("DEFEND_MODEL_ADAPTER_REVISION") or "runtime (unpinned)",
-            ),
+            ("Serving alias", model),
+            ("Provider", provider),
+            ("Serving engine", serving_engine),
+            ("Adapter", adapter),
+            ("Adapter revision", adapter_revision),
+            ("Base model", base_model),
+            ("Base revision", base_revision),
         )
+        state_value = state.state
+        status_text = state.message or state.state
+        last_error = state.message
+        if state.selected_mode in ("vast", "ollama") and state.state in (
+            "starting",
+            "ready",
+            "degraded",
+        ):
+            runtime_matches = self._runtime_matches(state.selected_mode, runtime)
+            if runtime_result.ok and not runtime_matches:
+                state_value = "degraded"
+                status_text = (
+                    f"{state.selected_mode} selected but API runtime reports "
+                    f"provider={provider}, model={model}; backend not active"
+                )
+                last_error = status_text
+            elif not runtime_result.ok and state.state == "ready":
+                state_value = "degraded"
+                status_text = "Selected backend API health is unavailable"
+                last_error = status_text
         return self._row(
-            state=state.state,
-            status_text=state.message or state.state,
+            state=state_value,
+            status_text=status_text,
             details=details,
-            last_error=state.message,
+            last_error=last_error,
+        )
+
+    def _runtime_health(self) -> JsonResult:
+        now = time.monotonic()
+        if (
+            self._runtime_probe_cache is not None
+            and now - self._runtime_probe_cache[0] < 1.0
+        ):
+            return self._runtime_probe_cache[1]
+        result = self._probe(f"http://127.0.0.1:{self._api_port}/health", 2.0)
+        self._runtime_probe_cache = (now, result)
+        return result
+
+    @staticmethod
+    def _runtime_matches(mode: str, runtime: dict[str, object]) -> bool:
+        provider = str(runtime.get("provider") or "").casefold()
+        model = str(runtime.get("model") or "")
+        if mode == "ollama":
+            return provider == "ollama" and model == LOCAL_ALIAS
+        return (
+            provider in {"openai_compatible", "vllm"}
+            and model == SERVING_ALIAS
+            and runtime.get("adapter_repo") == ADAPTER_REPO
+            and runtime.get("adapter_revision") == ADAPTER_REVISION
         )
 
     def health(self) -> bool:
@@ -2104,7 +2202,10 @@ def build_products(
     public_origin: str,
     settings: ProductsSettings | None = None,
     scs_tunnel=None,
-    coder_plane=None,
+coder_plane=None,
+    api_port: int = 8401,
+    prepare_model_start=None,
+    runtime_registry: ProductRuntimeRegistry | None = None,
     probe=fetch_http_json,
     clock=time.monotonic,
 ) -> tuple[ProductService, ...]:
@@ -2124,7 +2225,14 @@ def build_products(
             coder_service.lifecycle_emit,
         )
     return (
-        DefendService(controller, public_origin=public_origin),
+DefendService(
+            controller,
+            public_origin=public_origin,
+            api_port=api_port,
+            probe=probe,
+            prepare_model_start=prepare_model_start,
+            runtime_registry=runtime_registry,
+        ),
         SportsService(
             supervisor=supervisor,
             repository=repository,

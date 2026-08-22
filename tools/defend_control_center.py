@@ -25,6 +25,7 @@ from defend_control.orchestrator import StackOrchestrator
 from defend_control.preflight import CheckResult, PreflightRunner
 from defend_control.processes import ProcessSupervisor
 from defend_control.products import ProductsSettings, build_products
+from defend_control.product_runtime import ProductRuntimeRegistry
 from defend_control.secrets import DpapiSecretStore
 from defend_control.settings import ControlSettings, JsonSettingsStore
 from defend_control.ui import ControlCenterUI, SetupDialog
@@ -648,6 +649,13 @@ def _build_runtime(
             state_directory=Path(settings.data_root) / "coder-lifecycle",
         )
 
+        admin_surface = AdminSurfaceController(
+            supervisor=supervisor,
+            settings=settings,
+            secrets=secret_source,
+            python_executable=sys.executable,
+        )
+        runtime_registry = ProductRuntimeRegistry()
         products = build_products(
             controller=controller,
             supervisor=supervisor,
@@ -657,12 +665,8 @@ def _build_runtime(
             settings=products_settings,
             scs_tunnel=scs_tunnel,
             coder_plane=coder_plane,
-        )
-        admin_surface = AdminSurfaceController(
-            supervisor=supervisor,
-            settings=settings,
-            secrets=secret_source,
-            python_executable=sys.executable,
+            api_port=settings.defend_ai_api_port,
+            runtime_registry=runtime_registry,
         )
         return _Runtime(
             controller,
@@ -678,6 +682,19 @@ def _build_runtime(
         except Exception:
             pass
         raise
+
+
+def _schedule_settings_load_error(root: tk.Misc, error: Exception) -> None:
+    """Schedule a settings error without closing over an exception variable."""
+    error_type = type(error).__name__
+    root.after(
+        0,
+        lambda error_type=error_type: messagebox.showerror(
+            "DEFEND settings require attention",
+            f"Stored settings could not be loaded ({error_type}). Open Setup.",
+            parent=root,
+        ),
+    )
 
 
 def run_control_center() -> None:
@@ -698,14 +715,7 @@ def run_control_center() -> None:
         settings = _default_settings(repo_root)
     except Exception as error:
         settings = _default_settings(repo_root)
-        root.after(
-            0,
-            lambda: messagebox.showerror(
-                "DEFEND settings require attention",
-                f"Stored settings could not be loaded ({type(error).__name__}). Open Setup.",
-                parent=root,
-            ),
-        )
+        _schedule_settings_load_error(root, error)
 
     runtime = _build_runtime(settings, secret_store)
     coordinator = _RuntimeCoordinator(
@@ -725,8 +735,11 @@ def run_control_center() -> None:
             parent=root,
         )
 
+    # The shared admin surface is model-independent and must always be
+    # available: it owns the admin API (:8000) and the shared web UI (:3000).
+    # Product runtimes (DEFEND AI, DEFENDcoder, ...) start/stop independently.
     try:
-        coordinator.runtime.admin_surface.ensure_ready()
+        runtime.admin_surface.ensure_ready()
     except Exception as error:
         root.after(0, lambda error=error: surface_warning(error))
 

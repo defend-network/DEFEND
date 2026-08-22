@@ -22,14 +22,14 @@ from .types import ServiceState
 
 # -- Exact identifiers already present in the repository -------------------
 
-# PRODUCTION LoRA adapter repo + pinned revision SHA (owner-provided).
-ADAPTER_REPO = "Defend-network/defend-identity-lora-v002"
-ADAPTER_REVISION = "46ade1686870210ef0ab4603c32fecb0e563330f"
+# Canonical DEFEND AI LoRA adapter repo + pinned revision. The base lineage is
+# derived from adapter_config.json at this immutable adapter revision.
+ADAPTER_REPO = "Defend-network/defend-qwen-32b-lora"
+ADAPTER_REVISION = "92c790d248012a5e6adac980b9759fb76bc7adda"
 
-# Superseded first-generation adapter. NOT production; retained only as
-# metadata for rollback/migration history. Nothing in the launch path
-# resolves or serves it.
-LEGACY_ADAPTER_REPO = "Defend-network/defend-qwen-32b-lora"
+# Alternate adapter retained as metadata only; it is not a serving entry.
+ALTERNATE_ADAPTER_REPO = "Defend-network/defend-identity-lora-v002"
+ALTERNATE_ADAPTER_REVISION = "46ade1686870210ef0ab4603c32fecb0e563330f"
 
 # Preserved GGUF sibling repo; never served through the vLLM path
 # (huggingface.py:17, plan doc lines 19-20).

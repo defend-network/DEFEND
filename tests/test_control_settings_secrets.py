@@ -147,7 +147,7 @@ def test_settings_are_frozen_and_apply_required_defaults(tmp_path):
     assert (settings.api_port, settings.web_port, settings.model_port) == (
         8000,
         3000,
-        8001,
+        8402,
     )
     with pytest.raises(FrozenInstanceError):
         settings.api_port = 9000  # type: ignore[misc]

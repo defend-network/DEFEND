@@ -1737,6 +1737,7 @@ class ControlPlane:
         step_exec = StepExecution(
             step_id=step.id,
             call_id=step.call.call_id,
+            tool_name=step.call.tool_name,
             status=StepStatus.RUNNING,
             started_at=datetime.now(timezone.utc),
             attempts=0,

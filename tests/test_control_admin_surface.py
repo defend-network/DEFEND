@@ -112,6 +112,8 @@ def test_admin_surface_specs_use_canonical_ports_and_no_model_env(tmp_path):
     assert specs.api.argv == ("python.exe", "api_server.py")
     assert specs.api.cwd == tmp_path
     assert specs.api.env["DEFEND_API_PORT"] == "8000"
+    assert specs.api.env["DEFEND_API_MODE"] == "admin"
+    assert specs.api.env["DEFEND_AI_PRODUCT_API_BASE"].endswith(":8401")
     assert specs.api.health_url == "http://127.0.0.1:8000/health"
 
     assert specs.web.name == "web"
@@ -290,7 +292,7 @@ def test_preflight_adopted_ports_skip_availability_probe(tmp_path):
         adopted_ports=frozenset({3000, 8000}),
     )
 
-    assert observed == [8001]
+    assert observed == [8402]
     by_name = {result.name: result for result in results}
     assert by_name["port:3000"].ok
     assert by_name["port:8000"].ok
@@ -370,13 +372,13 @@ def test_orchestrator_adopts_healthy_shared_surface(tmp_path):
     result = orchestrator.start("ollama")
 
     assert preflight.adopted == frozenset({8000, 3000})
-    assert "api:start" not in events
+    assert "api:start" in events  # DEFEND AI owns its product API on :8401
     assert "web:start" not in events
     assert result.state == "ready"
     components = {item.name: item.state for item in result.components}
-    assert components["api"] == "ready (shared)"
+    assert components["api"] == "ready"
     assert components["frontend"] == "ready (shared)"
-    assert supervisor.started == ["cloudflare"]
+    assert supervisor.started == ["api", "cloudflare"]
 
 
 def test_orchestrator_starts_surface_when_shared_surface_unhealthy(tmp_path):

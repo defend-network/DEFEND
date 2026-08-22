@@ -64,7 +64,11 @@ def build_admin_surface_specs(
         raise ValueError("python_executable must be a non-empty string")
     secret_env = _secret_subset(secrets)
     api_env = {
+        "DEFEND_API_MODE": "admin",
         "DEFEND_API_PORT": str(settings.api_port),
+        "DEFEND_AI_PRODUCT_API_BASE": (
+            f"http://127.0.0.1:{settings.defend_ai_api_port}"
+        ),
         "DEFEND_OWNER_USER": "MASSA",
         "DEFEND_OWNER_EMAIL": "chairman@defend-network.org",
         "DEFEND_ADMIN_SESSION_HOURS": "12",

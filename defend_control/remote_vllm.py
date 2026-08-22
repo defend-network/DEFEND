@@ -277,8 +277,9 @@ def build_remote_process_specs(
     model_ready: ModelReady,
     adapter: AdapterSpec | None = None,
 ) -> RemoteProcessSpecs:
+    model_forward = f"http://127.0.0.1:{settings.model_port}/v1"
     if model_ready != ModelReady(
-        "defend-ai", "openai_compatible", "http://127.0.0.1:8001/v1"
+        "defend-ai", "openai_compatible", model_forward
     ):
         raise ValueError("remote process specs require verified loopback vLLM")
     vllm_key = secrets.get("VLLM_API_KEY")
@@ -299,11 +300,12 @@ def build_remote_process_specs(
             "DEFEND_MODEL_BASE_REVISION": adapter.base_revision,
         }
     api_env = {
+        "DEFEND_API_MODE": "defend_ai",
         "DEFEND_MODEL_BACKEND": "openai_compatible",
         "DEFEND_MODEL": "defend-ai",
         "DEFEND_MODEL_BASE_URL": model_ready.endpoint,
         "DEFEND_MODEL_API_KEY": vllm_key,
-        "DEFEND_API_PORT": "8000",
+        "DEFEND_API_PORT": str(settings.defend_ai_api_port),
         "DEFEND_OWNER_USER": "MASSA",
         "DEFEND_OWNER_EMAIL": "chairman@defend-network.org",
         "DEFEND_ADMIN_SESSION_HOURS": "12",
@@ -324,13 +326,14 @@ def build_remote_process_specs(
         **secret_env,
     }
     repo = settings.repo_root
+    api_port = settings.defend_ai_api_port
     return RemoteProcessSpecs(
         api=ProcessSpec(
             "api",
             (str(repo / ".venv" / "Scripts" / "python.exe"), "api_server.py"),
             repo,
             api_env,
-            "http://127.0.0.1:8000/health",
+            f"http://127.0.0.1:{api_port}/health",
         ),
         web=ProcessSpec(
             "web",

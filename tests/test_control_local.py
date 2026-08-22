@@ -89,7 +89,7 @@ def test_local_process_specs_keep_secrets_in_api_environment_only(tmp_path):
         "api_server.py",
     )
     assert specs.api.cwd == tmp_path
-    assert specs.api.health_url == "http://127.0.0.1:8000/health"
+    assert specs.api.health_url == "http://127.0.0.1:8401/health"
     assert specs.web.argv == ("npm.cmd", "run", "start")
     assert specs.web.cwd == tmp_path / "defend-ui-v2"
     assert dict(specs.web.env) == {"PORT": "3000", "HOSTNAME": "127.0.0.1"}
@@ -105,6 +105,7 @@ def test_local_process_specs_keep_secrets_in_api_environment_only(tmp_path):
     assert dict(specs.cloudflare.env) == {}
 
     expected_api_values = {
+        "DEFEND_API_MODE": "defend_ai",
         "DEFEND_MODEL_BACKEND": "ollama",
         "DEFEND_MODEL": "defend-ai:latest",
         "OLLAMA_HOST": "http://127.0.0.1:11434",
@@ -122,7 +123,7 @@ def test_local_process_specs_keep_secrets_in_api_environment_only(tmp_path):
         "DEFEND_CORS_ORIGINS": "https://ai.example.test",
         "DEFEND_TRUST_CLOUDFLARE": "true",
         "DEFEND_COOKIE_SECURE": "true",
-        "DEFEND_API_PORT": "8000",
+        "DEFEND_API_PORT": "8401",
         **secret_values,
     }
     for name, value in expected_api_values.items():

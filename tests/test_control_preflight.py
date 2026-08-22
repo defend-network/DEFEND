@@ -72,7 +72,7 @@ def test_preflight_uses_exact_service_ports_and_aggregates_checks(tmp_path):
 
     results = runner.run("vast", settings(tmp_path), complete_secrets())
 
-    assert observed_ports == [3000, 8000, 8001]
+    assert observed_ports == [3000, 8000, 8402]
     assert {result.name for result in results} >= {
         "python-version",
         "node-version",
@@ -86,7 +86,7 @@ def test_preflight_uses_exact_service_ports_and_aggregates_checks(tmp_path):
         "logs",
         "port:3000",
         "port:8000",
-        "port:8001",
+        "port:8402",
         "secrets",
         "next-build",
         "invitations",
