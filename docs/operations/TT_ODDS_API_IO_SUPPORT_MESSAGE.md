@@ -43,3 +43,16 @@ Fresh bounded re-test on the same Solo account confirms the same condition:
 - Classification remains `TT_PROVIDER_PRICE_FEED_EMPTY` for the two selected books. The Hard Rock limitation is account slot scope, not a request-parameter defect.
 
 No credential values are included in this document.
+
+## Definitive bookmaker-filtered attestation — 2026-08-22 (UTC)
+The provider's documented bookmaker-filtered discovery (`GET /v3/events?bookmaker=<book>`) was used with the actual sport slug (`table-tennis`) and exact catalog/selected identifiers:
+
+- `GENERIC_TT_EVENTS=51` (provider-wide pending events across International TT Elite Series, International TT Cup, Czech Liga Pro).
+- `Sbobet` filter: `SBOBET_TT_FILTERED_EVENTS_TOTAL=0`
+- `SingBet` filter: `SINGBET_TT_FILTERED_EVENTS_TOTAL=0`
+- Control (same filter, same account): `football bookmaker=Sbobet count=53`, `football bookmaker=SingBet count=54` — proving the filter is functional and the zero result is Table Tennis-specific.
+- Generic `/v3/odds` on sample TT event IDs (`73922828`, `73946574`, `73924232`) with `bookmakers=Sbobet,SingBet` returns HTTP 200 with empty bookmaker maps.
+
+Conclusion: `CURRENT_PROVIDER_BOOK_TT_COVERAGE_ZERO` for both selected books under this Solo account, which conflicts with the provider's published SBOBET and SingBet integration pages advertising Table Tennis coverage.
+
+Question for provider support: "Your current SBOBET and SingBet integration pages list Table Tennis as a supported sport. Our authenticated selected-bookmaker account discovers Table Tennis events globally (51) but bookmaker-filtered TT discovery and per-event /odds return zero markets for both books, while the same filter returns 53-54 football events. Is Table Tennis currently available for these books on our plan, and if so which competitions/events should return prices?"
