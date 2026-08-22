@@ -155,7 +155,7 @@ class TestForwardMatchPipeline:
 class TestOddsApiIoClient:
     def test_uses_attested_selected_bookmakers(self):
         client = OddsApiIOLiveClient("synthetic-key")
-        assert client._bookmakers_param() == "Bet365,Hard Rock"
+        assert client._bookmakers_param() == "Bet365,Betway"
 
     def test_pending_empty_embedded_books_still_fetches_odds(self, monkeypatch):
         calls = []

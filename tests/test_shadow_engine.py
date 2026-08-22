@@ -761,7 +761,7 @@ class TestForwardShadowAndPaper:
         engine.infer_m5()
         assert quant_store.shadow_prediction_count(model_id="challenger-recent-form20") >= 1
 
-    def test_record_paper_pass_creates_entries(self):
+    def test_record_decision_evaluations_creates_immutable_entries(self):
         from defend_markets.quant.store import InMemoryQuantStore
 
         store = InMemoryShadowStore()
@@ -787,9 +787,10 @@ class TestForwardShadowAndPaper:
         })
         engine._last_discovery_at = None
         engine.poll_odds()
-        metrics = engine.record_paper_pass()
+        metrics = engine.record_decision_evaluations()
         assert metrics.passes >= 1
-        assert quant_store.list_paper_entries()
+        assert quant_store.list_decision_evaluations()
+        assert quant_store.decision_evaluation_counts()["total"] >= 1
 
     def test_shadow_feature_schema_mismatch_rejected(self):
         from defend_markets.m5_live import ShadowPredictor

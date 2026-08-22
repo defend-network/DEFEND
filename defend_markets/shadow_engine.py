@@ -514,9 +514,22 @@ class ShadowEngine:
     # ------------------------------------------------------------------ #
     # P14 paper / pass ledger (one entry per canonical event)
     # ------------------------------------------------------------------ #
-    def record_paper_pass(self) -> CycleMetrics:
+    # ------------------------------------------------------------------ #
+    # P14 paper / pass — immutable decision evaluations + paper tickets
+    # ------------------------------------------------------------------ #
+    def record_decision_evaluations(self) -> CycleMetrics:
         metrics = CycleMetrics()
         now = self._now()
+        shadow_rows: dict[tuple[str, str], float] = {}
+        if self._quant_store is not None:
+            for row in self._quant_store.list_shadow_predictions(limit=100000):
+                shadow_rows[(str(row["canonical_event_id"]), str(row["model_id"]))] = float(row["p_a"])
+        shadow_version = (
+            self._shadow_predictor.model_version if self._shadow_predictor is not None else ""
+        )
+        shadow_snapshot = (
+            self._shadow_predictor.feature_snapshot_id if self._shadow_predictor is not None else ""
+        )
         for event in self._store.list_forward_events():
             canonical_id = event.get("canonical_event_id")
             if not canonical_id or event["match_level"] == "AMBIGUOUS":
@@ -525,6 +538,8 @@ class ShadowEngine:
             ruler = self._store.list_ruler_rows(canonical_id)
             prediction = self._store.m5_prediction(canonical_id)
             model_p_a = float(prediction["p_a"]) if prediction else None
+            m5_version = self._m5.model_version if prediction else ""
+            m5_snapshot = self._m5.feature_snapshot_id if prediction else ""
             if event["scheduled_commence"] <= now:
                 decision, reason, market_p_a, bookmaker, price, obs_id = "PASS", "POST_COMMENCE", None, None, None, None
             elif not observations:
@@ -534,37 +549,97 @@ class ShadowEngine:
             else:
                 row = ruler[-1]
                 disagreement = float(row.get("model_market_disagreement") or 0.0)
-                edge_threshold = self._config.paper_edge_threshold
                 market_p_a = row.get("no_vig_p_a")
                 bookmaker = observations[-1].get("bookmaker") if observations else None
                 price = observations[-1].get("price") if observations else None
                 obs_id = observations[-1].get("observation_id") if observations else None
-                if abs(disagreement) >= edge_threshold and market_p_a is not None:
+                if abs(disagreement) >= self._config.paper_edge_threshold and market_p_a is not None:
                     decision, reason = "PAPER_DECISION", "MODEL_EDGE_GE_THRESHOLD"
-                    metrics.paper_decisions += 1
                 else:
                     decision, reason = "PASS", "DISAGREEMENT_TOO_SMALL"
-            created = (
-                self._quant_store.upsert_paper_entry(
+            if decision == "PAPER_DECISION":
+                metrics.paper_decisions += 1
+            else:
+                metrics.passes += 1
+            if self._quant_store is None:
+                continue
+            prematch = event["scheduled_commence"] > now
+            self._quant_store.insert_decision_evaluation(
+                {
+                    "canonical_event_id": canonical_id,
+                    "provider_event_id": event.get("provider_event_id"),
+                    "model_id": MODEL_ID,
+                    "model_version": m5_version,
+                    "strategy": "PAPER_MAIN_V1",
+                    "decision": decision,
+                    "reason": reason,
+                    "decision_ts": now,
+                    "model_p_a": round(model_p_a, 6) if model_p_a is not None else None,
+                    "market_p_a": round(market_p_a, 6) if market_p_a is not None else None,
+                    "bookmaker": bookmaker,
+                    "price": price,
+                    "observation_id": obs_id,
+                    "feature_snapshot_id": m5_snapshot or None,
+                }
+            )
+            shadow_p = shadow_rows.get((canonical_id, "challenger-recent-form20"))
+            if shadow_p is not None:
+                self._quant_store.insert_decision_evaluation(
                     {
                         "canonical_event_id": canonical_id,
                         "provider_event_id": event.get("provider_event_id"),
+                        "model_id": "challenger-recent-form20",
+                        "model_version": shadow_version,
+                        "strategy": "PAPER_RESEARCH_V1",
                         "decision": decision,
                         "reason": reason,
-                        "model_p_a": round(model_p_a, 6) if model_p_a is not None else None,
+                        "decision_ts": now,
+                        "model_p_a": round(shadow_p, 6),
                         "market_p_a": round(market_p_a, 6) if market_p_a is not None else None,
                         "bookmaker": bookmaker,
                         "price": price,
                         "observation_id": obs_id,
-                        "model_id": MODEL_ID,
-                        "model_version": self._m5.model_version,
+                        "feature_snapshot_id": shadow_snapshot or None,
                     }
                 )
-                if self._quant_store is not None
-                else True
-            )
-            if created and decision == "PASS":
-                metrics.passes += 1
+            if decision == "PAPER_DECISION" and prematch and obs_id is not None:
+                side = "home" if (model_p_a is not None and market_p_a is not None and model_p_a >= market_p_a) else "away"
+                self._quant_store.commit_paper_ticket(
+                    {
+                        "canonical_event_id": canonical_id,
+                        "provider_event_id": event.get("provider_event_id"),
+                        "strategy": "PAPER_MAIN_V1",
+                        "model_id": MODEL_ID,
+                        "model_version": m5_version,
+                        "side": side,
+                        "price": price,
+                        "stake": 1.0,
+                        "model_p_a": round(model_p_a, 6) if model_p_a is not None else None,
+                        "market_p_a": round(market_p_a, 6) if market_p_a is not None else None,
+                        "market_observation_id": obs_id,
+                        "feature_snapshot_id": m5_snapshot or None,
+                        "decision_ts": now,
+                    }
+                )
+                if shadow_p is not None:
+                    shadow_side = "home" if (shadow_p is not None and market_p_a is not None and shadow_p >= market_p_a) else "away"
+                    self._quant_store.commit_paper_ticket(
+                        {
+                            "canonical_event_id": canonical_id,
+                            "provider_event_id": event.get("provider_event_id"),
+                            "strategy": "PAPER_RESEARCH_V1",
+                            "model_id": "challenger-recent-form20",
+                            "model_version": shadow_version,
+                            "side": shadow_side,
+                            "price": price,
+                            "stake": 1.0,
+                            "model_p_a": round(shadow_p, 6),
+                            "market_p_a": round(market_p_a, 6) if market_p_a is not None else None,
+                            "market_observation_id": obs_id,
+                            "feature_snapshot_id": shadow_snapshot or None,
+                            "decision_ts": now,
+                        }
+                    )
         return metrics
 
     # ------------------------------------------------------------------ #
@@ -695,7 +770,7 @@ class ShadowEngine:
             "freeze_promotions": self.freeze_last_valid_prematch(),
             "m5": self.infer_m5().to_dict(),
             "ruler": self.build_ruler_rows().to_dict(),
-            "paper_pass": self.record_paper_pass().to_dict(),
+            "paper_pass": self.record_decision_evaluations().to_dict(),
             "settlement": self.settle().to_dict(),
         }
         return metrics

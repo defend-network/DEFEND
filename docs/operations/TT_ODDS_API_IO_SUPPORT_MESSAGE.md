@@ -63,3 +63,10 @@ Account bookmaker slots were changed to Bet365 + Hard Rock. Re-test result:
 - `Bet365` bookmaker-filtered TT events: 51 (pending across Czech Liga Pro, International TT Cup, International TT Elite Series). Exact filtered event IDs return real prices: bookmaker key `Bet365`, markets ML / Spread / Totals with decimal prices (e.g. ML home 1.66 / away 2.10). Bet365 Table Tennis feed is AVAILABLE on this account.
 - `Hard Rock` bookmaker-filtered TT events: 0. Per-event `/odds?bookmakers=Hard Rock` returns 403 "Allowed: Bet365, Hard Rock" only when Hard Rock is not an enabled slot; with Hard Rock selected the filter returns 0 TT events. This is Odds-API.io exposing zero Hard Rock Table Tennis events to this account (not evidence that Hard Rock's sportsbook lacks Table Tennis).
 - Bet365 prices were ingested into the DEFEND database (Bet365 observations persisted; M5 and recent-form20 shadow predictions recorded).
+
+## M4.4 provider update — 2026-08-22 (UTC)
+The second bookmaker slot was changed to Betway (Bet365 retained).
+
+- Selected bookmakers: `Bet365, Betway`.
+- `Betway` bookmaker-filtered Table Tennis events: 0 (pending/live) across the current three circuits. Odds-API.io exposes zero Betway Table Tennis events to this account; Betway's own sportsbook lists these circuits, so this is a provider capture gap, not evidence Betway lacks Table Tennis.
+- `Bet365` bookmaker-filtered Table Tennis events remain 51 and continue to return real prices; Bet365 remains the primary and only currently usable TT price source through Odds-API.io.

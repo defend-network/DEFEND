@@ -673,6 +673,28 @@ class MarketsIntelligenceOrchestrator:
             info["schema_version"] = health.get("schema_version")
         return info
 
+    def _improvement_orchestrator(self):
+        from defend_markets.quant.improve import ImprovementOrchestrator
+
+        database = getattr(self._tools, "_database", None)
+        return ImprovementOrchestrator(self._store, database)
+
+    def run_improvement_loop(self) -> dict[str, Any]:
+        return self._improvement_orchestrator().run_once()
+
+    def daily_learning_review(self) -> dict[str, Any]:
+        return self._improvement_orchestrator().daily_learning_review()
+
+    def active_blocker_summary(self) -> dict[str, Any]:
+        review = self.daily_learning_review()
+        top = review["top_5_weaknesses"]
+        return {
+            "primary_progress_blocker": top[0] if top else None,
+            "top_5_weaknesses": top,
+            "forward_paired_n": self._store.decision_evaluation_counts().get("total", 0),
+            "price_coverage": review["data_coverage"],
+        }
+
     def latest_runtime_report(self) -> dict[str, Any] | None:
         artifact_dir = getattr(self._weekly_review, "_artifact_dir", None)
         if artifact_dir is None or not artifact_dir.is_dir():

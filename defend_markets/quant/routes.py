@@ -150,6 +150,21 @@ def build_quant_router(orchestrator: MarketsIntelligenceOrchestrator) -> APIRout
         _require_markets_admin(_principal)
         return {"approved": orchestrator.approve_expensive()}
 
+    @router.post("/improvement/run")
+    async def run_improvement(_principal: AdminPrincipal = Depends(require_admin)) -> dict:
+        _require_markets_admin(_principal)
+        return orchestrator.run_improvement_loop()
+
+    @router.get("/improvement/learning")
+    async def daily_learning_review(_principal: AdminPrincipal = Depends(require_admin)) -> dict:
+        _require_markets_admin(_principal)
+        return orchestrator.daily_learning_review()
+
+    @router.get("/improvement/blocker")
+    async def blocker_summary(_principal: AdminPrincipal = Depends(require_admin)) -> dict:
+        _require_markets_admin(_principal)
+        return orchestrator.active_blocker_summary()
+
     @router.get("/operational-status")
     async def operational_status(_principal: AdminPrincipal = Depends(require_admin)) -> dict:
         _require_markets_admin(_principal)

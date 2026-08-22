@@ -98,7 +98,7 @@ _OAIO_BASE = "https://api.odds-api.io/v3"
 # Bookmaker selection is account-scoped; the exact labels below were attested
 # through /v3/bookmakers/selected. /v3/events may omit embedded odds, so a
 # pending event must still receive a per-event /odds request.
-_OAIO_SELECTED_BOOKMAKERS = ("Bet365", "Hard Rock")
+_OAIO_SELECTED_BOOKMAKERS = ("Bet365", "Betway")
 
 
 def _oaio_event_to_fixture(event: dict[str, Any]) -> dict[str, Any]:

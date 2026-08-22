@@ -189,6 +189,57 @@ class QuantStore:
     def list_paper_entries(self, limit: int = 500) -> list[dict[str, Any]]:
         raise NotImplementedError
 
+    def upsert_weakness(self, spec: dict[str, Any]) -> int:
+        raise NotImplementedError
+
+    def list_weaknesses(self, limit: int = 500) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
+    def add_weakness_evidence(self, evidence: dict[str, Any]) -> int:
+        raise NotImplementedError
+
+    def update_weakness_status(self, weakness_id: int, *, status: str) -> None:
+        raise NotImplementedError
+
+    def weakness_counts(self) -> dict[str, Any]:
+        raise NotImplementedError
+
+    def create_improvement_action(self, action: dict[str, Any]) -> int:
+        raise NotImplementedError
+
+    def list_improvement_actions(self, limit: int = 300) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
+    def update_action_outcome(self, action_id: int, *, status: str, result_value: float | None, outcome: str) -> None:
+        raise NotImplementedError
+
+    def add_knowledge_finding(self, finding: dict[str, Any]) -> int:
+        raise NotImplementedError
+
+    def list_knowledge_findings(self, limit: int = 300) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
+    def create_repair_packet(self, packet: dict[str, Any]) -> int:
+        raise NotImplementedError
+
+    def list_repair_packets(self, limit: int = 200) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
+    def insert_decision_evaluation(self, evaluation: dict[str, Any]) -> bool:
+        raise NotImplementedError
+
+    def list_decision_evaluations(self, limit: int = 1000) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
+    def decision_evaluation_counts(self) -> dict[str, int]:
+        raise NotImplementedError
+
+    def commit_paper_ticket(self, ticket: dict[str, Any]) -> bool:
+        raise NotImplementedError
+
+    def list_paper_tickets(self, limit: int = 500) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
 
 class PostgresQuantStore(QuantStore):
     def __init__(self, database: MarketsDatabase) -> None:
@@ -918,6 +969,305 @@ class PostgresQuantStore(QuantStore):
             columns = [column.name for column in cursor.description]
             return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
+    def upsert_weakness(self, spec):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO quant_weaknesses "
+                "(weakness_type, category, title, description, status, severity, confidence, progress_impact, "
+                "first_detected_at, last_observed_at, affected_scope, affected_competition, affected_players, "
+                "affected_market, affected_model, blocking_capability, root_cause_state, recommended_action_type, "
+                "auto_action_allowed, priority_score, state_hash) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (weakness_type, state_hash) DO UPDATE SET "
+                "last_observed_at = EXCLUDED.last_observed_at, "
+                "evidence_count = quant_weaknesses.evidence_count + 1, "
+                "sample_size = EXCLUDED.sample_size, "
+                "severity = EXCLUDED.severity, "
+                "updated_at = now() "
+                "RETURNING weakness_id",
+                (
+                    spec["weakness_type"],
+                    spec["category"],
+                    spec["title"],
+                    spec.get("description"),
+                    spec.get("status", "DETECTED"),
+                    spec.get("severity", "LOW"),
+                    spec.get("confidence", "EARLY_SIGNAL"),
+                    spec.get("progress_impact"),
+                    spec["first_detected_at"],
+                    spec["last_observed_at"],
+                    spec.get("affected_scope"),
+                    spec.get("affected_competition"),
+                    spec.get("affected_players"),
+                    spec.get("affected_market"),
+                    spec.get("affected_model"),
+                    spec.get("blocking_capability"),
+                    spec.get("root_cause_state"),
+                    spec.get("recommended_action_type"),
+                    spec.get("auto_action_allowed", False),
+                    spec.get("priority_score"),
+                    spec["state_hash"],
+                ),
+            )
+            return int(cursor.fetchone()[0])
+
+    def list_weaknesses(self, limit=500):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT weakness_id, weakness_type, category, title, description, status, severity, confidence, "
+                "progress_impact, first_detected_at, last_observed_at, evidence_count, sample_size, affected_scope, "
+                "affected_competition, affected_players, affected_market, affected_model, blocking_capability, "
+                "root_cause_state, recommended_action_type, auto_action_allowed, priority_score, state_hash, "
+                "prior_resolution, reopened_at, created_at, updated_at "
+                "FROM quant_weaknesses ORDER BY priority_score DESC NULLS LAST, weakness_id"
+            )
+            columns = [column.name for column in cursor.description]
+            return [dict(zip(columns, row)) for row in cursor.fetchall()][:limit]
+
+    def add_weakness_evidence(self, evidence):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO quant_weakness_evidence "
+                "(weakness_id, evidence_type, metric_name, metric_value, sample_size, comparison_value, time_window, "
+                "competition, model, market, source_ref, observed_at, payload_hash) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING evidence_id",
+                (
+                    evidence["weakness_id"],
+                    evidence["evidence_type"],
+                    evidence["metric_name"],
+                    evidence.get("metric_value"),
+                    evidence.get("sample_size"),
+                    evidence.get("comparison_value"),
+                    evidence.get("time_window"),
+                    evidence.get("competition"),
+                    evidence.get("model"),
+                    evidence.get("market"),
+                    evidence.get("source_ref"),
+                    evidence["observed_at"],
+                    evidence.get("payload_hash"),
+                ),
+            )
+            return int(cursor.fetchone()[0])
+
+    def update_weakness_status(self, weakness_id, *, status):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "UPDATE quant_weaknesses SET status = %s, updated_at = now() WHERE weakness_id = %s",
+                (status, weakness_id),
+            )
+
+    def weakness_counts(self):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT status, count(*) FROM quant_weaknesses GROUP BY status ORDER BY status"
+            )
+            by_status = {str(row[0]): int(row[1]) for row in cursor.fetchall()}
+            cursor.execute("SELECT count(*) FROM quant_weaknesses")
+            total = int(cursor.fetchone()[0])
+        return {"total": total, "by_status": by_status}
+
+    def create_improvement_action(self, action):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO quant_improvement_actions "
+                "(weakness_id, action_type, description, expected_effect, status, risk, estimated_cost, "
+                "requires_owner, verification_metric, baseline_value) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING action_id",
+                (
+                    action["weakness_id"],
+                    action["action_type"],
+                    action.get("description"),
+                    action.get("expected_effect"),
+                    action.get("status", "PROPOSED"),
+                    action.get("risk"),
+                    action.get("estimated_cost"),
+                    action.get("requires_owner", False),
+                    action.get("verification_metric"),
+                    action.get("baseline_value"),
+                ),
+            )
+            return int(cursor.fetchone()[0])
+
+    def list_improvement_actions(self, limit=300):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT action_id, weakness_id, action_type, description, expected_effect, status, risk, "
+                "estimated_cost, requires_owner, created_at, started_at, completed_at, verification_metric, "
+                "baseline_value, result_value, outcome "
+                "FROM quant_improvement_actions ORDER BY action_id DESC LIMIT %s",
+                (limit,),
+            )
+            columns = [column.name for column in cursor.description]
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+    def update_action_outcome(self, action_id, *, status, result_value, outcome):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "UPDATE quant_improvement_actions SET status = %s, result_value = %s, outcome = %s, "
+                "completed_at = now() WHERE action_id = %s",
+                (status, result_value, outcome, action_id),
+            )
+
+    def add_knowledge_finding(self, finding):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO quant_knowledge_findings "
+                "(research_task_id, weakness_id, claim, source, source_type, retrieved_at, confidence, scope, "
+                "valid_from, valid_until, point_in_time_safe, approved_for_feature_use, notes) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING finding_id",
+                (
+                    finding.get("research_task_id"),
+                    finding.get("weakness_id"),
+                    finding["claim"],
+                    finding.get("source"),
+                    finding.get("source_type"),
+                    finding["retrieved_at"],
+                    finding.get("confidence", "EARLY_SIGNAL"),
+                    finding.get("scope"),
+                    finding.get("valid_from"),
+                    finding.get("valid_until"),
+                    finding.get("point_in_time_safe", False),
+                    finding.get("approved_for_feature_use", False),
+                    finding.get("notes"),
+                ),
+            )
+            return int(cursor.fetchone()[0])
+
+    def list_knowledge_findings(self, limit=300):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT finding_id, research_task_id, weakness_id, claim, source, source_type, retrieved_at, "
+                "confidence, scope, valid_from, valid_until, point_in_time_safe, approved_for_feature_use, notes, created_at "
+                "FROM quant_knowledge_findings ORDER BY finding_id DESC LIMIT %s",
+                (limit,),
+            )
+            columns = [column.name for column in cursor.description]
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+    def create_repair_packet(self, packet):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO quant_repair_packets "
+                "(weakness_id, symptom, reproduction, evidence, suspected_boundary, failing_invariant, "
+                "expected_behavior, suggested_test, likely_files, risk, acceptance_criteria, status) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING packet_id",
+                (
+                    packet.get("weakness_id"),
+                    packet["symptom"],
+                    packet.get("reproduction"),
+                    Jsonb(packet.get("evidence", {})),
+                    packet.get("suspected_boundary"),
+                    packet.get("failing_invariant"),
+                    packet.get("expected_behavior"),
+                    packet.get("suggested_test"),
+                    Jsonb(packet.get("likely_files", [])),
+                    packet.get("risk"),
+                    packet.get("acceptance_criteria"),
+                    packet.get("status", "PENDING"),
+                ),
+            )
+            return int(cursor.fetchone()[0])
+
+    def list_repair_packets(self, limit=200):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT packet_id, weakness_id, symptom, reproduction, evidence, suspected_boundary, "
+                "failing_invariant, expected_behavior, suggested_test, likely_files, risk, acceptance_criteria, "
+                "status, created_at FROM quant_repair_packets ORDER BY packet_id DESC LIMIT %s",
+                (limit,),
+            )
+            columns = [column.name for column in cursor.description]
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+    def insert_decision_evaluation(self, evaluation):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO quant_decision_evaluations "
+                "(canonical_event_id, provider_event_id, model_id, model_version, strategy, decision, reason, "
+                "decision_ts, model_p_a, market_p_a, bookmaker, price, observation_id, feature_snapshot_id, legacy_ledger_entry_id) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING evaluation_id",
+                (
+                    evaluation["canonical_event_id"],
+                    evaluation.get("provider_event_id"),
+                    evaluation["model_id"],
+                    evaluation["model_version"],
+                    evaluation["strategy"],
+                    evaluation["decision"],
+                    evaluation["reason"],
+                    evaluation["decision_ts"],
+                    evaluation.get("model_p_a"),
+                    evaluation.get("market_p_a"),
+                    evaluation.get("bookmaker"),
+                    evaluation.get("price"),
+                    evaluation.get("observation_id"),
+                    evaluation.get("feature_snapshot_id"),
+                    evaluation.get("legacy_ledger_entry_id"),
+                ),
+            )
+            return cursor.fetchone() is not None
+
+    def list_decision_evaluations(self, limit=1000):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT evaluation_id, canonical_event_id, provider_event_id, model_id, model_version, strategy, "
+                "decision, reason, decision_ts, model_p_a, market_p_a, bookmaker, price, observation_id, "
+                "feature_snapshot_id, legacy_ledger_entry_id, created_at "
+                "FROM quant_decision_evaluations ORDER BY evaluation_id DESC LIMIT %s",
+                (limit,),
+            )
+            columns = [column.name for column in cursor.description]
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+    def decision_evaluation_counts(self):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute("SELECT count(*) FROM quant_decision_evaluations")
+            total = int(cursor.fetchone()[0])
+            cursor.execute(
+                "SELECT decision, count(*) FROM quant_decision_evaluations GROUP BY decision"
+            )
+            by_decision = {str(row[0]): int(row[1]) for row in cursor.fetchall()}
+        return {"total": total, "by_decision": by_decision}
+
+    def commit_paper_ticket(self, ticket):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO quant_paper_tickets "
+                "(canonical_event_id, provider_event_id, strategy, model_id, model_version, side, selection, price, "
+                "stake, model_p_a, market_p_a, market_observation_id, feature_snapshot_id, decision_ts) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (canonical_event_id, strategy, model_id, decision_ts) DO NOTHING "
+                "RETURNING ticket_id",
+                (
+                    ticket["canonical_event_id"],
+                    ticket.get("provider_event_id"),
+                    ticket["strategy"],
+                    ticket["model_id"],
+                    ticket["model_version"],
+                    ticket["side"],
+                    ticket.get("selection"),
+                    ticket["price"],
+                    ticket.get("stake"),
+                    ticket.get("model_p_a"),
+                    ticket.get("market_p_a"),
+                    ticket.get("market_observation_id"),
+                    ticket.get("feature_snapshot_id"),
+                    ticket["decision_ts"],
+                ),
+            )
+            return cursor.fetchone() is not None
+
+    def list_paper_tickets(self, limit=500):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT ticket_id, canonical_event_id, provider_event_id, strategy, model_id, model_version, side, "
+                "selection, price, stake, model_p_a, market_p_a, market_observation_id, feature_snapshot_id, "
+                "decision_ts, committed_at, result_actual, paper_pnl, created_at "
+                "FROM quant_paper_tickets ORDER BY ticket_id DESC LIMIT %s",
+                (limit,),
+            )
+            columns = [column.name for column in cursor.description]
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
 
 @dataclass
 class InMemoryQuantStore(QuantStore):
@@ -939,11 +1289,22 @@ class InMemoryQuantStore(QuantStore):
     stage_audit: list[dict[str, Any]] = field(default_factory=list)
     shadow_predictions: dict[tuple[str, str, str], dict[str, Any]] = field(default_factory=dict)
     paper_entries: list[dict[str, Any]] = field(default_factory=list)
+    weaknesses: dict[tuple[str, str], dict[str, Any]] = field(default_factory=dict)
+    weakness_evidence: list[dict[str, Any]] = field(default_factory=list)
+    improvement_actions: list[dict[str, Any]] = field(default_factory=list)
+    knowledge_findings: list[dict[str, Any]] = field(default_factory=list)
+    repair_packets: list[dict[str, Any]] = field(default_factory=list)
+    decision_evaluations: list[dict[str, Any]] = field(default_factory=list)
+    paper_tickets: dict[tuple[str, str, str, str], dict[str, Any]] = field(default_factory=dict)
     _next_research: int = 1
     _next_thread: int = 1
     _next_message: int = 1
     _next_evaluation: int = 1
     _next_hypothesis: int = 1
+    _next_weakness: int = 1
+    _next_action: int = 1
+    _next_finding: int = 1
+    _next_packet: int = 1
 
     def create_research_entry(self, *, hypothesis, rationale=None, data_needed=None):
         entry_id = self._next_research
@@ -1322,3 +1683,93 @@ class InMemoryQuantStore(QuantStore):
 
     def list_paper_entries(self, limit=500):
         return list(reversed(self.paper_entries))[:limit]
+
+    def upsert_weakness(self, spec):
+        key = (spec["weakness_type"], spec["state_hash"])
+        existing = self.weaknesses.get(key)
+        if existing is None:
+            weakness_id = self._next_weakness
+            self._next_weakness += 1
+            self.weaknesses[key] = dict(spec, weakness_id=weakness_id, evidence_count=1, created_at=_utcnow().isoformat(), updated_at=_utcnow().isoformat())
+            return weakness_id
+        existing["last_observed_at"] = spec["last_observed_at"]
+        existing["evidence_count"] = existing.get("evidence_count", 0) + 1
+        existing["sample_size"] = spec.get("sample_size", existing.get("sample_size", 0))
+        existing["severity"] = spec.get("severity", existing.get("severity", "LOW"))
+        existing["updated_at"] = _utcnow().isoformat()
+        return existing["weakness_id"]
+
+    def list_weaknesses(self, limit=500):
+        rows = sorted(self.weaknesses.values(), key=lambda item: (item.get("priority_score") is None, -(item.get("priority_score") or 0)))
+        return rows[:limit]
+
+    def add_weakness_evidence(self, evidence):
+        self.weakness_evidence.append(dict(evidence, created_at=_utcnow().isoformat()))
+        return len(self.weakness_evidence)
+
+    def update_weakness_status(self, weakness_id, *, status):
+        for entry in self.weaknesses.values():
+            if entry["weakness_id"] == weakness_id:
+                entry["status"] = status
+                entry["updated_at"] = _utcnow().isoformat()
+
+    def weakness_counts(self):
+        by_status = {}
+        for entry in self.weaknesses.values():
+            by_status[entry["status"]] = by_status.get(entry["status"], 0) + 1
+        return {"total": len(self.weaknesses), "by_status": by_status}
+
+    def create_improvement_action(self, action):
+        action_id = self._next_action
+        self._next_action += 1
+        self.improvement_actions.append(dict(action, action_id=action_id, created_at=_utcnow().isoformat()))
+        return action_id
+
+    def list_improvement_actions(self, limit=300):
+        return list(reversed(self.improvement_actions))[:limit]
+
+    def update_action_outcome(self, action_id, *, status, result_value, outcome):
+        for action in self.improvement_actions:
+            if action["action_id"] == action_id:
+                action.update({"status": status, "result_value": result_value, "outcome": outcome, "completed_at": _utcnow().isoformat()})
+
+    def add_knowledge_finding(self, finding):
+        finding_id = self._next_finding
+        self._next_finding += 1
+        self.knowledge_findings.append(dict(finding, finding_id=finding_id, created_at=_utcnow().isoformat()))
+        return finding_id
+
+    def list_knowledge_findings(self, limit=300):
+        return list(reversed(self.knowledge_findings))[:limit]
+
+    def create_repair_packet(self, packet):
+        packet_id = self._next_packet
+        self._next_packet += 1
+        self.repair_packets.append(dict(packet, packet_id=packet_id, created_at=_utcnow().isoformat()))
+        return packet_id
+
+    def list_repair_packets(self, limit=200):
+        return list(reversed(self.repair_packets))[:limit]
+
+    def insert_decision_evaluation(self, evaluation):
+        self.decision_evaluations.append(dict(evaluation, created_at=_utcnow().isoformat()))
+        return True
+
+    def list_decision_evaluations(self, limit=1000):
+        return list(reversed(self.decision_evaluations))[:limit]
+
+    def decision_evaluation_counts(self):
+        by_decision = {}
+        for entry in self.decision_evaluations:
+            by_decision[entry["decision"]] = by_decision.get(entry["decision"], 0) + 1
+        return {"total": len(self.decision_evaluations), "by_decision": by_decision}
+
+    def commit_paper_ticket(self, ticket):
+        key = (ticket["canonical_event_id"], ticket["strategy"], ticket["model_id"], ticket["decision_ts"])
+        if key in self.paper_tickets:
+            return False
+        self.paper_tickets[key] = dict(ticket, created_at=_utcnow().isoformat())
+        return True
+
+    def list_paper_tickets(self, limit=500):
+        return list(reversed(list(self.paper_tickets.values())))[:limit]
