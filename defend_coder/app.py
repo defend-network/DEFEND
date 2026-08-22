@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+import os
 from pathlib import Path
 import secrets
 import threading
@@ -89,6 +90,14 @@ class RunCreateRequest(BaseModel):
 
 class ModelSelectRequest(BaseModel):
     requested_mode: str = Field(min_length=1, max_length=16)
+
+
+class ChatRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=20000)
+
+
+class CredentialRequest(BaseModel):
+    api_key: str = Field(min_length=1, max_length=4096)
 
 
 def _account_dict(account: AuthenticatedAccount) -> dict[str, object]:
@@ -648,6 +657,14 @@ def build_coder_app(
             targets=_targets,
             selector=_selector,
         )
+        if mode in ("AUTO", "DEEPSEEK") and not route.target.availability:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "DeepSeek is not configured; AUTO cannot silently fall "
+                    "back to another runtime"
+                ),
+            )
         if route.tier in (ModelTier.NEXT, ModelTier.SOL) and not route.target.availability:
             raise HTTPException(
                 status_code=400,
@@ -706,7 +723,7 @@ def build_coder_app(
             ) from None
         return {"cancelled": True}
 
-    @app.get("/v1/runs/{run_id}/routing")
+    @app.get("/v1/workspaces/{workspace_id}/runs/{run_id}/routing")
     def get_run_routing(
         workspace_id: str,
         run_id: str,
@@ -722,7 +739,7 @@ def build_coder_app(
             "runtime": _runtime_adapter.runtime_status("defendcoder"),
         }
 
-    @app.post("/v1/runs/{run_id}/model")
+    @app.post("/v1/workspaces/{workspace_id}/runs/{run_id}/model")
     def select_run_model(
         workspace_id: str,
         run_id: str,
@@ -746,6 +763,14 @@ def build_coder_app(
             targets=_targets,
             selector=_selector,
         )
+        if mode in ("AUTO", "DEEPSEEK") and not route.target.availability:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "DeepSeek is not configured; AUTO cannot silently fall "
+                    "back to another runtime"
+                ),
+            )
         if route.tier in (ModelTier.NEXT, ModelTier.SOL) and not route.target.availability:
             raise HTTPException(
                 status_code=400,
@@ -774,7 +799,7 @@ def build_coder_app(
             "next_step": next_step,
         }
 
-    @app.get("/v1/runs/{run_id}/escalation")
+    @app.get("/v1/workspaces/{workspace_id}/runs/{run_id}/escalation")
     def get_run_escalation(
         workspace_id: str,
         run_id: str,
@@ -785,7 +810,10 @@ def build_coder_app(
         proposals = runs_repository.list_escalation_proposals(UUID(run_id))
         return {"proposals": proposals}
 
-    @app.post("/v1/runs/{run_id}/escalation/{proposal_id}/approve")
+    @app.post(
+        "/v1/workspaces/{workspace_id}/runs/{run_id}/escalation/"
+        "{proposal_id}/approve"
+    )
     def approve_run_escalation(
         workspace_id: str,
         run_id: str,
@@ -794,9 +822,7 @@ def build_coder_app(
     ) -> dict[str, object]:
         account = current_account(request)
         _require_owner(account)
-        detail = runs_repository.get_run(UUID(run_id))
-        if detail is None:
-            raise HTTPException(status_code=404, detail="run not found")
+        _owned_run(account, workspace_id, run_id)
         proposals = runs_repository.list_escalation_proposals(UUID(run_id))
         proposal = next(
             (
@@ -864,7 +890,10 @@ def build_coder_app(
             "runtime": _runtime_adapter.runtime_status("defendcoder"),
         }
 
-    @app.post("/v1/runs/{run_id}/escalation/{proposal_id}/deny")
+    @app.post(
+        "/v1/workspaces/{workspace_id}/runs/{run_id}/escalation/"
+        "{proposal_id}/deny"
+    )
     def deny_run_escalation(
         workspace_id: str,
         run_id: str,
@@ -873,9 +902,7 @@ def build_coder_app(
     ) -> dict[str, object]:
         account = current_account(request)
         _require_owner(account)
-        detail = runs_repository.get_run(UUID(run_id))
-        if detail is None:
-            raise HTTPException(status_code=404, detail="run not found")
+        _owned_run(account, workspace_id, run_id)
         proposals = runs_repository.list_escalation_proposals(UUID(run_id))
         if not any(item["proposal_id"] == proposal_id for item in proposals):
             raise HTTPException(status_code=404, detail="proposal not found")
@@ -885,6 +912,121 @@ def build_coder_app(
             status="denied",
         )
         return {"status": "denied", "unchanged": True}
+
+    @app.get("/v1/admin/model-credentials")
+    def model_credentials(request: Request) -> dict[str, object]:
+        account = current_account(request)
+        _require_owner(account)
+        from defend_coder.providers import DEEPSEEK_API_KEY_ENV, SOL_API_KEY_ENV
+        from defend_control.secrets import DpapiSecretStore
+        from pathlib import Path as _Path
+
+        store_values = {}
+        try:
+            store_values = DpapiSecretStore(
+                _Path(os.environ.get("LOCALAPPDATA", ".")) / "DEFEND" / "secrets.dpapi"
+            ).load()
+        except Exception:
+            store_values = {}
+        deepseek = bool(
+            os.environ.get(DEEPSEEK_API_KEY_ENV)
+            or store_values.get("DEEPSEEK_API_KEY")
+        )
+        sol = bool(
+            os.environ.get(SOL_API_KEY_ENV)
+            or store_values.get("OPENAI_API_KEY")
+        )
+        return {
+            "deepseek": "CONFIGURED" if deepseek else "MISSING",
+            "sol": "CONFIGURED" if sol else "MISSING",
+        }
+
+    @app.post("/v1/admin/model-credentials/{provider}")
+    def set_model_credential(
+        provider: str,
+        payload: CredentialRequest,
+        request: Request,
+    ) -> dict[str, object]:
+        account = current_account(request)
+        _require_owner(account)
+        require_csrf(request)
+        from defend_control.secrets import DpapiSecretStore
+        from pathlib import Path as _Path
+
+        if provider not in ("deepseek", "sol"):
+            raise HTTPException(status_code=404, detail="unknown provider")
+        key_name = "DEEPSEEK_API_KEY" if provider == "deepseek" else "OPENAI_API_KEY"
+        store = DpapiSecretStore(
+            _Path(os.environ.get("LOCALAPPDATA", ".")) / "DEFEND" / "secrets.dpapi"
+        )
+        values = store.load()
+        values[key_name] = payload.api_key
+        store.save(values)
+        return {"provider": provider, "configured": True}
+
+    @app.post("/v1/chat", status_code=200)
+    def chat_without_workspace(
+        payload: ChatRequest,
+        request: Request,
+    ) -> dict[str, object]:
+        account = current_account(request)
+        require_csrf(request)
+        deepseek = _targets.get("deepseek")
+        if deepseek is None or not deepseek.availability:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "DeepSeek is not configured; workspace-less chat is "
+                    "unavailable until DEEPSEEK_API_KEY is set"
+                ),
+            )
+        try:
+            client = build_client(
+                deepseek,
+                api_key=_secret_resolver("deepseek"),
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from None
+        from defend_coder.agent import CodingAgent
+        from defend_coder.tools import CoderToolkit as _CoderToolkit
+
+        toolkit = _CoderToolkit(
+            repository=repository,
+            configured_root=(
+                configured_root if configured_root is not None else settings.workspace_root
+            ),
+            enabled=False,
+        )
+        agent = CodingAgent(
+            client=client,
+            toolkit=toolkit,
+            max_steps=4,
+            max_loop_seconds=120.0,
+        )
+        replies: list[str] = []
+
+        def sink(**fields: object) -> None:
+            if fields.get("role") == "assistant" and fields.get("content"):
+                replies.append(str(fields["content"]))
+
+        outcome = agent.run(
+            prompt=payload.message,
+            account_id=account.account_id,
+            workspace_id=None,  # type: ignore[arg-type]
+            sink=sink,
+        )
+        if outcome.state != "succeeded" or not replies:
+            raise HTTPException(
+                status_code=502,
+                detail=f"chat generation failed ({outcome.reason or outcome.state})",
+            )
+        return {
+            "reply": "\n".join(replies),
+            "model": deepseek.model_id,
+            "provider": deepseek.provider,
+            "tier": "DEEPSEEK",
+            "requested_mode": "AUTO",
+        }
 
     @app.get("/v1/workspaces/{workspace_id}/runs")
     def list_runs(

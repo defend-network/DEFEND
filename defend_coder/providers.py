@@ -32,9 +32,15 @@ SOL_API_KEY_ENV = "OPENAI_API_KEY"
 SOL_API_KEY_FILE_ENV = "OPENAI_API_KEY_FILE"
 SOL_BASE_URL_ENV = "OPENAI_BASE_URL"
 
-DEFAULT_DEEPSEEK_MODEL = "deepseek-chat"
-DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
+DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-flash"
+DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEFAULT_SOL_BASE_URL = "https://api.openai.com/v1"
+
+#: Platform runtime registry forward port for the "defendcoder" product
+#: (see defend_control.product_runtime.PRODUCT_FORWARD_PORTS). The Next
+#: endpoint is resolved from the runtime manager; this constant is the
+#: registry-scoped default when no manager is attached.
+NEXT_FORWARD_PORT = 8403
 
 #: Short handoff context the escalation flow carries between models.
 HANDOFF_FIELDS = (
@@ -136,15 +142,17 @@ def sol_target(env: dict[str, str] | None = None) -> ModelTarget:
     )
 
 
-def next_target(*, availability: bool = True) -> ModelTarget:
+def next_target(*, availability: bool = True, endpoint: str | None = None) -> ModelTarget:
     """TIER_2 self-hosted Next. Availability is the RUNTIME availability;
-    the target itself is always resolvable (it may be STOPPED_RETAINED)."""
+    the target itself is always resolvable (it may be STOPPED_RETAINED).
+    The endpoint comes from the platform runtime manager forward port, never
+    a hard-coded legacy tunnel port."""
     return ModelTarget(
         tier="NEXT",
         alias=NEXT_ALIAS,
         provider="self_hosted",
         model_id=NEXT_MODEL,
-        endpoint="http://127.0.0.1:8003/v1",
+        endpoint=endpoint or f"http://127.0.0.1:{NEXT_FORWARD_PORT}/v1",
         runtime_kind="vllm",
         requires_external_runtime=True,
         availability=availability,

@@ -236,7 +236,12 @@ def _account(role: str = "consumer") -> AuthenticatedAccount:
 
 
 class _App:
-    def __init__(self, account: AuthenticatedAccount) -> None:
+    def __init__(
+        self,
+        account: AuthenticatedAccount,
+        *,
+        configure_deepseek: bool = True,
+    ) -> None:
         workspace = _workspace(account.account_id)
         self.workspace = workspace
         self.run_id = uuid4()
@@ -263,6 +268,22 @@ class _App:
             configured_root=Path("C:/fake/root"),
             idle_timeout_seconds=0,
             runtime_adapter=self.runtime,
+            targets={
+                "deepseek": deepseek_target(
+                    env={
+                        "DEEPSEEK_API_KEY": (
+                            "sk-fake-deepseek-key" if configure_deepseek else ""
+                        )
+                    }
+                ),
+                "Qwen/Qwen3-Coder-Next": next_target(),
+                "gpt-5.6-sol": sol_target(env={}),
+            },
+            secret_resolver=lambda name: (
+                "sk-fake-deepseek-key"
+                if name == "deepseek" and configure_deepseek
+                else None
+            ),
         )
         from fastapi.testclient import TestClient
 
@@ -309,7 +330,7 @@ class TestNewSessionDefaults:
     def test_identity_is_defendcoder_in_routing(self):
         harness = _App(_account())
         response = harness.client.get(
-            f"/v1/runs/{harness.run_id}/routing?workspace_id={harness.workspace.workspace_id}"
+            f"/v1/workspaces/{harness.workspace.workspace_id}/runs/{harness.run_id}/routing"
         )
         assert response.status_code == 200
         assert response.json()["identity"] == PRODUCT_IDENTITY
@@ -319,7 +340,7 @@ class TestModelSelector:
     def test_explicit_deepseek_sticky(self):
         harness = _App(_account())
         response = harness.client.post(
-            f"/v1/runs/{harness.run_id}/model?workspace_id={harness.workspace.workspace_id}",
+            f"/v1/workspaces/{harness.workspace.workspace_id}/runs/{harness.run_id}/model",
             headers=harness._headers(),
             json={"requested_mode": "DEEPSEEK"},
         )
@@ -331,7 +352,7 @@ class TestModelSelector:
     def test_explicit_next_requires_owner(self):
         harness = _App(_account(role="consumer"))
         response = harness.client.post(
-            f"/v1/runs/{harness.run_id}/model?workspace_id={harness.workspace.workspace_id}",
+            f"/v1/workspaces/{harness.workspace.workspace_id}/runs/{harness.run_id}/model",
             headers=harness._headers(),
             json={"requested_mode": "NEXT"},
         )
@@ -340,7 +361,7 @@ class TestModelSelector:
     def test_explicit_next_admin_gives_resume_approval_step(self):
         harness = _App(_account(role="admin"))
         response = harness.client.post(
-            f"/v1/runs/{harness.run_id}/model?workspace_id={harness.workspace.workspace_id}",
+            f"/v1/workspaces/{harness.workspace.workspace_id}/runs/{harness.run_id}/model",
             headers=harness._headers(),
             json={"requested_mode": "NEXT"},
         )
@@ -351,7 +372,7 @@ class TestModelSelector:
     def test_explicit_sol_requires_owner_and_configuration(self):
         harness = _App(_account(role="consumer"))
         response = harness.client.post(
-            f"/v1/runs/{harness.run_id}/model?workspace_id={harness.workspace.workspace_id}",
+            f"/v1/workspaces/{harness.workspace.workspace_id}/runs/{harness.run_id}/model",
             headers=harness._headers(),
             json={"requested_mode": "SOL"},
         )
@@ -359,7 +380,7 @@ class TestModelSelector:
 
         harness = _App(_account(role="admin"))
         response = harness.client.post(
-            f"/v1/runs/{harness.run_id}/model?workspace_id={harness.workspace.workspace_id}",
+            f"/v1/workspaces/{harness.workspace.workspace_id}/runs/{harness.run_id}/model",
             headers=harness._headers(),
             json={"requested_mode": "SOL"},
         )
@@ -373,7 +394,7 @@ class TestEscalationProposalAPI:
         harness = _App(_account())
         harness.seed_pending_proposal()
         response = harness.client.get(
-            f"/v1/runs/{harness.run_id}/escalation?workspace_id={harness.workspace.workspace_id}"
+            f"/v1/workspaces/{harness.workspace.workspace_id}/runs/{harness.run_id}/escalation"
         )
         assert response.status_code == 200
         proposals = response.json()["proposals"]
@@ -392,8 +413,7 @@ class TestEscalationProposalAPI:
         harness = _App(_account(role="consumer"))
         proposal_id = harness.seed_pending_proposal()
         response = harness.client.post(
-            f"/v1/runs/{harness.run_id}/escalation/{proposal_id}/approve"
-            f"?workspace_id={harness.workspace.workspace_id}",
+            f"/v1/workspaces/{harness.workspace.workspace_id}/runs/{harness.run_id}/escalation/{proposal_id}/approve",
             headers=harness._headers(),
         )
         assert response.status_code == 403
@@ -403,8 +423,7 @@ class TestEscalationProposalAPI:
         proposal_id = harness.seed_pending_proposal()
         harness.client.cookies.delete("defendcoder_session")
         response = harness.client.post(
-            f"/v1/runs/{harness.run_id}/escalation/{proposal_id}/approve"
-            f"?workspace_id={harness.workspace.workspace_id}",
+            f"/v1/workspaces/{harness.workspace.workspace_id}/runs/{harness.run_id}/escalation/{proposal_id}/approve",
             headers=harness._headers(),
         )
         assert response.status_code == 401
@@ -413,8 +432,7 @@ class TestEscalationProposalAPI:
         harness = _App(_account(role="admin"))
         proposal_id = harness.seed_pending_proposal()
         response = harness.client.post(
-            f"/v1/runs/{harness.run_id}/escalation/{proposal_id}/approve"
-            f"?workspace_id={harness.workspace.workspace_id}",
+            f"/v1/workspaces/{harness.workspace.workspace_id}/runs/{harness.run_id}/escalation/{proposal_id}/approve",
             headers=harness._headers(),
         )
         assert response.status_code == 200
@@ -430,8 +448,7 @@ class TestEscalationProposalAPI:
         harness = _App(_account(role="admin"))
         proposal_id = harness.seed_pending_proposal()
         response = harness.client.post(
-            f"/v1/runs/{harness.run_id}/escalation/{proposal_id}/deny"
-            f"?workspace_id={harness.workspace.workspace_id}",
+            f"/v1/workspaces/{harness.workspace.workspace_id}/runs/{harness.run_id}/escalation/{proposal_id}/deny",
             headers=harness._headers(),
         )
         assert response.status_code == 200
@@ -443,14 +460,12 @@ class TestEscalationProposalAPI:
         harness = _App(_account(role="admin"))
         proposal_id = harness.seed_pending_proposal()
         first = harness.client.post(
-            f"/v1/runs/{harness.run_id}/escalation/{proposal_id}/approve"
-            f"?workspace_id={harness.workspace.workspace_id}",
+            f"/v1/workspaces/{harness.workspace.workspace_id}/runs/{harness.run_id}/escalation/{proposal_id}/approve",
             headers=harness._headers(),
         )
         assert first.status_code == 200
         second = harness.client.post(
-            f"/v1/runs/{harness.run_id}/escalation/{proposal_id}/approve"
-            f"?workspace_id={harness.workspace.workspace_id}",
+            f"/v1/workspaces/{harness.workspace.workspace_id}/runs/{harness.run_id}/escalation/{proposal_id}/approve",
             headers=harness._headers(),
         )
         assert second.status_code == 409
@@ -475,8 +490,8 @@ class TestEscalationProposalAPI:
         )
         harness.runs.create_escalation_proposal(harness.run_id, expired)
         response = harness.client.post(
-            f"/v1/runs/{harness.run_id}/escalation/{expired.proposal_id}/approve"
-            f"?workspace_id={harness.workspace.workspace_id}",
+            f"/v1/workspaces/{harness.workspace.workspace_id}/runs/"
+            f"{harness.run_id}/escalation/{expired.proposal_id}/approve",
             headers=harness._headers(),
         )
         assert response.status_code == 409
@@ -486,8 +501,7 @@ class TestEscalationProposalAPI:
         harness = _App(_account(role="admin"))
         proposal_id = harness.seed_pending_proposal()
         response = harness.client.post(
-            f"/v1/runs/{harness.run_id}/escalation/{proposal_id}/approve"
-            f"?workspace_id={harness.workspace.workspace_id}",
+            f"/v1/workspaces/{harness.workspace.workspace_id}/runs/{harness.run_id}/escalation/{proposal_id}/approve",
             headers=harness._headers(),
         )
         assert response.status_code == 200
@@ -639,7 +653,8 @@ class TestProviders:
         assert target.model_id == NEXT_MODEL
         assert target.requires_external_runtime is True
         assert target.runtime_kind == "vllm"
-        assert target.endpoint == "http://127.0.0.1:8003/v1"
+        assert "8003" not in target.endpoint
+        assert target.endpoint.endswith("/v1")
 
     def test_build_client_requires_key_for_managed_api(self):
         target = deepseek_target(env={})
@@ -687,3 +702,259 @@ class TestModelMetadata:
         assert targets["deepseek"].model_id == DEFAULT_DEEPSEEK_MODEL
         assert targets["Qwen/Qwen3-Coder-Next"].model_id == NEXT_MODEL
         assert targets["gpt-5.6-sol"].model_id == SOL_MODEL
+
+
+class TestDeepSeekProductionConfig:
+    def test_default_model_is_deepseek_v4_flash(self):
+        from defend_coder.providers import DEFAULT_DEEPSEEK_MODEL
+
+        assert DEFAULT_DEEPSEEK_MODEL == "deepseek-v4-flash"
+        assert deepseek_target(env={}).model_id == "deepseek-v4-flash"
+
+    def test_base_url_is_canonical(self):
+        from defend_coder.providers import DEFAULT_DEEPSEEK_BASE_URL
+
+        assert DEFAULT_DEEPSEEK_BASE_URL == "https://api.deepseek.com"
+        assert deepseek_target(env={}).endpoint == "https://api.deepseek.com"
+
+    def test_model_override_still_allowed(self):
+        target = deepseek_target(env={"DEEPSEEK_MODEL": "deepseek-v4-pro"})
+        assert target.model_id == "deepseek-v4-pro"
+
+    def test_v4_pro_never_in_automatic_chain(self):
+        from defend_coder.router import ModelTier, next_tier
+
+        assert next_tier(ModelTier.DEEPSEEK) == ModelTier.NEXT
+        assert next_tier(ModelTier.NEXT) == ModelTier.SOL
+        assert next_tier(ModelTier.SOL) is None
+
+
+class TestNoSilentLegacyFallback:
+    def test_auto_without_deepseek_key_is_503(self):
+        harness = _App(_account(), configure_deepseek=False)
+        response = harness.client.post(
+            f"/v1/workspaces/{harness.workspace.workspace_id}/runs",
+            headers=harness._headers(),
+            json={"prompt": "hello", "requested_mode": "AUTO"},
+        )
+        assert response.status_code == 503
+        assert "cannot silently fall" in response.json()["detail"]
+        assert harness.runs.routing_writes == []
+
+    def test_explicit_deepseek_without_key_is_503(self):
+        harness = _App(_account(), configure_deepseek=False)
+        response = harness.client.post(
+            f"/v1/workspaces/{harness.workspace.workspace_id}/runs",
+            headers=harness._headers(),
+            json={"prompt": "hello", "requested_mode": "DEEPSEEK"},
+        )
+        assert response.status_code == 503
+
+    def test_explicit_next_still_works_without_deepseek(self):
+        harness = _App(_account(role="admin"), configure_deepseek=False)
+        response = harness.client.post(
+            f"/v1/workspaces/{harness.workspace.workspace_id}/runs/"
+            f"{harness.run_id}/model",
+            headers=harness._headers(),
+            json={"requested_mode": "NEXT"},
+        )
+        assert response.status_code == 200
+        assert response.json()["routing"]["selected_model"] == NEXT_MODEL
+
+
+class TestWorkspaceScopedPaths:
+    def test_wrong_workspace_rejected(self):
+        harness = _App(_account())
+        other = uuid4()
+        response = harness.client.get(
+            f"/v1/workspaces/{other}/runs/{harness.run_id}/routing"
+        )
+        assert response.status_code == 404
+
+    def test_correct_workspace_succeeds(self):
+        harness = _App(_account())
+        response = harness.client.get(
+            f"/v1/workspaces/{harness.workspace.workspace_id}/runs/"
+            f"{harness.run_id}/routing"
+        )
+        assert response.status_code == 200
+        assert response.json()["identity"] == PRODUCT_IDENTITY
+
+    def test_approve_scoped_to_workspace(self):
+        harness = _App(_account(role="admin"))
+        proposal_id = harness.seed_pending_proposal()
+        other = uuid4()
+        response = harness.client.post(
+            f"/v1/workspaces/{other}/runs/{harness.run_id}/escalation/"
+            f"{proposal_id}/approve",
+            headers=harness._headers(),
+        )
+        assert response.status_code == 404
+        assert harness.start_calls == 0
+
+
+class TestWorkspaceLessChat:
+    def test_chat_without_workspace_succeeds_no_tools(self, monkeypatch):
+        from defend_coder.agent_client import (
+            AgentChatClient,
+            AgentChatResponse,
+        )
+        from defend_coder.model_config import CoderModelConfig
+
+        class FakeChatClient(AgentChatClient):
+            def __init__(self):
+                super().__init__(
+                    CoderModelConfig(
+                        alias="deepseek",
+                        model_name="deepseek-v4-flash",
+                        base_url="https://api.deepseek.com",
+                        api_key="sk-fake",
+                        requires_api_key=True,
+                        managed_api=True,
+                    )
+                )
+
+            def chat(self, messages, tools=None, *, timeout_seconds=None,
+                     max_tokens=None, on_request_started=None):
+                # Identity answer; never claims tools.
+                return AgentChatResponse(
+                    content=(
+                        "I am DEFENDcoder, the software-engineering AI in "
+                        "the DEFEND platform."
+                    ),
+                    tool_calls=(),
+                    usage={"prompt_tokens": 8, "completion_tokens": 6},
+                )
+
+        harness = _App(_account())
+        monkeypatch.setattr(
+            "defend_coder.app.build_client",
+            lambda target, api_key: FakeChatClient(),
+        )
+        response = harness.client.post(
+            "/v1/chat",
+            headers=harness._headers(),
+            json={"message": "Who are you?"},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert "DEFENDcoder" in body["reply"]
+        assert body["model"] == "deepseek-v4-flash"
+        assert body["tier"] == "DEEPSEEK"
+        assert body["requested_mode"] == "AUTO"
+
+    def test_chat_without_workspace_503_when_not_configured(self):
+        harness = _App(_account(), configure_deepseek=False)
+        response = harness.client.post(
+            "/v1/chat",
+            headers=harness._headers(),
+            json={"message": "Who are you?"},
+        )
+        assert response.status_code == 503
+
+    def test_chat_requires_session(self):
+        harness = _App(_account())
+        harness.client.cookies.delete("defendcoder_session")
+        response = harness.client.post(
+            "/v1/chat",
+            headers=harness._headers(),
+            json={"message": "hello"},
+        )
+        assert response.status_code == 401
+
+
+class TestNextRuntimeManagerIntegration:
+    def test_next_endpoint_uses_platform_forward_port(self):
+        from defend_coder.providers import NEXT_FORWARD_PORT
+
+        assert NEXT_FORWARD_PORT == 8403
+        assert next_target().endpoint == f"http://127.0.0.1:{NEXT_FORWARD_PORT}/v1"
+        # The 8003 legacy tunnel literal must not be the registry default.
+        assert "8003" not in next_target().endpoint
+
+    def test_endpoint_resolved_from_runtime_manager(self):
+        adapter = ProductRuntimeAdapterBoundary(
+            status={
+                "state": "ready",
+                "provider_instance_state": "running",
+                "model": NEXT_MODEL,
+                "instance_id": 1,
+            }
+        )
+        assert adapter.get_runtime_endpoint() == "http://127.0.0.1:8003/v1"
+
+    def test_ready_next_reused_not_replaced(self):
+        adapter = ProductRuntimeAdapterBoundary(
+            status={
+                "state": "ready",
+                "provider_instance_state": "running",
+                "model": NEXT_MODEL,
+                "instance_id": 77,
+            }
+        )
+        result = adapter.start_runtime(authorize_resume=True)
+        assert result["reused"] is True
+        assert adapter.runtime_status()["instance_id"] == 77
+
+
+class TestCosting:
+    def test_deepseek_v4_flash_pricing_math(self):
+        from decimal import Decimal
+
+        from defend_coder.costing import estimate_api_cost
+
+        # 1M cached input @0.0028 + 1M output @0.28
+        cost = estimate_api_cost(
+            "deepseek-v4-flash",
+            input_tokens=1_000_000,
+            cached_input_tokens=1_000_000,
+            output_tokens=1_000_000,
+        )
+        assert cost == Decimal("0.2828")
+
+    def test_uncached_input_priced_at_full_rate(self):
+        from decimal import Decimal
+
+        from defend_coder.costing import estimate_api_cost
+
+        cost = estimate_api_cost(
+            "deepseek-v4-flash",
+            input_tokens=1_000_000,
+            cached_input_tokens=0,
+            output_tokens=0,
+        )
+        assert cost == Decimal("0.14")
+
+    def test_unknown_model_returns_none(self):
+        from defend_coder.costing import estimate_api_cost
+
+        assert estimate_api_cost("unknown-model", input_tokens=100) is None
+
+    def test_run_cost_summary(self):
+        from defend_coder.costing import build_cost_summary
+
+        summary = build_cost_summary(
+            model="deepseek-v4-flash",
+            api_calls=[
+                {
+                    "input_tokens": 10_000,
+                    "cached_input_tokens": 5_000,
+                    "output_tokens": 2_000,
+                }
+            ],
+            task_success=True,
+        )
+        assert summary.api_cost is not None
+        assert summary.api_cost > 0
+        assert summary.input_tokens == 10_000
+        assert summary.cached_input_tokens == 5_000
+        assert summary.output_tokens == 2_000
+        assert summary.cost_per_successful_task == summary.total_cost
+
+    def test_gpu_cost_estimation(self):
+        from decimal import Decimal
+
+        from defend_coder.costing import estimate_gpu_cost
+
+        assert estimate_gpu_cost(Decimal("4.00"), 1800) == Decimal("2.00")
+        assert estimate_gpu_cost(None, 1800) is None
