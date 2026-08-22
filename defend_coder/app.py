@@ -19,7 +19,27 @@ from .auth import (
 )
 from .config import CoderSettings
 from .db import CoderDatabase
+from .providers import (
+    ModelTarget,
+    build_client,
+    deepseek_target,
+    next_target,
+    sol_target,
+)
 from .repositories import CoderRepository, WorkspaceRecord
+from .router import (
+    PRODUCT_IDENTITY,
+    EscalationReason,
+    ModelSelector,
+    ModelTier,
+    model_for_tier,
+    tier_for_model,
+)
+from .routing import (
+    ProductRuntimeAdapterBoundary,
+    RuntimeResumeDenied,
+    resolve_starting_route,
+)
 from .runs import (
     RunConflictError,
     RunDetail,
@@ -63,6 +83,12 @@ class WorkspaceCreateRequest(BaseModel):
 
 class RunCreateRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=20000)
+    requested_mode: str = Field(default="AUTO", max_length=16)
+    model: str | None = Field(default=None, max_length=64)
+
+
+class ModelSelectRequest(BaseModel):
+    requested_mode: str = Field(min_length=1, max_length=16)
 
 
 def _account_dict(account: AuthenticatedAccount) -> dict[str, object]:
@@ -177,6 +203,11 @@ def build_coder_app(
     idle_timeout_seconds: int | None = None,
     runtime_stop_callback: Callable[[str], None] | None = None,
     idle_reaper_interval_seconds: float = 15.0,
+    # Router integration (additive; defaults preserve legacy behavior).
+    targets: dict[str, ModelTarget] | None = None,
+    secret_resolver: Callable[[str], str | None] | None = None,
+    runtime_adapter: object | None = None,
+    model_selector: ModelSelector | None = None,
 ) -> FastAPI:
     idle_timeout_seconds = (
         settings.idle_timeout_seconds
@@ -239,6 +270,52 @@ def build_coder_app(
             else settings.workspace_root
         ),
     )
+
+    # Router integration state (additive). Defaults keep the legacy single
+    # model path intact when no provider is configured.
+    _targets = targets or {
+        "deepseek": deepseek_target(),
+        "Qwen/Qwen3-Coder-Next": next_target(),
+        "gpt-5.6-sol": sol_target(),
+    }
+    _secret_resolver = secret_resolver or (lambda _name: None)
+    _runtime_adapter = runtime_adapter or ProductRuntimeAdapterBoundary()
+    _selector = model_selector or ModelSelector()
+
+    def _target_for_model(model: str) -> ModelTarget:
+        try:
+            return _targets[model]
+        except KeyError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"no configured target for model {model!r}",
+            ) from None
+
+    def _require_owner(account: AuthenticatedAccount) -> None:
+        if account.role != "admin":
+            raise HTTPException(
+                status_code=403,
+                detail="owner/admin authority required",
+            )
+
+    def _owned_run(
+        account: AuthenticatedAccount,
+        workspace_id: str,
+        run_id: str,
+    ) -> RunDetail:
+        workspace = owned_workspace(account, workspace_id)
+        parsed = UUID(run_id)
+        detail = runs_repository.get_run(parsed)
+        if detail is None or detail.workspace_id != workspace.workspace_id:
+            raise HTTPException(status_code=404, detail="run not found")
+        return detail
+
+    def _resolve_targets_public() -> dict[str, object]:
+        return {
+            model: _targets[model].as_public_dict()
+            for model in ("deepseek", "Qwen/Qwen3-Coder-Next", "gpt-5.6-sol")
+            if model in _targets
+        }
 
     def current_account(request: Request) -> AuthenticatedAccount:
         token = request.cookies.get(SESSION_COOKIE)
@@ -556,7 +633,43 @@ def build_coder_app(
                 detail=str(error),
             ) from None
 
-        return {"run": _run_dict(run)}
+        mode = (payload.requested_mode or "AUTO").strip().upper()
+        if mode not in ("AUTO", "DEEPSEEK", "NEXT", "SOL"):
+            raise HTTPException(
+                status_code=400,
+                detail="requested_mode must be AUTO, DEEPSEEK, NEXT, or SOL",
+            )
+        explicit_tier = None if mode == "AUTO" else ModelTier(mode)
+        if explicit_tier in (ModelTier.NEXT, ModelTier.SOL):
+            _require_owner(account)
+        route = resolve_starting_route(
+            requested_mode=mode,
+            explicit_tier=explicit_tier,
+            targets=_targets,
+            selector=_selector,
+        )
+        if route.tier in (ModelTier.NEXT, ModelTier.SOL) and not route.target.availability:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{route.tier.value} is not currently configured",
+            )
+        runs_repository.set_run_routing(
+            run.run_id,
+            requested_mode=mode,
+            selected_tier=route.tier.value,
+            selected_model=route.target.model_id,
+            selected_provider=route.target.provider,
+            route_reason=(
+                "OWNER_REQUESTED"
+                if explicit_tier is not None
+                else "AUTO_DEFAULT"
+            ),
+        )
+
+        return {
+            "run": _run_dict(run),
+            "routing": runs_repository.get_run_routing(run.run_id).as_public_dict(),
+        }
 
     @app.post("/v1/workspaces/{workspace_id}/runs/{run_id}/cancel")
     def cancel_run(
@@ -592,6 +705,186 @@ def build_coder_app(
                 detail=str(error),
             ) from None
         return {"cancelled": True}
+
+    @app.get("/v1/runs/{run_id}/routing")
+    def get_run_routing(
+        workspace_id: str,
+        run_id: str,
+        request: Request,
+    ) -> dict[str, object]:
+        account = current_account(request)
+        _owned_run(account, workspace_id, run_id)
+        routing = runs_repository.get_run_routing(UUID(run_id))
+        return {
+            "identity": PRODUCT_IDENTITY,
+            "routing": routing.as_public_dict() if routing is not None else None,
+            "targets": _resolve_targets_public(),
+            "runtime": _runtime_adapter.runtime_status("defendcoder"),
+        }
+
+    @app.post("/v1/runs/{run_id}/model")
+    def select_run_model(
+        workspace_id: str,
+        run_id: str,
+        payload: ModelSelectRequest,
+        request: Request,
+    ) -> dict[str, object]:
+        account = current_account(request)
+        _owned_run(account, workspace_id, run_id)
+        mode = (payload.requested_mode or "AUTO").strip().upper()
+        if mode not in ("AUTO", "DEEPSEEK", "NEXT", "SOL"):
+            raise HTTPException(
+                status_code=400,
+                detail="requested_mode must be AUTO, DEEPSEEK, NEXT, or SOL",
+            )
+        explicit_tier = None if mode == "AUTO" else ModelTier(mode)
+        if explicit_tier in (ModelTier.NEXT, ModelTier.SOL):
+            _require_owner(account)
+        route = resolve_starting_route(
+            requested_mode=mode,
+            explicit_tier=explicit_tier,
+            targets=_targets,
+            selector=_selector,
+        )
+        if route.tier in (ModelTier.NEXT, ModelTier.SOL) and not route.target.availability:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{route.tier.value} is not currently configured",
+            )
+        runtime = _runtime_adapter.runtime_status("defendcoder")
+        next_step = None
+        if route.tier == ModelTier.NEXT and route.target.requires_external_runtime:
+            next_step = (
+                "resume_approval_required"
+                if runtime.get("state") != "ready"
+                else "ready_reuse"
+            )
+        runs_repository.set_run_routing(
+            UUID(run_id),
+            requested_mode=mode,
+            selected_tier=route.tier.value,
+            selected_model=route.target.model_id,
+            selected_provider=route.target.provider,
+            route_reason=(
+                "OWNER_REQUESTED" if explicit_tier is not None else "AUTO_DEFAULT"
+            ),
+        )
+        return {
+            "routing": runs_repository.get_run_routing(UUID(run_id)).as_public_dict(),
+            "next_step": next_step,
+        }
+
+    @app.get("/v1/runs/{run_id}/escalation")
+    def get_run_escalation(
+        workspace_id: str,
+        run_id: str,
+        request: Request,
+    ) -> dict[str, object]:
+        account = current_account(request)
+        _owned_run(account, workspace_id, run_id)
+        proposals = runs_repository.list_escalation_proposals(UUID(run_id))
+        return {"proposals": proposals}
+
+    @app.post("/v1/runs/{run_id}/escalation/{proposal_id}/approve")
+    def approve_run_escalation(
+        workspace_id: str,
+        run_id: str,
+        proposal_id: str,
+        request: Request,
+    ) -> dict[str, object]:
+        account = current_account(request)
+        _require_owner(account)
+        detail = runs_repository.get_run(UUID(run_id))
+        if detail is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        proposals = runs_repository.list_escalation_proposals(UUID(run_id))
+        proposal = next(
+            (
+                item
+                for item in proposals
+                if item["proposal_id"] == proposal_id
+            ),
+            None,
+        )
+        if proposal is None:
+            raise HTTPException(status_code=404, detail="proposal not found")
+        if proposal["status"] != "pending":
+            raise HTTPException(status_code=409, detail="proposal is not pending")
+        expires_at = proposal.get("expires_at")
+        if expires_at is not None:
+            try:
+                parsed_expiry = datetime.fromisoformat(str(expires_at))
+                if parsed_expiry.tzinfo is None:
+                    parsed_expiry = parsed_expiry.replace(
+                        tzinfo=timezone.utc
+                    )
+            except ValueError:
+                parsed_expiry = None
+            if parsed_expiry is not None and parsed_expiry < datetime.now(
+                timezone.utc
+            ):
+                raise HTTPException(status_code=409, detail="proposal has expired")
+        to_model = str(proposal["to_model"])
+        try:
+            to_tier = tier_for_model(to_model)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from None
+        target = _target_for_model(to_model)
+        if not target.availability:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{to_model} is not currently configured",
+            )
+        if to_tier == ModelTier.NEXT:
+            try:
+                _runtime_adapter.start_runtime("defendcoder", authorize_resume=True)
+            except RuntimeResumeDenied as error:
+                raise HTTPException(status_code=409, detail=str(error)) from None
+        now = datetime.now(timezone.utc)
+        runs_repository.set_run_routing(
+            UUID(run_id),
+            requested_mode="AUTO",
+            selected_tier=to_tier.value,
+            selected_model=to_model,
+            selected_provider=target.provider,
+            route_reason=str(proposal["reason_code"]),
+            escalated_from=str(proposal["from_model"]),
+            escalation_approved_at=now,
+            escalation_approved_by=account.username,
+        )
+        runs_repository.update_escalation_proposal_status(
+            UUID(run_id),
+            proposal_id,
+            status="approved",
+            approved_by=account.username,
+            approved_at=now,
+        )
+        return {
+            "routing": runs_repository.get_run_routing(UUID(run_id)).as_public_dict(),
+            "runtime": _runtime_adapter.runtime_status("defendcoder"),
+        }
+
+    @app.post("/v1/runs/{run_id}/escalation/{proposal_id}/deny")
+    def deny_run_escalation(
+        workspace_id: str,
+        run_id: str,
+        proposal_id: str,
+        request: Request,
+    ) -> dict[str, object]:
+        account = current_account(request)
+        _require_owner(account)
+        detail = runs_repository.get_run(UUID(run_id))
+        if detail is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        proposals = runs_repository.list_escalation_proposals(UUID(run_id))
+        if not any(item["proposal_id"] == proposal_id for item in proposals):
+            raise HTTPException(status_code=404, detail="proposal not found")
+        runs_repository.update_escalation_proposal_status(
+            UUID(run_id),
+            proposal_id,
+            status="denied",
+        )
+        return {"status": "denied", "unchanged": True}
 
     @app.get("/v1/workspaces/{workspace_id}/runs")
     def list_runs(

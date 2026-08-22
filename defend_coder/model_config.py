@@ -59,6 +59,10 @@ class CoderModelConfig:
     requires_api_key: bool = False
     timeout_seconds: float = DEFAULT_MODEL_TIMEOUT_SECONDS
     connect_timeout_seconds: float = DEFAULT_MODEL_CONNECT_TIMEOUT_SECONDS
+    #: True for external managed-API providers (DeepSeek, Sol). Such
+    #: backends use remote HTTPS endpoints and MUST carry an API key. The
+    #: default (False) is the self-hosted vLLM lane and stays loopback-only.
+    managed_api: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.alias, str) or not self.alias.strip():
@@ -89,10 +93,18 @@ class CoderModelConfig:
                 f"{CONNECT_TIMEOUT_MIN_SECONDS:.0f} and "
                 f"{CONNECT_TIMEOUT_MAX_SECONDS:.0f} seconds"
             )
+        if not isinstance(self.managed_api, bool):
+            raise ValueError("managed_api must be a bool")
         if self.base_url is not None:
             if not isinstance(self.base_url, str) or not self.base_url.strip():
                 raise ValueError("model base_url must not be empty")
-            if not _loopback_only(self.base_url):
+            if self.managed_api:
+                parts = urlsplit(self.base_url)
+                if parts.scheme != "https" or not parts.hostname:
+                    raise ValueError(
+                        "managed-API base_url must be an HTTPS origin"
+                    )
+            elif not _loopback_only(self.base_url):
                 raise ValueError(
                     "CODER_MODEL_BASE_URL must be a loopback endpoint "
                     "(http://127.0.0.1, localhost, or ::1)"
@@ -102,6 +114,8 @@ class CoderModelConfig:
             )
         if self.requires_api_key and not self.api_key:
             raise ValueError("requires_api_key=True needs an API key")
+        if self.managed_api and not self.api_key:
+            raise ValueError("managed-API providers require an API key")
 
 
 def _read_key_file(path: str | None) -> str | None:

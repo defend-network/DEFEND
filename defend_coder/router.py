@@ -29,10 +29,11 @@ Rules enforced here (pure logic, no I/O)
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Literal
+from uuid import uuid4
 
 # Canonical model/tier identity (product-visible, not provider-specific).
 PRODUCT_IDENTITY = "DEFENDcoder"
@@ -180,6 +181,8 @@ class EscalationProposal:
     requires_gpu_resume: bool
     expires_at: datetime
     created_at: datetime = utc_now()
+    #: Stable identity for persistence and owner approval endpoints.
+    proposal_id: str = field(default_factory=lambda: uuid4().hex)
 
     def __post_init__(self) -> None:
         if not isinstance(self.from_model, str) or not self.from_model:
@@ -212,6 +215,7 @@ class EscalationProposal:
 
     def as_public_dict(self) -> dict[str, object]:
         return {
+            "proposal_id": self.proposal_id,
             "from_model": self.from_model,
             "to_model": self.to_model,
             "reason_code": str(self.reason_code.value),

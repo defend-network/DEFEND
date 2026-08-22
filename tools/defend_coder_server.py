@@ -144,8 +144,64 @@ def main() -> None:
         )
         raise SystemExit(1) from error
 
-    if model_config.base_url is not None:
-        client = AgentChatClient(model_config)
+    # Router integration: AUTO runs default to the DeepSeek managed-API
+    # target when the product has a legitimate key configured; otherwise the
+    # legacy single-model env path is preserved unchanged.
+    from defend_coder.providers import (
+        build_client,
+        deepseek_target,
+        next_target,
+        sol_target,
+    )
+
+    deepseek = deepseek_target()
+    targets = {
+        "deepseek": deepseek,
+        "Qwen/Qwen3-Coder-Next": next_target(),
+        "gpt-5.6-sol": sol_target(),
+    }
+
+    def _secret_resolver(name: str) -> str | None:
+        from defend_coder.providers import (
+            DEEPSEEK_API_KEY_ENV,
+            SOL_API_KEY_ENV,
+        )
+        from defend_control.secrets import DpapiSecretStore
+        from pathlib import Path
+
+        if name == "deepseek":
+            value = os.environ.get(DEEPSEEK_API_KEY_ENV)
+            if value:
+                return value
+        if name == "sol":
+            value = os.environ.get(SOL_API_KEY_ENV)
+            if value:
+                return value
+        try:
+            store = DpapiSecretStore(
+                Path(os.environ.get("LOCALAPPDATA", ".")) / "DEFEND" / "secrets.dpapi"
+            )
+            values = store.load()
+        except Exception:
+            return None
+        return values.get("DEEPSEEK_API_KEY") or values.get("OPENAI_API_KEY")
+
+    if model_config.base_url is not None or deepseek.availability:
+        if deepseek.availability:
+            key = _secret_resolver("deepseek")
+            client = build_client(deepseek, api_key=key)
+            print(
+                "DEFENDcoder agent: AUTO default=deepseek "
+                f"model={deepseek.model_id}",
+                file=sys.stderr,
+            )
+        else:
+            client = AgentChatClient(model_config)
+            print(
+                f"DEFENDcoder agent: model={model_config.model_name} "
+                f"alias={model_config.alias}",
+                file=sys.stderr,
+            )
         runner = RunRunner(
             repository=runs_repository,
             client=client,
@@ -160,16 +216,14 @@ def main() -> None:
             finalization_timeout_seconds=settings.finalization_timeout_seconds,
         )
         print(
-            f"DEFENDcoder agent: model={model_config.model_name} "
-            f"alias={model_config.alias} "
-            f"max_steps={settings.max_steps} "
+            f"DEFENDcoder agent: max_steps={settings.max_steps} "
             f"max_run_seconds={settings.max_run_seconds:.0f} "
             f"finalization_enabled={settings.finalization_enabled}",
             file=sys.stderr,
         )
     else:
         print(
-            "DEFENDcoder agent: no CODER_MODEL_BASE_URL configured; "
+            "DEFENDcoder agent: no model endpoint configured; "
             "agent runs are disabled until the model runtime is wired",
             file=sys.stderr,
         )
@@ -183,6 +237,8 @@ def main() -> None:
         runs_repository=runs_repository,
         runner=runner,
         configured_root=settings.workspace_root,
+        targets=targets,
+        secret_resolver=_secret_resolver,
     )
 
     uvicorn.run(

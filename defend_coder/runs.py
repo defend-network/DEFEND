@@ -99,6 +99,37 @@ class RunDetail:
     messages: tuple[RunMessageRecord, ...]
 
 
+@dataclass(frozen=True)
+class RunRouting:
+    """Per-run model routing (additive; never a process-global)."""
+
+    run_id: UUID
+    requested_mode: str = "AUTO"
+    selected_tier: str = "DEEPSEEK"
+    selected_model: str = "deepseek"
+    selected_provider: str | None = None
+    route_reason: str | None = None
+    escalated_from: str | None = None
+    escalation_approved_at: object | None = None
+    escalation_approved_by: str | None = None
+
+    def as_public_dict(self) -> dict[str, object]:
+        return {
+            "requested_mode": self.requested_mode,
+            "selected_tier": self.selected_tier,
+            "selected_model": self.selected_model,
+            "selected_provider": self.selected_provider,
+            "route_reason": self.route_reason,
+            "escalated_from": self.escalated_from,
+            "escalation_approved_at": (
+                self.escalation_approved_at.isoformat()
+                if self.escalation_approved_at is not None
+                else None
+            ),
+            "escalation_approved_by": self.escalation_approved_by,
+        }
+
+
 class RunConflictError(RuntimeError):
     """Another agent run is already active on the same workspace."""
 
@@ -612,6 +643,233 @@ class RunsRepository:
             finalization_seconds=None,
             persistence_seconds=persistence_seconds,
         )
+
+
+    def set_run_routing(
+        self,
+        run_id: UUID,
+        *,
+        requested_mode: str,
+        selected_tier: str,
+        selected_model: str,
+        selected_provider: str | None,
+        route_reason: str | None = None,
+        escalated_from: str | None = None,
+        escalation_approved_at: object | None = None,
+        escalation_approved_by: str | None = None,
+    ) -> None:
+        """Persist the per-run model routing (additive, never global)."""
+        with self._db.connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE coder_runs
+                    SET requested_mode = %s,
+                        selected_tier = %s,
+                        selected_model = %s,
+                        selected_provider = %s,
+                        route_reason = %s,
+                        escalated_from = %s,
+                        escalation_approved_at = %s,
+                        escalation_approved_by = %s
+                    WHERE run_id = %s
+                    """,
+                    (
+                        requested_mode,
+                        selected_tier,
+                        selected_model,
+                        selected_provider,
+                        route_reason,
+                        escalated_from,
+                        escalation_approved_at,
+                        escalation_approved_by,
+                        run_id,
+                    ),
+                )
+
+    def get_run_routing(self, run_id: UUID) -> RunRouting | None:
+        with self._db.connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT
+                        requested_mode,
+                        selected_tier,
+                        selected_model,
+                        selected_provider,
+                        route_reason,
+                        escalated_from,
+                        escalation_approved_at,
+                        escalation_approved_by
+                    FROM coder_runs
+                    WHERE run_id = %s
+                    """,
+                    (run_id,),
+                )
+                row = cursor.fetchone()
+        if row is None:
+            return None
+        return RunRouting(
+            run_id=run_id,
+            requested_mode=row["requested_mode"],
+            selected_tier=row["selected_tier"],
+            selected_model=row["selected_model"],
+            selected_provider=row["selected_provider"],
+            route_reason=row["route_reason"],
+            escalated_from=row["escalated_from"],
+            escalation_approved_at=row["escalation_approved_at"],
+            escalation_approved_by=row["escalation_approved_by"],
+        )
+
+    def create_escalation_proposal(
+        self,
+        run_id: UUID,
+        proposal: object,
+    ) -> None:
+        """Persist a pending EscalationProposal for owner interaction."""
+        with self._db.connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO coder_escalation_proposals(
+                        proposal_id,
+                        run_id,
+                        from_model,
+                        to_model,
+                        reason_code,
+                        human_summary,
+                        evidence,
+                        attempt_count,
+                        tests_failed,
+                        estimated_incremental_cost,
+                        target_runtime_state,
+                        requires_gpu_resume,
+                        status,
+                        created_at,
+                        expires_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        proposal.proposal_id,
+                        run_id,
+                        proposal.from_model,
+                        proposal.to_model,
+                        str(proposal.reason_code.value),
+                        proposal.human_summary,
+                        Jsonb(list(proposal.evidence)),
+                        proposal.attempt_count,
+                        proposal.tests_failed,
+                        proposal.estimated_incremental_cost,
+                        proposal.target_runtime_state,
+                        proposal.requires_gpu_resume,
+                        "pending",
+                        proposal.created_at,
+                        proposal.expires_at,
+                    ),
+                )
+
+    def list_escalation_proposals(
+        self,
+        run_id: UUID,
+    ) -> tuple[dict[str, object], ...]:
+        with self._db.connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT
+                        proposal_id,
+                        from_model,
+                        to_model,
+                        reason_code,
+                        human_summary,
+                        evidence,
+                        attempt_count,
+                        tests_failed,
+                        estimated_incremental_cost,
+                        target_runtime_state,
+                        requires_gpu_resume,
+                        status,
+                        created_at,
+                        expires_at,
+                        approved_at,
+                        approved_by
+                    FROM coder_escalation_proposals
+                    WHERE run_id = %s
+                    ORDER BY created_at DESC
+                    """,
+                    (run_id,),
+                )
+                rows = cursor.fetchall()
+        proposals: list[dict[str, object]] = []
+        for row in rows:
+            evidence = row["evidence"] or []
+            proposals.append(
+                {
+                    "proposal_id": row["proposal_id"],
+                    "from_model": row["from_model"],
+                    "to_model": row["to_model"],
+                    "reason_code": row["reason_code"],
+                    "human_summary": row["human_summary"],
+                    "evidence": list(evidence) if isinstance(evidence, list) else [],
+                    "attempt_count": row["attempt_count"],
+                    "tests_failed": row["tests_failed"],
+                    "estimated_incremental_cost": (
+                        row["estimated_incremental_cost"]
+                    ),
+                    "target_runtime_state": row["target_runtime_state"],
+                    "requires_gpu_resume": row["requires_gpu_resume"],
+                    "status": row["status"],
+                    "created_at": (
+                        row["created_at"].isoformat()
+                        if row["created_at"] is not None
+                        else None
+                    ),
+                    "expires_at": (
+                        row["expires_at"].isoformat()
+                        if row["expires_at"] is not None
+                        else None
+                    ),
+                    "approved_at": (
+                        row["approved_at"].isoformat()
+                        if row["approved_at"] is not None
+                        else None
+                    ),
+                    "approved_by": row["approved_by"],
+                }
+            )
+        return tuple(proposals)
+
+    def update_escalation_proposal_status(
+        self,
+        run_id: UUID,
+        proposal_id: str,
+        *,
+        status: str,
+        approved_by: str | None = None,
+        approved_at: object | None = None,
+    ) -> bool:
+        if status not in ("pending", "approved", "denied", "expired"):
+            raise ValueError(f"invalid proposal status {status!r}")
+        with self._db.connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE coder_escalation_proposals
+                    SET status = %s,
+                        approved_at = %s,
+                        approved_by = %s
+                    WHERE run_id = %s AND proposal_id = %s
+                    """,
+                    (
+                        status,
+                        approved_at,
+                        approved_by,
+                        run_id,
+                        proposal_id,
+                    ),
+                )
+                return cursor.rowcount == 1
 
 
 class RunRunner:
