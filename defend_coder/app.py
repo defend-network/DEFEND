@@ -19,8 +19,11 @@ from .auth import (
     AuthenticatedAccount,
 )
 from .config import CoderSettings
+from .credentials import CredentialStore
 from .db import CoderDatabase
 from .providers import (
+    NEXT_MODEL,
+    SOL_MODEL,
     ModelTarget,
     build_client,
     deepseek_target,
@@ -98,6 +101,16 @@ class ChatRequest(BaseModel):
 
 class CredentialRequest(BaseModel):
     api_key: str = Field(min_length=1, max_length=4096)
+
+
+def _default_secret_store() -> object:
+    """Platform DPAPI secret store loader (defendcoder product)."""
+    from pathlib import Path as _Path
+
+    from defend_control.secrets import DpapiSecretStore
+
+    local = os.environ.get("LOCALAPPDATA") or "."
+    return DpapiSecretStore(_Path(local) / "DEFEND" / "secrets.dpapi")
 
 
 def _account_dict(account: AuthenticatedAccount) -> dict[str, object]:
@@ -213,8 +226,7 @@ def build_coder_app(
     runtime_stop_callback: Callable[[str], None] | None = None,
     idle_reaper_interval_seconds: float = 15.0,
     # Router integration (additive; defaults preserve legacy behavior).
-    targets: dict[str, ModelTarget] | None = None,
-    secret_resolver: Callable[[str], str | None] | None = None,
+    credentials: object | None = None,
     runtime_adapter: object | None = None,
     model_selector: ModelSelector | None = None,
 ) -> FastAPI:
@@ -282,18 +294,28 @@ def build_coder_app(
 
     # Router integration state (additive). Defaults keep the legacy single
     # model path intact when no provider is configured.
-    _targets = targets or {
-        "deepseek": deepseek_target(),
-        "Qwen/Qwen3-Coder-Next": next_target(),
-        "gpt-5.6-sol": sol_target(),
-    }
-    _secret_resolver = secret_resolver or (lambda _name: None)
+    _credentials = credentials or CredentialStore(
+        store_loader=_default_secret_store
+    )
     _runtime_adapter = runtime_adapter or ProductRuntimeAdapterBoundary()
     _selector = model_selector or ModelSelector()
 
+    def _live_targets() -> dict[str, ModelTarget]:
+        """Targets keyed by MODEL ID with LIVE credential availability."""
+        deepseek = deepseek_target(
+            availability=_credentials.configured("deepseek")
+        )
+        return {
+            deepseek.model_id: deepseek,
+            NEXT_MODEL: next_target(availability=True),
+            SOL_MODEL: sol_target(
+                availability=_credentials.configured("sol")
+            ),
+        }
+
     def _target_for_model(model: str) -> ModelTarget:
         try:
-            return _targets[model]
+            return _live_targets()[model]
         except KeyError:
             raise HTTPException(
                 status_code=400,
@@ -321,9 +343,8 @@ def build_coder_app(
 
     def _resolve_targets_public() -> dict[str, object]:
         return {
-            model: _targets[model].as_public_dict()
-            for model in ("deepseek", "Qwen/Qwen3-Coder-Next", "gpt-5.6-sol")
-            if model in _targets
+            model: target.as_public_dict()
+            for model, target in _live_targets().items()
         }
 
     def current_account(request: Request) -> AuthenticatedAccount:
@@ -631,17 +652,16 @@ def build_coder_app(
                 ),
             )
 
-        try:
-            run = runner.start(
-                workspace=workspace,
-                prompt=payload.prompt,
-            )
-        except RunConflictError as error:
+        if runs_repository.get_active_run_for_workspace(
+            workspace.workspace_id
+        ) is not None:
             raise HTTPException(
                 status_code=409,
-                detail=str(error),
-            ) from None
+                detail="an agent run is already active for this workspace",
+            )
 
+        # ROUTE BEFORE START: validate, resolve, and gate the actual model
+        # target BEFORE creating a run or spawning any worker/model call.
         mode = (payload.requested_mode or "AUTO").strip().upper()
         if mode not in ("AUTO", "DEEPSEEK", "NEXT", "SOL"):
             raise HTTPException(
@@ -654,7 +674,7 @@ def build_coder_app(
         route = resolve_starting_route(
             requested_mode=mode,
             explicit_tier=explicit_tier,
-            targets=_targets,
+            targets=_live_targets(),
             selector=_selector,
         )
         if mode in ("AUTO", "DEEPSEEK") and not route.target.availability:
@@ -670,6 +690,13 @@ def build_coder_app(
                 status_code=400,
                 detail=f"{route.tier.value} is not currently configured",
             )
+
+        # Create the run record, persist the selected routing, THEN start
+        # execution using that exact route.
+        run = runs_repository.create_run(
+            workspace=workspace,
+            prompt=payload.prompt,
+        )
         runs_repository.set_run_routing(
             run.run_id,
             requested_mode=mode,
@@ -681,6 +708,13 @@ def build_coder_app(
                 if explicit_tier is not None
                 else "AUTO_DEFAULT"
             ),
+        )
+
+        # ONLY NOW start execution on the persisted route.
+        runner.start_existing(
+            run_id=run.run_id,
+            workspace=workspace,
+            prompt=payload.prompt,
         )
 
         return {
@@ -760,7 +794,7 @@ def build_coder_app(
         route = resolve_starting_route(
             requested_mode=mode,
             explicit_tier=explicit_tier,
-            targets=_targets,
+            targets=_live_targets(),
             selector=_selector,
         )
         if mode in ("AUTO", "DEEPSEEK") and not route.target.availability:
@@ -885,6 +919,7 @@ def build_coder_app(
             approved_by=account.username,
             approved_at=now,
         )
+        runs_repository.update_run_phase(UUID(run_id), "completed")
         return {
             "routing": runs_repository.get_run_routing(UUID(run_id)).as_public_dict(),
             "runtime": _runtime_adapter.runtime_status("defendcoder"),
@@ -911,35 +946,14 @@ def build_coder_app(
             proposal_id,
             status="denied",
         )
+        runs_repository.update_run_phase(UUID(run_id), "failed")
         return {"status": "denied", "unchanged": True}
 
     @app.get("/v1/admin/model-credentials")
     def model_credentials(request: Request) -> dict[str, object]:
         account = current_account(request)
         _require_owner(account)
-        from defend_coder.providers import DEEPSEEK_API_KEY_ENV, SOL_API_KEY_ENV
-        from defend_control.secrets import DpapiSecretStore
-        from pathlib import Path as _Path
-
-        store_values = {}
-        try:
-            store_values = DpapiSecretStore(
-                _Path(os.environ.get("LOCALAPPDATA", ".")) / "DEFEND" / "secrets.dpapi"
-            ).load()
-        except Exception:
-            store_values = {}
-        deepseek = bool(
-            os.environ.get(DEEPSEEK_API_KEY_ENV)
-            or store_values.get("DEEPSEEK_API_KEY")
-        )
-        sol = bool(
-            os.environ.get(SOL_API_KEY_ENV)
-            or store_values.get("OPENAI_API_KEY")
-        )
-        return {
-            "deepseek": "CONFIGURED" if deepseek else "MISSING",
-            "sol": "CONFIGURED" if sol else "MISSING",
-        }
+        return {"providers": _credentials.status()}
 
     @app.post("/v1/admin/model-credentials/{provider}")
     def set_model_credential(
@@ -950,19 +964,17 @@ def build_coder_app(
         account = current_account(request)
         _require_owner(account)
         require_csrf(request)
-        from defend_control.secrets import DpapiSecretStore
-        from pathlib import Path as _Path
-
-        if provider not in ("deepseek", "sol"):
-            raise HTTPException(status_code=404, detail="unknown provider")
-        key_name = "DEEPSEEK_API_KEY" if provider == "deepseek" else "OPENAI_API_KEY"
-        store = DpapiSecretStore(
-            _Path(os.environ.get("LOCALAPPDATA", ".")) / "DEFEND" / "secrets.dpapi"
-        )
-        values = store.load()
-        values[key_name] = payload.api_key
-        store.save(values)
-        return {"provider": provider, "configured": True}
+        try:
+            _credentials.set(provider, payload.api_key)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from None
+        except RuntimeError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from None
+        # Availability is dynamic: no restart required.
+        return {
+            "provider": provider,
+            "configured": _credentials.configured(provider),
+        }
 
     @app.post("/v1/chat", status_code=200)
     def chat_without_workspace(
@@ -971,8 +983,7 @@ def build_coder_app(
     ) -> dict[str, object]:
         account = current_account(request)
         require_csrf(request)
-        deepseek = _targets.get("deepseek")
-        if deepseek is None or not deepseek.availability:
+        if not _credentials.configured("deepseek"):
             raise HTTPException(
                 status_code=503,
                 detail=(
@@ -980,10 +991,15 @@ def build_coder_app(
                     "unavailable until DEEPSEEK_API_KEY is set"
                 ),
             )
+        deepseek = next(
+            target
+            for target in _live_targets().values()
+            if target.tier == "DEEPSEEK"
+        )
         try:
             client = build_client(
                 deepseek,
-                api_key=_secret_resolver("deepseek"),
+                api_key=_credentials.resolve("deepseek"),
             )
         except ValueError as error:
             raise HTTPException(status_code=503, detail=str(error)) from None

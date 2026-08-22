@@ -11,7 +11,10 @@ from uuid import UUID, uuid4
 from psycopg.types.json import Jsonb
 
 from .agent import CodingAgent, RunLog
-from .agent_client import AgentChatClient
+from .agent_client import (
+    AgentChatClient,
+    RoutingAgentClient,
+)
 from .db import CoderDatabase
 from .repositories import WorkspaceRecord
 from .telemetry import (
@@ -60,6 +63,7 @@ _RUN_PHASES = frozenset({
     "completed",
     "failed",
     "cancelled",
+    "awaiting_escalation_approval",
 })
 
 
@@ -887,6 +891,8 @@ class RunRunner:
         finalization_enabled: bool = True,
         finalization_timeout_seconds: float = 600.0,
         phase_max_tokens: dict[str, int] | None = None,
+        client_resolver: Callable[[object], AgentChatClient] | None = None,
+        proposal_factory: Callable[[object, object], object | None] | None = None,
     ) -> None:
         if not isinstance(client, AgentChatClient):
             raise TypeError("client must be an AgentChatClient")
@@ -894,6 +900,8 @@ class RunRunner:
             raise TypeError("toolkit_factory must be callable")
         self._repository = repository
         self._client = client
+        self._client_resolver = client_resolver
+        self._proposal_factory = proposal_factory
         self._toolkit_factory = toolkit_factory
         self._log = log or (lambda _line: None)
         self._max_steps = max(1, min(100, int(max_steps)))
@@ -924,6 +932,29 @@ class RunRunner:
         if event is None:
             raise KeyError(f"run {run_id} is not active on this server")
         event.set()
+
+    def start_existing(
+        self,
+        *,
+        run_id: UUID,
+        workspace: WorkspaceRecord,
+        prompt: str,
+    ) -> None:
+        """Start the worker for an ALREADY-created, ALREADY-routed run.
+
+        Routing is persisted by the caller BEFORE this returns, so the
+        worker's per-run client resolution sees the selected backend.
+        """
+        self._repository.update_run_status(run_id, status="running")
+        cancel_event = threading.Event()
+        self._cancel_events[run_id] = cancel_event
+        thread = threading.Thread(
+            target=self._execute,
+            args=(run_id, workspace, prompt, cancel_event),
+            name=f"coder-run-{run_id}",
+            daemon=True,
+        )
+        thread.start()
 
     def start(
         self,
@@ -956,6 +987,24 @@ class RunRunner:
         thread.start()
         return run
 
+    def _resolve_client(self, run_id: UUID) -> AgentChatClient:
+        """Per-run provider dispatch: the ACTUAL client comes from the
+        persisted routing, never a process-global model.
+
+        When a ``client_resolver`` is configured, the run executes through a
+        delegating client that re-reads the run's routing before EVERY
+        generation call, so an owner-approved escalation changes the real
+        provider mid-run (DeepSeek -> Next -> Sol) without restarting.
+        """
+        if self._client_resolver is None:
+            return self._client
+
+        def resolve() -> AgentChatClient:
+            routing = self._repository.get_run_routing(run_id)
+            return self._client_resolver(routing)
+
+        return RoutingAgentClient(resolve)
+
     def _execute(
         self,
         run_id: UUID,
@@ -965,8 +1014,9 @@ class RunRunner:
     ) -> None:
         run_log = RunLog()
         toolkit = self._toolkit_factory(run_log.tail)
+        client = self._resolve_client(run_id)
         agent = CodingAgent(
-            client=self._client,
+            client=client,
             toolkit=toolkit,
             log=run_log.append,
             max_steps=self._max_steps,
@@ -1060,6 +1110,37 @@ class RunRunner:
             )
             self._repository.update_run_phase(run_id, "cancelled")
         else:
+            # Quality failure path: a grounded escalation proposal may be
+            # created, but it NEVER switches the model or starts compute.
+            if self._proposal_factory is not None:
+                try:
+                    proposal = self._proposal_factory(run_id, outcome)
+                except Exception as error:  # noqa: BLE001
+                    self._log(
+                        f"run {run_id}: proposal evaluation failed: {error!r}"
+                    )
+                    proposal = None
+                if proposal is not None:
+                    self._repository.create_escalation_proposal(
+                        run_id, proposal
+                    )
+                    self._repository.update_run_phase(
+                        run_id, "awaiting_escalation_approval"
+                    )
+                    self._repository.append_message(
+                        run_id,
+                        role="log",
+                        content=(
+                            "Escalation proposal awaiting owner approval; "
+                            "the run did not change models."
+                        ),
+                        kind="log",
+                        ok=True,
+                    )
+                    self._log(
+                        f"run {run_id}: escalation proposal "
+                        f"{proposal.proposal_id} awaiting approval"
+                    )
             self._repository.update_run_status(
                 run_id,
                 status="failed",

@@ -103,10 +103,18 @@ def _env_secret(
     return None
 
 
-def deepseek_target(env: dict[str, str] | None = None) -> ModelTarget:
-    """TIER_1 managed-API target. Availability requires a configured key."""
+def deepseek_target(
+    env: dict[str, str] | None = None,
+    *,
+    availability: bool | None = None,
+) -> ModelTarget:
+    """TIER_1 managed-API target. Availability is resolved dynamically by
+    the credential store; the caller may pass an explicit value so a
+    credential saved after startup takes effect without a restart."""
     env = env if env is not None else os.environ
-    key = _env_secret(env, DEEPSEEK_API_KEY_ENV, DEEPSEEK_API_KEY_FILE_ENV)
+    if availability is None:
+        key = _env_secret(env, DEEPSEEK_API_KEY_ENV, DEEPSEEK_API_KEY_FILE_ENV)
+        availability = bool(key)
     return ModelTarget(
         tier="DEEPSEEK",
         alias=TIER_1_MODEL,
@@ -117,16 +125,23 @@ def deepseek_target(env: dict[str, str] | None = None) -> ModelTarget:
         or DEFAULT_DEEPSEEK_BASE_URL,
         runtime_kind="managed_api",
         requires_external_runtime=False,
-        availability=bool(key),
+        availability=availability,
         cost_class="api",
         managed_api=True,
     )
 
 
-def sol_target(env: dict[str, str] | None = None) -> ModelTarget:
-    """TIER_3 frontier managed-API target. Optional at startup."""
+def sol_target(
+    env: dict[str, str] | None = None,
+    *,
+    availability: bool | None = None,
+) -> ModelTarget:
+    """TIER_3 frontier managed-API target. Optional at startup; availability
+    is resolved dynamically from the credential store."""
     env = env if env is not None else os.environ
-    key = _env_secret(env, SOL_API_KEY_ENV, SOL_API_KEY_FILE_ENV)
+    if availability is None:
+        key = _env_secret(env, SOL_API_KEY_ENV, SOL_API_KEY_FILE_ENV)
+        availability = bool(key)
     return ModelTarget(
         tier="SOL",
         alias=SOL_MODEL,
@@ -136,7 +151,7 @@ def sol_target(env: dict[str, str] | None = None) -> ModelTarget:
         or DEFAULT_SOL_BASE_URL,
         runtime_kind="managed_api",
         requires_external_runtime=False,
-        availability=bool(key),
+        availability=availability,
         cost_class="frontier_api",
         managed_api=True,
     )

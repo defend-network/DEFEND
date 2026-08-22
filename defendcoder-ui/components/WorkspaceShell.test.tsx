@@ -153,8 +153,8 @@ describe("DEFENDcoder workspace shell", () => {
 
     expect(screen.getByText("READY")).toBeInTheDocument();
     expect(
-      screen.getByText("Qwen/Qwen3-Coder-Next")
-    ).toBeInTheDocument();
+      screen.getAllByText("Qwen/Qwen3-Coder-Next").length
+    ).toBeGreaterThan(0);
     expect(screen.getByText("Vast.ai")).toBeInTheDocument();
     expect(screen.getByText(/32768/)).toBeInTheDocument();
   });
@@ -401,7 +401,7 @@ describe("DEFENDcoder workspace shell", () => {
     expect(sessionStorage.getItem("defendcoder_csrf")).toBeNull();
   });
 
-  it("keeps agent execution disabled until a workspace is selected", () => {
+  it("enables workspace-less chat when no workspace is selected", () => {
     renderShell();
 
     expect(
@@ -412,9 +412,9 @@ describe("DEFENDcoder workspace shell", () => {
     ).toBeDisabled();
 
     const composer = screen.getByLabelText("Coding task");
-    expect(composer).toBeDisabled();
+    expect(composer).not.toBeDisabled();
     expect(
-      screen.getByText("Select or create a workspace to begin.")
+      screen.getByText(/No workspace attached — advice and coding discussion/)
     ).toBeInTheDocument();
   });
 

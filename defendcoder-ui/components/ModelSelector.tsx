@@ -31,6 +31,8 @@ export default function ModelSelector({
   onChange,
 }: Props) {
   const solAvailable = targets?.["gpt-5.6-sol"]?.available ?? false;
+  const deepseekAvailable =
+    targets?.["deepseek-v4-flash"]?.available ?? false;
   const nextAvailable = targets?.["Qwen/Qwen3-Coder-Next"]?.available ?? true;
 
   return (
@@ -44,7 +46,10 @@ export default function ModelSelector({
           onChange={(event) => onChange(event.target.value as ModelMode)}
         >
           <option value="AUTO">{MODE_LABELS.AUTO}</option>
-          <option value="DEEPSEEK">{MODE_LABELS.DEEPSEEK}</option>
+          <option value="DEEPSEEK" disabled={!deepseekAvailable}>
+            {MODE_LABELS.DEEPSEEK}
+            {!deepseekAvailable ? " · not configured" : ""}
+          </option>
           <option value="NEXT" disabled={role !== "admin" || !nextAvailable}>
             {MODE_LABELS.NEXT}
             {role !== "admin" ? " (owner only)" : ""}

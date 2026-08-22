@@ -38,7 +38,7 @@ from uuid import uuid4
 # Canonical model/tier identity (product-visible, not provider-specific).
 PRODUCT_IDENTITY = "DEFENDcoder"
 
-TIER_1_MODEL = "deepseek"
+TIER_1_MODEL = "deepseek-v4-flash"
 NEXT_ALIAS = "defendcoder-heavy"
 NEXT_MODEL = "Qwen/Qwen3-Coder-Next"
 SOL_MODEL = "gpt-5.6-sol"

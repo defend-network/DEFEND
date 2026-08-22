@@ -18,6 +18,7 @@ from defend_coder.agent import AgentOutcome
 from defend_coder.app import build_coder_app
 from defend_coder.auth import AuthenticatedAccount
 from defend_coder.config import CoderSettings
+from defend_coder.credentials import CredentialStore
 from defend_coder.db import CoderDatabase
 from defend_coder.providers import (
     DEFAULT_DEEPSEEK_MODEL,
@@ -78,6 +79,7 @@ class FakeRunsRepository:
         self._proposals: dict[str, dict[str, Any]] = {}
         self._approved_by: list[str] = []
         self.routing_writes: list[tuple[str, str]] = []
+        self.created = 0
 
     def get_run(self, run_id):
         if str(run_id) == str(self._run_id):
@@ -86,6 +88,19 @@ class FakeRunsRepository:
 
     def messages_for_run(self, run_id):
         return ()
+
+    def create_run(self, *, workspace, prompt):
+        self.created += 1
+        return self._run(workspace)
+
+    def get_active_run_for_workspace(self, workspace_id):
+        return None
+
+    def update_run_phase(self, run_id, phase):
+        return None
+
+    def update_run_status(self, run_id, *, status, error=None, reason="unknown"):
+        return None
 
     @staticmethod
     def _run(workspace):
@@ -200,6 +215,11 @@ class FakeRunner:
     def __init__(self, run_id: Any, workspace: Any) -> None:
         self._run_id = run_id
         self._workspace = workspace
+        self.start_existing_calls = 0
+
+    def start_existing(self, *, run_id, workspace, prompt):
+        self.start_existing_calls += 1
+        return None
 
     def start(self, *, workspace, prompt):
         from defend_coder.runs import RunRecord
@@ -235,6 +255,21 @@ def _account(role: str = "consumer") -> AuthenticatedAccount:
     )
 
 
+class FakeSecretStore:
+    def __init__(self, *, deepseek_key: bool, sol_key: bool = False) -> None:
+        self.values: dict[str, str] = {}
+        if deepseek_key:
+            self.values["DEEPSEEK_API_KEY"] = "sk-fake-deepseek-key"
+        if sol_key:
+            self.values["OPENAI_API_KEY"] = "sk-fake-openai"
+
+    def load(self) -> dict[str, str]:
+        return dict(self.values)
+
+    def save(self, values: dict[str, str]) -> None:
+        self.values = dict(values)
+
+
 class _App:
     def __init__(
         self,
@@ -249,6 +284,7 @@ class _App:
         self.auth = FakeAuth(account)
         self.runtime = ProductRuntimeAdapterBoundary()
         self.runner = FakeRunner(self.run_id, workspace)
+        self.credentials = FakeSecretStore(deepseek_key=configure_deepseek)
         self.start_calls = 0
         original_start = self.runtime.start_runtime
 
@@ -268,22 +304,7 @@ class _App:
             configured_root=Path("C:/fake/root"),
             idle_timeout_seconds=0,
             runtime_adapter=self.runtime,
-            targets={
-                "deepseek": deepseek_target(
-                    env={
-                        "DEEPSEEK_API_KEY": (
-                            "sk-fake-deepseek-key" if configure_deepseek else ""
-                        )
-                    }
-                ),
-                "Qwen/Qwen3-Coder-Next": next_target(),
-                "gpt-5.6-sol": sol_target(env={}),
-            },
-            secret_resolver=lambda name: (
-                "sk-fake-deepseek-key"
-                if name == "deepseek" and configure_deepseek
-                else None
-            ),
+            credentials=CredentialStore(store_loader=self.credentials),
         )
         from fastapi.testclient import TestClient
 
