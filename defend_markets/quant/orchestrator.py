@@ -18,12 +18,22 @@ from defend_markets.quant.config import (
     QuantDirectorSettings,
 )
 from defend_markets.quant.explanation import explain_m5_prediction
+from defend_markets.quant.health import QuantDirectorHealth, detect_health
 from defend_markets.quant.model_aliases import (
     DEEP_RESEARCH_ALIAS,
     RUNTIME_ALIAS,
     resolve_runtime_profile,
     runtime_credentials_present,
 )
+from defend_markets.quant.research.experiment import (
+    ExperimentResult,
+    ExperimentRunner,
+    ExperimentSpec,
+    build_spec,
+)
+from defend_markets.quant.research.promotion import PromotionGateSet
+from defend_markets.quant.research.snapshot import DatasetSnapshot, build_snapshot
+from defend_markets.quant.triggers import SupervisoryTriggers
 
 
 class DirectorModel(Protocol):
@@ -97,6 +107,17 @@ class MarketsIntelligenceOrchestrator:
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._weights_doc = weights_doc
         self._last_trigger_at: datetime | None = None
+        self._triggers = SupervisoryTriggers(clock=self._clock)
+        self._health = detect_health(
+            initialized=True,
+            runtime_model=resolve_runtime_profile(RUNTIME_ALIAS).model,
+        )
+
+    def health(self) -> QuantDirectorHealth:
+        return self._health
+
+    def health_state(self) -> dict[str, Any]:
+        return self._health.to_dict()
 
     def runtime_profile(self, *, deep: bool = False) -> dict[str, str]:
         alias = DEEP_RESEARCH_ALIAS if deep else RUNTIME_ALIAS
@@ -163,6 +184,13 @@ class MarketsIntelligenceOrchestrator:
     def maybe_run_scheduled_review(self) -> dict[str, Any]:
         if not self._settings.markets_ready:
             return {"ran": False, "reason": f"runtime state is {self.markets_state()}; no AI spend"}
+        tool_state = self._tools.all_tool_state()
+        trigger = self._triggers.evaluate(
+            markets_ready=self._settings.markets_ready,
+            tool_state=tool_state,
+        )
+        if not trigger.should_run:
+            return {"ran": False, "reason": trigger.reason or "no meaningful state change"}
         now = self._clock()
         if self._last_trigger_at is not None:
             cooldown = self._settings.trigger_cooldown_seconds
@@ -176,7 +204,84 @@ class MarketsIntelligenceOrchestrator:
         self._store.record_ai_call(
             provider=profile["provider"], model=profile["model"], cost=0.0
         )
-        return {"ran": True, "reason": "scheduled review", "profile": profile}
+        return {"ran": True, "reason": trigger.reason, "profile": profile}
+
+    def budget_policy(self) -> dict[str, Any]:
+        return {
+            "max_daily_calls": self._settings.max_daily_calls,
+            "daily_cost_soft_limit": self._settings.daily_cost_soft_limit,
+            "daily_cost_hard_limit": self._settings.daily_cost_hard_limit,
+            "trigger_cooldown_seconds": self._settings.trigger_cooldown_seconds,
+            "deep_research_allowed": self._settings.deep_research_allowed,
+        }
+
+    def create_snapshot(
+        self,
+        *,
+        rows: list[dict[str, Any]],
+        cutoff: str,
+        target_definition: str,
+        provenance: dict[str, Any] | None = None,
+    ) -> DatasetSnapshot:
+        snapshot = build_snapshot(
+            rows,
+            cutoff=cutoff,
+            target_definition=target_definition,
+            feature_schema_version=1,
+            provenance=provenance,
+        )
+        self._store.create_snapshot(snapshot)
+        return snapshot
+
+    def run_experiment(
+        self,
+        *,
+        hypothesis_id: str,
+        challenger_name: str,
+        feature_set: list[str],
+        snapshot: DatasetSnapshot,
+        champion_version: str,
+        n_windows: int = 4,
+        champion_brier: float | None = None,
+        champion_log_loss: float | None = None,
+        market_metrics_available: bool = False,
+    ) -> ExperimentResult:
+        spec = build_spec(
+            experiment_id=f"exp-{hypothesis_id}-{challenger_name}",
+            hypothesis_id=hypothesis_id,
+            snapshot=snapshot,
+            champion_version=champion_version,
+            challenger_name=challenger_name,
+            feature_set=feature_set,
+        )
+        runner = ExperimentRunner(snapshot=snapshot, n_windows=n_windows)
+        result = runner.run(
+            spec,
+            champion_brier=champion_brier,
+            champion_log_loss=champion_log_loss,
+            market_metrics_available=market_metrics_available,
+        )
+        self._store.save_experiment(spec=spec, result=result)
+        self._store.register_model(
+            model_id=f"challenger-{challenger_name}",
+            model_version=spec.experiment_id,
+            role="CHALLENGER",
+            stage="RESEARCH" if result.decision == "PROMOTION_BLOCKED" else "WALK_FORWARD",
+            feature_schema_version=1,
+        )
+        return result
+
+    def advance_stage(self, *, model_id: str, model_version: str, to_stage: str) -> dict[str, Any]:
+        allowed = {"RESEARCH", "BACKTEST", "WALK_FORWARD", "SHADOW", "PAPER"}
+        if to_stage not in allowed:
+            return {"allowed": False, "reason": f"stage {to_stage} requires owner authority"}
+        self._store.register_model(
+            model_id=model_id,
+            model_version=model_version,
+            role="CHALLENGER",
+            stage=to_stage,
+        )
+        return {"allowed": True, "stage": to_stage}
 
     def explain_prediction(self, features: dict[str, float]) -> dict[str, Any] | None:
         if self._weights_doc is None:
@@ -231,3 +336,9 @@ class MarketsIntelligenceOrchestrator:
 
     def list_research(self) -> list[dict[str, Any]]:
         return self._store.list_research_entries()
+
+    def list_experiments(self) -> list[dict[str, Any]]:
+        return self._store.list_experiments()
+
+    def list_snapshots(self) -> list[dict[str, Any]]:
+        return self._store.list_snapshots()

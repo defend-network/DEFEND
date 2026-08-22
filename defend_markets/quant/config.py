@@ -53,9 +53,9 @@ def _env_bool(name: str, default: bool) -> bool:
 class QuantDirectorSettings:
     runtime_state: str = MARKETS_RUNTIME_STATE_DEFAULT
     enabled: bool = True
-    max_daily_calls: int = 100
-    daily_cost_soft_limit: float = 2.0
-    daily_cost_hard_limit: float = 10.0
+    max_daily_calls: int = 20
+    daily_cost_soft_limit: float = 1.0
+    daily_cost_hard_limit: float = 3.0
     trigger_cooldown_seconds: int = 600
     deep_research_allowed: bool = False
     provider: str = "openai"
@@ -69,12 +69,12 @@ class QuantDirectorSettings:
         return cls(
             runtime_state=raw_state,
             enabled=_env_bool("MARKETS_AI_ENABLED", True),
-            max_daily_calls=_env_int("MARKETS_AI_MAX_DAILY_CALLS", 100),
+            max_daily_calls=_env_int("MARKETS_AI_MAX_DAILY_CALLS", 20),
             daily_cost_soft_limit=float(
-                _env("MARKETS_AI_DAILY_COST_SOFT_LIMIT", "2.00")
+                _env("MARKETS_AI_DAILY_COST_SOFT_LIMIT", "1.00")
             ),
             daily_cost_hard_limit=float(
-                _env("MARKETS_AI_DAILY_COST_HARD_LIMIT", "10.00")
+                _env("MARKETS_AI_DAILY_COST_HARD_LIMIT", "3.00")
             ),
             trigger_cooldown_seconds=_env_int("MARKETS_AI_TRIGGER_COOLDOWN", 600),
             deep_research_allowed=_env_bool("MARKETS_AI_DEEP_RESEARCH_ALLOWED", False),

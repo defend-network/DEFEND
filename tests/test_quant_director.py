@@ -105,7 +105,7 @@ class TestBudgetAndState:
         assert first["ran"] is True
         second = orchestrator.maybe_run_scheduled_review()
         assert second["ran"] is False
-        assert second["reason"] == "cooldown"
+        assert second["reason"] in ("cooldown", "no meaningful state change")
 
     def test_hard_budget_blocks_calls(self):
         store = InMemoryQuantStore()

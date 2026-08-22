@@ -40,11 +40,43 @@ def build_quant_router(orchestrator: MarketsIntelligenceOrchestrator) -> APIRout
         _require_markets_admin(_principal)
         return {
             "markets_state": orchestrator.markets_state(),
+            "quant_director_state": orchestrator.health_state(),
             "runtime_profile": orchestrator.runtime_profile(),
             "live_ai_configured": orchestrator.live_ai_configured(),
-            "budget": orchestrator._budget_state(),
+            "budget": orchestrator.budget_policy(),
+            "budget_usage": orchestrator._budget_state(),
             "blocking_layers": orchestrator._tools.current_blocking_layers(),
         }
+
+    @router.get("/overview")
+    async def ai_overview(_principal: AdminPrincipal = Depends(require_admin)) -> dict:
+        _require_markets_admin(_principal)
+        champion = orchestrator._tools.m5_champion()
+        registry = orchestrator._tools.model_registry()
+        experiments = orchestrator.list_experiments()
+        return {
+            "quant_director_state": orchestrator.health_state(),
+            "runtime_model": orchestrator.runtime_profile(),
+            "champion": champion,
+            "challengers": [
+                entry for entry in registry if entry.get("role") == "CHALLENGER"
+            ],
+            "latest_experiment": experiments[0] if experiments else None,
+            "research_hypotheses": orchestrator.list_research(),
+            "current_blockers": orchestrator._tools.current_blocking_layers(),
+            "provider_tt_coverage": orchestrator._tools.price_observations(),
+            "budget": orchestrator.budget_policy(),
+            "budget_usage": orchestrator._budget_state(),
+            "promotion_funnel": {
+                stage: sum(1 for entry in registry if entry.get("stage") == stage)
+                for stage in ("RESEARCH", "BACKTEST", "WALK_FORWARD", "SHADOW", "PAPER", "REJECTED")
+            },
+        }
+
+    @router.get("/experiments")
+    async def list_experiments(_principal: AdminPrincipal = Depends(require_admin)) -> dict:
+        _require_markets_admin(_principal)
+        return {"experiments": orchestrator.list_experiments()}
 
     @router.post("/chat")
     async def chat(

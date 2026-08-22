@@ -78,6 +78,18 @@ class QuantStore:
     def record_ai_call(self, *, provider: str, model: str, cost: float) -> None:
         raise NotImplementedError
 
+    def create_snapshot(self, snapshot: Any) -> bool:
+        raise NotImplementedError
+
+    def list_snapshots(self) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
+    def save_experiment(self, *, spec: Any, result: Any) -> bool:
+        raise NotImplementedError
+
+    def list_experiments(self) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
 
 class PostgresQuantStore(QuantStore):
     def __init__(self, database: MarketsDatabase) -> None:
@@ -203,6 +215,113 @@ class PostgresQuantStore(QuantStore):
                 (_today_utc(), provider, model, cost),
             )
 
+    def create_snapshot(self, snapshot):
+        document = snapshot.to_dict()
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO quant_dataset_snapshots "
+                "(snapshot_id, created_at, cutoff, target_definition, source_query_version, "
+                "feature_schema_version, row_count, event_count, player_count, date_min, date_max, "
+                "content_hash, excluded_row_counts, leakage_checks, provenance) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (snapshot_id) DO NOTHING RETURNING snapshot_id",
+                (
+                    document["snapshot_id"],
+                    document["created_at"],
+                    document["cutoff"],
+                    document["target_definition"],
+                    document["source_query_version"],
+                    document["feature_schema_version"],
+                    document["row_count"],
+                    document["event_count"],
+                    document["player_count"],
+                    document["date_min"],
+                    document["date_max"],
+                    document["content_hash"],
+                    Jsonb(document["excluded_row_counts"]),
+                    Jsonb(document["leakage_checks"]),
+                    Jsonb(document["provenance"]),
+                ),
+            )
+            return cursor.fetchone() is not None
+
+    def list_snapshots(self):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT snapshot_id, created_at, cutoff, target_definition, source_query_version, "
+                "feature_schema_version, row_count, event_count, player_count, date_min, date_max, "
+                "content_hash, excluded_row_counts, leakage_checks, provenance "
+                "FROM quant_dataset_snapshots ORDER BY created_at DESC"
+            )
+            columns = [column.name for column in cursor.description]
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+    def save_experiment(self, *, spec, result):
+        spec_doc = spec.to_dict()
+        result_doc = result.to_dict()
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO quant_experiments "
+                "(experiment_id, hypothesis_id, dataset_snapshot_id, champion_version, challenger_name, "
+                "feature_set, algorithm, hyperparameters, seed, training_window, validation_windows, "
+                "calibration_method, metrics_requested, created_by, code_commit, result, decision) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (experiment_id) DO UPDATE SET result = EXCLUDED.result, "
+                "decision = EXCLUDED.decision",
+                (
+                    spec_doc["experiment_id"],
+                    spec_doc["hypothesis_id"],
+                    spec_doc["dataset_snapshot_id"],
+                    spec_doc["champion_version"],
+                    spec_doc["challenger_name"],
+                    Jsonb(spec_doc["feature_set"]),
+                    spec_doc["algorithm"],
+                    Jsonb(spec_doc["hyperparameters"]),
+                    spec_doc["seed"],
+                    Jsonb(spec_doc["training_window"]),
+                    Jsonb(spec_doc["validation_windows"]),
+                    spec_doc["calibration_method"],
+                    Jsonb(spec_doc["metrics_requested"]),
+                    spec_doc["created_by"],
+                    spec_doc["code_commit"],
+                    Jsonb(result_doc),
+                    result_doc["decision"],
+                ),
+            )
+            for fold in result_doc.get("folds", []):
+                cursor.execute(
+                    "INSERT INTO quant_experiment_folds "
+                    "(experiment_id, fold_index, train_start, train_end, val_start, val_end, "
+                    "train_rows, val_rows, brier, log_loss, calibration_error, metrics) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                    "ON CONFLICT (experiment_id, fold_index) DO UPDATE SET metrics = EXCLUDED.metrics",
+                    (
+                        spec_doc["experiment_id"],
+                        fold["index"],
+                        fold.get("train_start"),
+                        fold.get("train_end"),
+                        fold.get("val_start"),
+                        fold.get("val_end"),
+                        fold.get("train_rows"),
+                        fold.get("val_rows"),
+                        fold.get("brier"),
+                        fold.get("log_loss"),
+                        fold.get("calibration_error"),
+                        Jsonb(fold.get("metrics", {})),
+                    ),
+                )
+            return True
+
+    def list_experiments(self):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT experiment_id, hypothesis_id, dataset_snapshot_id, champion_version, "
+                "challenger_name, feature_set, algorithm, created_at, decision, result "
+                "FROM quant_experiments ORDER BY created_at DESC"
+            )
+            columns = [column.name for column in cursor.description]
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
 
 @dataclass
 class InMemoryQuantStore(QuantStore):
@@ -210,6 +329,8 @@ class InMemoryQuantStore(QuantStore):
     models: list[dict[str, Any]] = field(default_factory=list)
     threads: dict[int, list[dict[str, Any]]] = field(default_factory=dict)
     budget: dict[tuple[str, str, str], dict[str, Any]] = field(default_factory=dict)
+    snapshots: list[dict[str, Any]] = field(default_factory=list)
+    experiments: list[dict[str, Any]] = field(default_factory=list)
     _next_research: int = 1
     _next_thread: int = 1
     _next_message: int = 1
@@ -318,3 +439,36 @@ class InMemoryQuantStore(QuantStore):
         else:
             existing["call_count"] += 1
             existing["cost_usd"] += cost
+
+    def create_snapshot(self, snapshot):
+        document = snapshot.to_dict()
+        if any(snapshot["snapshot_id"] == document["snapshot_id"] for snapshot in self.snapshots):
+            return False
+        self.snapshots.append(document)
+        return True
+
+    def list_snapshots(self):
+        return list(reversed(self.snapshots))
+
+    def save_experiment(self, *, spec, result):
+        document = {
+            "experiment_id": spec.experiment_id,
+            "hypothesis_id": spec.hypothesis_id,
+            "dataset_snapshot_id": spec.dataset_snapshot_id,
+            "champion_version": spec.champion_version,
+            "challenger_name": spec.challenger_name,
+            "feature_set": list(spec.feature_set),
+            "algorithm": spec.algorithm,
+            "created_at": result.created_at,
+            "decision": result.decision,
+            "result": result.to_dict(),
+        }
+        for existing in self.experiments:
+            if existing["experiment_id"] == spec.experiment_id:
+                existing.update(document)
+                return False
+        self.experiments.append(document)
+        return True
+
+    def list_experiments(self):
+        return list(reversed(self.experiments))

@@ -965,6 +965,12 @@ def build_markets_app(dependencies: MarketsDependencies) -> FastAPI:
         return _outcome_payload(outcome)
 
     if deps.database is not None:
+        quant_state = {
+            "state": "NOT_CONFIGURED",
+            "reason": "quant director not initialized",
+            "runtime_model": "",
+            "initialized": False,
+        }
         try:
             from defend_markets.quant.config import QuantDirectorSettings
             from defend_markets.quant.orchestrator import MarketsIntelligenceOrchestrator
@@ -981,7 +987,17 @@ def build_markets_app(dependencies: MarketsDependencies) -> FastAPI:
                 settings=quant_settings,
             )
             app.include_router(build_quant_router(quant_orchestrator))
-        except Exception:
-            pass
+            quant_state = quant_orchestrator.health_state()
+        except Exception as exc:  # noqa: BLE001 - surfaced as FAILED state, never silent
+            quant_state = {
+                "state": "FAILED",
+                "reason": f"quant director initialization failed: {type(exc).__name__}",
+                "runtime_model": "",
+                "initialized": False,
+            }
+
+        @app.get("/v1/quant/state")
+        def quant_state_endpoint() -> dict[str, object]:
+            return quant_state
 
     return app
