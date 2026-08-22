@@ -23,10 +23,13 @@ M5_ARTIFACT = REPO / "docs" / "operations" / "TT_M5_LIVE_WEIGHTS_V1.json"
 def _snapshot(**overrides):
     base = {
         "prices": {"observations": 122, "unique_events_priced": 31},
-        "events": {"discovered": 87, "matched": 87},
-        "predictions": {"total": 122, "m5_available": 119, "shadow_available": 66},
-        "coverage": {"eligible_events": 51, "priced_events": 21, "coverage_rate": 0.4118, "cohort_aligned": True},
-        "pairing": {"eligible": 119, "complete": 66, "rate": 0.5546, "failure_reasons": {"m5_without_shadow": 53}},
+        "events": {"discovered": 87},
+        "predictions": {"m5_available": 119, "shadow_available": 66},
+        "coverage_by_bookmaker": {
+            "Bet365": {"bookmaker_id": "Bet365", "eligible_events": 51, "priced_events": 21, "coverage_rate": 0.4118, "cohort_aligned": True, "selected": True, "attestation_state": "AVAILABLE"},
+            "Betway": {"bookmaker_id": "Betway", "eligible_events": 0, "priced_events": 0, "coverage_rate": None, "cohort_aligned": True, "selected": True, "attestation_state": "ZERO_CURRENT_COVERAGE"},
+        },
+        "pairing": {"eligible": 16, "complete": 16, "rate": 1.0, "failure_reasons": {"m5_without_shadow": 0, "shadow_without_m5": 50}},
         "bookmakers": {
             "Bet365": {"bookmaker_id": "Bet365", "selected": True, "attestation_state": "AVAILABLE"},
             "Betway": {"bookmaker_id": "Betway", "selected": True, "attestation_state": "ZERO_CURRENT_COVERAGE"},
@@ -87,12 +90,27 @@ def snapshot_present_specs(snapshot):
 
 
 class TestImprovementOrchestrator:
-    def _orchestrator(self):
+    def _seeded_store(self):
         store = InMemoryQuantStore()
-        return ImprovementOrchestrator(store, _FakeDatabase(), live_selected=["Bet365", "Betway"])
+        store.upsert_bookmaker_coverage({
+            "bookmaker_id": "Bet365", "attestation_state": "AVAILABLE", "selected": True,
+            "filtered_events": 51, "priced_events": 21, "observations": 100,
+            "coverage_window_start": "2026-08-22T00:00:00Z", "coverage_window_end": "2026-08-23T00:00:00Z",
+            "last_attested_at": "2026-08-22T12:00:00Z",
+        })
+        store.upsert_bookmaker_coverage({
+            "bookmaker_id": "Betway", "attestation_state": "ZERO_CURRENT_COVERAGE", "selected": True,
+            "filtered_events": 0, "priced_events": 0, "observations": 0,
+            "coverage_window_start": "2026-08-22T00:00:00Z", "coverage_window_end": "2026-08-23T00:00:00Z",
+            "last_attested_at": "2026-08-22T12:00:00Z",
+        })
+        return store
+
+    def _orchestrator(self, store=None):
+        return ImprovementOrchestrator(store or self._seeded_store(), _FakeDatabase(), live_selected=["Bet365", "Betway"])
 
     def test_run_once_records_and_selects_action(self):
-        store = InMemoryQuantStore()
+        store = self._seeded_store()
         orchestrator = ImprovementOrchestrator(store, _FakeDatabase(), live_selected=["Bet365", "Betway"])
         result = orchestrator.run_once()
         assert result["recorded"]
@@ -100,17 +118,53 @@ class TestImprovementOrchestrator:
         assert store.list_improvement_actions()
 
     def test_actions_have_verification_metric(self):
-        store = InMemoryQuantStore()
+        store = self._seeded_store()
         ImprovementOrchestrator(store, _FakeDatabase(), live_selected=["Bet365", "Betway"]).run_once()
         action = store.list_improvement_actions()[0]
         assert action["verification_metric"]
 
     def test_actions_close_with_measured_outcome(self):
-        store = InMemoryQuantStore()
+        store = self._seeded_store()
         ImprovementOrchestrator(store, _FakeDatabase(), live_selected=["Bet365", "Betway"]).run_once()
         actions = store.list_improvement_actions()
-        assert all(action["status"] == "COMPLETED" for action in actions)
-        assert all(action["outcome"] in ("IMPROVED", "RESOLVED", "NO_CHANGE", "INCONCLUSIVE") for action in actions)
+        assert any(a["outcome"] == "MEASUREMENT_CORRECTED" for a in actions)
+        assert any(a["outcome"] == "WAITING_FOR_TRIGGER" for a in actions)
+
+    def test_provider_action_waits_for_trigger(self):
+        store = self._seeded_store()
+        ImprovementOrchestrator(store, _FakeDatabase(), live_selected=["Bet365", "Betway"]).run_once()
+        provider_action = next(a for a in store.list_improvement_actions() if a["action_type"] == "PROVIDER_ATTESTATION")
+        assert provider_action["status"] == "WAITING_FOR_TRIGGER"
+        assert provider_action["outcome"] == "WAITING_FOR_TRIGGER"
+
+    def test_shadow_historical_artifact_resolves_prospectively(self):
+        store = InMemoryQuantStore()
+        now = datetime.now(timezone.utc)
+        for i in range(10):
+            store.upsert_official_prediction({
+                "canonical_event_id": f"e{i}", "model_id": "M5_REGULARIZED_LOGISTIC",
+                "model_version": "v1", "prediction_id": f"m{i}", "prediction_role": "M5_FORWARD",
+                "generated_at": now, "commence_at": now, "probability_a": 0.6, "policy_version": 1,
+            })
+        for i in range(5):
+            store.upsert_official_prediction({
+                "canonical_event_id": f"e{i}", "model_id": "challenger-recent-form20",
+                "model_version": "v1", "prediction_id": f"s{i}", "prediction_role": "SHADOW_FORWARD",
+                "generated_at": now, "commence_at": now, "probability_a": 0.6, "policy_version": 1,
+            })
+        orchestrator = ImprovementOrchestrator(store, _FakeDatabase(), live_selected=["Bet365", "Betway"])
+        orchestrator.run_once()
+        shadow_weakness = next(w for w in store.list_weaknesses() if w["weakness_type"] == "SHADOW_COVERAGE_GAP")
+        assert shadow_weakness["status"] in ("MONITORING", "DETECTED")
+        for i in range(5, 10):
+            store.upsert_official_prediction({
+                "canonical_event_id": f"e{i}", "model_id": "challenger-recent-form20",
+                "model_version": "v1", "prediction_id": f"s{i}", "prediction_role": "SHADOW_FORWARD",
+                "generated_at": now, "commence_at": now, "probability_a": 0.6, "policy_version": 1,
+            })
+        orchestrator.run_once()
+        refreshed = next(w for w in store.list_weaknesses() if w["weakness_type"] == "SHADOW_COVERAGE_GAP")
+        assert refreshed["status"] == "RESOLVED"
 
     def test_daily_learning_review(self):
         store = InMemoryQuantStore()

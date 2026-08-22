@@ -64,42 +64,33 @@ def classify_unpriced(
     }
 
 
-def prospective_shadow_pairing(database: Any) -> dict[str, Any]:
-    """Prospective M5/shadow pairing for events first mutually eligible after
-    the shadow pipeline's parallel start."""
-    with database.connect() as connection, connection.cursor() as cursor:
-        cursor.execute("SELECT min(generated_at) FROM quant_shadow_predictions")
-        start = cursor.fetchone()[0]
-        if start is None:
-            return {"parallel_start_at": None, "eligible": 0, "complete": 0, "rate": None, "failure_reasons": {}}
-        cursor.execute(
-            "SELECT count(*) FROM tt_m5_live_predictions "
-            "WHERE availability = 'AVAILABLE' AND generated_at >= %s",
-            (start,),
-        )
-        m5_eligible = int(cursor.fetchone()[0])
-        cursor.execute(
-            "SELECT count(*) FROM quant_shadow_predictions "
-            "WHERE availability = 'AVAILABLE' AND generated_at >= %s",
-            (start,),
-        )
-        shadow_eligible = int(cursor.fetchone()[0])
-        cursor.execute(
-            "SELECT count(*) FROM tt_m5_live_predictions m "
-            "JOIN quant_shadow_predictions s ON s.canonical_event_id = m.canonical_event_id "
-            "WHERE m.availability = 'AVAILABLE' AND s.availability = 'AVAILABLE' "
-            "AND m.generated_at >= %s AND s.generated_at >= %s",
-            (start, start),
-        )
-        complete = int(cursor.fetchone()[0])
-    eligible = int(m5_eligible)
+def prospective_shadow_pairing(store: Any) -> dict[str, Any]:
+    """Prospective M5/shadow pairing over DISTINCT canonical events using the
+    official frozen forward prediction registry. No raw-row or many-to-many
+    inflation. Historical pre-shadow M5 events are excluded from the active
+    defect count."""
+    from defend_markets.quant.forward_evidence import unique_event_pairing
+
+    result = unique_event_pairing(store)
+    shadow_predictions = [
+        p for p in store.list_official_predictions(limit=100000)
+        if p.get("prediction_role") == "SHADOW_FORWARD"
+    ]
     return {
-        "parallel_start_at": start.isoformat() if start else None,
-        "eligible": eligible,
-        "complete": complete,
-        "rate": round(complete / eligible, 4) if eligible else None,
+        "parallel_start_at": _earliest(shadow_predictions) or None,
+        "eligible": result["pair_eligible_events"],
+        "complete": result["pair_complete_events"],
+        "rate": result["pair_rate"],
         "failure_reasons": {
-            "m5_without_shadow": max(0, m5_eligible - complete),
-            "shadow_without_m5": max(0, shadow_eligible - complete),
+            "m5_without_shadow": result["m5_only_fresh_defect"],
+            "shadow_without_m5": result["shadow_only_events"],
+            "historical_pre_shadow": result["m5_only_historical_pre_shadow"],
         },
     }
+
+
+def _earliest(predictions: list[dict[str, Any]]) -> str | None:
+    values = [p.get("generated_at") for p in predictions]
+    if not values:
+        return None
+    return str(min(values))

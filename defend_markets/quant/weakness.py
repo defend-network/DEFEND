@@ -47,29 +47,29 @@ class WeaknessDetector:
         specs: list[dict[str, Any]] = []
         now = utc_now_iso()
         prices = snapshot.get("prices", {})
-        events = snapshot.get("events", {})
         predictions = snapshot.get("predictions", {})
-        coverage = snapshot.get("coverage", {})
+        coverage_by_book = snapshot.get("coverage_by_bookmaker", {})
         pairing = snapshot.get("pairing", {})
         bookmakers = snapshot.get("bookmakers", {})
         passes = snapshot.get("pass_reasons", {})
 
-        eligible = int(coverage.get("eligible_events", 0))
-        priced = int(coverage.get("priced_events", 0))
-        rate = coverage.get("coverage_rate")
-        if eligible > 0 and rate is not None and rate < 0.5:
-            specs.append(
-                self._spec(
-                    now,
-                    weakness_type="PRICE_COVERAGE_LOW",
-                    category="MARKET_DATA_COVERAGE",
-                    title="Selected-book price coverage is low",
-                    description=f"cohort-aligned: {priced} of {eligible} eligible events priced ({rate}); same-book/same-window/same-cohort",
-                    severity="HIGH" if rate < 0.3 else "MEDIUM",
-                    evidence={"metric_name": "coverage_rate", "metric_value": rate, "sample_size": eligible},
-                    state_hash=state_hash({"coverage_rate": rate, "eligible": eligible, "priced": priced}),
+        for bookmaker_id, coverage in coverage_by_book.items():
+            eligible = int(coverage.get("eligible_events", 0))
+            priced = int(coverage.get("priced_events", 0))
+            rate = coverage.get("coverage_rate")
+            if coverage.get("selected") and eligible > 0 and rate is not None and rate < 0.5:
+                specs.append(
+                    self._spec(
+                        now,
+                        weakness_type="PRICE_COVERAGE_LOW",
+                        category="MARKET_DATA_COVERAGE",
+                        title=f"Selected book {bookmaker_id} price coverage is low",
+                        description=f"cohort-aligned: {priced} of {eligible} eligible events priced ({rate}); same-book/same-window/same-cohort",
+                        severity="HIGH" if rate < 0.3 else "MEDIUM",
+                        evidence={"metric_name": "coverage_rate", "metric_value": rate, "sample_size": eligible},
+                        state_hash=state_hash({"bookmaker": bookmaker_id, "coverage_rate": rate, "eligible": eligible, "priced": priced}),
+                    )
                 )
-            )
 
         pair_rate = pairing.get("rate")
         failure = pairing.get("failure_reasons", {})
@@ -88,17 +88,18 @@ class WeaknessDetector:
             )
 
         total_predictions = int(predictions.get("total", 0))
-        if total_predictions > 0 and int(predictions.get("m5_available", 0)) / total_predictions < 0.5:
+        m5_available = int(predictions.get("m5_available", 0))
+        if total_predictions > 0 and m5_available / total_predictions < 0.5:
             specs.append(
                 self._spec(
                     now,
                     weakness_type="MODEL_ELIGIBILITY_LOW",
                     category="MODEL_COVERAGE",
                     title="M5 eligibility below half of stored predictions",
-                    description=f"available={predictions.get('m5_available')} total={total_predictions}",
+                    description=f"available={m5_available} total={total_predictions}",
                     severity="LOW",
-                    evidence={"metric_name": "m5_available", "metric_value": predictions.get("m5_available"), "sample_size": total_predictions},
-                    state_hash=state_hash({"total": total_predictions, "available": predictions.get("m5_available")}),
+                    evidence={"metric_name": "m5_available", "metric_value": m5_available, "sample_size": total_predictions},
+                    state_hash=state_hash({"total": total_predictions, "available": m5_available}),
                 )
             )
 

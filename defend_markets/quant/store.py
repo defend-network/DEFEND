@@ -246,6 +246,27 @@ class QuantStore:
     def list_bookmaker_coverage(self, limit: int = 200) -> list[dict[str, Any]]:
         raise NotImplementedError
 
+    def upsert_official_prediction(self, spec: dict[str, Any]) -> bool:
+        raise NotImplementedError
+
+    def list_official_predictions(self, limit: int = 2000) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
+    def official_prediction_counts(self) -> dict[str, int]:
+        raise NotImplementedError
+
+    def insert_settlement(self, spec: dict[str, Any]) -> bool:
+        raise NotImplementedError
+
+    def list_settlements(self, limit: int = 2000) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
+    def insert_forward_score(self, spec: dict[str, Any]) -> bool:
+        raise NotImplementedError
+
+    def list_forward_scores(self, limit: int = 2000) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
 
 class PostgresQuantStore(QuantStore):
     def __init__(self, database: MarketsDatabase) -> None:
@@ -1322,6 +1343,130 @@ class PostgresQuantStore(QuantStore):
                 latest[bookmaker_id] = row
         return list(latest.values())[:limit]
 
+    def upsert_official_prediction(self, spec):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO quant_official_forward_predictions "
+                "(canonical_event_id, model_id, model_version, model_hash, prediction_id, prediction_role, "
+                "generated_at, commence_at, probability_a, feature_snapshot_id, frozen_forward, policy_version) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (canonical_event_id, model_id) DO NOTHING RETURNING official_prediction_id",
+                (
+                    spec["canonical_event_id"],
+                    spec["model_id"],
+                    spec["model_version"],
+                    spec.get("model_hash"),
+                    spec["prediction_id"],
+                    spec["prediction_role"],
+                    spec["generated_at"],
+                    spec["commence_at"],
+                    spec["probability_a"],
+                    spec.get("feature_snapshot_id"),
+                    spec.get("frozen_forward", True),
+                    spec.get("policy_version", 1),
+                ),
+            )
+            return cursor.fetchone() is not None
+
+    def list_official_predictions(self, limit=2000):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT official_prediction_id, canonical_event_id, model_id, model_version, model_hash, "
+                "prediction_id, prediction_role, generated_at, commence_at, probability_a, feature_snapshot_id, "
+                "frozen_forward, policy_version, created_at "
+                "FROM quant_official_forward_predictions ORDER BY official_prediction_id DESC LIMIT %s",
+                (limit,),
+            )
+            columns = [column.name for column in cursor.description]
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+    def official_prediction_counts(self):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT prediction_role, count(DISTINCT canonical_event_id) FROM quant_official_forward_predictions "
+                "GROUP BY prediction_role"
+            )
+            by_role = {str(row[0]): int(row[1]) for row in cursor.fetchall()}
+            cursor.execute("SELECT count(*) FROM quant_official_forward_predictions")
+            total_rows = int(cursor.fetchone()[0])
+        return {"total_rows": total_rows, "unique_events_by_role": by_role}
+
+    def insert_settlement(self, spec):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO quant_settlements "
+                "(canonical_event_id, provider_event_id, competition, participant_a, participant_b, status, "
+                "actual_a, actual_b, winner_side, source_result_id, source_provider, observed_at, raw_payload_hash, "
+                "orientation_verified, revision) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 1) "
+                "ON CONFLICT (canonical_event_id, source_result_id) DO NOTHING RETURNING settlement_id",
+                (
+                    spec["canonical_event_id"],
+                    spec.get("provider_event_id"),
+                    spec.get("competition"),
+                    spec.get("participant_a"),
+                    spec.get("participant_b"),
+                    spec.get("status", "FINAL"),
+                    spec.get("actual_a"),
+                    spec.get("actual_b"),
+                    spec.get("winner_side"),
+                    spec["source_result_id"],
+                    spec.get("source_provider", "odds_api_io"),
+                    spec.get("observed_at"),
+                    spec.get("raw_payload_hash"),
+                    spec.get("orientation_verified", False),
+                ),
+            )
+            return cursor.fetchone() is not None
+
+    def list_settlements(self, limit=2000):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT settlement_id, canonical_event_id, provider_event_id, competition, participant_a, "
+                "participant_b, status, actual_a, actual_b, winner_side, source_result_id, source_provider, "
+                "observed_at, raw_payload_hash, orientation_verified, revision, supersedes_revision_id, created_at "
+                "FROM quant_settlements ORDER BY settlement_id DESC LIMIT %s",
+                (limit,),
+            )
+            columns = [column.name for column in cursor.description]
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+    def insert_forward_score(self, spec):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO quant_forward_scores "
+                "(canonical_event_id, official_prediction_id, model_id, settlement_id, probability_a, actual_outcome, "
+                "brier, logloss, logloss_eps_policy, effective_clipped_p, scoring_policy_version) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (canonical_event_id, model_id, settlement_id) DO NOTHING RETURNING score_id",
+                (
+                    spec["canonical_event_id"],
+                    spec["official_prediction_id"],
+                    spec["model_id"],
+                    spec["settlement_id"],
+                    spec["probability_a"],
+                    spec["actual_outcome"],
+                    spec["brier"],
+                    spec["logloss"],
+                    spec.get("logloss_eps_policy", "LOGLOSS_EPSILON_POLICY_V1"),
+                    spec.get("effective_clipped_p"),
+                    spec.get("scoring_policy_version", 1),
+                ),
+            )
+            return cursor.fetchone() is not None
+
+    def list_forward_scores(self, limit=2000):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT score_id, canonical_event_id, official_prediction_id, model_id, settlement_id, "
+                "probability_a, actual_outcome, brier, logloss, logloss_eps_policy, effective_clipped_p, "
+                "scoring_policy_version, created_at "
+                "FROM quant_forward_scores ORDER BY score_id DESC LIMIT %s",
+                (limit,),
+            )
+            columns = [column.name for column in cursor.description]
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
 
 @dataclass
 class InMemoryQuantStore(QuantStore):
@@ -1351,6 +1496,9 @@ class InMemoryQuantStore(QuantStore):
     decision_evaluations: list[dict[str, Any]] = field(default_factory=list)
     paper_tickets: dict[tuple[str, str, str, str], dict[str, Any]] = field(default_factory=dict)
     bookmaker_coverage: list[dict[str, Any]] = field(default_factory=list)
+    official_predictions: dict[tuple[str, str], dict[str, Any]] = field(default_factory=dict)
+    settlements: dict[tuple[str, str], dict[str, Any]] = field(default_factory=dict)
+    forward_scores: dict[tuple[str, str, int], dict[str, Any]] = field(default_factory=dict)
     _next_research: int = 1
     _next_thread: int = 1
     _next_message: int = 1
@@ -1360,6 +1508,8 @@ class InMemoryQuantStore(QuantStore):
     _next_action: int = 1
     _next_finding: int = 1
     _next_packet: int = 1
+    _next_official: int = 1
+    _next_settlement: int = 1
 
     def create_research_entry(self, *, hypothesis, rationale=None, data_needed=None):
         entry_id = self._next_research
@@ -1839,3 +1989,44 @@ class InMemoryQuantStore(QuantStore):
             if bookmaker_id not in latest:
                 latest[bookmaker_id] = row
         return list(latest.values())[:limit]
+
+    def upsert_official_prediction(self, spec):
+        key = (spec["canonical_event_id"], spec["model_id"])
+        if key in self.official_predictions:
+            return False
+        official_id = self._next_official
+        self._next_official += 1
+        self.official_predictions[key] = dict(spec, official_prediction_id=official_id, created_at=_utcnow().isoformat())
+        return True
+
+    def list_official_predictions(self, limit=2000):
+        return list(reversed(list(self.official_predictions.values())))[:limit]
+
+    def official_prediction_counts(self):
+        by_role = {}
+        for entry in self.official_predictions.values():
+            role = entry.get("prediction_role")
+            by_role[role] = by_role.get(role, 0) + 1
+        return {"total_rows": len(self.official_predictions), "unique_events_by_role": by_role}
+
+    def insert_settlement(self, spec):
+        key = (spec["canonical_event_id"], spec["source_result_id"])
+        if key in self.settlements:
+            return False
+        settlement_id = self._next_settlement
+        self._next_settlement += 1
+        self.settlements[key] = dict(spec, settlement_id=settlement_id, revision=1, created_at=_utcnow().isoformat())
+        return True
+
+    def list_settlements(self, limit=2000):
+        return list(reversed(list(self.settlements.values())))[:limit]
+
+    def insert_forward_score(self, spec):
+        key = (spec["canonical_event_id"], spec["model_id"], spec["settlement_id"])
+        if key in self.forward_scores:
+            return False
+        self.forward_scores[key] = dict(spec, created_at=_utcnow().isoformat())
+        return True
+
+    def list_forward_scores(self, limit=2000):
+        return list(reversed(list(self.forward_scores.values())))[:limit]
