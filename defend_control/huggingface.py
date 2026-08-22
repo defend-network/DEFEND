@@ -23,6 +23,78 @@ _REPOSITORY = re.compile(
 )
 
 
+def _model_family(repo: str, architecture: str | None) -> str | None:
+    """Return the base model family (qwen2/qwen3) from authoritative signals.
+
+    Repository names are a hint only; the architecture class from the adapter's
+    ``auto_mapping.base_model_class`` is preferred when present.
+    """
+    if isinstance(architecture, str) and architecture:
+        lower = architecture.casefold()
+        if "qwen3" in lower:
+            return "qwen3"
+        if "qwen2" in lower:
+            return "qwen2"
+    if isinstance(repo, str):
+        lower = repo.casefold()
+        if "qwen3" in lower:
+            return "qwen3"
+        if "qwen2" in lower:
+            return "qwen2"
+    return None
+
+
+def _config_family(
+    runtime_base_config: Mapping[str, object],
+) -> tuple[str | None, str | None]:
+    model_type = runtime_base_config.get("model_type")
+    architectures = runtime_base_config.get("architectures")
+    first_arch = None
+    if isinstance(architectures, list) and architectures:
+        first_arch = str(architectures[0])
+    family = _model_family(
+        str(model_type) if isinstance(model_type, str) else "",
+        first_arch,
+    )
+    return family, first_arch
+
+
+def adapter_runtime_base_compatible(
+    *,
+    adapter_base_repo: str,
+    adapter_architecture: str | None,
+    runtime_base_config: Mapping[str, object],
+) -> tuple[bool, str]:
+    """Fail-closed check that the adapter's declared base family and
+    architecture class match the runtime base config.
+
+    Deterministic and dependency-free so it is unit-testable with fixtures.
+    """
+    adapter_family = _model_family(adapter_base_repo, adapter_architecture)
+    runtime_family, runtime_arch = _config_family(runtime_base_config)
+    if adapter_family is None or runtime_family is None:
+        return False, "unable to determine base model family"
+    if adapter_family != runtime_family:
+        return (
+            False,
+            f"adapter base is {adapter_family} but runtime base is {runtime_family}",
+        )
+    if runtime_arch is None:
+        return False, "runtime base config has no architectures"
+    adapter_arch = adapter_architecture
+    if adapter_arch is not None:
+        if adapter_arch.casefold() not in {
+            str(entry).casefold()
+            for entry in (runtime_base_config.get("architectures") or [])
+        }:
+            return (
+                False,
+                f"adapter architecture {adapter_arch} not present in runtime "
+                f"base architectures",
+            )
+    return True, "adapter base and runtime base are compatible"
+
+
 class HuggingFaceError(RuntimeError):
     """A safe Hugging Face discovery failure without response or secret data."""
 
@@ -146,6 +218,14 @@ class HuggingFaceClient:
                 else None
             )
         base_revision = self._require_revision(configured_revision, "base")
+
+        auto_mapping = config.get("auto_mapping")
+        base_architecture = None
+        if isinstance(auto_mapping, Mapping):
+            candidate = auto_mapping.get("base_model_class")
+            if isinstance(candidate, str) and candidate:
+                base_architecture = candidate
+
         return AdapterSpec(
             adapter_repo=repo,
             adapter_revision=adapter_revision,
@@ -153,7 +233,27 @@ class HuggingFaceClient:
             base_revision=base_revision,
             peft_type="LORA",
             lora_rank=lora_rank,
+            base_architecture=base_architecture,
         )
+
+    def verify_deployment_compatibility(self, adapter: AdapterSpec, token: str) -> None:
+        """Fail closed if the adapter's declared base is incompatible with the
+        runtime base config (e.g. Qwen2.5 adapter against a Qwen3 runtime)."""
+        if not isinstance(token, str) or not token:
+            raise HuggingFaceError("Hugging Face token must be a non-empty string")
+        base_config = self._get_json(
+            f"{_HUB_ROOT}/{adapter.base_repo}/resolve/{adapter.base_revision}/config.json",
+            token,
+        )
+        if not isinstance(base_config, Mapping):
+            raise HuggingFaceError("Hugging Face base configuration is invalid")
+        ok, reason = adapter_runtime_base_compatible(
+            adapter_base_repo=adapter.base_repo,
+            adapter_architecture=adapter.base_architecture,
+            runtime_base_config=base_config,
+        )
+        if not ok:
+            raise HuggingFaceError(f"DEFEND adapter/runtime base mismatch: {reason}")
 
     @staticmethod
     def _require_revision(value: object, subject: str) -> str:

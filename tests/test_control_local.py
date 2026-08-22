@@ -1,6 +1,7 @@
 from dataclasses import FrozenInstanceError
 from decimal import Decimal
 from pathlib import Path
+import sys
 
 import pytest
 
@@ -85,7 +86,7 @@ def test_local_process_specs_keep_secrets_in_api_environment_only(tmp_path):
     )
 
     assert specs.api.argv == (
-        str(tmp_path / ".venv" / "Scripts" / "python.exe"),
+        sys.executable,
         "api_server.py",
     )
     assert specs.api.cwd == tmp_path

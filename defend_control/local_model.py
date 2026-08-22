@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 import json
+import sys
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from .processes import ProcessSpec
@@ -140,10 +141,11 @@ def build_local_process_specs(
     }
     repo = settings.repo_root
     api_port = settings.defend_ai_api_port
+    python = sys.executable
     return LocalProcessSpecs(
         api=ProcessSpec(
             "api",
-            (str(repo / ".venv" / "Scripts" / "python.exe"), "api_server.py"),
+            (python, "api_server.py"),
             repo,
             api_env,
             f"http://127.0.0.1:{api_port}/health",

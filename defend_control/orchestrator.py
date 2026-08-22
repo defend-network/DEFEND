@@ -560,6 +560,17 @@ class StackOrchestrator:
             self._vast_adapter = self._huggingface_client.resolve_adapter(
                 self._settings.adapter_repo, secrets["HF_TOKEN"]
             )
+        # Fail closed on adapter/runtime base mismatch before any provisioning.
+        verify = getattr(
+            self._huggingface_client, "verify_deployment_compatibility", None
+        )
+        if callable(verify):
+            try:
+                verify(self._vast_adapter, secrets["HF_TOKEN"])
+            except Exception as error:
+                raise StartFailed(
+                    "model", f"adapter/runtime base mismatch: {error}"
+                ) from None
         self._check_cancelled(cancellation)
         if not self._ssh_key_registered:
             public_key = self._ssh_tunnel.ensure_identity()

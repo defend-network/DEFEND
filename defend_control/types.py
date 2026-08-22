@@ -31,6 +31,7 @@ class AdapterSpec:
     base_revision: str
     peft_type: str
     lora_rank: int
+    base_architecture: str | None = None
 
 
 @dataclass(frozen=True)

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import re
 import shlex
+import sys
 from typing import Protocol
 
 from .model_registry import ADAPTER_REPO
@@ -327,10 +328,11 @@ def build_remote_process_specs(
     }
     repo = settings.repo_root
     api_port = settings.defend_ai_api_port
+    python = sys.executable
     return RemoteProcessSpecs(
         api=ProcessSpec(
             "api",
-            (str(repo / ".venv" / "Scripts" / "python.exe"), "api_server.py"),
+            (python, "api_server.py"),
             repo,
             api_env,
             f"http://127.0.0.1:{api_port}/health",
