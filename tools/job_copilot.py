@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import mimetypes
+import re
 import sys
 from datetime import date, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -31,6 +32,11 @@ from scs_reports.completeness import evaluate, ready_to_leave
 from scs_reports.composer import Composer
 from scs_reports.nl_parse import merge_capture, parse_measurements
 from scs_reports.planner import plan_for
+from scs_reports.preengineer import (
+    build_preengineered_record,
+    design_vs_field,
+    field_test_plan,
+)
 from scs_reports.schema import (
     AirDevice,
     Equipment,
@@ -42,6 +48,18 @@ from scs_reports.schema import (
 )
 from scs_reports.store import JobStore, MasterStore, PhotoIngest, ReportPaths
 from scs_reports.validation import validate_report
+
+try:
+    import fitz  # PyMuPDF for plan-region preview
+except Exception:  # pragma: no cover
+    fitz = None
+
+from scs_reports.plans import (
+    cached_basis,
+    index_pdf,
+    run_document,
+    sha256_of,
+)
 
 SCOPE_MARKERS = ("scope", "verification", "verifying", "airflow", "balance",
                  "ductwork", "ducts", "outlets", "studios", "traverse",
@@ -59,6 +77,139 @@ def detect_scope(text: str) -> tuple[str, str]:
     else:
         report_type = "TAB"
     return report_type, text.strip()
+
+
+def _room_from_question(upper: str) -> str | None:
+    match = re.search(r"(WORKOUT STUDIO [A-Z]|STUDIO [A-Z]|SPIN STUDIO)", upper)
+    return match.group(1) if match else None
+
+
+def _match_room(room: str | None, basis: dict) -> str | None:
+    if not room:
+        return None
+    names = [r["name"] for r in basis.get("rooms", [])]
+    names += [t["scope"] for t in basis.get("design_totals", [])]
+    for name in names:
+        if room.upper() in name.upper() or name.upper() in room.upper():
+            return name
+    return room
+
+
+def answer_plan_question(text: str, basis: dict) -> dict:
+    """Grounded blueprint Q&A: every answer cites sheet/page/provenance."""
+    upper = text.upper()
+    instances = {d["device_id"]: d for d in basis.get("instances", [])}
+    equipment = {e["tag"]: e for e in basis.get("equipment", [])}
+    supply_totals = [
+        t for t in basis.get("design_totals", []) if t["function"] == "SUPPLY"
+    ]
+
+    tag_match = re.search(
+        r"\b(SA|SD|RA|EA|EF|EG|RG|RF|SF|RTU|AHU|FCU|VAV|LI|CR|OA)-?\s?\d{1,3}\b",
+        upper,
+    )
+    if tag_match:
+        tag = tag_match.group(0).upper().replace(" ", "-")
+        tag = re.sub(r"-(\s*)(\d+)$", r"-\2", tag)
+        if tag in instances:
+            d = instances[tag]
+            return {
+                "answer": (
+                    f"{tag} is a {d.get('type') or 'air device'} in "
+                    f"{d.get('room') or 'unassigned room'}; design "
+                    f"{d.get('design_cfm')} CFM, size {d.get('size') or 'n/a'}. "
+                    f"Source: {d['source'].get('sheet') or '?'} "
+                    f"(page {d['source'].get('page')}, "
+                    f"{d['source'].get('extraction_method')})."
+                ),
+                "source": d["source"], "device": tag,
+            }
+        if tag in equipment:
+            e = equipment[tag]
+            return {
+                "answer": (
+                    f"{tag} is a {e.get('type') or 'unit'} "
+                    f"({e.get('manufacturer')} {e.get('model')}); "
+                    f"supply {e.get('supply_cfm')} CFM. "
+                    f"Source: {e['source'].get('sheet') or '?'} "
+                    f"(page {e['source'].get('page')})."
+                ),
+                "source": e["source"], "equipment": tag,
+            }
+        return {"answer": f"{tag} not found in the plan index.", "source": None}
+
+    room = _match_room(_room_from_question(upper), basis)
+    if ("TOTAL" in upper or "DESIGN SUPPLY" in upper) and room:
+        match = next(
+            (t for t in supply_totals
+             if t["scope"].upper() == room.upper()),
+            None,
+        )
+        if match:
+            return {
+                "answer": (
+                    f"Design supply for {match['scope']} is "
+                    f"{match['design_total_cfm']:.0f} CFM across "
+                    f"{match['device_count']} devices. "
+                    f"Source: {', '.join(match.get('source_sheets', [])) or 'plans'}."
+                ),
+                "source": {"sheet": ",".join(match.get("source_sheets", []) or [])},
+            }
+    if ("HOW MANY" in upper or "COUNT" in upper) and room:
+        room_devices = [d for d in basis.get("instances", [])
+                        if (d.get("room") or "").upper() == room.upper()]
+        supply = [d for d in room_devices if d["device_id"].startswith("SA")]
+        return {
+            "answer": (
+                f"{room} has {len(supply)} supply outlet(s) and "
+                f"{len(room_devices) - len(supply)} return/exhaust device(s). "
+                f"Source: plan sheets "
+                f"{', '.join(sorted({d['source'].get('sheet') for d in room_devices if d['source'].get('sheet')})) or '?'}."
+            ),
+            "source": {"sheet": "plans"},
+        }
+    if "SCHEDULE" in upper and ("AIR DEVICE" in upper or "WHAT SHEET" in upper):
+        page = next(
+            (p for p in basis.get("sheet_classification", [])
+             if p["type"] == "AIR_DEVICE_SCHEDULE"),
+            None,
+        )
+        if page:
+            return {
+                "answer": (
+                    f"The air device schedule is on sheet {page['sheet_number']} "
+                    f"(page {page['page']})."
+                ),
+                "source": {"sheet": page["sheet_number"], "page": page["page"]},
+            }
+    if "SYSTEM SERVES" in upper or "WHAT SYSTEM" in upper:
+        if room:
+            device = next(
+                (d for d in basis.get("instances", [])
+                 if (d.get("room") or "").upper() == room.upper()),
+                None,
+            )
+            if device:
+                return {
+                    "answer": (
+                        f"{room} is served by the duct branch shown on "
+                        f"{device['source'].get('sheet')} (page "
+                        f"{device['source'].get('page')}); the serving unit is "
+                        f"in the equipment schedule (M2.2)."
+                    ),
+                    "source": {"sheet": device["source"].get("sheet")},
+                }
+    # fallback: summary
+    sheets = basis.get("sheet_classification", [])
+    return {
+        "answer": (
+            "I can answer from the plan index. Found "
+            f"{len(instances)} devices, {len(equipment)} equipment units, and "
+            f"{len(supply_totals)} supply systems across "
+            f"{len(sheets)} sheets."
+        ),
+        "source": None,
+    }
 
 
 class CopilotServer(BaseHTTPRequestHandler):
@@ -103,6 +254,38 @@ class CopilotServer(BaseHTTPRequestHandler):
     def _save(self, record: JobRecord) -> JobRecord:
         return self.store.save(record)
 
+    def _docs_file(self, job_id: str) -> Path:
+        return self.paths.job_dir(job_id) / "documents.json"
+
+    def _load_docs(self, job_id: str) -> list[dict]:
+        path = self._docs_file(job_id)
+        if not path.exists():
+            return []
+        try:
+            return json.loads(path.read_text(encoding="utf-8-sig"))
+        except Exception:
+            return []
+
+    def _save_docs(self, job_id: str, docs: list[dict]) -> None:
+        self._docs_file(job_id).write_text(
+            json.dumps(docs, indent=2, default=str), encoding="utf-8")
+
+    def _basis_file(self, job_id: str) -> Path:
+        return self.paths.job_dir(job_id) / "plan_basis.json"
+
+    def _load_basis(self, job_id: str) -> dict | None:
+        path = self._basis_file(job_id)
+        if not path.exists():
+            return None
+        try:
+            return json.loads(path.read_text(encoding="utf-8-sig"))
+        except Exception:
+            return None
+
+    def _save_basis(self, job_id: str, basis: dict) -> None:
+        self._basis_file(job_id).write_text(
+            json.dumps(basis, indent=2, default=str), encoding="utf-8")
+
     def _job_payload(self, record: JobRecord) -> dict:
         plan = plan_for(record)
         return {
@@ -145,6 +328,8 @@ class CopilotServer(BaseHTTPRequestHandler):
             parts = path[len("/api/jobs/"):].split("/")
             if len(parts) == 2 and parts[1] == "download":
                 self._download(parts[0])
+            elif len(parts) == 2 and parts[1] == "preview":
+                self._action_preview(parts[0])
             elif len(parts) == 3 and parts[1] == "photo":
                 self._serve_photo(parts[0], parts[2])
             elif len(parts) == 1:
@@ -163,7 +348,7 @@ class CopilotServer(BaseHTTPRequestHandler):
             parts = path[len("/api/jobs/"):].split("/")
             if len(parts) == 2:
                 action = parts[1]
-                handler = getattr(self, f"_action_{action}", None)
+                handler = getattr(self, "_action_" + action.replace("-", "_"), None)
                 if handler is not None:
                     handler(parts[0])
                 else:
@@ -343,6 +528,143 @@ class CopilotServer(BaseHTTPRequestHandler):
         record = self._load(job_id)
         self._send_json(plan_for(record).to_dict())
 
+    def _action_docs(self, job_id: str):
+        record = self._load(job_id)
+        body = self._read_body()
+        sources = [Path(p) for p in (body.get("document_paths") or [])]
+        if not sources:
+            self._send_json({"error": "document_paths required"}, 400)
+            return
+        docs = self._load_docs(job_id)
+        docs_dir = self.paths.job_subdir(job_id, "docs")
+        created = []
+        for source in sources:
+            if not source.exists():
+                continue
+            digest = sha256_of(source)
+            if any(d.get("sha256") == digest for d in docs):
+                continue
+            target = docs_dir / source.name
+            if not target.exists():
+                import shutil
+                shutil.copy2(source, target)
+            indexed = index_pdf(target)
+            entry = {
+                "document_id": f"DOC-{digest[:8]}",
+                "filename": target.name,
+                "sha256": digest,
+                "page_count": len(indexed.pages),
+                "revision": None,
+                "uploaded_at": datetime.now().isoformat(timespec="seconds"),
+                "path": str(target),
+            }
+            docs.append(entry)
+            created.append(entry)
+        self._save_docs(job_id, docs)
+        self._send_json({"documents": docs, "created": created})
+
+    def _action_prepare(self, job_id: str):
+        record = self._load(job_id)
+        docs = self._load_docs(job_id)
+        if not docs:
+            self._send_json({"error": "upload plans first"}, 400)
+            return
+        merged = None
+        for doc in docs:
+            basis = cached_basis(
+                Path(doc["path"]),
+                self.paths.job_dir(job_id) / "plan_cache",
+            )
+            basis = {k: v for k, v in basis.items() if k != "_cache_hit"}
+            if merged is None:
+                merged = basis
+            else:
+                merged["instances"].extend(basis["instances"])
+                merged["equipment"].extend(basis["equipment"])
+                merged["design_totals"].extend(basis["design_totals"])
+                merged["conflicts"].extend(basis["conflicts"])
+                merged["rooms"].extend(basis["rooms"])
+                merged["sheet_classification"].extend(basis["sheet_classification"])
+        self._save_basis(job_id, merged)
+        build_preengineered_record(record, merged)
+        self._save(record)
+        preview = self._plan_preview(merged)
+        self._send_json({
+            "preview": preview,
+            "design_totals": merged["design_totals"],
+            "conflicts": merged["conflicts"],
+            "devices": len(merged["instances"]),
+            "rooms": merged["rooms"],
+            "sheets": merged["sheet_classification"],
+            "field_plan": field_test_plan(record),
+            "payload": self._job_payload(record),
+        })
+
+    @staticmethod
+    def _plan_preview(basis: dict) -> dict:
+        rooms = []
+        for total in basis.get("design_totals", []):
+            if total["function"] == "SUPPLY":
+                rooms.append({
+                    "room": total["scope"],
+                    "supply_devices": total["device_count"],
+                    "design_supply_cfm": total["design_total_cfm"],
+                    "source_sheets": total.get("source_sheets", []),
+                })
+        mechanical_sheets = [
+            {
+                "page": s["page"], "sheet": s["sheet_number"], "title": s["title"],
+                "type": s["type"], "confidence": s["confidence"],
+            }
+            for s in basis.get("sheet_classification", [])
+            if s["type"] not in ("ELECTRICAL", "ARCHITECTURAL", "PLUMBING",
+                                 "COVER", "IRRELEVANT")
+        ]
+        return {
+            "rooms": rooms,
+            "relevant_sheets": mechanical_sheets,
+            "conflicts": basis.get("conflicts", []),
+        }
+
+    def _action_plan_chat(self, job_id: str):
+        basis = self._load_basis(job_id)
+        body = self._read_body()
+        text = (body.get("text") or "").strip()
+        if not basis:
+            self._send_json({"error": "prepare from plans first"}, 400)
+            return
+        answer = answer_plan_question(text, basis)
+        self._send_json(answer)
+
+    def _action_preview(self, job_id: str):
+        query = urlparse(self.path).query
+        params = {k: v[0] for k, v in parse_qs(query).items()}
+        page_no = int(params.get("page", 1))
+        bbox = [float(x) for x in params.get("bbox", "0,0,0,0").split(",")]
+        docs = self._load_docs(job_id)
+        if not docs:
+            self._send_json({"error": "no documents"}, 404)
+            return
+        if fitz is None:
+            self._send_json({"error": "renderer unavailable"}, 500)
+            return
+        try:
+            renderer = fitz.open(docs[0]["path"])
+            page = renderer.load_page(page_no - 1)
+            zoom = 3.0
+            pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom),
+                                  clip=fitz.Rect(*bbox))
+            png = pix.tobytes("png")
+            renderer.close()
+        except Exception as error:
+            self._send_json({"error": f"render failed: {error}"}, 500)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "image/png")
+        self.send_header("Content-Length", str(len(png)))
+        self.end_headers()
+        self.wfile.write(png)
+
     def _action_generate(self, job_id: str):
         record = self._load(job_id)
         plan = plan_for(record)
@@ -495,6 +817,22 @@ pre { white-space:pre-wrap; color:#b9c2d4; font-size:12px; margin:4px 0; }
     <div id="photoOut"></div>
   </div>
 
+  <h2>BLUEPRINT PLANS</h2>
+  <div class="card">
+    <label>PDF paths (one per line) - upload as job artifact (immutable)</label>
+    <textarea id="docPaths" rows="2" placeholder="C:\\path\\to\\mechanical_prints.pdf"></textarea>
+    <button class="green" onclick="uploadDocs()" style="margin-top:8px">Upload plans</button>
+    <button class="primary" onclick="prepareFromPlans()" style="margin-top:8px">Prepare from plans</button>
+    <div id="planOut"></div>
+  </div>
+
+  <h2>PLAN CHAT</h2>
+  <div class="card">
+    <textarea id="planChat" rows="2" placeholder="What is SA-6 supposed to be? How many supply diffusers are in Studio B? What is the design total for Studio A?"></textarea>
+    <button onclick="askPlan()" style="margin-top:8px">Ask about the plans</button>
+    <div id="planChatOut"></div>
+  </div>
+
   <h2>MEASUREMENTS</h2>
   <div class="card">
     <textarea id="meas" rows="3" placeholder="Studio B SA-1 was 300 CFM as found. Balanced damper, got 418 final."></textarea>
@@ -617,6 +955,40 @@ async function ingestPhotos() {
   document.getElementById("photoOut").innerHTML = "<pre>" + JSON.stringify(j.photos || [], null, 1) + "</pre>";
   msg("Ingested " + (j.photos || []).length + " photo(s)");
   renderPayload(j.payload);
+}
+async function uploadDocs() {
+  const paths = val("docPaths").split("\\n").map(s => s.trim()).filter(Boolean);
+  if (!paths.length || !current) return msg("provide PDF paths + job", true);
+  const j = await api("/api/jobs/" + current + "/docs", "POST", { document_paths: paths });
+  if (j.error) return msg(j.error, true);
+  document.getElementById("planOut").innerHTML = "<pre>" + JSON.stringify(j.documents || [], null, 1) + "</pre>";
+  msg("Uploaded " + (j.created || []).length + " plan document(s)");
+}
+async function prepareFromPlans() {
+  if (!current) return msg("load/create a job first", true);
+  msg("Reading the prints...", false);
+  const j = await api("/api/jobs/" + current + "/prepare", "POST", {});
+  if (j.error) return msg(j.error, true);
+  const p = j.preview || {};
+  const lines = ["<b>SYSTEMS / ROOMS FOUND</b>"];
+  (p.rooms || []).forEach(r => lines.push(`${r.room}: ${r.supply_devices} supply devices, design supply ${r.design_supply_cfm} CFM`));
+  lines.push("<b>RELEVANT SHEETS</b>");
+  (p.relevant_sheets || []).forEach(s => lines.push(`${s.sheet} ${s.type} (conf ${s.confidence})`));
+  if (j.conflicts && j.conflicts.length) { lines.push("<b>DOCUMENT CONFLICTS</b>"); j.conflicts.forEach(c => lines.push(c.detail)); }
+  lines.push("<b>FIELD PLAN</b>");
+  (j.field_plan || []).slice(0, 6).forEach(d => lines.push(`${d.device} ${d.room || ""} design ${d.design_cfm} ${d.size || ""} [${d.status}]`));
+  document.getElementById("planOut").innerHTML = "<pre>" + lines.join("&#10;") + "</pre>";
+  msg("Pre-engineered " + j.devices + " devices from plans; job status PRE_ENGINEERED");
+  renderPayload(j.payload);
+}
+async function askPlan() {
+  const text = val("planChat");
+  if (!text || !current) return msg("enter a question", true);
+  const j = await api("/api/jobs/" + current + "/plan-chat", "POST", { text });
+  if (j.error) return msg(j.error, true);
+  document.getElementById("planChatOut").innerHTML =
+    "<pre>" + (j.answer || "") + "</pre>" +
+    (j.source ? `<div class="hint">source: ${JSON.stringify(j.source)}</div>` : "");
 }
 async function sendMeasurements() {
   const text = val("meas");

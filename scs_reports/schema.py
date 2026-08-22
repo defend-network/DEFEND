@@ -311,6 +311,7 @@ class AirDevice:
     status: str | None = None
     notes: str | None = None
     evidence_refs: list[str] = field(default_factory=list)
+    design_source: str | None = None
 
     @property
     def percent_design(self) -> float | None:
@@ -332,6 +333,7 @@ class AirDevice:
             "status": self.status,
             "notes": self.notes,
             "evidence_refs": self.evidence_refs,
+            "design_source": self.design_source,
         }
 
     @classmethod
@@ -349,6 +351,7 @@ class AirDevice:
             status=data.get("status"),
             notes=data.get("notes"),
             evidence_refs=data.get("evidence_refs", []),
+            design_source=data.get("design_source"),
         )
 
 
@@ -539,6 +542,7 @@ class JobMetadata:
     customer: str | None = None
     design_engineer: str | None = None
     report_type: str = "TAB"
+    status: str = "DRAFT"
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: datetime = field(default_factory=datetime.now)
 
@@ -555,6 +559,7 @@ class JobMetadata:
             "customer": self.customer,
             "design_engineer": self.design_engineer,
             "report_type": self.report_type,
+            "status": self.status,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
         }
@@ -575,6 +580,7 @@ class JobMetadata:
             customer=data.get("customer"),
             design_engineer=data.get("design_engineer"),
             report_type=data.get("report_type", "TAB"),
+            status=data.get("status", "DRAFT"),
             created_at=datetime.fromisoformat(data["created_at"]),
             updated_at=datetime.fromisoformat(data["updated_at"]),
         )

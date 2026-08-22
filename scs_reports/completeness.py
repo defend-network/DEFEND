@@ -111,18 +111,42 @@ def evaluate(record: JobRecord) -> CompletenessReport:
         add("air_devices", "BLOCKING", "no outlet readings captured")
     else:
         add("air_devices", "OPTIONAL", f"{len(record.air_devices)} device(s) recorded")
+        measured = sum(1 for d in record.air_devices if d.final_cfm is not None)
+        unmeasured = [d for d in record.air_devices if d.final_cfm is None]
+        if unmeasured:
+            detail = "; ".join(
+                f"{d.device_id} ({d.area_served or 'unassigned'})"
+                f"{(' design ' + format(d.design_cfm, '.0f') + ' CFM') if d.design_cfm else ''}"
+                for d in unmeasured
+            )
+            add("planned_devices_measured",
+                "BLOCKING",
+                f"{len(unmeasured)} planned device(s) unmeasured: {detail}")
+        else:
+            add("planned_devices_measured", "OPTIONAL",
+                f"{measured} planned device(s) measured")
 
     for device in record.air_devices:
         fid = f"{device.device_id}:final_cfm"
         if device.final_cfm is None:
-            add(fid, "BLOCKING", f"{device.device_id} missing final CFM")
+            design = (
+                f" (design {format(device.design_cfm, '.0f')} CFM)"
+                if device.design_cfm else ""
+            )
+            add(fid, "BLOCKING",
+                f"{device.device_id} ({device.area_served or 'unassigned'}) missing final CFM{design}")
         else:
-            add(fid, "OPTIONAL", f"{device.device_id} final {device.final_cfm} CFM")
+            add(fid, "OPTIONAL",
+                f"{device.device_id} final {device.final_cfm} CFM")
         if device.design_cfm is None and not (
             device.notes and "design" in device.notes.casefold()
         ):
             add(f"{device.device_id}:design_cfm", "IMPORTANT",
                 f"{device.device_id} has measured CFM but no design airflow documented")
+        elif device.design_cfm is not None:
+            add(f"{device.device_id}:design_cfm", "OPTIONAL",
+                f"{device.device_id} design {format(device.design_cfm, '.0f')} CFM"
+                + (f" [{device.design_source}]" if device.design_source else ""))
         if device.as_found_cfm is None:
             add(f"{device.device_id}:as_found_cfm", "IMPORTANT",
                 f"{device.device_id} lacks as-found value (verification/balance report)")
@@ -210,6 +234,8 @@ def _questions(record: JobRecord, report: CompletenessReport) -> list[str]:
         questions.append(
             "What is the design airflow for: " + ", ".join(design_missing) + "?"
         )
+    elif not record.air_devices:
+        questions.append("What design airflows apply to the devices you measured?")
     if record.air_devices and not any(d.as_found_cfm is not None for d in record.air_devices):
         questions.append("Did you capture as-found readings before adjusting?")
     no_device_photos = record.air_devices and not {
