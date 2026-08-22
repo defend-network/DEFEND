@@ -65,7 +65,17 @@ from scs_reports.plans import (
     run_document,
     sha256_of,
 )
-from scs_reports.blueprint_raster import cached_blueprint
+from scs_reports.plan_packet import build_packet, classify_missing_context
+from scs_reports.plan_semantics import build_graph, graph_to_design_basis
+from scs_reports.plan_scope import (
+    answer_graph_question,
+    field_plan,
+    scope_relevant,
+)
+from scs_reports.blueprint_raster import (
+    cached_blueprint,
+    _ocr_with_orientation,
+)
 from scs_reports.vision import (
     build_document_reader,
     document_reader_status,
@@ -608,6 +618,10 @@ class CopilotServer(BaseHTTPRequestHandler):
             if known is not None:
                 device["corrected_value"] = known
         self._save_basis(job_id, merged)
+        # build the MechanicalPlanGraph (native words + OCR words for sparse pages)
+        graph = self._build_plan_graph(job_id, docs, reader)
+        self._graph_file(job_id).write_text(
+            json.dumps(graph.to_dict(), indent=2, default=str), encoding="utf-8")
         build_preengineered_record(record, merged)
         self._save(record)
         preview = self._plan_preview(merged)
@@ -619,9 +633,55 @@ class CopilotServer(BaseHTTPRequestHandler):
             "devices": len(merged["instances"]),
             "rooms": merged["rooms"],
             "sheets": merged["sheet_classification"],
-            "field_plan": field_test_plan(record),
+            "field_plan": field_plan(graph, record.scope_notes or "verify airflow"),
+            "graph": {
+                "schema_version": graph.schema_version,
+                "equipment": len(graph.equipment),
+                "air_devices": len(graph.air_devices),
+                "dampers": len(graph.dampers),
+                "controls": len(graph.controls),
+                "duct_segments": len(graph.duct_segments),
+                "rooms": len(graph.rooms),
+                "notes": len(graph.notes),
+                "references": len(graph.references),
+                "schedules": len(graph.schedules),
+                "relationships": len(graph.relationships),
+                "missing_context": graph.missing_context,
+                "validation_issues": graph.validate(),
+            },
             "payload": self._job_payload(record),
         })
+
+    def _graph_file(self, job_id: str) -> Path:
+        return self.paths.job_dir(job_id) / "plan_graph.json"
+
+    def _load_graph(self, job_id: str):
+        path = self._graph_file(job_id)
+        if not path.exists():
+            return None
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+
+    def _build_plan_graph(self, job_id: str, docs: list[dict], reader):
+        from scs_reports.plan_graph import MechanicalPlanGraph
+        from scs_reports.plan_packet import PlanPacket
+
+        native_docs = []
+        raster_words: dict[int, list] = {}
+        cache_dir = self.paths.job_dir(job_id) / "plan_cache"
+        for doc in docs:
+            native = index_pdf(Path(doc["path"]), tables=False)
+            native_docs.append(native)
+            for page in native.pages:
+                if not page.words:
+                    words, _orientation = _ocr_with_orientation(
+                        Path(doc["path"]), page.page_number, reader, 200,
+                        cache_dir, doc["sha256"])
+                    raster_words[page.page_number] = words
+        graph = build_graph(native_docs, raster_words=raster_words)
+        return graph
 
     def _action_correct(self, job_id: str):
         body = self._read_body()
@@ -682,9 +742,29 @@ class CopilotServer(BaseHTTPRequestHandler):
         }
 
     def _action_plan_chat(self, job_id: str):
-        basis = self._load_basis(job_id)
         body = self._read_body()
         text = (body.get("text") or "").strip()
+        graph_payload = self._load_graph(job_id)
+        if graph_payload is not None:
+            from scs_reports.plan_graph import MechanicalPlanGraph
+            graph = MechanicalPlanGraph(packet={})
+            for key, value in graph_payload.items():
+                if key in ("packet",):
+                    continue
+                if key == "relationships":
+                    from scs_reports.plan_graph import Relationship
+                    graph.relationships = [
+                        Relationship(r["source"], r["target"], r["rel_type"],
+                                     r.get("evidence", []), r.get("confidence", "HIGH"),
+                                     r.get("source_ref"))
+                        for r in value
+                    ]
+                else:
+                    setattr(graph, key, value)
+            answer = answer_graph_question(text, graph)
+            self._send_json(answer)
+            return
+        basis = self._load_basis(job_id)
         if not basis:
             self._send_json({"error": "prepare from plans first"}, 400)
             return
