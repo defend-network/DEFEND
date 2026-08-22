@@ -117,6 +117,9 @@ class RunRouting:
     escalated_from: str | None = None
     escalation_approved_at: object | None = None
     escalation_approved_by: str | None = None
+    identity_profile_id: str | None = None
+    identity_version: str | None = None
+    identity_hash: str | None = None
 
     def as_public_dict(self) -> dict[str, object]:
         return {
@@ -132,6 +135,9 @@ class RunRouting:
                 else None
             ),
             "escalation_approved_by": self.escalation_approved_by,
+            "identity_profile_id": self.identity_profile_id,
+            "identity_version": self.identity_version,
+            "identity_hash": self.identity_hash,
         }
 
 
@@ -720,7 +726,10 @@ class RunsRepository:
                         route_reason,
                         escalated_from,
                         escalation_approved_at,
-                        escalation_approved_by
+                        escalation_approved_by,
+                        identity_profile_id,
+                        identity_version,
+                        identity_hash
                     FROM coder_runs
                     WHERE run_id = %s
                     """,
@@ -739,7 +748,32 @@ class RunsRepository:
             escalated_from=row["escalated_from"],
             escalation_approved_at=row["escalation_approved_at"],
             escalation_approved_by=row["escalation_approved_by"],
+            identity_profile_id=row["identity_profile_id"],
+            identity_version=row["identity_version"],
+            identity_hash=row["identity_hash"],
         )
+
+    def set_run_identity(
+        self,
+        run_id: UUID,
+        *,
+        profile_id: str,
+        version: str,
+        identity_hash: str,
+    ) -> None:
+        """Pin the server-owned identity profile onto a run (reproducible)."""
+        with self._db.connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE coder_runs
+                    SET identity_profile_id = %s,
+                        identity_version = %s,
+                        identity_hash = %s
+                    WHERE run_id = %s
+                    """,
+                    (profile_id, version, identity_hash, run_id),
+                )
 
     def create_escalation_proposal(
         self,

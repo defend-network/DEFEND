@@ -156,6 +156,7 @@ def main() -> None:
         SOL_MODEL,
         build_client,
         deepseek_target,
+        deepseek_thinking_params,
         next_target,
         sol_target,
     )
@@ -198,7 +199,16 @@ def main() -> None:
                 )
         else:
             api_key = None
-        return build_client(target, api_key=api_key)
+        thinking_params = (
+            deepseek_thinking_params()
+            if model == DEFAULT_DEEPSEEK_MODEL
+            else None
+        )
+        return build_client(
+            target,
+            api_key=api_key,
+            default_extra_body=thinking_params,
+        )
 
     def _proposal_for(run_id, outcome):
         # Deterministic, grounded auto-escalation: quality failures only, one

@@ -26,6 +26,10 @@ DEEPSEEK_API_KEY_ENV = "DEEPSEEK_API_KEY"
 DEEPSEEK_API_KEY_FILE_ENV = "DEEPSEEK_API_KEY_FILE"
 DEEPSEEK_MODEL_ENV = "DEEPSEEK_MODEL"
 DEEPSEEK_BASE_URL_ENV = "DEEPSEEK_BASE_URL"
+#: Optional explicit JSON for DeepSeek thinking-mode parameters (e.g.
+#: {"thinking": {"enabled": true, "effort": "max"}}). When absent nothing is
+#: sent — never blindly inject unsupported provider parameters.
+DEEPSEEK_THINKING_PARAMS_ENV = "DEEPSEEK_THINKING_PARAMS"
 
 #: Sol frontier provider environment names.
 SOL_API_KEY_ENV = "OPENAI_API_KEY"
@@ -175,6 +179,27 @@ def next_target(*, availability: bool = True, endpoint: str | None = None) -> Mo
     )
 
 
+def deepseek_thinking_params(
+    env: dict[str, str] | None = None,
+) -> dict[str, object] | None:
+    """Parse optional DeepSeek thinking/reasoning-effort policy JSON.
+
+    Returns None when not configured (nothing extra is sent to the
+    provider). Malformed config is ignored rather than breaking startup.
+    """
+    import json
+
+    env = env if env is not None else os.environ
+    raw = (env.get(DEEPSEEK_THINKING_PARAMS_ENV) or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
 def build_client(
     target: ModelTarget,
     *,
@@ -183,11 +208,14 @@ def build_client(
     max_model_len: int = 8192,
     temperature: float = 0.3,
     urlopen: Callable[..., object] | None = None,
+    default_extra_body: dict[str, object] | None = None,
 ) -> AgentChatClient:
     """Build an OpenAI-compatible client for a resolved target.
 
     ``api_key`` is supplied by the server secret resolver; it is never
-    stored on the target or in run records.
+    stored on the target or in run records. ``default_extra_body`` carries
+    optional provider-specific protocol params (e.g. DeepSeek thinking
+    effort) and is only merged when the caller configured them.
     """
     if not isinstance(target, ModelTarget):
         raise TypeError("target must be a ModelTarget")
@@ -210,4 +238,5 @@ def build_client(
         max_model_len=max_model_len,
         temperature=temperature,
         urlopen=urlopen,
+        default_extra_body=default_extra_body,
     )

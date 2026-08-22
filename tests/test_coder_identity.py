@@ -23,6 +23,8 @@ from defend_coder.identity import (
     default_identity_profile,
     identity_continuity,
 )
+from defend_coder.config import CoderSettings
+from defend_coder.db import CoderDatabase
 from defend_coder.model_config import CoderModelConfig
 
 
@@ -229,3 +231,164 @@ class TestOneRoutingSourceOfTruth:
         decision = ModelSelector().select_auto()
         assert decision.model == "deepseek-v4-flash"
         assert decision.tier.value == "DEEPSEEK"
+
+
+class TestRunIdentityPinning:
+    def test_routing_public_dict_carries_identity_metadata(self):
+        from defend_coder.runs import RunRouting
+
+        routing = RunRouting(
+            run_id=uuid4(),
+            identity_profile_id="defendcoder-identity-v1",
+            identity_version="1",
+            identity_hash="a" * 64,
+        )
+        public = routing.as_public_dict()
+        assert public["identity_profile_id"] == "defendcoder-identity-v1"
+        assert public["identity_version"] == "1"
+        assert public["identity_hash"] == "a" * 64
+
+    def test_create_run_pins_default_identity(self):
+        from fastapi.testclient import TestClient
+
+        from defend_coder.app import build_coder_app
+        from defend_coder.auth import AuthenticatedAccount
+        from defend_coder.credentials import CredentialStore
+
+        from test_coder_router_integration import (
+            FakeAuth,
+            FakeRepository,
+            FakeRunsRepository,
+            FakeRunner,
+            FakeSecretStore,
+            _workspace,
+        )
+        from defend_coder.routing import ProductRuntimeAdapterBoundary
+
+        account = AuthenticatedAccount(
+            account_id=uuid4(),
+            username="owner",
+            email="owner@example.com",
+            role="admin",
+            is_active=True,
+        )
+        workspace = _workspace(account.account_id)
+        run_id = uuid4()
+        runs = FakeRunsRepository(workspace, run_id)
+        runner = FakeRunner(run_id, workspace)
+        app = build_coder_app(
+            settings=CoderSettings(database_url="postgresql://fake:fake@localhost/fake"),
+            db=CoderDatabase("postgresql://fake:fake@localhost/fake"),
+            auth=FakeAuth(account),
+            runtime_status=lambda: {"state": "ready"},
+            repository=FakeRepository(workspace),
+            runs_repository=runs,
+            runner=runner,
+            configured_root=Path("C:/fake/root"),
+            idle_timeout_seconds=0,
+            runtime_adapter=ProductRuntimeAdapterBoundary(),
+            credentials=CredentialStore(
+                store_loader=FakeSecretStore(deepseek_key=True)
+            ),
+        )
+        client = TestClient(app)
+        client.cookies.set("defendcoder_session", "session-token")
+        client.cookies.set("defendcoder_csrf", "csrf-token")
+        response = client.post(
+            f"/v1/workspaces/{workspace.workspace_id}/runs",
+            headers={"X-CSRF-Token": "csrf-token"},
+            json={"prompt": "hello", "requested_mode": "AUTO"},
+        )
+        assert response.status_code == 201
+        identity = runs.identity
+        assert identity["profile_id"] == "defendcoder-identity-v1"
+        assert identity["version"] == "1"
+        assert len(identity["identity_hash"]) == 64
+
+
+class TestDeepSeekThinkingPolicy:
+    def test_thinking_params_absent_by_default(self):
+        from defend_coder.providers import deepseek_thinking_params
+
+        assert deepseek_thinking_params(env={}) is None
+        assert deepseek_thinking_params(env={"DEEPSEEK_THINKING_PARAMS": ""}) is None
+
+    def test_thinking_params_parsed_from_policy(self):
+        from defend_coder.providers import deepseek_thinking_params
+
+        params = deepseek_thinking_params(
+            env={
+                "DEEPSEEK_THINKING_PARAMS": (
+                    '{"thinking": {"enabled": true, "effort": "max"}}'
+                )
+            }
+        )
+        assert params == {"thinking": {"enabled": True, "effort": "max"}}
+
+    def test_malformed_thinking_params_ignored(self):
+        from defend_coder.providers import deepseek_thinking_params
+
+        assert (
+            deepseek_thinking_params(
+                env={"DEEPSEEK_THINKING_PARAMS": "{not json"}
+            )
+            is None
+        )
+
+    def test_client_merges_configured_extra_body(self):
+        import json as _json
+
+        from defend_coder.providers import build_client, deepseek_target
+
+        class _Capture:
+            def __init__(self):
+                self.bodies = []
+
+            def __call__(self, request, timeout=None):
+                self.bodies.append(json.loads(request.data))
+                return _Resp(
+                    _json.dumps(
+                        {
+                            "choices": [
+                                {
+                                    "message": {"role": "assistant", "content": "ok"},
+                                    "finish_reason": "stop",
+                                }
+                            ],
+                            "usage": {},
+                        }
+                    ).encode()
+                )
+
+        class _Resp:
+            def __init__(self, body):
+                self.status = 200
+                self._body = body
+
+            def read(self):
+                return self._body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return None
+
+        capture = _Capture()
+        target = deepseek_target(
+            env={"DEEPSEEK_API_KEY": "sk-fake"}
+        )
+        client = build_client(
+            target,
+            api_key="sk-fake",
+            urlopen=capture,
+            default_extra_body={"thinking": {"enabled": True, "effort": "max"}},
+        )
+        client.chat([{"role": "user", "content": "hi"}])
+        payload = capture.bodies[0]
+        assert payload["thinking"] == {"enabled": True, "effort": "max"}
+        # Without configuration, nothing extra is sent.
+        capture.bodies.clear()
+        plain = build_client(target, api_key="sk-fake", urlopen=capture)
+        plain.chat([{"role": "user", "content": "hi"}])
+        assert "thinking" not in capture.bodies[0]

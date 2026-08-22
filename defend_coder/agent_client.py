@@ -158,6 +158,7 @@ class AgentChatClient:
         temperature: float = 0.3,
         urlopen: Any = None,
         clock: Callable[[], float] = time.monotonic,
+        default_extra_body: dict[str, Any] | None = None,
     ) -> None:
         if not isinstance(config, CoderModelConfig):
             raise TypeError("config must be a CoderModelConfig")
@@ -183,6 +184,9 @@ class AgentChatClient:
         self._max_tokens = max(1, int(max_tokens))
         self._max_model_len = max(64, int(max_model_len))
         self._temperature = float(temperature)
+        self._default_extra_body = (
+            dict(default_extra_body) if default_extra_body else None
+        )
         if urlopen is None:
             self._urlopen = _HttpClientTransport(self._connect_timeout)
         else:
@@ -317,6 +321,11 @@ class AgentChatClient:
             "temperature": self._temperature,
             "max_tokens": max_tokens,
         }
+        # Provider-specific protocol params (e.g. DeepSeek thinking effort)
+        # are injected ONLY when explicitly configured — never blindly, so
+        # an unsupported parameter cannot break a live provider.
+        if self._default_extra_body:
+            payload.update(self._default_extra_body)
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"

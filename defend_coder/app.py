@@ -738,6 +738,13 @@ def build_coder_app(
                 else "AUTO_DEFAULT"
             ),
         )
+        identity = default_identity_profile()
+        runs_repository.set_run_identity(
+            run.run_id,
+            profile_id=identity.profile_id,
+            version=identity.version,
+            identity_hash=identity.hash,
+        )
 
         # ONLY NOW start execution on the persisted route.
         runner.start_existing(

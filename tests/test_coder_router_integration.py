@@ -102,6 +102,14 @@ class FakeRunsRepository:
     def update_run_status(self, run_id, *, status, error=None, reason="unknown"):
         return None
 
+    def set_run_identity(self, run_id, *, profile_id, version, identity_hash):
+        self.identity = {
+            "profile_id": profile_id,
+            "version": version,
+            "identity_hash": identity_hash,
+        }
+        return None
+
     @staticmethod
     def _run(workspace):
         from defend_coder.runs import RunRecord

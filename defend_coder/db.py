@@ -26,6 +26,11 @@ _MIGRATIONS = (
         Path(__file__).with_name("migrations")
         / "0007_run_escalation_phase.sql",
     ),
+    (
+        8,
+        Path(__file__).with_name("migrations")
+        / "0008_run_identity.sql",
+    ),
 )
 
 
