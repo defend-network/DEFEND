@@ -74,3 +74,56 @@ def test_default_records_are_stopped(tmp_path):
         "scs-ai",
     }
     assert all(record.state == "stopped" for record in records.values())
+
+
+def test_reconcile_clears_stale_retained_instance(tmp_path):
+    registry = ProductRuntimeRegistry(tmp_path / "product-runtime.json")
+    registry.update("defend-ai", state="stopped_retained", instance_id=48403815)
+    cleared = registry.reconcile_instance(
+        "defend-ai", lambda instance_id: False
+    )
+    record = registry.load()["defend-ai"]
+    assert cleared is True
+    assert record.instance_id is None
+    assert record.state == "stopped"
+    assert record.provider_instance_state == "missing"
+
+
+def test_reconcile_keeps_retained_instance_that_still_exists(tmp_path):
+    registry = ProductRuntimeRegistry(tmp_path / "product-runtime.json")
+    registry.update("defend-ai", state="stopped_retained", instance_id=48403815)
+    cleared = registry.reconcile_instance(
+        "defend-ai", lambda instance_id: True
+    )
+    record = registry.load()["defend-ai"]
+    assert cleared is False
+    assert record.instance_id == 48403815
+    assert record.state == "stopped_retained"
+
+
+def test_record_stopped_is_retained_only_when_instance_known(tmp_path):
+    registry = ProductRuntimeRegistry(tmp_path / "product-runtime.json")
+    registry.update("defend-ai", instance_id=48403815)
+    registry.record_stopped("defend-ai")
+    assert registry.load()["defend-ai"].state == "stopped_retained"
+
+    registry.update("defendcoder", instance_id=None)
+    registry.record_stopped("defendcoder")
+    assert registry.load()["defendcoder"].state == "stopped"
+
+
+def test_record_destroyed_requires_exact_id_and_clears_instance(tmp_path):
+    registry = ProductRuntimeRegistry(tmp_path / "product-runtime.json")
+    registry.update("defend-ai", state="stopped_retained", instance_id=48403815)
+    try:
+        registry.record_destroyed("defend-ai", 999)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("destroy with wrong instance ID must be rejected")
+
+    registry.record_destroyed("defend-ai", 48403815)
+    record = registry.load()["defend-ai"]
+    assert record.instance_id is None
+    assert record.state == "stopped"
+    assert record.provider_instance_state == "destroyed"

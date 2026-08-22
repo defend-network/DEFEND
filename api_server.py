@@ -107,6 +107,49 @@ class ChatOut(BaseModel):
 
 
 
+def _execution_summary(execution) -> dict[str, Any] | None:
+    """Non-sensitive execution trace: tool names, statuses, error codes, latency.
+
+    Tool arguments and result payloads are intentionally omitted (redacted).
+    """
+    if execution is None:
+        return None
+    try:
+        steps: list[dict[str, Any]] = []
+        for step_id, step in (execution.steps or {}).items():
+            latency_ms: float | None = None
+            if step.started_at is not None and step.finished_at is not None:
+                latency_ms = round(
+                    (step.finished_at - step.started_at).total_seconds() * 1000, 1
+                )
+            error_code = None
+            ok = None
+            if step.tool_result is not None:
+                ok = bool(step.tool_result.ok)
+                err = step.tool_result.error
+                if err is not None:
+                    error_code = getattr(getattr(err, "code", None), "value", None)
+            steps.append(
+                {
+                    "step_id": step_id,
+                    "tool_name": step.tool_name,
+                    "status": getattr(step.status, "value", str(step.status)),
+                    "attempts": step.attempts,
+                    "ok": ok,
+                    "error_code": error_code,
+                    "latency_ms": latency_ms,
+                }
+            )
+        return {
+            "plan_status": getattr(execution.status, "value", str(execution.status)),
+            "tool_calls": execution.tool_calls,
+            "cost_usd": round(float(execution.cost_usd or 0.0), 6),
+            "steps": steps,
+        }
+    except Exception:
+        return None
+
+
 def _pack_response(resp) -> dict[str, Any]:
     meta = resp.metadata or {}
     sources: list[dict[str, Any]] = []
@@ -130,6 +173,7 @@ def _pack_response(resp) -> dict[str, Any]:
         "recovery_attempts": meta.get("recovery_attempts"),
         "sources": sources,
         "metadata": meta,
+        "execution": _execution_summary(getattr(resp, "plan_execution", None)),
         "status": "done",
         "job_id": None,
     }

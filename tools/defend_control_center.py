@@ -45,6 +45,38 @@ class _Runtime:
     coder_plane: object | None = None
     coder_fingerprint_confirmer: object | None = None
     admin_surface: AdminSurfaceController | None = None
+    runtime_registry: ProductRuntimeRegistry | None = None
+
+
+def _provider_instance_exists(secret_source) -> object:
+    """Provider-verified retained-instance truth; never exposes credentials.
+
+    Returns a callable provider_exists(instance_id) -> bool, or None when the
+    provider is not configured so callers can skip reconciliation silently.
+    """
+    try:
+        values = (
+            secret_source.load()
+            if hasattr(secret_source, "load")
+            else secret_source
+        )
+        api_key = values.get("VAST_API_KEY")
+        if not isinstance(api_key, str) or not api_key:
+            return None
+        from defend_control.vast import VastClient
+
+        client = VastClient(api_key)
+
+        def provider_exists(instance_id: int) -> bool:
+            try:
+                client.show_instance(instance_id)
+                return True
+            except Exception:
+                return False
+
+        return provider_exists
+    except Exception:
+        return None
 
 
 class _CoderFingerprintConfirmer:
@@ -675,6 +707,7 @@ def _build_runtime(
             coder_plane=coder_plane,
             coder_fingerprint_confirmer=confirmer,
             admin_surface=admin_surface,
+            runtime_registry=runtime_registry,
         )
     except Exception:
         try:
@@ -725,6 +758,19 @@ def run_control_center() -> None:
         secret_store=secret_store,
         build_runtime=_build_runtime,
     )
+
+    # Reconcile retained-instance truth at launch: a retained provider instance
+    # that no longer exists must never be shown as STOPPED_RETAINED.
+    provider_exists = _provider_instance_exists(secret_store)
+    registry = getattr(runtime, "runtime_registry", None)
+    if provider_exists is not None and registry is not None:
+        records = registry.load()
+        for product_id, record in records.items():
+            if record.instance_id is not None:
+                try:
+                    registry.reconcile_instance(product_id, provider_exists)
+                except Exception:
+                    pass
 
     def surface_warning(error: Exception) -> None:
         messagebox.showwarning(

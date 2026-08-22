@@ -260,12 +260,32 @@ class ControlPlane:
 
         # Calculator: only clear math, not "what is the rate"
         calc_markers = ("calculate", "how much is", "math expression", " * ", " + ", " - ", " / ")
-        if any(k in msg for k in calc_markers) or (
+        has_calculation = any(k in msg for k in calc_markers) or (
             re.search(r"\b\d+\s*[\*\+\-\/]\s*\d+\b", msg) is not None
-        ):
+        )
+        time_markers = (
+            "what time",
+            "time is it",
+            "utc now",
+            "current time",
+            "today's date",
+            "today date",
+            "date and time",
+            "time tool",
+            "clock",
+        )
+        has_time = any(k in msg for k in time_markers)
+        has_sequence = any(
+            k in msg for k in ("first", "then", "next", "after that", "followed by")
+        )
+        # Route explicit multi-intent requests to the planner before the
+        # single-tool shortcuts consume the first recognizable intent.
+        if has_calculation and has_time and has_sequence:
+            return RouteDecision(route=Route.COMPLEX, reason_code="multi_tool_request")
+        if has_calculation:
             return RouteDecision(route=Route.SINGLE_TOOL, reason_code="calculation")
 
-        if any(k in msg for k in ["what time", "time is it", "utc now", "current time"]):
+        if has_time:
             return RouteDecision(route=Route.SINGLE_TOOL, reason_code="time")
 
         if any(k in msg for k in ["search the web", "fetch url", "read document"]):
@@ -1297,7 +1317,10 @@ class ControlPlane:
             get_system_prompt()
             + "\n\nYou are the tool-selection component of DEFEND-AI.\n"
             "Decide whether a single tool is needed. Return SingleToolDecision only.\n"
-            "Prefer direct answers when tools are unnecessary."
+            "Prefer direct answers when tools are unnecessary.\n"
+            "Choose tool names and arguments ONLY from the available tools below.\n\n"
+            "Available tools:\n"
+            + json.dumps(available, ensure_ascii=False)
         )
 
         messages = [
@@ -1341,7 +1364,10 @@ class ControlPlane:
             "Break the user request into a minimal sequence of tool calls if tools are needed.\n"
             "Return a ProposedPlan. Prefer the smallest number of steps that achieves the objective.\n"
             "Use depends_on when one step needs the output of a previous step.\n"
-            "If no tools are needed, return a plan with an empty steps list."
+            "If no tools are needed, return a plan with an empty steps list.\n"
+            "Choose tool names and arguments ONLY from the available tools below.\n\n"
+            "Available tools:\n"
+            + json.dumps(available, ensure_ascii=False)
         )
 
         messages = [

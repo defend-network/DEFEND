@@ -11,6 +11,7 @@ separate, owner-confirmed action and never happens automatically.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 import json
@@ -37,6 +38,19 @@ PRODUCT_API_PORTS: dict[str, int] = {
 }
 
 PRODUCT_IDS = ("defend-ai", "defendcoder", "defendmarkets", "scs-ai")
+
+# Explicit lifecycle states. STOPPED_RETAINED means a provider instance is
+# retained and must NEVER be reported for a nonexistent resource.
+STATE_NOT_CONFIGURED = "not_configured"
+STATE_STOPPED = "stopped"
+STATE_STOPPED_RETAINED = "stopped_retained"
+STATE_PROVISIONING = "provisioning"
+STATE_STARTING = "starting"
+STATE_READY = "ready"
+STATE_DEGRADED = "degraded"
+STATE_STOPPING = "stopping"
+STATE_FAILED = "failed"
+STATE_DESTROYED = "destroyed"
 
 
 def utc_now() -> str:
@@ -130,3 +144,72 @@ class ProductRuntimeRegistry:
         record.mark_activity()
         self.save(records)
         return record
+
+    def reconcile_instance(
+        self,
+        product_id: str,
+        provider_exists: Callable[[int], bool],
+    ) -> bool:
+        """Reconcile retained-instance truth against the provider.
+
+        If the registry references a provider instance that no longer exists
+        (destroyed externally), clear the stale reference and mark the product
+        STOPPED. Returns True when a stale reference was cleared.
+        """
+        if product_id not in PRODUCT_IDS:
+            raise ValueError(f"unknown product {product_id!r}")
+        records = self.load()
+        record = records[product_id]
+        instance_id = record.instance_id
+        if instance_id is None:
+            return False
+        try:
+            exists = bool(provider_exists(instance_id))
+        except Exception:
+            return False
+        if exists:
+            return False
+        record.instance_id = None
+        record.gpu = None
+        record.gpu_count = None
+        record.gpu_ram_mb = None
+        record.hourly_compute_cost = None
+        record.retained_storage_cost = None
+        record.provider_instance_state = "missing"
+        record.state = STATE_STOPPED
+        record.last_error = "retained provider instance no longer exists"
+        record.mark_activity()
+        self.save(records)
+        return True
+
+    def record_stopped(self, product_id: str) -> ProductRuntimeRecord:
+        """Mark a product stopped; retained when a provider instance is known."""
+        records = self.load()
+        record = records[product_id]
+        record.state = (
+            STATE_STOPPED_RETAINED if record.instance_id is not None else STATE_STOPPED
+        )
+        record.mark_activity()
+        self.save(records)
+        return record
+
+    def record_destroyed(self, product_id: str, instance_id: int) -> None:
+        """Clear a destroyed instance and mark the product STOPPED."""
+        records = self.load()
+        record = records[product_id]
+        if record.instance_id is not None and record.instance_id != instance_id:
+            raise ValueError(
+                f"destroyed instance {instance_id} does not match retained "
+                f"instance {record.instance_id}"
+            )
+        record.instance_id = None
+        record.gpu = None
+        record.gpu_count = None
+        record.gpu_ram_mb = None
+        record.hourly_compute_cost = None
+        record.retained_storage_cost = None
+        record.provider_instance_state = "destroyed"
+        record.state = STATE_STOPPED
+        record.last_error = None
+        record.mark_activity()
+        self.save(records)

@@ -561,15 +561,47 @@ class DefendService:
                 last_error=f"stop failed ({type(error).__name__})",
             )
         if self._runtime_registry is not None:
-            self._runtime_registry.update(
-                "defend-ai",
-                state="stopped",
-                provider=None,
-                instance_id=None,
-                gpu=None,
-                hourly_compute_cost=None,
-                model_forward_port=PRODUCT_FORWARD_PORTS["defend-ai"],
-                product_api_port=self._api_port,
+            self._runtime_registry.record_stopped("defend-ai")
+        return self.status()
+
+    def destroy(self, confirmed_instance_id: int | None) -> ProductStatus:
+        """Permanently destroy the retained provider instance.
+
+        Never part of normal Stop. Requires the exact retained instance ID and
+        provider-confirmed absence before the registry is cleared.
+        """
+        record = (
+            self._runtime_registry.load().get("defend-ai")
+            if self._runtime_registry is not None
+            else None
+        )
+        retained = record.instance_id if record is not None else None
+        if retained is None or isinstance(confirmed_instance_id, bool):
+            return self._row(
+                state="failed",
+                status_text="No retained instance to destroy",
+                last_error="no retained provider instance",
+            )
+        if type(confirmed_instance_id) is not int or confirmed_instance_id != retained:
+            return self._row(
+                state="failed",
+                status_text="Enter the exact retained instance ID to destroy",
+                last_error="exact instance ID confirmation required",
+            )
+        try:
+            destroy = getattr(self._controller, "stop_and_destroy_vast", None)
+            if not callable(destroy):
+                raise RuntimeError("Vast.ai destruction is not available")
+            self._controller.stop_and_destroy_vast(confirmed_instance_id)
+        except Exception as error:
+            return self._row(
+                state="failed",
+                status_text=f"Destroy failed ({type(error).__name__})",
+                last_error=f"destroy failed ({type(error).__name__})",
+            )
+        if self._runtime_registry is not None:
+            self._runtime_registry.record_destroyed(
+                "defend-ai", confirmed_instance_id
             )
         return self.status()
 
