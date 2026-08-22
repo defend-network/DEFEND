@@ -141,7 +141,7 @@ def build_blueprint(path: Path, *, supply_overrides: dict | None = None) -> Path
     _grid(pdf, page, page_size, label_top="EQUIPMENT SCHEDULE",
           footer="EQUIPMENT SCHEDULE")
     headers = ["TAG", "TYPE", "MANUFACTURER", "MODEL", "SUPPLY CFM", "ESP", "REMARKS"]
-    col_w = [60, 110, 110, 90, 80, 60, 120]
+    col_w = [50, 90, 90, 70, 70, 50, 150]
     rows = [
         ["RTU-5", "RTU", "GREENHECK", "SQ-30", str(overrides.get("RTU-5", 1180)), "0.5", "SERVES WORKOUT STUDIO A"],
         ["RTU-6", "RTU", "GREENHECK", "SQ-30", str(overrides.get("RTU-6", 1240)), "0.5", "SERVES WORKOUT STUDIO B"],
@@ -207,10 +207,37 @@ def build_blueprint(path: Path, *, supply_overrides: dict | None = None) -> Path
     return path
 
 
+def build_raster_blueprint(source_pdf: Path, path: Path, *, dpi: int = 200) -> Path:
+    """Rasterize a blueprint PDF into an image-only PDF (scanned-print look).
+
+    Each source page is rendered to a raster image and embedded so native-text
+    extraction sees nothing; OCR is the only reader. Used for deterministic
+    raster tests and the real-print acceptance.
+    """
+    src = fitz.open(str(source_pdf))
+    out = fitz.open()
+    zoom = dpi / 72.0
+    for page in src:
+        pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom))
+        img_png = pix.tobytes("png")
+        new_page = out.new_page(width=page.rect.width, height=page.rect.height)
+        new_page.insert_image(fitz.Rect(0, 0, page.rect.width, page.rect.height),
+                              stream=img_png)
+    src.close()
+    out.save(str(path))
+    out.close()
+    return path
+
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", default="blueprint_fixture.pdf")
+    parser.add_argument("--raster", default=None,
+                        help="also write a rasterized image-only copy to this path")
     args = parser.parse_args()
-    build_blueprint(Path(args.out))
+    built = build_blueprint(Path(args.out))
     print("wrote", args.out)
+    if args.raster:
+        build_raster_blueprint(built, Path(args.raster))
+        print("wrote", args.raster)

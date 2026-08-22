@@ -45,6 +45,14 @@ def evaluate(basis: dict, ground_truth: dict) -> dict:
     )
     sheet_accuracy = sheet_hits / len(expected_sheets) if expected_sheets else 0.0
 
+    sheet_number_hits = sum(
+        1 for page, (sheet, _ptype) in expected_sheets.items()
+        if _sheet_number_of(basis, page) == sheet
+    )
+    sheet_number_accuracy = (
+        sheet_number_hits / len(expected_sheets) if expected_sheets else 0.0
+    )
+
     # equipment
     expected_equip = ground_truth.get("EXPECTED_EQUIPMENT", {})
     equip_hits = 0
@@ -58,14 +66,26 @@ def evaluate(basis: dict, ground_truth: dict) -> dict:
     # devices
     expected_devices = ground_truth.get("EXPECTED_DEVICES", {})
     actual = {d["device_id"]: d for d in basis["instances"]}
-    tags_hit = sum(1 for tag in expected_devices if tag in actual)
-    tag_exact = tags_hit / len(expected_devices) if expected_devices else 0.0
+    expected_ids = set(expected_devices)
+    found_ids = set(actual)
+    true_pos = len(expected_ids & found_ids)
+    false_pos = len(found_ids - expected_ids)
+    precision = true_pos / len(found_ids) if found_ids else 0.0
+    recall = true_pos / len(expected_ids) if expected_ids else 0.0
 
     cfm_hit = sum(
         1 for tag, attrs in expected_devices.items()
         if tag in actual and actual[tag].get("design_cfm") == attrs["cfm"]
     )
     cfm_exact = cfm_hit / len(expected_devices) if expected_devices else 0.0
+
+    # FALSE_CFM_RATE: autofilled CFM that is present but wrong
+    false_cfm = sum(
+        1 for tag, attrs in expected_devices.items()
+        if tag in actual and actual[tag].get("design_cfm") is not None
+        and actual[tag].get("design_cfm") != attrs["cfm"]
+    )
+    false_cfm_rate = false_cfm / len(expected_devices) if expected_devices else 0.0
 
     size_hit = sum(
         1 for tag, attrs in expected_devices.items()
@@ -81,13 +101,20 @@ def evaluate(basis: dict, ground_truth: dict) -> dict:
 
     device_count = len(expected_devices)
     found_count = len(actual)
-    extra = found_count - device_count
-    # extra instances are false positives (count against, but not double-punish)
-    false_facts = extra + sum(
-        1 for d in actual.values()
-        if d.get("design_cfm") is not None and d["device_id"] not in expected_devices
+    # UNSUPPORTED_AUTOFILL: expected device with design CFM absent (abstained)
+    unsupported = sum(
+        1 for tag in expected_devices
+        if tag in actual and actual[tag].get("design_cfm") is None
     )
-    false_fact_rate = false_facts / max(1, found_count)
+    unsupported_autofill = unsupported / len(expected_devices) if expected_devices else 0.0
+
+    # REVIEW_REQUIRED_RATE: uncertain/conflict numeric states that abstained
+    review = sum(
+        1 for tag in expected_devices
+        if tag in actual and actual[tag].get("numeric_status") in (
+            "REVIEW_REQUIRED", "CONFLICT", "UNREADABLE", "LOW")
+    )
+    review_required_rate = review / len(expected_devices) if expected_devices else 0.0
 
     # design totals (supply per room)
     expected_totals = ground_truth.get("EXPECTED_SUPPLY_TOTALS", {})
@@ -103,31 +130,37 @@ def evaluate(basis: dict, ground_truth: dict) -> dict:
             total_exact += 1
     total_exactness = total_exact / len(expected_totals) if expected_totals else 0.0
 
-    unsupported = sum(
-        1 for tag in expected_devices
-        if tag in actual and actual[tag].get("design_cfm") is None
-    )
-    unsupported_autofill = unsupported / len(expected_devices) if expected_devices else 0.0
-
     return {
         "DEVICES_EXPECTED": device_count,
         "DEVICES_FOUND": found_count,
         "SHEET_CLASSIFICATION_ACCURACY": round(sheet_accuracy, 4),
+        "SHEET_NUMBER_ACCURACY": round(sheet_number_accuracy, 4),
         "SCHEDULE_ROW_EXTRACTION_ACCURACY": round(equipment_accuracy, 4),
-        "DEVICE_TAG_EXACT_MATCH": round(tag_exact, 4),
+        "DEVICE_TAG_PRECISION": round(precision, 4),
+        "DEVICE_TAG_RECALL": round(recall, 4),
         "CFM_EXACT_MATCH": round(cfm_exact, 4),
+        "FALSE_CFM_RATE": round(false_cfm_rate, 4),
         "SIZE_EXACT_MATCH": round(size_exact, 4),
         "ROOM_ASSOCIATION_ACCURACY": round(room_accuracy, 4),
-        "DESIGN_TOTAL_EXACTNESS": round(total_exactness, 4),
-        "FALSE_FACT_RATE": round(false_fact_rate, 4),
+        "DESIGN_TOTAL_EXACT_MATCH": round(total_exactness, 4),
         "UNSUPPORTED_AUTOFILL_RATE": round(unsupported_autofill, 4),
+        "REVIEW_REQUIRED_RATE": round(review_required_rate, 4),
     }
+
+
+def _sheet_number_of(basis: dict, page_number: int) -> str | None:
+    for entry in basis.get("sheet_classification", []):
+        if entry.get("page") == page_number:
+            return entry.get("sheet_number")
+    return None
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--fixture",
                         default=r"C:\SCS_DATA\corpus\fixtures\blueprint_fixture.pdf")
+    parser.add_argument("--mode", choices=["native", "raster", "auto"], default="auto")
+    parser.add_argument("--dpi", type=int, default=200)
     parser.add_argument("--out", default=None)
     args = parser.parse_args()
     fixture = Path(args.fixture)
@@ -147,9 +180,19 @@ def main() -> int:
         "EXPECTED_DEVICES": EXPECTED_DEVICES,
         "EXPECTED_SUPPLY_TOTALS": EXPECTED_SUPPLY_TOTALS,
     }
-    basis = run_document(fixture)
+    import tempfile
+    from scs_reports.blueprint_raster import raster_run, run_blueprint
+    from scs_reports.plans import run_document
+
+    cache = Path(tempfile.mkdtemp(prefix="scs_bp_bench_"))
+    if args.mode == "native":
+        basis = run_document(fixture)
+    elif args.mode == "raster":
+        basis = raster_run(fixture, dpi=args.dpi, cache_dir=cache)
+    else:
+        basis = run_blueprint(fixture, dpi=args.dpi, cache_dir=cache)
     metrics = evaluate(basis, ground_truth)
-    print("Blueprint benchmark")
+    print(f"Blueprint benchmark ({args.mode}, dpi={args.dpi})")
     for key, value in metrics.items():
         print(f"  {key:36s} {value}")
     if args.out:

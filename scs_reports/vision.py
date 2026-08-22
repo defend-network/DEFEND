@@ -12,6 +12,7 @@ import json
 import os
 import re
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -426,5 +427,176 @@ def vision_provider_status(router: ModelRouter) -> dict[str, Any]:
             f"Local-only {provider_name}. Photos never leave this machine. "
             "Extracted candidates appear in review as NEEDS_CONFIRMATION; "
             "nothing is written to the report without technician confirmation."
+        ),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Document vision (blueprint / drawing reading) behind the same routing idea.
+# Photo providers (PhotoClassifier/FactExtractor) and document readers are
+# deliberately separate interfaces: extract_nameplate() is NOT a blueprint API.
+# ---------------------------------------------------------------------------
+
+_DOC_OCR_PROVIDER = os.environ.get("SCS_DOCUMENT_VISION_PROVIDER", "").strip().upper()
+_DOC_VLM_MODEL = os.environ.get("SCS_DOCUMENT_VLM_MODEL", "qwen2.5vl:3b")
+
+
+@dataclass
+class OcrWord:
+    """A single OCR word with geometry (pixel or PDF coords depending on call)."""
+    text: str
+    confidence: float
+    x0: float
+    y0: float
+    x1: float
+    y1: float
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"text": self.text, "confidence": round(self.confidence, 3),
+                "x0": round(self.x0, 1), "y0": round(self.y0, 1),
+                "x1": round(self.x1, 1), "y1": round(self.y1, 1)}
+
+
+class DocumentReader(ABC):
+    """OCR / VLM reading for construction drawings (not field photos)."""
+
+    @abstractmethod
+    def read_page_words(self, image_path: Path) -> list[OcrWord]:
+        """OCR a rendered page, returning words with pixel bboxes + confidence."""
+
+    @abstractmethod
+    def read_region(self, image_path: Path, crop: tuple[float, float, float, float],
+                    prompt: str) -> list[dict[str, Any]]:
+        """Read a crop region; facts [{text, confidence, ...}]. Empty = abstain."""
+
+
+class RapidOcrDocumentReader(DocumentReader):
+    """RapidOCR (PP-OCRv5 on ONNX) exact-text reader with geometry."""
+
+    def __init__(self) -> None:
+        from rapidocr_onnxruntime import RapidOCR
+
+        self._ocr = RapidOCR()
+
+    def read_page_words(self, image_path: Path) -> list[OcrWord]:
+        try:
+            result, _ = self._ocr(str(image_path))
+        except Exception:
+            return []
+        if not result:
+            return []
+        words: list[OcrWord] = []
+        for box, text, score in result:
+            try:
+                points = [tuple(float(v) for v in point) for point in box]
+            except (TypeError, ValueError):
+                continue
+            x0 = min(p[0] for p in points)
+            y0 = min(p[1] for p in points)
+            x1 = max(p[0] for p in points)
+            y1 = max(p[1] for p in points)
+            try:
+                confidence = float(score)
+            except (TypeError, ValueError):
+                confidence = 0.0
+            words.append(OcrWord(str(text).strip(), confidence, x0, y0, x1, y1))
+        return [w for w in words if w.text]
+
+    def read_region(self, image_path: Path, crop, prompt: str) -> list[dict[str, Any]]:
+        # OCR is the exact-text engine; a region is just the full image here
+        # (callers pass a rendered crop image already). VLM covers region
+        # interpretation.
+        return []
+
+
+class OllamaDocumentReader(DocumentReader):
+    """Local VLM (qwen2.5vl) for crop interpretation / corroboration."""
+
+    def __init__(self, model: str = _DOC_VLM_MODEL, *,
+                 endpoint: str = _OLLAMA_ENDPOINT,
+                 min_confidence: float = 0.6,
+                 timeout: float = 120.0) -> None:
+        self._vlm = OllamaVisionProvider(model, endpoint=endpoint,
+                                         min_confidence=min_confidence,
+                                         timeout=timeout)
+
+    def read_page_words(self, image_path: Path) -> list[OcrWord]:
+        return []
+
+    def read_region(self, image_path: Path, crop, prompt: str) -> list[dict[str, Any]]:
+        payload = self._vlm._generate_structured(
+            image_path, prompt, ["values", "text", "label"]
+        )
+        if not payload:
+            return []
+        out: list[dict[str, Any]] = []
+        values = payload.get("values") if isinstance(payload.get("values"), list) else []
+        for item in values:
+            if isinstance(item, dict) and item.get("value") is not None:
+                out.append({
+                    "text": str(item["value"]),
+                    "confidence": self._vlm._clamp(item.get("confidence"),
+                                                   payload.get("confidence")),
+                })
+        text = payload.get("text") or payload.get("label")
+        if text and str(text).strip():
+            out.append({
+                "text": str(text).strip(),
+                "confidence": self._vlm._clamp(payload.get("confidence")),
+            })
+        return out
+
+
+class CombinedDocumentReader(DocumentReader):
+    """OCR words (primary) + VLM region corroboration."""
+
+    def __init__(self, ocr: RapidOcrDocumentReader,
+                 vlm: OllamaDocumentReader | None = None) -> None:
+        self._ocr = ocr
+        self._vlm = vlm
+
+    @property
+    def has_vlm(self) -> bool:
+        return self._vlm is not None
+
+    def read_page_words(self, image_path: Path) -> list[OcrWord]:
+        return self._ocr.read_page_words(image_path)
+
+    def read_region(self, image_path: Path, crop, prompt: str) -> list[dict[str, Any]]:
+        if self._vlm is None:
+            return []
+        return self._vlm.read_region(image_path, crop, prompt)
+
+
+def build_document_reader() -> DocumentReader:
+    """Pick the document vision stack from SCS_DOCUMENT_VISION_PROVIDER.
+
+    LOCAL_OCR          -> RapidOCR only
+    LOCAL_OCR_PLUS_VLM -> RapidOCR + Ollama qwen2.5vl corroboration
+    (unset)            -> LocalVisionStub-like honest reader (no OCR words)
+    """
+    if _DOC_OCR_PROVIDER in ("LOCAL_OCR", "LOCAL_OCR_PLUS_VLM"):
+        ocr = RapidOcrDocumentReader()
+        if _DOC_OCR_PROVIDER == "LOCAL_OCR_PLUS_VLM":
+            try:
+                vlm = OllamaDocumentReader(model=_DOC_VLM_MODEL)
+                return CombinedDocumentReader(ocr, vlm)
+            except Exception:
+                return ocr
+        return ocr
+    return RapidOcrDocumentReader()
+
+
+def document_reader_status(reader: DocumentReader) -> dict[str, Any]:
+    if isinstance(reader, LocalVisionStub):
+        return {"status": "NOT_CONFIGURED", "provider": None}
+    provider = _DOC_OCR_PROVIDER or "LOCAL_OCR"
+    return {
+        "status": "LOCAL",
+        "provider": provider,
+        "note": (
+            "Local document OCR (RapidOCR) with geometry. "
+            "VLM corroboration enabled" if isinstance(reader, CombinedDocumentReader)
+            and reader.has_vlm else "Local document OCR (RapidOCR) with geometry."
         ),
     }

@@ -361,10 +361,11 @@ def test_blueprint_benchmark_metrics(basis):
     metrics = benchmark_evaluate(basis, ground_truth)
     assert metrics["CFM_EXACT_MATCH"] == 1.0
     assert metrics["SIZE_EXACT_MATCH"] == 1.0
-    assert metrics["DEVICE_TAG_EXACT_MATCH"] == 1.0
+    assert metrics["DEVICE_TAG_RECALL"] == 1.0
+    assert metrics["DEVICE_TAG_PRECISION"] == 1.0
     assert metrics["ROOM_ASSOCIATION_ACCURACY"] == 1.0
-    assert metrics["DESIGN_TOTAL_EXACTNESS"] == 1.0
-    assert metrics["FALSE_FACT_RATE"] == 0.0
+    assert metrics["DESIGN_TOTAL_EXACT_MATCH"] == 1.0
+    assert metrics["FALSE_CFM_RATE"] == 0.0
 
 
 def test_no_customer_pdf_committed():

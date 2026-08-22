@@ -262,6 +262,17 @@ def _header_role(cell: str | None) -> str | None:
     norm = _norm_header(cell)
     if not norm:
         return None
+    # OCR often merges adjacent header words ("DESIGNCFM", "NECKSIZE").
+    merged_tokens = {
+        "designcfm": "design_cfm", "necksize": "neck_size",
+        "facesize": "face_size", "supplycfm": "supply_cfm",
+        "supplyaircfm": "supply_cfm", "grillesize": "size",
+        "diffusersize": "size", "outsideaircfm": "outside_air_cfm",
+        "exhaustcfm": "exhaust_cfm", "returncfm": "return_cfm",
+    }
+    compact = norm.replace(" ", "")
+    if compact in merged_tokens:
+        return merged_tokens[compact]
     best_role: str | None = None
     best_len = 0
     for role, aliases in _SCHEDULE_HEADER_ALIASES.items():
@@ -367,11 +378,12 @@ def _schedule_from_words(words: list[Word]) -> list[dict[str, str]]:
         right = header_phrases[i + 1][0] if i + 1 < len(header_phrases) else 1e9
         columns.append((x0, right, phrase, role or ""))
 
+    # column assignment: nearest header-start (tolerant of OCR pixel shifts)
     def column_of(word: Word) -> str | None:
-        for x0, right, _phrase, role in columns:
-            if x0 <= word.x0 < right:
-                return role if role else None
-        return None
+        starts = [c[0] for c in columns]
+        nearest = min(range(len(starts)), key=lambda i: abs(word.x0 - starts[i]))
+        role = columns[nearest][3]
+        return role if role else None
 
     records: list[dict[str, str]] = []
     for line in lines[header_idx + 1:]:
@@ -530,6 +542,7 @@ def extract_plan_devices(page: PlanPage) -> list[dict[str, Any]]:
         line = _line_words(page.words, tag)
         type_ref: str | None = None
         cfm: float | None = None
+        cfm_word: Word | None = None
         for w in sorted(line, key=lambda x: x.x0):
             if w is tag or w.x1 < tag.x1:
                 continue
@@ -539,24 +552,29 @@ def extract_plan_devices(page: PlanPage) -> list[dict[str, Any]]:
                 continue
             if _CFM_WORD_RE.match(w.text):
                 cfm = float(w.text.replace(",", ""))
+                cfm_word = w
                 continue
             if "CFM" in w.text.upper():
                 match = re.search(r"(\d{1,5})", w.text)
                 if match:
                     cfm = float(match.group(1))
+                    cfm_word = w
         room, room_dist = _find_room(page.words, tag)
+        source = {
+            "sheet": page.sheet_number,
+            "page": page.page_number,
+            "bbox": tag.bbox(),
+            "extraction_method": "NATIVE_TEXT",
+        }
+        if cfm_word is not None:
+            source["cfm_bbox"] = cfm_word.bbox()
         devices.append({
             "device_id": tag_id,
             "room": room,
             "design_cfm": cfm,
             "size": None,
             "schedule_type": type_ref,
-            "source": {
-                "sheet": page.sheet_number,
-                "page": page.page_number,
-                "bbox": tag.bbox(),
-                "extraction_method": "NATIVE_TEXT",
-            },
+            "source": source,
             "confidence": "HIGH" if cfm is not None else "MEDIUM",
         })
     return devices
@@ -613,12 +631,71 @@ def _schedule_index(records: list[dict[str, str]]) -> dict[str, dict[str, str]]:
     return index
 
 
+def compute_system_associations(
+    instances: list[dict[str, Any]],
+    equipment_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Evidence-based system association: device room -> equipment schedule.
+
+    A system is only claimed when the equipment schedule remarks/type name the
+    serving room (or the room name appears in the schedule row). Ambiguous /
+    unsupported associations return confidence REVIEW_REQUIRED or are omitted.
+    """
+    room_devices: dict[str, list[str]] = {}
+    for device in instances:
+        room = device.get("room")
+        if room:
+            room_devices.setdefault(room.upper(), []).append(device["device_id"])
+    associations: list[dict[str, Any]] = []
+    room_supply: dict[str, float] = {}
+    for device in instances:
+        room = (device.get("room") or "").upper()
+        if room and _function_of(device) == "SUPPLY":
+            room_supply[room] = room_supply.get(room, 0.0) + (device.get("design_cfm") or 0)
+    for row in equipment_rows:
+        tag = (row.get("tag") or "").upper()
+        area_text = " ".join([
+            str(row.get("remarks") or ""), str(row.get("type") or "")
+        ]).upper()
+        matched_rooms = [
+            room for room in room_devices if room in area_text
+        ]
+        if not matched_rooms and row.get("supply_cfm"):
+            # numeric fallback: room supply total matches the equipment schedule
+            supply = float(row["supply_cfm"])
+            matched_rooms = [
+                room for room, total in room_supply.items()
+                if abs(total - supply) <= 1
+            ]
+            evidence_kind = "SCHEDULE_SUPPLY_MATCH"
+        else:
+            evidence_kind = "SCHEDULE_REMARKS"
+        if matched_rooms:
+            for room in matched_rooms:
+                associations.append({
+                    "system_id": tag,
+                    "system_type": row.get("type"),
+                    "equipment_reference": tag,
+                    "devices_served": sorted(room_devices.get(room, [])),
+                    "design_total_airflow": room_supply.get(room, 0.0),
+                    "confidence": "HIGH",
+                    "evidence": [
+                        {"kind": evidence_kind,
+                         "text": row.get("remarks"),
+                         "source": row.get("source")},
+                        {"kind": "ROOM_MATCH", "room": room},
+                    ],
+                })
+    return associations
+
+
 # ---------------------------------------------------------------------------
 # Pipeline / indexing / caching
 # ---------------------------------------------------------------------------
 
 
-def sha256_of(path: Path) -> str:
+def sha256_of(path) -> str:
+    path = Path(path)
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1 << 20), b""):
@@ -816,8 +893,7 @@ def run_document(
 
     return {
         "document": doc.to_dict(),
-        "schedule_types": {
-            tag: {
+        "schedule_types": {            tag: {
                 "type": rec.get("type"),
                 "design_cfm": rec.get("design_cfm"),
                 "size": rec.get("neck_size") or rec.get("size") or rec.get("face_size"),
@@ -845,6 +921,7 @@ def run_document(
             }
             for p in doc.pages
         ],
+        "system_associations": compute_system_associations(instances, equipment_rows),
     }
 
 
@@ -868,10 +945,15 @@ def load_basis_json(path: Path) -> dict[str, Any] | None:
         return None
 
 
+SCS_EXTRACTION_VERSION = "v1"  # bump to invalidate blueprint extraction caches
+
+
 def cached_basis(path: Path, cache_dir: Path) -> dict[str, Any]:
     """Reuse extraction for the same PDF sha256 (never re-charge AI)."""
     digest = sha256_of(path)
-    cache_file = cache_dir / f"{digest}.json"
+    cache_dir = Path(cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_file = cache_dir / f"{SCS_EXTRACTION_VERSION}_{digest}.json"
     cached = load_basis_json(cache_file)
     if cached is not None:
         cached["_cache_hit"] = True

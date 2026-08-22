@@ -29,6 +29,11 @@ from urllib.parse import parse_qs, unquote, urlparse
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scs_reports.completeness import evaluate, ready_to_leave
+from scs_reports.corrections import (
+    apply_known_correction,
+    load_corrections,
+    save_correction,
+)
 from scs_reports.composer import Composer
 from scs_reports.nl_parse import merge_capture, parse_measurements
 from scs_reports.planner import plan_for
@@ -59,6 +64,12 @@ from scs_reports.plans import (
     index_pdf,
     run_document,
     sha256_of,
+)
+from scs_reports.blueprint_raster import cached_blueprint
+from scs_reports.vision import (
+    build_document_reader,
+    document_reader_status,
+    vision_provider_status,
 )
 
 SCOPE_MARKERS = ("scope", "verification", "verifying", "airflow", "balance",
@@ -323,7 +334,9 @@ class CopilotServer(BaseHTTPRequestHandler):
                 })
             unchanged, _ = self.masters.verify_unchanged()
             self._send_json({"jobs": jobs, "masters_verified": unchanged,
-                             "workspace": str(self.paths.root)})
+                             "workspace": str(self.paths.root),
+                             "document_vision": document_reader_status(
+                                 build_document_reader())})
         elif path.startswith("/api/jobs/"):
             parts = path[len("/api/jobs/"):].split("/")
             if len(parts) == 2 and parts[1] == "download":
@@ -569,22 +582,31 @@ class CopilotServer(BaseHTTPRequestHandler):
         if not docs:
             self._send_json({"error": "upload plans first"}, 400)
             return
+        reader = build_document_reader()
         merged = None
         for doc in docs:
-            basis = cached_basis(
+            basis = cached_blueprint(
                 Path(doc["path"]),
                 self.paths.job_dir(job_id) / "plan_cache",
+                reader,
             )
             basis = {k: v for k, v in basis.items() if k != "_cache_hit"}
             if merged is None:
                 merged = basis
             else:
-                merged["instances"].extend(basis["instances"])
-                merged["equipment"].extend(basis["equipment"])
-                merged["design_totals"].extend(basis["design_totals"])
-                merged["conflicts"].extend(basis["conflicts"])
-                merged["rooms"].extend(basis["rooms"])
-                merged["sheet_classification"].extend(basis["sheet_classification"])
+                from scs_reports.blueprint_raster import merge_basis
+                merged = merge_basis(merged, basis)
+        # re-apply any known owner corrections for this document hash
+        corrections_path = self.paths.job_dir(job_id) / "corrections.json"
+        for device in merged.get("instances", []):
+            known = apply_known_correction(
+                corrections_path,
+                merged["document"].get("sha256", ""),
+                device["device_id"],
+                device["source"].get("sheet"),
+            )
+            if known is not None:
+                device["corrected_value"] = known
         self._save_basis(job_id, merged)
         build_preengineered_record(record, merged)
         self._save(record)
@@ -593,11 +615,44 @@ class CopilotServer(BaseHTTPRequestHandler):
             "preview": preview,
             "design_totals": merged["design_totals"],
             "conflicts": merged["conflicts"],
+            "system_associations": merged.get("system_associations", []),
             "devices": len(merged["instances"]),
             "rooms": merged["rooms"],
             "sheets": merged["sheet_classification"],
             "field_plan": field_test_plan(record),
             "payload": self._job_payload(record),
+        })
+
+    def _action_correct(self, job_id: str):
+        body = self._read_body()
+        device = (body.get("device") or "").strip()
+        if not device or body.get("corrected") is None:
+            self._send_json({"error": "device + corrected required"}, 400)
+            return
+        basis = self._load_basis(job_id)
+        sha = (basis or {}).get("document", {}).get("sha256", "")
+        original = body.get("original")
+        sheet = body.get("sheet")
+        corrections_path = self.paths.job_dir(job_id) / "corrections.json"
+        save_correction(
+            corrections_path,
+            sha256=sha,
+            device=device,
+            original_value=original,
+            corrected_value=body["corrected"],
+            sheet=sheet,
+            page=body.get("page"),
+            bbox=body.get("bbox"),
+            extraction_method=body.get("extraction_method"),
+            corrected_by=body.get("corrected_by") or "owner",
+            reason=body.get("reason"),
+        )
+        self._send_json({
+            "ok": True,
+            "correction": load_corrections(corrections_path).get(
+                f"{sha[:12]}::{sheet or '?'}::{device}"
+            ),
+            "note": "original extraction preserved; correction recorded",
         })
 
     @staticmethod
