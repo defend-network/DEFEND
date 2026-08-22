@@ -909,6 +909,7 @@ class RunRunner:
         phase_max_tokens: dict[str, int] | None = None,
         client_resolver: Callable[[object], AgentChatClient] | None = None,
         proposal_factory: Callable[[object, object], object | None] | None = None,
+        identity_profile: object | None = None,
     ) -> None:
         if not isinstance(client, AgentChatClient):
             raise TypeError("client must be an AgentChatClient")
@@ -918,6 +919,7 @@ class RunRunner:
         self._client = client
         self._client_resolver = client_resolver
         self._proposal_factory = proposal_factory
+        self._identity_profile = identity_profile
         self._toolkit_factory = toolkit_factory
         self._log = log or (lambda _line: None)
         self._max_steps = max(1, min(100, int(max_steps)))
@@ -1047,6 +1049,7 @@ class RunRunner:
                 run_id, record
             ),
             phase_max_tokens=self._phase_max_tokens,
+            identity_profile=self._identity_profile,
         )
         seq_lock = threading.Lock()
         seq_counter = self._repository.max_message_seq(run_id)

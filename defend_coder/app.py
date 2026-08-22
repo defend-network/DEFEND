@@ -21,6 +21,7 @@ from .auth import (
 from .config import CoderSettings
 from .credentials import CredentialStore
 from .db import CoderDatabase
+from .identity import default_identity_profile
 from .providers import (
     NEXT_MODEL,
     SOL_MODEL,
@@ -1071,6 +1072,7 @@ def build_coder_app(
             toolkit=toolkit,
             max_steps=4,
             max_loop_seconds=120.0,
+            identity_profile=default_identity_profile(),
         )
         replies: list[str] = []
 

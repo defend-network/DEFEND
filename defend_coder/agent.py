@@ -13,6 +13,7 @@ from .agent_client import (
     ModelTimeoutError,
     ModelUnavailableError,
 )
+from .identity import DefendCoderIdentityProfile, compose_system_instructions
 from .prompts import SYSTEM_PROMPT, PROMPT_VERSION
 from .telemetry import ModelCallRecord, build_call_record
 from .tools import CoderToolkit
@@ -91,6 +92,7 @@ class CodingAgent:
         cancelled: Callable[[], bool] | None = None,
         telemetry_sink: Callable[[ModelCallRecord], None] | None = None,
         phase_max_tokens: dict[str, int] | None = None,
+        identity_profile: DefendCoderIdentityProfile | None = None,
     ) -> None:
         if not isinstance(client, AgentChatClient):
             raise TypeError("client must be an AgentChatClient")
@@ -109,6 +111,7 @@ class CodingAgent:
         self._is_cancelled = cancelled or (lambda: False)
         self._telemetry_sink = telemetry_sink
         self._phase_max_tokens = self._resolve_phase_budgets(phase_max_tokens)
+        self._identity_profile = identity_profile
 
     def _resolve_phase_budgets(
         self,
@@ -210,8 +213,13 @@ class CodingAgent:
                 reason="invalid_prompt",
             )
 
+        system_prompt = (
+            compose_system_instructions(self._identity_profile)
+            if self._identity_profile is not None
+            else SYSTEM_PROMPT
+        )
         messages: list[dict[str, Any]] = [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt},
         ]
         tool_schemas = self._toolkit.schema()

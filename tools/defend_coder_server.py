@@ -148,6 +148,7 @@ def main() -> None:
     # NO silent legacy fallback: AUTO is DeepSeek V4 Flash, and each run's
     # client is dispatched per-run from its persisted routing.
     from defend_coder.credentials import CredentialStore
+    from defend_coder.identity import default_identity_profile
     from defend_coder.model_config import CoderModelConfig
     from defend_coder.providers import (
         DEFAULT_DEEPSEEK_MODEL,
@@ -245,6 +246,7 @@ def main() -> None:
         ),
         client_resolver=_client_for,
         proposal_factory=_proposal_for,
+        identity_profile=default_identity_profile(),
         toolkit_factory=lambda log_reader: CoderToolkit(
             repository=repository,
             configured_root=settings.workspace_root,
