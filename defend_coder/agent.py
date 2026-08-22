@@ -323,6 +323,13 @@ class CodingAgent:
                         }
                         for call in response.tool_calls
                     ]
+                # Provider protocol state (DeepSeek thinking-mode tool calls):
+                # reasoning_content MUST be replayed internally for a valid
+                # continuation, but it is NEVER written to the visible sink.
+                if response.reasoning_content:
+                    assistant_message["reasoning_content"] = (
+                        response.reasoning_content
+                    )
                 messages.append(assistant_message)
 
                 sink(

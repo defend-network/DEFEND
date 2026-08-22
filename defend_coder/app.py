@@ -341,6 +341,34 @@ def build_coder_app(
             raise HTTPException(status_code=404, detail="run not found")
         return detail
 
+    def _resume_same_run(
+        detail: RunDetail,
+        workspace_id: str,
+        run_id: str,
+        account: AuthenticatedAccount,
+    ) -> None:
+        """Continue the SAME run after an owner escalation choice.
+
+        Persists route change first (done by the caller), transitions to
+        resuming/running, and re-dispatches the worker on the same run_id.
+        The per-run RoutingAgentClient resolves the CURRENT routing before
+        the next generation call, so the approved provider is actually used.
+        """
+        workspace = owned_workspace(account, workspace_id)
+        runs_repository.update_run_phase(UUID(run_id), "resuming")
+        runs_repository.update_run_status(
+            UUID(run_id),
+            status="running",
+            error=None,
+            reason="unknown",
+        )
+        if runner is not None:
+            runner.start_existing(
+                run_id=UUID(run_id),
+                workspace=workspace,
+                prompt=detail.prompt,
+            )
+
     def _resolve_targets_public() -> dict[str, object]:
         return {
             model: target.as_public_dict()
@@ -856,7 +884,7 @@ def build_coder_app(
     ) -> dict[str, object]:
         account = current_account(request)
         _require_owner(account)
-        _owned_run(account, workspace_id, run_id)
+        detail = _owned_run(account, workspace_id, run_id)
         proposals = runs_repository.list_escalation_proposals(UUID(run_id))
         proposal = next(
             (
@@ -896,10 +924,34 @@ def build_coder_app(
                 detail=f"{to_model} is not currently configured",
             )
         if to_tier == ModelTier.NEXT:
-            try:
-                _runtime_adapter.start_runtime("defendcoder", authorize_resume=True)
-            except RuntimeResumeDenied as error:
-                raise HTTPException(status_code=409, detail=str(error)) from None
+            runtime_state = _runtime_adapter.runtime_status("defendcoder")
+            retained = bool(
+                runtime_state.get("instance_id")
+                or runtime_state.get("provider_instance_state")
+                or runtime_state.get("gpu")
+            )
+            if runtime_state.get("state") == "ready":
+                # Reuse the ready runtime.
+                pass
+            elif runtime_state.get("state") == "stopped" and retained:
+                # Resume the retained instance (owner-authorized escalation).
+                try:
+                    _runtime_adapter.start_runtime(
+                        "defendcoder", authorize_resume=True
+                    )
+                except RuntimeResumeDenied as error:
+                    raise HTTPException(status_code=409, detail=str(error)) from None
+            else:
+                # No retained instance: "Approve stronger intelligence" does
+                # NOT authorize renting unknown GPU at any price.
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "PRICE_CONFIRMATION_REQUIRED: no retained Next "
+                        "instance; a new GPU rental requires explicit price "
+                        "approval"
+                    ),
+                )
         now = datetime.now(timezone.utc)
         runs_repository.set_run_routing(
             UUID(run_id),
@@ -919,10 +971,11 @@ def build_coder_app(
             approved_by=account.username,
             approved_at=now,
         )
-        runs_repository.update_run_phase(UUID(run_id), "completed")
+        _resume_same_run(detail, workspace_id, run_id, account)
         return {
             "routing": runs_repository.get_run_routing(UUID(run_id)).as_public_dict(),
             "runtime": _runtime_adapter.runtime_status("defendcoder"),
+            "state": "resuming",
         }
 
     @app.post(
@@ -937,7 +990,7 @@ def build_coder_app(
     ) -> dict[str, object]:
         account = current_account(request)
         _require_owner(account)
-        _owned_run(account, workspace_id, run_id)
+        detail = _owned_run(account, workspace_id, run_id)
         proposals = runs_repository.list_escalation_proposals(UUID(run_id))
         if not any(item["proposal_id"] == proposal_id for item in proposals):
             raise HTTPException(status_code=404, detail="proposal not found")
@@ -946,8 +999,8 @@ def build_coder_app(
             proposal_id,
             status="denied",
         )
-        runs_repository.update_run_phase(UUID(run_id), "failed")
-        return {"status": "denied", "unchanged": True}
+        _resume_same_run(detail, workspace_id, run_id, account)
+        return {"status": "denied", "state": "resuming", "unchanged": False}
 
     @app.get("/v1/admin/model-credentials")
     def model_credentials(request: Request) -> dict[str, object]:

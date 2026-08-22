@@ -64,6 +64,7 @@ _RUN_PHASES = frozenset({
     "failed",
     "cancelled",
     "awaiting_escalation_approval",
+    "resuming",
 })
 
 
@@ -691,6 +692,21 @@ class RunsRepository:
                     ),
                 )
 
+    def max_message_seq(self, run_id: UUID) -> int:
+        """Highest existing message seq for a run (continuation continuity)."""
+        with self._db.connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT COALESCE(MAX(seq), 0) AS seq
+                    FROM coder_run_messages
+                    WHERE run_id = %s
+                    """,
+                    (run_id,),
+                )
+                row = cursor.fetchone()
+        return int(row["seq"]) if row else 0
+
     def get_run_routing(self, run_id: UUID) -> RunRouting | None:
         with self._db.connect() as connection:
             with connection.cursor() as cursor:
@@ -1033,7 +1049,7 @@ class RunRunner:
             phase_max_tokens=self._phase_max_tokens,
         )
         seq_lock = threading.Lock()
-        seq_counter = 0
+        seq_counter = self._repository.max_message_seq(run_id)
         persistence_seconds = 0.0
         persistence_lock = threading.Lock()
 

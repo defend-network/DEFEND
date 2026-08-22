@@ -43,6 +43,10 @@ class AgentChatResponse:
     tool_calls: tuple[ToolCall, ...]
     usage: dict[str, int] | None = None
     finish_reason: str | None = None
+    #: INTERNAL provider protocol state only (DeepSeek thinking-mode tool
+    #: calls MUST replay it on continuation). Never surfaced to the user,
+    #: UI, logs, DB transcript, or telemetry.
+    reasoning_content: str | None = None
 
 
 class _HttpClientTransport:
@@ -270,6 +274,11 @@ class AgentChatClient:
             tool_calls=tuple(tool_calls),
             usage=usage if isinstance(usage, dict) else None,
             finish_reason=finish_reason or None,
+            reasoning_content=(
+                message.get("reasoning_content")
+                if isinstance(message.get("reasoning_content"), str)
+                else None
+            ),
         )
 
     def chat(

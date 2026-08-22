@@ -15,6 +15,7 @@ ALTER TABLE coder_runs
             'completed',
             'failed',
             'cancelled',
-            'awaiting_escalation_approval'
+            'awaiting_escalation_approval',
+            'resuming'
         )
     );
