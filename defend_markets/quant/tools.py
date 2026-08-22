@@ -57,6 +57,12 @@ class GovernedMarketTools:
     def drift_indicators(self) -> dict[str, Any]:
         raise NotImplementedError
 
+    def prediction_outcomes(self, limit: int = 5000) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
+    def confidence_distribution(self) -> dict[str, Any]:
+        raise NotImplementedError
+
     def m5_champion(self) -> dict[str, Any] | None:
         return self._store.champion()
 
@@ -246,6 +252,37 @@ class PostgresMarketTools(GovernedMarketTools):
             "predictions": counts["predictions"],
         }
 
+    def prediction_outcomes(self, limit: int = 5000) -> list[dict[str, Any]]:
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT m5_p_a, actual FROM tt_shadow_evaluation "
+                "WHERE actual IS NOT NULL AND m5_p_a IS NOT NULL "
+                "ORDER BY settled_at DESC LIMIT %s",
+                (max(1, min(limit, 20000)),),
+            )
+            return [
+                {"p": float(row[0]), "actual": float(row[1])}
+                for row in cursor.fetchall()
+            ]
+
+    def confidence_distribution(self) -> dict[str, Any]:
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT count(*), "
+                "count(*) FILTER (WHERE p_a < 0.55), "
+                "count(*) FILTER (WHERE p_a >= 0.55 AND p_a < 0.75), "
+                "count(*) FILTER (WHERE p_a >= 0.75) "
+                "FROM tt_m5_live_predictions WHERE availability = 'AVAILABLE'"
+            )
+            row = cursor.fetchone()
+        total = int(row[0]) if row else 0
+        return {
+            "available": total,
+            "low_confidence_under_0.55": int(row[1]) if row else 0,
+            "mid_confidence_0.55_0.75": int(row[2]) if row else 0,
+            "high_confidence_over_0.75": int(row[3]) if row else 0,
+        }
+
 
 class InMemoryMarketTools(GovernedMarketTools):
     """Fixture-driven tools for tests and the mock runtime."""
@@ -261,6 +298,8 @@ class InMemoryMarketTools(GovernedMarketTools):
         price_observations: int = 0,
         bookmakers_with_prices: int = 0,
         provider_healthy: bool = True,
+        prediction_outcomes: list[dict[str, Any]] | None = None,
+        confidence_distribution: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(store, weights_doc=weights_doc)
         self._events_discovered = events_discovered
@@ -269,6 +308,8 @@ class InMemoryMarketTools(GovernedMarketTools):
         self._price_observations = price_observations
         self._bookmakers_with_prices = bookmakers_with_prices
         self._provider_healthy = provider_healthy
+        self._prediction_outcomes = list(prediction_outcomes or [])
+        self._confidence_distribution = dict(confidence_distribution or {"available": available_predictions})
 
     def current_blocking_layers(self) -> dict[str, Any]:
         if not self._provider_healthy:
@@ -333,3 +374,9 @@ class InMemoryMarketTools(GovernedMarketTools):
             "observations": self._price_observations,
             "predictions": self._available_predictions,
         }
+
+    def prediction_outcomes(self, limit: int = 5000) -> list[dict[str, Any]]:
+        return list(self._prediction_outcomes)
+
+    def confidence_distribution(self) -> dict[str, Any]:
+        return dict(self._confidence_distribution)

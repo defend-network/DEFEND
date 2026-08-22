@@ -19,12 +19,15 @@ from defend_markets.quant.config import (
 )
 from defend_markets.quant.explanation import explain_m5_prediction
 from defend_markets.quant.health import QuantDirectorHealth, detect_health
+from defend_markets.quant.intelligence import QuantIntelligence, collect_monitor_data
 from defend_markets.quant.model_aliases import (
     DEEP_RESEARCH_ALIAS,
+    SOL_ALIAS,
     RUNTIME_ALIAS,
     resolve_runtime_profile,
     runtime_credentials_present,
 )
+from defend_markets.quant.reviews import DailyReview, WeeklyReview
 from defend_markets.quant.research.experiment import (
     ExperimentResult,
     ExperimentRunner,
@@ -108,6 +111,10 @@ class MarketsIntelligenceOrchestrator:
         self._weights_doc = weights_doc
         self._last_trigger_at: datetime | None = None
         self._triggers = SupervisoryTriggers(clock=self._clock)
+        self._intelligence = QuantIntelligence(weights_doc=weights_doc)
+        self._daily_review = DailyReview()
+        self._weekly_review = WeeklyReview()
+        self._approved_expensive = False
         self._health = detect_health(
             initialized=True,
             runtime_model=resolve_runtime_profile(RUNTIME_ALIAS).model,
@@ -119,10 +126,12 @@ class MarketsIntelligenceOrchestrator:
     def health_state(self) -> dict[str, Any]:
         return self._health.to_dict()
 
-    def runtime_profile(self, *, deep: bool = False) -> dict[str, str]:
-        alias = DEEP_RESEARCH_ALIAS if deep else RUNTIME_ALIAS
+    def runtime_profile(self, *, deep: bool = False, sol: bool = False) -> dict[str, str]:
+        if sol:
+            return resolve_runtime_profile(SOL_ALIAS).to_dict()
         if deep and not self._settings.deep_research_allowed:
             return resolve_runtime_profile(RUNTIME_ALIAS).to_dict()
+        alias = DEEP_RESEARCH_ALIAS if deep else RUNTIME_ALIAS
         return resolve_runtime_profile(alias).to_dict()
 
     def live_ai_configured(self) -> bool:
@@ -152,16 +161,18 @@ class MarketsIntelligenceOrchestrator:
             ),
         }
 
-    def chat(self, *, thread_id: int | None, message: str) -> dict[str, Any]:
+    def chat(self, *, thread_id: int | None, message: str, deep: bool = False, sol: bool = False) -> dict[str, Any]:
         if not self._settings.enabled:
             raise RuntimeError("MARKETS_AI_ENABLED is false")
+        profile = self.runtime_profile(deep=deep, sol=sol)
+        if profile.get("requires_approval") == "true" and not self._approved_expensive:
+            raise RuntimeError("owner approval required for expensive Sol profile")
         budget = self._budget_state()
         if budget["blocked"]:
             raise RuntimeError("AI budget hard limit reached")
         if thread_id is None:
             thread_id = self._store.create_thread(admin_account_id="owner")
         context = self._tools.all_tool_state()
-        profile = self.runtime_profile()
         self._store.record_ai_call(
             provider=profile["provider"], model=profile["model"], cost=0.0
         )
@@ -180,6 +191,10 @@ class MarketsIntelligenceOrchestrator:
             "profile": profile,
             "budget": self._budget_state(),
         }
+
+    def approve_expensive(self) -> bool:
+        self._approved_expensive = True
+        return True
 
     def maybe_run_scheduled_review(self) -> dict[str, Any]:
         if not self._settings.markets_ready:
@@ -282,6 +297,95 @@ class MarketsIntelligenceOrchestrator:
             stage=to_stage,
         )
         return {"allowed": True, "stage": to_stage}
+
+    def monitor_m5(self) -> dict[str, Any]:
+        data = collect_monitor_data(self._tools)
+        return self._intelligence.monitor(data)
+
+    def analyze_weaknesses(self) -> list[dict[str, Any]]:
+        data = collect_monitor_data(self._tools)
+        return [finding.to_dict() for finding in self._intelligence.find_weaknesses(data)]
+
+    def generate_hypotheses(self, *, limit: int = 10) -> list[dict[str, Any]]:
+        data = collect_monitor_data(self._tools)
+        return self._intelligence.generate_hypotheses(data, limit=limit)
+
+    def research_report(self) -> dict[str, Any]:
+        data = collect_monitor_data(self._tools)
+        return self._intelligence.research_report(data)
+
+    def create_proposal(
+        self,
+        *,
+        title: str,
+        reason: str,
+        supporting_data: str | None = None,
+        expected_effect: str | None = None,
+        risk: str | None = None,
+        required_features: list[str] | None = None,
+        evaluation_plan: str | None = None,
+    ) -> int:
+        payload = {
+            "title": title,
+            "reason": reason,
+            "supporting_data": supporting_data,
+            "expected_effect": expected_effect,
+            "risk": risk,
+            "required_features": required_features or [],
+            "evaluation_plan": evaluation_plan,
+        }
+        entry_id = self._store.create_research_entry(
+            hypothesis=f"{title} :: {reason}",
+            rationale=supporting_data,
+            data_needed="; ".join(required_features or []),
+        )
+        self._store.transition_research_entry(
+            entry_id,
+            status="PROPOSED",
+            evidence={"proposal": payload},
+        )
+        return entry_id
+
+    def list_proposals(self) -> list[dict[str, Any]]:
+        return [
+            entry for entry in self._store.list_research_entries()
+            if entry.get("status") == "PROPOSED"
+        ]
+
+    def _review_gate(self) -> dict[str, Any] | None:
+        if not self._settings.markets_ready:
+            return {"ran": False, "reason": f"runtime state is {self.markets_state()}; no AI spend"}
+        budget = self._budget_state()
+        if budget["blocked"]:
+            return {"ran": False, "reason": "budget hard limit"}
+        now = self._clock()
+        if self._last_trigger_at is not None:
+            cooldown = self._settings.trigger_cooldown_seconds
+            if (now - self._last_trigger_at).total_seconds() < cooldown:
+                return {"ran": False, "reason": "cooldown"}
+        self._last_trigger_at = now
+        return None
+
+    def run_daily_review(self) -> dict[str, Any]:
+        blocked = self._review_gate()
+        if blocked is not None:
+            return blocked
+        data = collect_monitor_data(self._tools)
+        outcome = self._daily_review.run(tools=self._tools, intelligence=self._intelligence, data=data)
+        self._store.save_review(outcome)
+        return outcome.to_dict()
+
+    def run_weekly_review(self) -> dict[str, Any]:
+        blocked = self._review_gate()
+        if blocked is not None:
+            return blocked
+        data = collect_monitor_data(self._tools)
+        outcome = self._weekly_review.run(tools=self._tools, intelligence=self._intelligence, data=data)
+        self._store.save_review(outcome)
+        return outcome.to_dict()
+
+    def list_reviews(self) -> list[dict[str, Any]]:
+        return self._store.list_reviews()
 
     def explain_prediction(self, features: dict[str, float]) -> dict[str, Any] | None:
         if self._weights_doc is None:

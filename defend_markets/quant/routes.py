@@ -32,6 +32,16 @@ class ResearchEntryRequest(BaseModel):
     data_needed: str | None = None
 
 
+class ProposalRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=500)
+    reason: str = Field(min_length=1, max_length=2000)
+    supporting_data: str | None = None
+    expected_effect: str | None = None
+    risk: str | None = None
+    required_features: list[str] = Field(default_factory=list)
+    evaluation_plan: str | None = None
+
+
 def build_quant_router(orchestrator: MarketsIntelligenceOrchestrator) -> APIRouter:
     router = APIRouter(prefix="/api/markets/ai", tags=["markets-ai"])
 
@@ -77,6 +87,66 @@ def build_quant_router(orchestrator: MarketsIntelligenceOrchestrator) -> APIRout
     async def list_experiments(_principal: AdminPrincipal = Depends(require_admin)) -> dict:
         _require_markets_admin(_principal)
         return {"experiments": orchestrator.list_experiments()}
+
+    @router.get("/monitor")
+    async def monitor_m5(_principal: AdminPrincipal = Depends(require_admin)) -> dict:
+        _require_markets_admin(_principal)
+        return {"monitor": orchestrator.monitor_m5()}
+
+    @router.get("/weaknesses")
+    async def weaknesses(_principal: AdminPrincipal = Depends(require_admin)) -> dict:
+        _require_markets_admin(_principal)
+        return {"weaknesses": orchestrator.analyze_weaknesses()}
+
+    @router.get("/hypotheses")
+    async def hypotheses(
+        limit: int = 10,
+        _principal: AdminPrincipal = Depends(require_admin),
+    ) -> dict:
+        _require_markets_admin(_principal)
+        return {"hypotheses": orchestrator.generate_hypotheses(limit=limit)}
+
+    @router.post("/proposals")
+    async def create_proposal(
+        body: ProposalRequest,
+        _principal: AdminPrincipal = Depends(require_admin),
+    ) -> dict:
+        _require_markets_admin(_principal)
+        entry_id = orchestrator.create_proposal(
+            title=body.title,
+            reason=body.reason,
+            supporting_data=body.supporting_data,
+            expected_effect=body.expected_effect,
+            risk=body.risk,
+            required_features=body.required_features,
+            evaluation_plan=body.evaluation_plan,
+        )
+        return {"entry_id": entry_id, "status": "PROPOSED"}
+
+    @router.get("/proposals")
+    async def list_proposals(_principal: AdminPrincipal = Depends(require_admin)) -> dict:
+        _require_markets_admin(_principal)
+        return {"proposals": orchestrator.list_proposals()}
+
+    @router.post("/review/daily")
+    async def run_daily_review(_principal: AdminPrincipal = Depends(require_admin)) -> dict:
+        _require_markets_admin(_principal)
+        return orchestrator.run_daily_review()
+
+    @router.post("/review/weekly")
+    async def run_weekly_review(_principal: AdminPrincipal = Depends(require_admin)) -> dict:
+        _require_markets_admin(_principal)
+        return orchestrator.run_weekly_review()
+
+    @router.get("/reviews")
+    async def list_reviews(_principal: AdminPrincipal = Depends(require_admin)) -> dict:
+        _require_markets_admin(_principal)
+        return {"reviews": orchestrator.list_reviews()}
+
+    @router.post("/approve-expensive")
+    async def approve_expensive(_principal: AdminPrincipal = Depends(require_admin)) -> dict:
+        _require_markets_admin(_principal)
+        return {"approved": orchestrator.approve_expensive()}
 
     @router.post("/chat")
     async def chat(

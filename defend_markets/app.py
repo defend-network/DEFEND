@@ -981,10 +981,20 @@ def build_markets_app(dependencies: MarketsDependencies) -> FastAPI:
             quant_settings = QuantDirectorSettings.from_env()
             quant_store = PostgresQuantStore(deps.database)
             quant_tools = PostgresMarketTools(deps.database, quant_store)
+            from pathlib import Path as _Path
+            import json as _json
+
+            _weights_doc = _json.loads(
+                (
+                    _Path(__file__).resolve().parents[1]
+                    / "docs" / "operations" / "TT_M5_LIVE_WEIGHTS_V1.json"
+                ).read_text(encoding="utf-8")
+            )
             quant_orchestrator = MarketsIntelligenceOrchestrator(
                 store=quant_store,
                 tools=quant_tools,
                 settings=quant_settings,
+                weights_doc=_weights_doc,
             )
             app.include_router(build_quant_router(quant_orchestrator))
             quant_state = quant_orchestrator.health_state()

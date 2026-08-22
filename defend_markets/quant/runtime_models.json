@@ -1,0 +1,21 @@
+{
+  "defendmarkets-quant-director": {
+    "provider": "deepseek",
+    "model": "deepseek-v4-flash",
+    "reasoning": "default",
+    "credential_env": ["DEEPSEEK_API_KEY", "MARKETS_AI_API_KEY"]
+  },
+  "defendmarkets-quant-director-deep": {
+    "provider": "deepseek",
+    "model": "deepseek-v4-pro",
+    "reasoning": "high",
+    "credential_env": ["DEEPSEEK_API_KEY", "MARKETS_AI_API_KEY"]
+  },
+  "defendmarkets-quant-director-sol": {
+    "provider": "openai",
+    "model": "gpt-5.6-sol",
+    "reasoning": "xhigh",
+    "requires_approval": true,
+    "credential_env": ["OPENAI_API_KEY", "MARKETS_AI_API_KEY"]
+  }
+}

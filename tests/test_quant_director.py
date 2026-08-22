@@ -16,6 +16,7 @@ from defend_markets.quant.config import MarketsRuntimeState, QuantDirectorSettin
 from defend_markets.quant.explanation import explain_m5_prediction
 from defend_markets.quant.model_aliases import (
     DEEP_RESEARCH_ALIAS,
+    SOL_ALIAS,
     RUNTIME_ALIAS,
     DirectorProfile,
     resolve_runtime_profile,
@@ -83,13 +84,19 @@ class TestRuntimeAliases:
     def test_quant_director_product_identity(self):
         profile = resolve_runtime_profile(RUNTIME_ALIAS)
         assert isinstance(profile, DirectorProfile)
-        assert profile.provider == "openai"
-        assert profile.model == "gpt-5.6-terra"
-        assert profile.reasoning == "high"
+        assert profile.provider == "deepseek"
+        assert profile.model == "deepseek-v4-flash"
+        assert profile.reasoning == "default"
+        assert profile.requires_approval is False
 
-    def test_deep_research_alias_resolves_to_sol(self):
+    def test_deep_research_alias_resolves_to_pro(self):
         profile = resolve_runtime_profile(DEEP_RESEARCH_ALIAS)
+        assert profile.model == "deepseek-v4-pro"
+
+    def test_sol_alias_requires_owner_approval(self):
+        profile = resolve_runtime_profile(SOL_ALIAS)
         assert profile.model == "gpt-5.6-sol"
+        assert profile.requires_approval is True
 
 
 class TestBudgetAndState:

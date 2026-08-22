@@ -90,6 +90,12 @@ class QuantStore:
     def list_experiments(self) -> list[dict[str, Any]]:
         raise NotImplementedError
 
+    def save_review(self, outcome: Any) -> bool:
+        raise NotImplementedError
+
+    def list_reviews(self) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
 
 class PostgresQuantStore(QuantStore):
     def __init__(self, database: MarketsDatabase) -> None:
@@ -322,6 +328,32 @@ class PostgresQuantStore(QuantStore):
             columns = [column.name for column in cursor.description]
             return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
+    def save_review(self, outcome):
+        document = outcome.to_dict()
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO quant_review_runs (kind, started_at, completed_at, ran, reason, report) "
+                "VALUES (%s, %s, %s, %s, %s, %s) RETURNING review_id",
+                (
+                    document["kind"],
+                    document["started_at"],
+                    document["completed_at"],
+                    document["ran"],
+                    document["reason"],
+                    Jsonb(document["report"]),
+                ),
+            )
+            return cursor.fetchone() is not None
+
+    def list_reviews(self):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT review_id, kind, started_at, completed_at, ran, reason, report "
+                "FROM quant_review_runs ORDER BY review_id DESC LIMIT 100"
+            )
+            columns = [column.name for column in cursor.description]
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
 
 @dataclass
 class InMemoryQuantStore(QuantStore):
@@ -331,6 +363,7 @@ class InMemoryQuantStore(QuantStore):
     budget: dict[tuple[str, str, str], dict[str, Any]] = field(default_factory=dict)
     snapshots: list[dict[str, Any]] = field(default_factory=list)
     experiments: list[dict[str, Any]] = field(default_factory=list)
+    reviews: list[dict[str, Any]] = field(default_factory=list)
     _next_research: int = 1
     _next_thread: int = 1
     _next_message: int = 1
@@ -472,3 +505,10 @@ class InMemoryQuantStore(QuantStore):
 
     def list_experiments(self):
         return list(reversed(self.experiments))
+
+    def save_review(self, outcome):
+        self.reviews.append(outcome.to_dict())
+        return True
+
+    def list_reviews(self):
+        return list(reversed(self.reviews))
