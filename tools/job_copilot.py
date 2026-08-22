@@ -800,6 +800,56 @@ class CopilotServer(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(png)
 
+    def _action_copilot(self, job_id: str):
+        """SCS Copilot: one job-aware question -> tool-routed sourced answer."""
+        record = self._load(job_id)
+        body = self._read_body()
+        question = (body.get("question") or "").strip()
+        if not question:
+            self._send_json({"error": "question required"}, 400)
+            return
+        from scs_copilot.context import SCSJobContext
+        from scs_copilot.router import CopilotRouter
+        from scs_knowledge.registry import SCSKnowledgeLibrary
+        from scs_knowledge.gaps_lessons import KnowledgeGapLog
+        from scs_reports.plan_graph import MechanicalPlanGraph
+
+        graph = None
+        graph_payload = self._load_graph(job_id)
+        if graph_payload is not None:
+            graph = MechanicalPlanGraph(packet={})
+            for key, value in graph_payload.items():
+                if key == "relationships":
+                    from scs_reports.plan_graph import Relationship
+                    graph.relationships = [
+                        Relationship(r["source"], r["target"], r["rel_type"],
+                                     r.get("evidence", []), r.get("confidence", "HIGH"),
+                                     r.get("source_ref")) for r in value]
+                elif key != "packet":
+                    setattr(graph, key, value)
+        basis = self._load_basis(job_id) or {}
+        context = SCSJobContext(job_id=job_id, job=record, graph=graph,
+                                design_basis=basis)
+        for device in record.air_devices:
+            if device.final_cfm is not None:
+                context.record_reading(f"{device.device_id}:final_cfm",
+                                       device.final_cfm)
+        knowledge_dir = self.paths.root / "knowledge"
+        knowledge_dir.mkdir(parents=True, exist_ok=True)
+        library = SCSKnowledgeLibrary(knowledge_dir / "library.db")
+        gaps = KnowledgeGapLog(knowledge_dir / "gaps.json")
+        router = CopilotRouter(context=context, knowledge=library, gaps=gaps)
+        answer = router.route(question)
+        library.close()
+        self._send_json({"question": question, **answer})
+
+    def _action_calculate(self, job_id: str):
+        body = self._read_body()
+        name = (body.get("calculator") or "").strip()
+        inputs = body.get("inputs") or {}
+        from scs_engineering.calculators import run_calculator
+        self._send_json({"calculation": run_calculator(name, **inputs)})
+
     def _action_generate(self, job_id: str):
         record = self._load(job_id)
         plan = plan_for(record)
