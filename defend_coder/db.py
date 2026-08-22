@@ -16,6 +16,16 @@ _MIGRATIONS = (
         Path(__file__).with_name("migrations")
         / "0005_completion_state_telemetry.sql",
     ),
+    (
+        6,
+        Path(__file__).with_name("migrations")
+        / "0006_run_routing.sql",
+    ),
+    (
+        7,
+        Path(__file__).with_name("migrations")
+        / "0007_run_escalation_phase.sql",
+    ),
 )
 
 

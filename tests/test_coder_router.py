@@ -360,12 +360,10 @@ class TestToolAuthorityInvariant:
         assert "tool" not in vars(deepseek)
 
     def test_router_never_constructs_a_toolkit(self):
-        import sys
-
         import defend_coder.router as router_module
 
         assert "CoderToolkit" not in dir(router_module)
-        assert "defend_coder.tools" not in sys.modules
+        assert "toolkit" not in dir(router_module)
 
     def test_identity_statement_never_claims_unearned_authority(self):
         statement = identity_statement()

@@ -11,7 +11,10 @@ from uuid import UUID, uuid4
 from psycopg.types.json import Jsonb
 
 from .agent import CodingAgent, RunLog
-from .agent_client import AgentChatClient
+from .agent_client import (
+    AgentChatClient,
+    RoutingAgentClient,
+)
 from .db import CoderDatabase
 from .repositories import WorkspaceRecord
 from .telemetry import (
@@ -60,6 +63,8 @@ _RUN_PHASES = frozenset({
     "completed",
     "failed",
     "cancelled",
+    "awaiting_escalation_approval",
+    "resuming",
 })
 
 
@@ -97,6 +102,37 @@ class RunMessageRecord:
 class RunDetail:
     run: RunRecord
     messages: tuple[RunMessageRecord, ...]
+
+
+@dataclass(frozen=True)
+class RunRouting:
+    """Per-run model routing (additive; never a process-global)."""
+
+    run_id: UUID
+    requested_mode: str = "AUTO"
+    selected_tier: str = "DEEPSEEK"
+    selected_model: str = "deepseek"
+    selected_provider: str | None = None
+    route_reason: str | None = None
+    escalated_from: str | None = None
+    escalation_approved_at: object | None = None
+    escalation_approved_by: str | None = None
+
+    def as_public_dict(self) -> dict[str, object]:
+        return {
+            "requested_mode": self.requested_mode,
+            "selected_tier": self.selected_tier,
+            "selected_model": self.selected_model,
+            "selected_provider": self.selected_provider,
+            "route_reason": self.route_reason,
+            "escalated_from": self.escalated_from,
+            "escalation_approved_at": (
+                self.escalation_approved_at.isoformat()
+                if self.escalation_approved_at is not None
+                else None
+            ),
+            "escalation_approved_by": self.escalation_approved_by,
+        }
 
 
 class RunConflictError(RuntimeError):
@@ -614,6 +650,248 @@ class RunsRepository:
         )
 
 
+    def set_run_routing(
+        self,
+        run_id: UUID,
+        *,
+        requested_mode: str,
+        selected_tier: str,
+        selected_model: str,
+        selected_provider: str | None,
+        route_reason: str | None = None,
+        escalated_from: str | None = None,
+        escalation_approved_at: object | None = None,
+        escalation_approved_by: str | None = None,
+    ) -> None:
+        """Persist the per-run model routing (additive, never global)."""
+        with self._db.connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE coder_runs
+                    SET requested_mode = %s,
+                        selected_tier = %s,
+                        selected_model = %s,
+                        selected_provider = %s,
+                        route_reason = %s,
+                        escalated_from = %s,
+                        escalation_approved_at = %s,
+                        escalation_approved_by = %s
+                    WHERE run_id = %s
+                    """,
+                    (
+                        requested_mode,
+                        selected_tier,
+                        selected_model,
+                        selected_provider,
+                        route_reason,
+                        escalated_from,
+                        escalation_approved_at,
+                        escalation_approved_by,
+                        run_id,
+                    ),
+                )
+
+    def max_message_seq(self, run_id: UUID) -> int:
+        """Highest existing message seq for a run (continuation continuity)."""
+        with self._db.connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT COALESCE(MAX(seq), 0) AS seq
+                    FROM coder_run_messages
+                    WHERE run_id = %s
+                    """,
+                    (run_id,),
+                )
+                row = cursor.fetchone()
+        return int(row["seq"]) if row else 0
+
+    def get_run_routing(self, run_id: UUID) -> RunRouting | None:
+        with self._db.connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT
+                        requested_mode,
+                        selected_tier,
+                        selected_model,
+                        selected_provider,
+                        route_reason,
+                        escalated_from,
+                        escalation_approved_at,
+                        escalation_approved_by
+                    FROM coder_runs
+                    WHERE run_id = %s
+                    """,
+                    (run_id,),
+                )
+                row = cursor.fetchone()
+        if row is None:
+            return None
+        return RunRouting(
+            run_id=run_id,
+            requested_mode=row["requested_mode"],
+            selected_tier=row["selected_tier"],
+            selected_model=row["selected_model"],
+            selected_provider=row["selected_provider"],
+            route_reason=row["route_reason"],
+            escalated_from=row["escalated_from"],
+            escalation_approved_at=row["escalation_approved_at"],
+            escalation_approved_by=row["escalation_approved_by"],
+        )
+
+    def create_escalation_proposal(
+        self,
+        run_id: UUID,
+        proposal: object,
+    ) -> None:
+        """Persist a pending EscalationProposal for owner interaction."""
+        with self._db.connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO coder_escalation_proposals(
+                        proposal_id,
+                        run_id,
+                        from_model,
+                        to_model,
+                        reason_code,
+                        human_summary,
+                        evidence,
+                        attempt_count,
+                        tests_failed,
+                        estimated_incremental_cost,
+                        target_runtime_state,
+                        requires_gpu_resume,
+                        status,
+                        created_at,
+                        expires_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        proposal.proposal_id,
+                        run_id,
+                        proposal.from_model,
+                        proposal.to_model,
+                        str(proposal.reason_code.value),
+                        proposal.human_summary,
+                        Jsonb(list(proposal.evidence)),
+                        proposal.attempt_count,
+                        proposal.tests_failed,
+                        proposal.estimated_incremental_cost,
+                        proposal.target_runtime_state,
+                        proposal.requires_gpu_resume,
+                        "pending",
+                        proposal.created_at,
+                        proposal.expires_at,
+                    ),
+                )
+
+    def list_escalation_proposals(
+        self,
+        run_id: UUID,
+    ) -> tuple[dict[str, object], ...]:
+        with self._db.connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT
+                        proposal_id,
+                        from_model,
+                        to_model,
+                        reason_code,
+                        human_summary,
+                        evidence,
+                        attempt_count,
+                        tests_failed,
+                        estimated_incremental_cost,
+                        target_runtime_state,
+                        requires_gpu_resume,
+                        status,
+                        created_at,
+                        expires_at,
+                        approved_at,
+                        approved_by
+                    FROM coder_escalation_proposals
+                    WHERE run_id = %s
+                    ORDER BY created_at DESC
+                    """,
+                    (run_id,),
+                )
+                rows = cursor.fetchall()
+        proposals: list[dict[str, object]] = []
+        for row in rows:
+            evidence = row["evidence"] or []
+            proposals.append(
+                {
+                    "proposal_id": row["proposal_id"],
+                    "from_model": row["from_model"],
+                    "to_model": row["to_model"],
+                    "reason_code": row["reason_code"],
+                    "human_summary": row["human_summary"],
+                    "evidence": list(evidence) if isinstance(evidence, list) else [],
+                    "attempt_count": row["attempt_count"],
+                    "tests_failed": row["tests_failed"],
+                    "estimated_incremental_cost": (
+                        row["estimated_incremental_cost"]
+                    ),
+                    "target_runtime_state": row["target_runtime_state"],
+                    "requires_gpu_resume": row["requires_gpu_resume"],
+                    "status": row["status"],
+                    "created_at": (
+                        row["created_at"].isoformat()
+                        if row["created_at"] is not None
+                        else None
+                    ),
+                    "expires_at": (
+                        row["expires_at"].isoformat()
+                        if row["expires_at"] is not None
+                        else None
+                    ),
+                    "approved_at": (
+                        row["approved_at"].isoformat()
+                        if row["approved_at"] is not None
+                        else None
+                    ),
+                    "approved_by": row["approved_by"],
+                }
+            )
+        return tuple(proposals)
+
+    def update_escalation_proposal_status(
+        self,
+        run_id: UUID,
+        proposal_id: str,
+        *,
+        status: str,
+        approved_by: str | None = None,
+        approved_at: object | None = None,
+    ) -> bool:
+        if status not in ("pending", "approved", "denied", "expired"):
+            raise ValueError(f"invalid proposal status {status!r}")
+        with self._db.connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE coder_escalation_proposals
+                    SET status = %s,
+                        approved_at = %s,
+                        approved_by = %s
+                    WHERE run_id = %s AND proposal_id = %s
+                    """,
+                    (
+                        status,
+                        approved_at,
+                        approved_by,
+                        run_id,
+                        proposal_id,
+                    ),
+                )
+                return cursor.rowcount == 1
+
+
 class RunRunner:
     """Owns the worker thread that executes a single agent run."""
 
@@ -629,6 +907,8 @@ class RunRunner:
         finalization_enabled: bool = True,
         finalization_timeout_seconds: float = 600.0,
         phase_max_tokens: dict[str, int] | None = None,
+        client_resolver: Callable[[object], AgentChatClient] | None = None,
+        proposal_factory: Callable[[object, object], object | None] | None = None,
     ) -> None:
         if not isinstance(client, AgentChatClient):
             raise TypeError("client must be an AgentChatClient")
@@ -636,6 +916,8 @@ class RunRunner:
             raise TypeError("toolkit_factory must be callable")
         self._repository = repository
         self._client = client
+        self._client_resolver = client_resolver
+        self._proposal_factory = proposal_factory
         self._toolkit_factory = toolkit_factory
         self._log = log or (lambda _line: None)
         self._max_steps = max(1, min(100, int(max_steps)))
@@ -666,6 +948,29 @@ class RunRunner:
         if event is None:
             raise KeyError(f"run {run_id} is not active on this server")
         event.set()
+
+    def start_existing(
+        self,
+        *,
+        run_id: UUID,
+        workspace: WorkspaceRecord,
+        prompt: str,
+    ) -> None:
+        """Start the worker for an ALREADY-created, ALREADY-routed run.
+
+        Routing is persisted by the caller BEFORE this returns, so the
+        worker's per-run client resolution sees the selected backend.
+        """
+        self._repository.update_run_status(run_id, status="running")
+        cancel_event = threading.Event()
+        self._cancel_events[run_id] = cancel_event
+        thread = threading.Thread(
+            target=self._execute,
+            args=(run_id, workspace, prompt, cancel_event),
+            name=f"coder-run-{run_id}",
+            daemon=True,
+        )
+        thread.start()
 
     def start(
         self,
@@ -698,6 +1003,24 @@ class RunRunner:
         thread.start()
         return run
 
+    def _resolve_client(self, run_id: UUID) -> AgentChatClient:
+        """Per-run provider dispatch: the ACTUAL client comes from the
+        persisted routing, never a process-global model.
+
+        When a ``client_resolver`` is configured, the run executes through a
+        delegating client that re-reads the run's routing before EVERY
+        generation call, so an owner-approved escalation changes the real
+        provider mid-run (DeepSeek -> Next -> Sol) without restarting.
+        """
+        if self._client_resolver is None:
+            return self._client
+
+        def resolve() -> AgentChatClient:
+            routing = self._repository.get_run_routing(run_id)
+            return self._client_resolver(routing)
+
+        return RoutingAgentClient(resolve)
+
     def _execute(
         self,
         run_id: UUID,
@@ -707,8 +1030,9 @@ class RunRunner:
     ) -> None:
         run_log = RunLog()
         toolkit = self._toolkit_factory(run_log.tail)
+        client = self._resolve_client(run_id)
         agent = CodingAgent(
-            client=self._client,
+            client=client,
             toolkit=toolkit,
             log=run_log.append,
             max_steps=self._max_steps,
@@ -725,7 +1049,7 @@ class RunRunner:
             phase_max_tokens=self._phase_max_tokens,
         )
         seq_lock = threading.Lock()
-        seq_counter = 0
+        seq_counter = self._repository.max_message_seq(run_id)
         persistence_seconds = 0.0
         persistence_lock = threading.Lock()
 
@@ -802,6 +1126,37 @@ class RunRunner:
             )
             self._repository.update_run_phase(run_id, "cancelled")
         else:
+            # Quality failure path: a grounded escalation proposal may be
+            # created, but it NEVER switches the model or starts compute.
+            if self._proposal_factory is not None:
+                try:
+                    proposal = self._proposal_factory(run_id, outcome)
+                except Exception as error:  # noqa: BLE001
+                    self._log(
+                        f"run {run_id}: proposal evaluation failed: {error!r}"
+                    )
+                    proposal = None
+                if proposal is not None:
+                    self._repository.create_escalation_proposal(
+                        run_id, proposal
+                    )
+                    self._repository.update_run_phase(
+                        run_id, "awaiting_escalation_approval"
+                    )
+                    self._repository.append_message(
+                        run_id,
+                        role="log",
+                        content=(
+                            "Escalation proposal awaiting owner approval; "
+                            "the run did not change models."
+                        ),
+                        kind="log",
+                        ok=True,
+                    )
+                    self._log(
+                        f"run {run_id}: escalation proposal "
+                        f"{proposal.proposal_id} awaiting approval"
+                    )
             self._repository.update_run_status(
                 run_id,
                 status="failed",

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+import os
 from pathlib import Path
 import secrets
 import threading
@@ -18,8 +19,31 @@ from .auth import (
     AuthenticatedAccount,
 )
 from .config import CoderSettings
+from .credentials import CredentialStore
 from .db import CoderDatabase
+from .providers import (
+    NEXT_MODEL,
+    SOL_MODEL,
+    ModelTarget,
+    build_client,
+    deepseek_target,
+    next_target,
+    sol_target,
+)
 from .repositories import CoderRepository, WorkspaceRecord
+from .router import (
+    PRODUCT_IDENTITY,
+    EscalationReason,
+    ModelSelector,
+    ModelTier,
+    model_for_tier,
+    tier_for_model,
+)
+from .routing import (
+    ProductRuntimeAdapterBoundary,
+    RuntimeResumeDenied,
+    resolve_starting_route,
+)
 from .runs import (
     RunConflictError,
     RunDetail,
@@ -63,6 +87,30 @@ class WorkspaceCreateRequest(BaseModel):
 
 class RunCreateRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=20000)
+    requested_mode: str = Field(default="AUTO", max_length=16)
+    model: str | None = Field(default=None, max_length=64)
+
+
+class ModelSelectRequest(BaseModel):
+    requested_mode: str = Field(min_length=1, max_length=16)
+
+
+class ChatRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=20000)
+
+
+class CredentialRequest(BaseModel):
+    api_key: str = Field(min_length=1, max_length=4096)
+
+
+def _default_secret_store() -> object:
+    """Platform DPAPI secret store loader (defendcoder product)."""
+    from pathlib import Path as _Path
+
+    from defend_control.secrets import DpapiSecretStore
+
+    local = os.environ.get("LOCALAPPDATA") or "."
+    return DpapiSecretStore(_Path(local) / "DEFEND" / "secrets.dpapi")
 
 
 def _account_dict(account: AuthenticatedAccount) -> dict[str, object]:
@@ -177,6 +225,10 @@ def build_coder_app(
     idle_timeout_seconds: int | None = None,
     runtime_stop_callback: Callable[[str], None] | None = None,
     idle_reaper_interval_seconds: float = 15.0,
+    # Router integration (additive; defaults preserve legacy behavior).
+    credentials: object | None = None,
+    runtime_adapter: object | None = None,
+    model_selector: ModelSelector | None = None,
 ) -> FastAPI:
     idle_timeout_seconds = (
         settings.idle_timeout_seconds
@@ -239,6 +291,89 @@ def build_coder_app(
             else settings.workspace_root
         ),
     )
+
+    # Router integration state (additive). Defaults keep the legacy single
+    # model path intact when no provider is configured.
+    _credentials = credentials or CredentialStore(
+        store_loader=_default_secret_store
+    )
+    _runtime_adapter = runtime_adapter or ProductRuntimeAdapterBoundary()
+    _selector = model_selector or ModelSelector()
+
+    def _live_targets() -> dict[str, ModelTarget]:
+        """Targets keyed by MODEL ID with LIVE credential availability."""
+        deepseek = deepseek_target(
+            availability=_credentials.configured("deepseek")
+        )
+        return {
+            deepseek.model_id: deepseek,
+            NEXT_MODEL: next_target(availability=True),
+            SOL_MODEL: sol_target(
+                availability=_credentials.configured("sol")
+            ),
+        }
+
+    def _target_for_model(model: str) -> ModelTarget:
+        try:
+            return _live_targets()[model]
+        except KeyError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"no configured target for model {model!r}",
+            ) from None
+
+    def _require_owner(account: AuthenticatedAccount) -> None:
+        if account.role != "admin":
+            raise HTTPException(
+                status_code=403,
+                detail="owner/admin authority required",
+            )
+
+    def _owned_run(
+        account: AuthenticatedAccount,
+        workspace_id: str,
+        run_id: str,
+    ) -> RunDetail:
+        workspace = owned_workspace(account, workspace_id)
+        parsed = UUID(run_id)
+        detail = runs_repository.get_run(parsed)
+        if detail is None or detail.workspace_id != workspace.workspace_id:
+            raise HTTPException(status_code=404, detail="run not found")
+        return detail
+
+    def _resume_same_run(
+        detail: RunDetail,
+        workspace_id: str,
+        run_id: str,
+        account: AuthenticatedAccount,
+    ) -> None:
+        """Continue the SAME run after an owner escalation choice.
+
+        Persists route change first (done by the caller), transitions to
+        resuming/running, and re-dispatches the worker on the same run_id.
+        The per-run RoutingAgentClient resolves the CURRENT routing before
+        the next generation call, so the approved provider is actually used.
+        """
+        workspace = owned_workspace(account, workspace_id)
+        runs_repository.update_run_phase(UUID(run_id), "resuming")
+        runs_repository.update_run_status(
+            UUID(run_id),
+            status="running",
+            error=None,
+            reason="unknown",
+        )
+        if runner is not None:
+            runner.start_existing(
+                run_id=UUID(run_id),
+                workspace=workspace,
+                prompt=detail.prompt,
+            )
+
+    def _resolve_targets_public() -> dict[str, object]:
+        return {
+            model: target.as_public_dict()
+            for model, target in _live_targets().items()
+        }
 
     def current_account(request: Request) -> AuthenticatedAccount:
         token = request.cookies.get(SESSION_COOKIE)
@@ -545,18 +680,75 @@ def build_coder_app(
                 ),
             )
 
-        try:
-            run = runner.start(
-                workspace=workspace,
-                prompt=payload.prompt,
-            )
-        except RunConflictError as error:
+        if runs_repository.get_active_run_for_workspace(
+            workspace.workspace_id
+        ) is not None:
             raise HTTPException(
                 status_code=409,
-                detail=str(error),
-            ) from None
+                detail="an agent run is already active for this workspace",
+            )
 
-        return {"run": _run_dict(run)}
+        # ROUTE BEFORE START: validate, resolve, and gate the actual model
+        # target BEFORE creating a run or spawning any worker/model call.
+        mode = (payload.requested_mode or "AUTO").strip().upper()
+        if mode not in ("AUTO", "DEEPSEEK", "NEXT", "SOL"):
+            raise HTTPException(
+                status_code=400,
+                detail="requested_mode must be AUTO, DEEPSEEK, NEXT, or SOL",
+            )
+        explicit_tier = None if mode == "AUTO" else ModelTier(mode)
+        if explicit_tier in (ModelTier.NEXT, ModelTier.SOL):
+            _require_owner(account)
+        route = resolve_starting_route(
+            requested_mode=mode,
+            explicit_tier=explicit_tier,
+            targets=_live_targets(),
+            selector=_selector,
+        )
+        if mode in ("AUTO", "DEEPSEEK") and not route.target.availability:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "DeepSeek is not configured; AUTO cannot silently fall "
+                    "back to another runtime"
+                ),
+            )
+        if route.tier in (ModelTier.NEXT, ModelTier.SOL) and not route.target.availability:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{route.tier.value} is not currently configured",
+            )
+
+        # Create the run record, persist the selected routing, THEN start
+        # execution using that exact route.
+        run = runs_repository.create_run(
+            workspace=workspace,
+            prompt=payload.prompt,
+        )
+        runs_repository.set_run_routing(
+            run.run_id,
+            requested_mode=mode,
+            selected_tier=route.tier.value,
+            selected_model=route.target.model_id,
+            selected_provider=route.target.provider,
+            route_reason=(
+                "OWNER_REQUESTED"
+                if explicit_tier is not None
+                else "AUTO_DEFAULT"
+            ),
+        )
+
+        # ONLY NOW start execution on the persisted route.
+        runner.start_existing(
+            run_id=run.run_id,
+            workspace=workspace,
+            prompt=payload.prompt,
+        )
+
+        return {
+            "run": _run_dict(run),
+            "routing": runs_repository.get_run_routing(run.run_id).as_public_dict(),
+        }
 
     @app.post("/v1/workspaces/{workspace_id}/runs/{run_id}/cancel")
     def cancel_run(
@@ -592,6 +784,318 @@ def build_coder_app(
                 detail=str(error),
             ) from None
         return {"cancelled": True}
+
+    @app.get("/v1/workspaces/{workspace_id}/runs/{run_id}/routing")
+    def get_run_routing(
+        workspace_id: str,
+        run_id: str,
+        request: Request,
+    ) -> dict[str, object]:
+        account = current_account(request)
+        _owned_run(account, workspace_id, run_id)
+        routing = runs_repository.get_run_routing(UUID(run_id))
+        return {
+            "identity": PRODUCT_IDENTITY,
+            "routing": routing.as_public_dict() if routing is not None else None,
+            "targets": _resolve_targets_public(),
+            "runtime": _runtime_adapter.runtime_status("defendcoder"),
+        }
+
+    @app.post("/v1/workspaces/{workspace_id}/runs/{run_id}/model")
+    def select_run_model(
+        workspace_id: str,
+        run_id: str,
+        payload: ModelSelectRequest,
+        request: Request,
+    ) -> dict[str, object]:
+        account = current_account(request)
+        _owned_run(account, workspace_id, run_id)
+        mode = (payload.requested_mode or "AUTO").strip().upper()
+        if mode not in ("AUTO", "DEEPSEEK", "NEXT", "SOL"):
+            raise HTTPException(
+                status_code=400,
+                detail="requested_mode must be AUTO, DEEPSEEK, NEXT, or SOL",
+            )
+        explicit_tier = None if mode == "AUTO" else ModelTier(mode)
+        if explicit_tier in (ModelTier.NEXT, ModelTier.SOL):
+            _require_owner(account)
+        route = resolve_starting_route(
+            requested_mode=mode,
+            explicit_tier=explicit_tier,
+            targets=_live_targets(),
+            selector=_selector,
+        )
+        if mode in ("AUTO", "DEEPSEEK") and not route.target.availability:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "DeepSeek is not configured; AUTO cannot silently fall "
+                    "back to another runtime"
+                ),
+            )
+        if route.tier in (ModelTier.NEXT, ModelTier.SOL) and not route.target.availability:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{route.tier.value} is not currently configured",
+            )
+        runtime = _runtime_adapter.runtime_status("defendcoder")
+        next_step = None
+        if route.tier == ModelTier.NEXT and route.target.requires_external_runtime:
+            next_step = (
+                "resume_approval_required"
+                if runtime.get("state") != "ready"
+                else "ready_reuse"
+            )
+        runs_repository.set_run_routing(
+            UUID(run_id),
+            requested_mode=mode,
+            selected_tier=route.tier.value,
+            selected_model=route.target.model_id,
+            selected_provider=route.target.provider,
+            route_reason=(
+                "OWNER_REQUESTED" if explicit_tier is not None else "AUTO_DEFAULT"
+            ),
+        )
+        return {
+            "routing": runs_repository.get_run_routing(UUID(run_id)).as_public_dict(),
+            "next_step": next_step,
+        }
+
+    @app.get("/v1/workspaces/{workspace_id}/runs/{run_id}/escalation")
+    def get_run_escalation(
+        workspace_id: str,
+        run_id: str,
+        request: Request,
+    ) -> dict[str, object]:
+        account = current_account(request)
+        _owned_run(account, workspace_id, run_id)
+        proposals = runs_repository.list_escalation_proposals(UUID(run_id))
+        return {"proposals": proposals}
+
+    @app.post(
+        "/v1/workspaces/{workspace_id}/runs/{run_id}/escalation/"
+        "{proposal_id}/approve"
+    )
+    def approve_run_escalation(
+        workspace_id: str,
+        run_id: str,
+        proposal_id: str,
+        request: Request,
+    ) -> dict[str, object]:
+        account = current_account(request)
+        _require_owner(account)
+        detail = _owned_run(account, workspace_id, run_id)
+        proposals = runs_repository.list_escalation_proposals(UUID(run_id))
+        proposal = next(
+            (
+                item
+                for item in proposals
+                if item["proposal_id"] == proposal_id
+            ),
+            None,
+        )
+        if proposal is None:
+            raise HTTPException(status_code=404, detail="proposal not found")
+        if proposal["status"] != "pending":
+            raise HTTPException(status_code=409, detail="proposal is not pending")
+        expires_at = proposal.get("expires_at")
+        if expires_at is not None:
+            try:
+                parsed_expiry = datetime.fromisoformat(str(expires_at))
+                if parsed_expiry.tzinfo is None:
+                    parsed_expiry = parsed_expiry.replace(
+                        tzinfo=timezone.utc
+                    )
+            except ValueError:
+                parsed_expiry = None
+            if parsed_expiry is not None and parsed_expiry < datetime.now(
+                timezone.utc
+            ):
+                raise HTTPException(status_code=409, detail="proposal has expired")
+        to_model = str(proposal["to_model"])
+        try:
+            to_tier = tier_for_model(to_model)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from None
+        target = _target_for_model(to_model)
+        if not target.availability:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{to_model} is not currently configured",
+            )
+        if to_tier == ModelTier.NEXT:
+            runtime_state = _runtime_adapter.runtime_status("defendcoder")
+            retained = bool(
+                runtime_state.get("instance_id")
+                or runtime_state.get("provider_instance_state")
+                or runtime_state.get("gpu")
+            )
+            if runtime_state.get("state") == "ready":
+                # Reuse the ready runtime.
+                pass
+            elif runtime_state.get("state") == "stopped" and retained:
+                # Resume the retained instance (owner-authorized escalation).
+                try:
+                    _runtime_adapter.start_runtime(
+                        "defendcoder", authorize_resume=True
+                    )
+                except RuntimeResumeDenied as error:
+                    raise HTTPException(status_code=409, detail=str(error)) from None
+            else:
+                # No retained instance: "Approve stronger intelligence" does
+                # NOT authorize renting unknown GPU at any price.
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "PRICE_CONFIRMATION_REQUIRED: no retained Next "
+                        "instance; a new GPU rental requires explicit price "
+                        "approval"
+                    ),
+                )
+        now = datetime.now(timezone.utc)
+        runs_repository.set_run_routing(
+            UUID(run_id),
+            requested_mode="AUTO",
+            selected_tier=to_tier.value,
+            selected_model=to_model,
+            selected_provider=target.provider,
+            route_reason=str(proposal["reason_code"]),
+            escalated_from=str(proposal["from_model"]),
+            escalation_approved_at=now,
+            escalation_approved_by=account.username,
+        )
+        runs_repository.update_escalation_proposal_status(
+            UUID(run_id),
+            proposal_id,
+            status="approved",
+            approved_by=account.username,
+            approved_at=now,
+        )
+        _resume_same_run(detail, workspace_id, run_id, account)
+        return {
+            "routing": runs_repository.get_run_routing(UUID(run_id)).as_public_dict(),
+            "runtime": _runtime_adapter.runtime_status("defendcoder"),
+            "state": "resuming",
+        }
+
+    @app.post(
+        "/v1/workspaces/{workspace_id}/runs/{run_id}/escalation/"
+        "{proposal_id}/deny"
+    )
+    def deny_run_escalation(
+        workspace_id: str,
+        run_id: str,
+        proposal_id: str,
+        request: Request,
+    ) -> dict[str, object]:
+        account = current_account(request)
+        _require_owner(account)
+        detail = _owned_run(account, workspace_id, run_id)
+        proposals = runs_repository.list_escalation_proposals(UUID(run_id))
+        if not any(item["proposal_id"] == proposal_id for item in proposals):
+            raise HTTPException(status_code=404, detail="proposal not found")
+        runs_repository.update_escalation_proposal_status(
+            UUID(run_id),
+            proposal_id,
+            status="denied",
+        )
+        _resume_same_run(detail, workspace_id, run_id, account)
+        return {"status": "denied", "state": "resuming", "unchanged": False}
+
+    @app.get("/v1/admin/model-credentials")
+    def model_credentials(request: Request) -> dict[str, object]:
+        account = current_account(request)
+        _require_owner(account)
+        return {"providers": _credentials.status()}
+
+    @app.post("/v1/admin/model-credentials/{provider}")
+    def set_model_credential(
+        provider: str,
+        payload: CredentialRequest,
+        request: Request,
+    ) -> dict[str, object]:
+        account = current_account(request)
+        _require_owner(account)
+        require_csrf(request)
+        try:
+            _credentials.set(provider, payload.api_key)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from None
+        except RuntimeError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from None
+        # Availability is dynamic: no restart required.
+        return {
+            "provider": provider,
+            "configured": _credentials.configured(provider),
+        }
+
+    @app.post("/v1/chat", status_code=200)
+    def chat_without_workspace(
+        payload: ChatRequest,
+        request: Request,
+    ) -> dict[str, object]:
+        account = current_account(request)
+        require_csrf(request)
+        if not _credentials.configured("deepseek"):
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "DeepSeek is not configured; workspace-less chat is "
+                    "unavailable until DEEPSEEK_API_KEY is set"
+                ),
+            )
+        deepseek = next(
+            target
+            for target in _live_targets().values()
+            if target.tier == "DEEPSEEK"
+        )
+        try:
+            client = build_client(
+                deepseek,
+                api_key=_credentials.resolve("deepseek"),
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from None
+        from defend_coder.agent import CodingAgent
+        from defend_coder.tools import CoderToolkit as _CoderToolkit
+
+        toolkit = _CoderToolkit(
+            repository=repository,
+            configured_root=(
+                configured_root if configured_root is not None else settings.workspace_root
+            ),
+            enabled=False,
+        )
+        agent = CodingAgent(
+            client=client,
+            toolkit=toolkit,
+            max_steps=4,
+            max_loop_seconds=120.0,
+        )
+        replies: list[str] = []
+
+        def sink(**fields: object) -> None:
+            if fields.get("role") == "assistant" and fields.get("content"):
+                replies.append(str(fields["content"]))
+
+        outcome = agent.run(
+            prompt=payload.message,
+            account_id=account.account_id,
+            workspace_id=None,  # type: ignore[arg-type]
+            sink=sink,
+        )
+        if outcome.state != "succeeded" or not replies:
+            raise HTTPException(
+                status_code=502,
+                detail=f"chat generation failed ({outcome.reason or outcome.state})",
+            )
+        return {
+            "reply": "\n".join(replies),
+            "model": deepseek.model_id,
+            "provider": deepseek.provider,
+            "tier": "DEEPSEEK",
+            "requested_mode": "AUTO",
+        }
 
     @app.get("/v1/workspaces/{workspace_id}/runs")
     def list_runs(

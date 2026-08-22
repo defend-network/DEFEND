@@ -144,35 +144,124 @@ def main() -> None:
         )
         raise SystemExit(1) from error
 
-    if model_config.base_url is not None:
-        client = AgentChatClient(model_config)
-        runner = RunRunner(
-            repository=runs_repository,
-            client=client,
-            toolkit_factory=lambda log_reader: CoderToolkit(
-                repository=repository,
-                configured_root=settings.workspace_root,
-                log_reader=log_reader,
+    # Router integration (M2.1): strict, dynamic credential routing. There is
+    # NO silent legacy fallback: AUTO is DeepSeek V4 Flash, and each run's
+    # client is dispatched per-run from its persisted routing.
+    from defend_coder.credentials import CredentialStore
+    from defend_coder.model_config import CoderModelConfig
+    from defend_coder.providers import (
+        DEFAULT_DEEPSEEK_MODEL,
+        NEXT_MODEL,
+        SOL_MODEL,
+        build_client,
+        deepseek_target,
+        next_target,
+        sol_target,
+    )
+
+    def _secret_store_loader() -> object:
+        from pathlib import Path
+
+        from defend_control.secrets import DpapiSecretStore
+
+        local = os.environ.get("LOCALAPPDATA") or "."
+        return DpapiSecretStore(Path(local) / "DEFEND" / "secrets.dpapi")
+
+    credentials = CredentialStore(store_loader=_secret_store_loader)
+
+    def _client_for(routing) -> object:
+        model = (
+            routing.selected_model
+            if routing is not None and routing.selected_model
+            else DEFAULT_DEEPSEEK_MODEL
+        )
+        live = {
+            DEFAULT_DEEPSEEK_MODEL: deepseek_target(
+                availability=credentials.configured("deepseek")
             ),
-            max_steps=settings.max_steps,
-            max_loop_seconds=settings.max_run_seconds,
-            finalization_enabled=settings.finalization_enabled,
-            finalization_timeout_seconds=settings.finalization_timeout_seconds,
+            NEXT_MODEL: next_target(),
+            SOL_MODEL: sol_target(
+                availability=credentials.configured("sol")
+            ),
+        }
+        target = live.get(model)
+        if target is None:
+            raise ValueError(f"no configured target for model {model!r}")
+        if target.managed_api:
+            api_key = credentials.resolve(
+                "deepseek" if model == DEFAULT_DEEPSEEK_MODEL else "sol"
+            )
+            if not api_key:
+                raise ValueError(
+                    f"provider {target.provider} requires a configured key"
+                )
+        else:
+            api_key = None
+        return build_client(target, api_key=api_key)
+
+    def _proposal_for(run_id, outcome):
+        # Deterministic, grounded auto-escalation: quality failures only, one
+        # proposal per run (anti-spam), never for infrastructure failures.
+        if outcome.state != "failed":
+            return None
+        if runs_repository.list_escalation_proposals(run_id):
+            return None
+        from defend_coder.router import (
+            EscalationManager,
+            EscalationReason,
         )
-        print(
-            f"DEFENDcoder agent: model={model_config.model_name} "
-            f"alias={model_config.alias} "
-            f"max_steps={settings.max_steps} "
-            f"max_run_seconds={settings.max_run_seconds:.0f} "
-            f"finalization_enabled={settings.finalization_enabled}",
-            file=sys.stderr,
+        from defend_coder.routing import propose_for_outcome
+
+        routing = runs_repository.get_run_routing(run_id)
+        current = (
+            routing.selected_model
+            if routing is not None
+            else DEFAULT_DEEPSEEK_MODEL
         )
-    else:
-        print(
-            "DEFENDcoder agent: no CODER_MODEL_BASE_URL configured; "
-            "agent runs are disabled until the model runtime is wired",
-            file=sys.stderr,
+        return propose_for_outcome(
+            manager=EscalationManager(),
+            current_model=current,
+            outcome=outcome,
+            summary=(
+                "Two repair attempts failed the same objective; "
+                "DEFENDcoder recommends a stronger model."
+            ),
+            evidence=(str(outcome.reason or outcome.state),),
+            attempt_count=2,
+            tests_failed=1,
+            reason_code=EscalationReason.REPEATED_TEST_FAILURE,
         )
+
+    runner = RunRunner(
+        repository=runs_repository,
+        # Base client is only used for policy/back-compat; real execution is
+        # dispatched per-run through client_resolver.
+        client=AgentChatClient(
+            CoderModelConfig(
+                alias="routing",
+                model_name="routing",
+                base_url="http://127.0.0.1:9/v1",
+            )
+        ),
+        client_resolver=_client_for,
+        proposal_factory=_proposal_for,
+        toolkit_factory=lambda log_reader: CoderToolkit(
+            repository=repository,
+            configured_root=settings.workspace_root,
+            log_reader=log_reader,
+        ),
+        max_steps=settings.max_steps,
+        max_loop_seconds=settings.max_run_seconds,
+        finalization_enabled=settings.finalization_enabled,
+        finalization_timeout_seconds=settings.finalization_timeout_seconds,
+    )
+    print(
+        f"DEFENDcoder agent: per-run routing (AUTO=deepseek-v4-flash) "
+        f"max_steps={settings.max_steps} "
+        f"max_run_seconds={settings.max_run_seconds:.0f} "
+        f"finalization_enabled={settings.finalization_enabled}",
+        file=sys.stderr,
+    )
 
     app = build_coder_app(
         settings=settings,
@@ -183,6 +272,8 @@ def main() -> None:
         runs_repository=runs_repository,
         runner=runner,
         configured_root=settings.workspace_root,
+        targets=targets,
+        secret_resolver=_secret_resolver,
     )
 
     uvicorn.run(

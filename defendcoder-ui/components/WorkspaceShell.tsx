@@ -4,16 +4,27 @@ import { FormEvent, useEffect, useState } from "react";
 
 import {
   ApiError,
+  approveEscalation,
   createRun,
+  denyEscalation,
+  EscalationProposal,
+  fetchEscalations,
   fetchRunDetail,
+  fetchRouting,
   FileEntry,
   listFiles,
   listRuns,
+  ModelTargetPublic,
   RunDetail,
   RunMessage,
   RunRecord,
+  RunRouting,
   RuntimeStatus,
+  selectModel,
+  sendChat,
 } from "@/app/workspace/load-workspace";
+import EscalationModal from "./EscalationModal";
+import ModelSelector, { ModelMode } from "./ModelSelector";
 
 type Account = {
   username: string;
@@ -233,6 +244,23 @@ export default function WorkspaceShell({
   const [filesError, setFilesError] = useState<string | null>(null);
   const [tab, setTab] = useState<ExecutionTab>("terminal");
 
+  const [modelMode, setModelMode] = useState<ModelMode>("AUTO");
+  const [currentModel, setCurrentModel] = useState<string | null>(
+    runtime?.model ?? null
+  );
+  const [routing, setRouting] = useState<RunRouting | null>(null);
+  const [routingTargets, setRoutingTargets] = useState<
+    Record<string, ModelTargetPublic> | null
+  >(null);
+  const [pendingProposal, setPendingProposal] =
+    useState<EscalationProposal | null>(null);
+  const [escalationBusy, setEscalationBusy] = useState(false);
+  const [chatReplies, setChatReplies] = useState<
+    Array<{ role: "user" | "assistant"; text: string }>
+  >([]);
+  const [chatInput, setChatInput] = useState("");
+  const [chatBusy, setChatBusy] = useState(false);
+
   const activeWorkspace =
     items.find((item) => item.workspace_id === activeId) ?? null;
 
@@ -244,7 +272,8 @@ export default function WorkspaceShell({
 
   const composerDisabledReason = (() => {
     if (!activeWorkspace) {
-      return "Select or create a workspace to begin.";
+      // Workspace-less chat mode: no workspace tools, chat works.
+      return null;
     }
     if (runActive) {
       return "An agent run is in progress for this workspace.";
@@ -309,6 +338,180 @@ export default function WorkspaceShell({
     }
   }
 
+  async function refreshRoutingAndEscalations(
+    workspaceId: string,
+    runId: string
+  ) {
+    try {
+      const data = await fetchRouting(fetch, "/v1", workspaceId, runId);
+      setRouting(data.routing);
+      setRoutingTargets(data.targets);
+      if (data.routing) {
+        setCurrentModel(data.routing.selected_model);
+        setModelMode(
+          (data.routing.requested_mode as ModelMode) || "AUTO"
+        );
+      }
+    } catch {
+      // transient; next poll retries
+    }
+    try {
+      const proposals = await fetchEscalations(
+        fetch,
+        "/v1",
+        workspaceId,
+        runId
+      );
+      const pending = proposals.find((p) => p.status === "pending") ?? null;
+      setPendingProposal(pending);
+    } catch {
+      // transient
+    }
+  }
+
+  useEffect(() => {
+    if (!activeRun || !activeWorkspace) {
+      return;
+    }
+    const workspaceId = activeWorkspace.workspace_id;
+    const runId = activeRun.run.run_id;
+
+    void refreshRoutingAndEscalations(workspaceId, runId);
+    const timer = window.setInterval(() => {
+      void refreshRoutingAndEscalations(workspaceId, runId);
+    }, 3000);
+
+    return () => window.clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeRun?.run.run_id, activeWorkspace?.workspace_id]);
+
+  async function chooseMode(mode: ModelMode) {
+    if (!activeWorkspace || !activeRun) {
+      setModelMode(mode);
+      return;
+    }
+    try {
+      const csrf = csrfToken();
+      const routed = await selectModel(
+        fetch,
+        "/v1",
+        activeWorkspace.workspace_id,
+        activeRun.run.run_id,
+        mode,
+        csrf
+      );
+      setRouting(routed);
+      setCurrentModel(routed.selected_model);
+      setModelMode((routed.requested_mode as ModelMode) || "AUTO");
+      setError(null);
+    } catch (cause) {
+      setError(
+        cause instanceof ApiError
+          ? cause.message
+          : "Unable to change model."
+      );
+    }
+  }
+
+  async function handleApproveEscalation() {
+    if (!activeWorkspace || !activeRun || !pendingProposal) {
+      return;
+    }
+    setEscalationBusy(true);
+    try {
+      const csrf = csrfToken();
+      const routed = await approveEscalation(
+        fetch,
+        "/v1",
+        activeWorkspace.workspace_id,
+        activeRun.run.run_id,
+        pendingProposal.proposal_id,
+        csrf
+      );
+      setRouting(routed);
+      setCurrentModel(routed.selected_model);
+      setPendingProposal(null);
+      setError(null);
+    } catch (cause) {
+      setError(
+        cause instanceof ApiError
+          ? cause.message
+          : "Approval failed."
+      );
+    } finally {
+      setEscalationBusy(false);
+    }
+  }
+
+  async function handleStayOnCurrent() {
+    if (!activeWorkspace || !activeRun || !pendingProposal) {
+      return;
+    }
+    setEscalationBusy(true);
+    try {
+      const csrf = csrfToken();
+      await denyEscalation(
+        fetch,
+        "/v1",
+        activeWorkspace.workspace_id,
+        activeRun.run.run_id,
+        pendingProposal.proposal_id,
+        csrf
+      );
+      setPendingProposal(null);
+    } catch (cause) {
+      setError(
+        cause instanceof ApiError
+          ? cause.message
+          : "Unable to stay on the current model."
+      );
+    } finally {
+      setEscalationBusy(false);
+    }
+  }
+
+  async function handleUseSolInstead() {
+    await chooseMode("SOL");
+    setPendingProposal(null);
+  }
+
+  async function handleCancelRun() {
+    await handleStayOnCurrent();
+    setError("Run cancelled by owner.");
+  }
+
+  async function sendChatMessage(message: string) {
+    const value = message.trim();
+    if (!value || chatBusy) {
+      return;
+    }
+    setChatBusy(true);
+    setError(null);
+    try {
+      const csrf = csrfToken();
+      const result = await sendChat(fetch, "/v1", value, csrf);
+      setChatReplies((current) => [
+        ...current,
+        { role: "user", text: value },
+        { role: "assistant", text: result.reply },
+      ]);
+      setCurrentModel(result.model);
+      setChatInput("");
+    } catch (cause) {
+      if (cause instanceof ApiError && cause.status === 503) {
+        setError(
+          "DeepSeek is not configured; workspace-less chat is unavailable."
+        );
+      } else {
+        setError(
+          cause instanceof ApiError ? cause.message : "Chat failed."
+        );
+      }
+    } finally {
+      setChatBusy(false);
+    }
+  }
+
   async function selectWorkspace(workspaceId: string) {
     setActiveId(workspaceId);
     setError(null);
@@ -341,7 +544,11 @@ export default function WorkspaceShell({
 
   async function sendPrompt(rawPrompt: string) {
     const value = rawPrompt.trim();
-    if (!value || !activeWorkspace || runActive) {
+    if (!value || runActive) {
+      return;
+    }
+    if (!activeWorkspace) {
+      await sendChatMessage(value);
       return;
     }
 
@@ -604,6 +811,16 @@ export default function WorkspaceShell({
           </div>
         </div>
 
+        <ModelSelector
+          mode={modelMode}
+          currentModel={currentModel ?? runtime?.model ?? ""}
+          routing={routing}
+          targets={routingTargets}
+          role={account.role}
+          disabled={!activeRun || !activeWorkspace}
+          onChange={(mode) => void chooseMode(mode)}
+        />
+
         <div className="workspace-account">
           <span>{account.username}</span>
           <span className="role-chip">{account.role}</span>
@@ -850,13 +1067,33 @@ export default function WorkspaceShell({
           </div>
 
           <div className="agent-conversation">
-            {!activeRun ? (
+            {!activeWorkspace ? (
+              chatReplies.length === 0 ? (
+                <div className="empty-agent-state">
+                  <strong>DEFENDcoder Chat</strong>
+                  <p>
+                    No workspace attached — advice and coding discussion are
+                    available without filesystem or tool access.
+                  </p>
+                </div>
+              ) : (
+                chatReplies.map((message, index) => (
+                  <article
+                    key={index}
+                    className={`agent-message agent-message-${
+                      message.role === "user" ? "user" : "assistant"
+                    }`}
+                  >
+                    <span className="message-role">
+                      {message.role === "user" ? "You" : "Agent"}
+                    </span>
+                    <p className="message-content">{message.text}</p>
+                  </article>
+                ))
+              )
+            ) : !activeRun ? (
               <div className="empty-agent-state">
-                <strong>
-                  {activeWorkspace
-                    ? activeWorkspace.name
-                    : "Select or create a workspace."}
-                </strong>
+                <strong>{activeWorkspace.name}</strong>
                 <p>{agentStateNotice}</p>
               </div>
             ) : (
@@ -951,7 +1188,9 @@ export default function WorkspaceShell({
               aria-label="Coding task"
               placeholder={
                 composerDisabledReason ??
-                "Describe a coding task for the agent…"
+                (activeWorkspace
+                  ? "Describe a coding task for the agent…"
+                  : "Ask DEFENDcoder anything — no workspace needed…")
               }
               disabled={composerDisabledReason !== null}
               value={prompt}
@@ -1101,6 +1340,22 @@ export default function WorkspaceShell({
           </div>
         </section>
       </div>
+
+      {pendingProposal && activeRun && activeWorkspace ? (
+        <EscalationModal
+          proposal={pendingProposal}
+          runtimeState={
+            routingTargets?.["Qwen/Qwen3-Coder-Next"]?.available
+              ? "READY"
+              : "STOPPED_RETAINED"
+          }
+          busy={escalationBusy}
+          onApprove={() => void handleApproveEscalation()}
+          onStay={() => void handleStayOnCurrent()}
+          onUseSol={() => void handleUseSolInstead()}
+          onCancelRun={() => void handleCancelRun()}
+        />
+      ) : null}
     </main>
   );
 }

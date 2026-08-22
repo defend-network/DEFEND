@@ -280,3 +280,162 @@ export async function listFiles(
   );
   return (await response.json()) as FilesResponse;
 }
+
+export type RunRouting = {
+  requested_mode: string;
+  selected_tier: string;
+  selected_model: string;
+  selected_provider: string | null;
+  route_reason: string | null;
+  escalated_from: string | null;
+  escalation_approved_at: string | null;
+  escalation_approved_by: string | null;
+};
+
+export type ModelTargetPublic = {
+  tier: string;
+  alias: string;
+  provider: string;
+  model: string;
+  runtime_kind: string;
+  requires_external_runtime: boolean;
+  available: boolean;
+  cost_class: string;
+};
+
+export type RoutingResponse = {
+  identity: string;
+  routing: RunRouting | null;
+  targets: Record<string, ModelTargetPublic>;
+  runtime: { state?: string | null; model?: string | null; instance_id?: number | null };
+};
+
+export type EscalationProposal = {
+  proposal_id: string;
+  from_model: string;
+  to_model: string;
+  reason_code: string;
+  human_summary: string;
+  evidence: string[];
+  attempt_count: number;
+  tests_failed: number;
+  estimated_incremental_cost: string | null;
+  target_runtime_state: string;
+  requires_gpu_resume: boolean;
+  status: string;
+  created_at: string | null;
+  expires_at: string | null;
+  approved_at: string | null;
+  approved_by: string | null;
+};
+
+export async function fetchRouting(
+  fetchImpl: typeof fetch,
+  base: string,
+  workspaceId: string,
+  runId: string
+): Promise<RoutingResponse> {
+  const response = await apiFetch(
+    fetchImpl,
+    `${base}/v1/workspaces/${workspaceId}/runs/${runId}/routing`
+  );
+  return (await response.json()) as RoutingResponse;
+}
+
+export async function selectModel(
+  fetchImpl: typeof fetch,
+  base: string,
+  workspaceId: string,
+  runId: string,
+  requestedMode: string,
+  csrfToken: string | null
+): Promise<RunRouting> {
+  const response = await apiFetch(
+    fetchImpl,
+    `${base}/v1/workspaces/${workspaceId}/runs/${runId}/model`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(csrfToken ? { "X-CSRF-Token": csrfToken } : {}),
+      },
+      body: JSON.stringify({ requested_mode: requestedMode }),
+    }
+  );
+  const body = (await response.json()) as { routing: RunRouting };
+  return body.routing;
+}
+
+export async function fetchEscalations(
+  fetchImpl: typeof fetch,
+  base: string,
+  workspaceId: string,
+  runId: string
+): Promise<EscalationProposal[]> {
+  const response = await apiFetch(
+    fetchImpl,
+    `${base}/v1/workspaces/${workspaceId}/runs/${runId}/escalation`
+  );
+  const body = (await response.json()) as { proposals: EscalationProposal[] };
+  return body.proposals;
+}
+
+export async function approveEscalation(
+  fetchImpl: typeof fetch,
+  base: string,
+  workspaceId: string,
+  runId: string,
+  proposalId: string,
+  csrfToken: string | null
+): Promise<RunRouting> {
+  const response = await apiFetch(
+    fetchImpl,
+    `${base}/v1/workspaces/${workspaceId}/runs/${runId}/escalation/${proposalId}/approve`,
+    {
+      method: "POST",
+      headers: csrfToken ? { "X-CSRF-Token": csrfToken } : {},
+    }
+  );
+  const body = (await response.json()) as { routing: RunRouting };
+  return body.routing;
+}
+
+export async function denyEscalation(
+  fetchImpl: typeof fetch,
+  base: string,
+  workspaceId: string,
+  runId: string,
+  proposalId: string,
+  csrfToken: string | null
+): Promise<void> {
+  await apiFetch(
+    fetchImpl,
+    `${base}/v1/workspaces/${workspaceId}/runs/${runId}/escalation/${proposalId}/deny`,
+    {
+      method: "POST",
+      headers: csrfToken ? { "X-CSRF-Token": csrfToken } : {},
+    }
+  );
+}
+
+export async function sendChat(
+  fetchImpl: typeof fetch,
+  base: string,
+  message: string,
+  csrfToken: string | null
+): Promise<{ reply: string; model: string; provider: string; tier: string }> {
+  const response = await apiFetch(fetchImpl, `${base}/v1/chat`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(csrfToken ? { "X-CSRF-Token": csrfToken } : {}),
+    },
+    body: JSON.stringify({ message }),
+  });
+  return (await response.json()) as {
+    reply: string;
+    model: string;
+    provider: string;
+    tier: string;
+  };
+}
