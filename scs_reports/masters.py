@@ -147,6 +147,16 @@ MASTER_WORKBOOKS: tuple[MasterWorkbook, ...] = (
                 merged_cell_count=0,
             ),
             MasterSheet(
+                "Field_Report_Master.xlsm", "30_Deficiencies",
+                "Deficiency, exception & corrective action log",
+                "general", "row per deficiency",
+                required_fields=("deficiency_id", "issue", "severity"),
+                optional_fields=("equipment_area", "category",
+                                 "objective_evidence", "recommended_action",
+                                 "status"),
+                merged_cell_count=0,
+            ),
+            MasterSheet(
                 "Field_Report_Master.xlsm", "31_Photo_Log",
                 "Photo evidence register (photo id/date/equipment/view/"
                 "description/file ref)", "general", "row per photo",

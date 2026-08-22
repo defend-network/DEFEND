@@ -72,24 +72,27 @@ class OfficeToolkit:
     def workbook_inspect(self, path: str) -> dict[str, Any]:
         op = "workbook.inspect"
         try:
-            source = self._require_file(path, ".xlsx")
-            wb = openpyxl.load_workbook(source, data_only=False)
+            source = self._require_spreadsheet(path)
+            wb = self._open_spreadsheet(source)
             sheets = []
             for ws in wb.worksheets:
                 formulas = sum(
-                    1 for row in ws.iter_rows() for cell in row
+                    1 for row in ws.iter_rows(max_row=min(ws.max_row, 2000),
+                                              max_col=min(ws.max_column, 200))
+                    for cell in row
                     if isinstance(cell.value, str) and cell.value.startswith("=")
                 )
                 sheets.append({"name": ws.title, "max_row": ws.max_row, "max_column": ws.max_column, "formula_cells": formulas})
-            return self._result(op, source, None, data={"sheets": sheets})
+            has_vba = bool(getattr(wb, "vba_archive", None) or getattr(wb, "keep_vba", False))
+            return self._result(op, source, None, data={"sheets": sheets, "has_vba": has_vba})
         except Exception as exc:
             return self._failure(op, path, exc)
 
     def workbook_read_range(self, path: str, *, sheet: str, range: str) -> dict[str, Any]:
         op = "workbook.read_range"
         try:
-            source = self._require_file(path, ".xlsx")
-            wb = openpyxl.load_workbook(source, data_only=False)
+            source = self._require_spreadsheet(path)
+            wb = self._open_spreadsheet(source)
             ws = wb[sheet]
             cells = ws[range]
             if not isinstance(cells, tuple):
@@ -112,10 +115,10 @@ class OfficeToolkit:
     def workbook_write_range(self, path: str, *, sheet: str, range: str, values: list[list[Any]]) -> dict[str, Any]:
         op = "workbook.write_range"
         try:
-            source = self._require_file(path, ".xlsx")
+            source = self._require_spreadsheet(path)
             out = self._versioned_sibling(source)
             shutil.copy2(source, out)
-            wb = openpyxl.load_workbook(out, data_only=False)
+            wb = self._open_spreadsheet(out)
             ws = wb[sheet]
             min_col, min_row, max_col, max_row = range_boundaries(range)
             height, width = max_row - min_row + 1, max_col - min_col + 1
@@ -134,10 +137,10 @@ class OfficeToolkit:
         try:
             if not isinstance(formula, str) or not formula.startswith("="):
                 raise ValueError("formula must start with '='")
-            source = self._require_file(path, ".xlsx")
+            source = self._require_spreadsheet(path)
             out = self._versioned_sibling(source)
             shutil.copy2(source, out)
-            wb = openpyxl.load_workbook(out, data_only=False)
+            wb = self._open_spreadsheet(out)
             wb[sheet][cell] = formula
             wb.save(out)
             return self._result(
@@ -162,10 +165,10 @@ class OfficeToolkit:
     ) -> dict[str, Any]:
         op = "workbook.format_range"
         try:
-            source = self._require_file(path, ".xlsx")
+            source = self._require_spreadsheet(path)
             out = self._versioned_sibling(source)
             shutil.copy2(source, out)
-            wb = openpyxl.load_workbook(out, data_only=False)
+            wb = self._open_spreadsheet(out)
             ws = wb[sheet]
             min_col, min_row, max_col, max_row = range_boundaries(range)
             for row in ws.iter_rows(min_row=min_row, max_row=max_row, min_col=min_col, max_col=max_col):
@@ -186,10 +189,10 @@ class OfficeToolkit:
     def workbook_add_sheet(self, path: str, *, sheet: str) -> dict[str, Any]:
         op = "workbook.add_sheet"
         try:
-            source = self._require_file(path, ".xlsx")
+            source = self._require_spreadsheet(path)
             out = self._versioned_sibling(source)
             shutil.copy2(source, out)
-            wb = openpyxl.load_workbook(out, data_only=False)
+            wb = self._open_spreadsheet(out)
             if sheet in wb.sheetnames:
                 raise ValueError("sheet already exists")
             wb.create_sheet(sheet)
@@ -294,6 +297,22 @@ class OfficeToolkit:
         if not resolved.is_file():
             raise FileNotFoundError(str(resolved))
         return resolved
+
+    def _require_spreadsheet(self, path: str) -> Path:
+        resolved = self.resolve(path)
+        if resolved.suffix.lower() not in (".xlsx", ".xlsm"):
+            raise ValueError("expected .xlsx or .xlsm artifact")
+        if not resolved.is_file():
+            raise FileNotFoundError(str(resolved))
+        return resolved
+
+    def _open_spreadsheet(self, path: Path):
+        """Open a workbook; XLSM keeps VBA in memory (never executed)."""
+        keep_vba = path.suffix.lower() == ".xlsm"
+        workbook = openpyxl.load_workbook(path, data_only=False, keep_vba=keep_vba)
+        if keep_vba:
+            workbook.keep_vba = True
+        return workbook
 
     def _assert_no_link_escape(self, candidate: Path) -> None:
         current = self.workspace_root

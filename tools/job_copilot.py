@@ -1,0 +1,679 @@
+"""SCS Job Copilot - Monday-ready local field copilot.
+
+Wraps the scs_reports pipeline (JobStore, PhotoIngest, planner, composer,
+validation, completeness, natural-language measurement capture) behind a
+small local server + single-page UI:
+
+    JOB  CHAT  PHOTOS  MEASUREMENTS  COMPLETENESS  REPORT PLAN  FINDINGS  GENERATE
+
+The owner never edits JobRecord JSON by hand; natural language becomes
+structured facts. Reports are composed from the immutable owner masters
+(never written to) and downloaded as .xlsx.
+
+Usage:
+    python tools/job_copilot.py [--port 3220] [--workspace C:/SCS_DATA/copilot]
+                                [--masters C:/SCS_DATA/masters]
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import mimetypes
+import sys
+from datetime import date, datetime
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import parse_qs, unquote, urlparse
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from scs_reports.completeness import evaluate, ready_to_leave
+from scs_reports.composer import Composer
+from scs_reports.nl_parse import merge_capture, parse_measurements
+from scs_reports.planner import plan_for
+from scs_reports.schema import (
+    AirDevice,
+    Equipment,
+    EquipmentType,
+    Finding,
+    JobMetadata,
+    JobRecord,
+    PhotoEvidence,
+)
+from scs_reports.store import JobStore, MasterStore, PhotoIngest, ReportPaths
+from scs_reports.validation import validate_report
+
+SCOPE_MARKERS = ("scope", "verification", "verifying", "airflow", "balance",
+                 "ductwork", "ducts", "outlets", "studios", "traverse",
+                 "static")
+
+
+def detect_scope(text: str) -> tuple[str, str]:
+    """Return (report_type, scope_notes) from a natural scope description."""
+    low = text.lower()
+    if any(w in low for w in ("airflow", "verification", "balance", "outlet",
+                              "duct", "studio")):
+        report_type = "AIRFLOW_VERIFICATION"
+    elif any(w in low for w in ("tab", "traverse", "vav")):
+        report_type = "TAB"
+    else:
+        report_type = "TAB"
+    return report_type, text.strip()
+
+
+class CopilotServer(BaseHTTPRequestHandler):
+    paths: ReportPaths
+    store: JobStore
+    masters: MasterStore
+    composer: Composer
+
+    @classmethod
+    def configure(cls, workspace: Path, masters_dir: Path) -> None:
+        cls.paths = ReportPaths(workspace).ensure()
+        cls.masters = MasterStore(cls.paths)
+        try:
+            cls.masters.install_masters(masters_dir)
+        except FileNotFoundError as error:
+            print(f"[copilot] WARN {error}", file=sys.stderr)
+        cls.store = JobStore(cls.paths)
+        cls.composer = Composer(cls.paths, cls.store)
+
+    # ------------------------------------------------------------- helpers
+
+    def _send_json(self, obj, status: int = 200):
+        body = json.dumps(obj, indent=2, default=str).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _read_body(self) -> dict:
+        length = int(self.headers.get("Content-Length", 0))
+        if length <= 0:
+            return {}
+        try:
+            return json.loads(self.rfile.read(length).decode("utf-8"))
+        except Exception:
+            return {}
+
+    def _load(self, job_id: str) -> JobRecord:
+        return self.store.load(job_id)
+
+    def _save(self, record: JobRecord) -> JobRecord:
+        return self.store.save(record)
+
+    def _job_payload(self, record: JobRecord) -> dict:
+        plan = plan_for(record)
+        return {
+            "job": record.to_dict(),
+            "plan": plan.to_dict(),
+            "completeness": evaluate(record).to_dict(),
+            "ready_to_leave": ready_to_leave(record),
+        }
+
+    # ---------------------------------------------------------------- routing
+
+    def do_GET(self):
+        parsed = urlparse(self.path)
+        path = unquote(parsed.path)
+        if path in ("/", "/index.html"):
+            self._send_ui()
+        elif path == "/api/state":
+            jobs = []
+            for job_id in self.store.list_jobs():
+                try:
+                    record = self._load(job_id)
+                except Exception:
+                    continue
+                jobs.append({
+                    "job_id": job_id,
+                    "project_name": record.metadata.project_name,
+                    "site_name": record.metadata.site_name,
+                    "report_type": record.metadata.report_type,
+                    "test_date": (
+                        record.metadata.test_date.isoformat()
+                        if record.metadata.test_date else None
+                    ),
+                    "device_count": len(record.air_devices),
+                    "photo_count": len(record.photos),
+                })
+            unchanged, _ = self.masters.verify_unchanged()
+            self._send_json({"jobs": jobs, "masters_verified": unchanged,
+                             "workspace": str(self.paths.root)})
+        elif path.startswith("/api/jobs/"):
+            parts = path[len("/api/jobs/"):].split("/")
+            if len(parts) == 2 and parts[1] == "download":
+                self._download(parts[0])
+            elif len(parts) == 3 and parts[1] == "photo":
+                self._serve_photo(parts[0], parts[2])
+            elif len(parts) == 1:
+                self._job_detail(parts[0])
+            else:
+                self._send_json({"error": "not found"}, 404)
+        else:
+            self._send_json({"error": "not found"}, 404)
+
+    def do_POST(self):
+        parsed = urlparse(self.path)
+        path = unquote(parsed.path)
+        if path == "/api/jobs":
+            self._create_job()
+        elif path.startswith("/api/jobs/"):
+            parts = path[len("/api/jobs/"):].split("/")
+            if len(parts) == 2:
+                action = parts[1]
+                handler = getattr(self, f"_action_{action}", None)
+                if handler is not None:
+                    handler(parts[0])
+                else:
+                    self._send_json({"error": f"unknown action {action}"}, 400)
+            else:
+                self._send_json({"error": "not found"}, 404)
+        else:
+            self._send_json({"error": "not found"}, 404)
+
+    # ------------------------------------------------------------- handlers
+
+    def _create_job(self):
+        body = self._read_body()
+        project = (body.get("project_name") or "").strip()
+        if not project:
+            self._send_json({"error": "project_name required"}, 400)
+            return
+        job_id = body.get("job_id") or datetime.now().strftime("%Y%m%d%H%M%S")
+        metadata = JobMetadata(
+            job_id=job_id,
+            project_name=project,
+            project_number=body.get("project_number"),
+            site_name=body.get("site_name") or "",
+            test_date=(
+                date.fromisoformat(body["test_date"])
+                if body.get("test_date") else date.today()
+            ),
+            technician=body.get("technician") or "",
+            hiring_contractor=body.get("hiring_contractor"),
+            report_type=(body.get("report_type") or "TAB").upper(),
+        )
+        if "scope" in body and body["scope"]:
+            metadata.report_type, scope_notes = detect_scope(body["scope"])
+        record = JobRecord(metadata=metadata)
+        if "scope" in body and body["scope"]:
+            _, record.scope_notes = detect_scope(body["scope"])
+        try:
+            self.store.create(record)
+        except ValueError as error:
+            self._send_json({"error": str(error)}, 400)
+            return
+        self._send_json(self._job_payload(record))
+
+    def _job_detail(self, job_id: str):
+        try:
+            record = self._load(job_id)
+        except FileNotFoundError as error:
+            self._send_json({"error": str(error)}, 404)
+            return
+        self._send_json(self._job_payload(record))
+
+    def _action_chat(self, job_id: str):
+        record = self._load(job_id)
+        body = self._read_body()
+        text = (body.get("text") or "").strip()
+        if not text:
+            self._send_json({"error": "text required"}, 400)
+            return
+        low = text.lower()
+        if any(w in low for w in SCOPE_MARKERS) and not any(
+            w in low for w in ("cfm", "fpm", "as found", "final", "reading")
+        ):
+            record.metadata.report_type, record.scope_notes = detect_scope(text)
+        captures = parse_measurements(text)
+        merged = 0
+        for capture in captures:
+            if merge_capture(record, capture):
+                merged += 1
+        self._save(record)
+        self._send_json({
+            "captures": [c.to_dict() for c in captures],
+            "merged": merged,
+            "scope_notes": record.scope_notes,
+            "report_type": record.metadata.report_type,
+            "payload": self._job_payload(record),
+        })
+
+    def _action_photos(self, job_id: str):
+        record = self._load(job_id)
+        body = self._read_body()
+        sources = [Path(p) for p in (body.get("photo_paths") or [])]
+        if not sources:
+            self._send_json({"error": "photo_paths required"}, 400)
+            return
+        ingest = PhotoIngest(self.paths)
+        entries = ingest.ingest(job_id, sources)
+        record.photos.extend(entries)
+        self._save(record)
+        self._send_json({
+            "photos": [p.to_dict() for p in entries],
+            "payload": self._job_payload(record),
+        })
+
+    def _action_measurements(self, job_id: str):
+        record = self._load(job_id)
+        body = self._read_body()
+        text = (body.get("text") or "").strip()
+        captures = parse_measurements(text)
+        merged = 0
+        for capture in captures:
+            if merge_capture(record, capture):
+                merged += 1
+        self._save(record)
+        self._send_json({"captures": [c.to_dict() for c in captures],
+                         "merged": merged,
+                         "payload": self._job_payload(record)})
+
+    def _action_devices(self, job_id: str):
+        record = self._load(job_id)
+        body = self._read_body()
+        device_id = (body.get("device_id") or "").strip()
+        if not device_id:
+            self._send_json({"error": "device_id required"}, 400)
+            return
+        device = next(
+            (d for d in record.air_devices if d.device_id == device_id), None
+        )
+        if device is None:
+            device = AirDevice(device_id=device_id,
+                               function=body.get("function") or "SUPPLY",
+                               measurement_method="rotating vane")
+            record.air_devices.append(device)
+        for key in ("area_served", "function", "measurement_method", "size",
+                    "status", "notes"):
+            if body.get(key) is not None:
+                setattr(device, key, body[key])
+        for key in ("design_cfm", "as_found_cfm", "final_cfm", "avg_velocity_fpm"):
+            if body.get(key) is not None:
+                try:
+                    setattr(device, key, float(body[key]))
+                except (TypeError, ValueError):
+                    pass
+        self._save(record)
+        self._send_json(self._job_payload(record))
+
+    def _action_equipment(self, job_id: str):
+        record = self._load(job_id)
+        body = self._read_body()
+        equipment_id = (body.get("equipment_id") or "").strip()
+        if not equipment_id:
+            self._send_json({"error": "equipment_id required"}, 400)
+            return
+        equipment = Equipment(
+            equipment_id=equipment_id,
+            equipment_type=EquipmentType(body.get("equipment_type") or "OTHER"),
+            tag=body.get("tag") or equipment_id,
+            manufacturer=body.get("manufacturer"),
+            model=body.get("model"),
+            serial=body.get("serial"),
+            area_served=body.get("area_served"),
+        )
+        record.equipment.append(equipment)
+        self._save(record)
+        self._send_json(self._job_payload(record))
+
+    def _action_findings(self, job_id: str):
+        record = self._load(job_id)
+        body = self._read_body()
+        title = (body.get("title") or "").strip()
+        if not title:
+            self._send_json({"error": "title required"}, 400)
+            return
+        record.findings.append(Finding(
+            title=title,
+            detail=body.get("detail") or "",
+            category=body.get("category") or "observation",
+            severity=body.get("severity") or "minor",
+        ))
+        self._save(record)
+        self._send_json(self._job_payload(record))
+
+    def _action_completeness(self, job_id: str):
+        record = self._load(job_id)
+        self._send_json(ready_to_leave(record))
+
+    def _action_plan(self, job_id: str):
+        record = self._load(job_id)
+        self._send_json(plan_for(record).to_dict())
+
+    def _action_generate(self, job_id: str):
+        record = self._load(job_id)
+        plan = plan_for(record)
+        try:
+            output = self.composer.compose(record, plan)
+        except Exception as error:
+            self._send_json({"error": f"compose failed: {type(error).__name__}: {error}"}, 500)
+            return
+        validation = validate_report(record, plan, output,
+                                     masters=self.masters)
+        self._send_json({
+            "output": str(output),
+            "output_name": output.name,
+            "validation": {
+                "summary": validation.summary(),
+                "checks": [
+                    {"name": c.name, "status": c.status, "message": c.message}
+                    for c in validation.checks
+                ],
+            },
+        })
+
+    def _download(self, job_id: str):
+        record = self._load(job_id)
+        from scs_reports.composer import output_stem
+        stem = output_stem(record)
+        output_dir = self.paths.output_dir(job_id)
+        candidates = sorted(
+            (p for p in output_dir.glob(f"{stem}*.xlsx") if p.is_file()),
+            key=lambda p: p.stat().st_mtime,
+        )
+        if not candidates:
+            self._send_json({"error": "no generated report yet"}, 404)
+            return
+        target = candidates[-1]
+        body = target.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        self.send_header("Content-Disposition", f'attachment; filename="{target.name}"')
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _serve_photo(self, job_id: str, photo_id: str):
+        record = self._load(job_id)
+        photo = next((p for p in record.photos if p.photo_id == photo_id), None)
+        if photo is None:
+            self._send_json({"error": "no such photo"}, 404)
+            return
+        source = self.paths.job_subdir(job_id, "originals") / photo.original_filename
+        if not source.exists():
+            self._send_json({"error": "photo file missing"}, 404)
+            return
+        mime = mimetypes.guess_type(source.name)[0] or "application/octet-stream"
+        body = source.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", mime)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_ui(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        body = INDEX_HTML.encode("utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, fmt, *args):  # quiet
+        pass
+
+
+INDEX_HTML = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><title>SCS Job Copilot</title>
+<style>
+:root { color-scheme: dark; }
+* { box-sizing: border-box; }
+body { margin:0; font:14px/1.45 system-ui, Segoe UI, sans-serif; background:#12141a; color:#e6e8ee; }
+header { display:flex; align-items:center; gap:14px; padding:10px 16px; background:#1a1d26; border-bottom:1px solid #2a2f3a; position:sticky; top:0; z-index:5; flex-wrap:wrap; }
+header h1 { font-size:15px; margin:0; font-weight:600; }
+header .spacer { flex:1; }
+main { display:grid; grid-template-columns: minmax(0,1fr) minmax(340px,1fr); gap:0; height:calc(100vh - 52px); }
+#left { padding:12px 16px; overflow-y:auto; }
+#right { padding:12px 16px; overflow-y:auto; border-left:1px solid #2a2f3a; background:#161a22; }
+button, select, input, textarea { font:inherit; color:inherit; }
+button { background:#232834; border:1px solid #3a4150; border-radius:6px; padding:6px 12px; cursor:pointer; }
+button:hover { background:#2c3342; }
+button.primary { background:#2563eb; border-color:#2563eb; color:#fff; }
+button.green { background:#1e5e34; border-color:#2f8a4c; color:#d7f2df; }
+select { background:#232834; border:1px solid #3a4150; border-radius:6px; padding:6px 8px; }
+input, textarea { background:#171a21; border:1px solid #3a4150; border-radius:6px; padding:6px 8px; width:100%; }
+label { display:block; font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:#8b93a5; margin:10px 0 4px; }
+h2 { font-size:13px; color:#9aa4b5; text-transform:uppercase; letter-spacing:.08em; margin:16px 0 6px; }
+.card { background:#1a1e28; border:1px solid #2a2f3a; border-radius:8px; padding:10px 12px; margin:8px 0; }
+pre { white-space:pre-wrap; color:#b9c2d4; font-size:12px; margin:4px 0; }
+.badge { display:inline-block; border-radius:4px; padding:1px 8px; font-size:11px; margin-right:6px; }
+.badge.ready { background:#16381f; color:#a7e8bb; border:1px solid #2f8a4c; }
+.badge.missing { background:#3a1616; color:#f0b3b3; border:1px solid #c0392b; }
+.badge.ok { background:#1e2c3a; color:#9db8e8; border:1px solid #2c3d5c; }
+#msg { position:fixed; bottom:14px; right:14px; background:#173a24; border:1px solid #2f6b44; color:#b8e6c8; padding:8px 14px; border-radius:8px; opacity:0; transition:opacity .25s; z-index:10; }
+#msg.err { background:#3a1a1a; border-color:#6b2f2f; color:#e6b8b8; }
+.row { display:grid; grid-template-columns:1fr 1fr; gap:0 12px; }
+</style></head>
+<body>
+<header>
+  <h1>SCS Job Copilot</h1>
+  <select id="jobSel" onchange="loadJob(this.value)"><option value="">-- select / create job --</option></select>
+  <div class="spacer"></div>
+  <span id="masters"></span>
+  <button onclick="refreshState()">Refresh</button>
+</header>
+<main>
+<div id="left">
+  <h2>JOB</h2>
+  <div class="card">
+    <div class="row">
+      <div><label>Project / Client</label><input id="project_name" placeholder="Workout Studio Airflow Verification"></div>
+      <div><label>Site</label><input id="site_name" placeholder="Studio A & B"></div>
+    </div>
+    <div class="row">
+      <div><label>Job #</label><input id="project_number" placeholder="A-1234"></div>
+      <div><label>Test date</label><input id="test_date" type="date"></div>
+    </div>
+    <div class="row">
+      <div><label>Technician</label><input id="technician" placeholder="Aaron T."></div>
+      <div><label>Report type</label>
+        <select id="report_type"><option>TAB</option><option selected>AIRFLOW_VERIFICATION</option></select>
+      </div>
+    </div>
+    <label>Scope (natural language)</label>
+    <textarea id="scope" rows="2" placeholder="Airflow verification and slight balancing of two newly installed ductwork systems serving small workout studio areas."></textarea>
+    <button class="primary" onclick="createJob()" style="margin-top:8px">Create job</button>
+  </div>
+
+  <h2>CHAT</h2>
+  <div class="card">
+    <textarea id="chat" rows="3" placeholder="'Scope: airflow verification of two duct systems. Studio A SA-3 was 142 CFM as found; I opened the damper and got 181 final.'"></textarea>
+    <button class="green" onclick="sendChat()" style="margin-top:8px">Send (scope + measurements)</button>
+    <div id="chatOut"></div>
+  </div>
+
+  <h2>PHOTOS</h2>
+  <div class="card">
+    <label>Absolute paths (one per line)</label>
+    <textarea id="photoPaths" rows="3" placeholder="C:\\path\\to\\photo1.jpg&#10;C:\\path\\to\\photo2.HEIC"></textarea>
+    <button class="green" onclick="ingestPhotos()" style="margin-top:8px">Ingest photos</button>
+    <div id="photoOut"></div>
+  </div>
+
+  <h2>MEASUREMENTS</h2>
+  <div class="card">
+    <textarea id="meas" rows="3" placeholder="Studio B SA-1 was 300 CFM as found. Balanced damper, got 418 final."></textarea>
+    <button onclick="sendMeasurements()" style="margin-top:8px">Capture measurements</button>
+    <div id="measOut"></div>
+  </div>
+
+  <h2>FINDINGS</h2>
+  <div class="card">
+    <div class="row">
+      <div><label>Title</label><input id="find_title" placeholder="Loose flex connection"></div>
+      <div><label>Severity</label><select id="find_sev"><option>minor</option><option>major</option><option>critical</option></select></div>
+    </div>
+    <label>Detail</label>
+    <input id="find_detail" placeholder="Flex strap loose at Studio A plenum">
+    <button onclick="addFinding()" style="margin-top:8px">Add finding</button>
+  </div>
+
+  <h2>REPORT PLAN & GENERATE</h2>
+  <div class="card">
+    <div id="planOut"></div>
+    <button class="primary" onclick="generate()">Generate report</button>
+    <button class="green" id="dlBtn" style="display:none" onclick="download()">Download workbook</button>
+    <div id="genOut"></div>
+  </div>
+</div>
+
+<div id="right">
+  <h2>READY TO LEAVE?</h2>
+  <div id="readyBox" class="card"><span class="badge ok">no job loaded</span></div>
+  <h2>DEVICES</h2>
+  <div id="devicesBox" class="card"></div>
+  <h2>JOB RECORD</h2>
+  <pre id="recordOut"></pre>
+</div>
+</main>
+<div id="msg"></div>
+<script>
+let current = null;
+let lastPlan = [];
+async function api(url, method, body) {
+  const opt = { method, headers: { "Content-Type": "application/json" } };
+  if (body !== undefined) opt.body = JSON.stringify(body);
+  const r = await fetch(url, opt);
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok && !j.error) j.error = "HTTP " + r.status;
+  return j;
+}
+function msg(text, err) { const el = document.getElementById("msg"); el.textContent = text; el.className = err ? "err" : ""; el.style.opacity = 1; clearTimeout(msg._t); msg._t = setTimeout(() => el.style.opacity = 0, 2500); }
+async function refreshState() {
+  const s = await api("/api/state", "GET");
+  document.getElementById("masters").textContent = s.masters_verified ? "masters verified" : "MASTERS UNVERIFIED";
+  const sel = document.getElementById("jobSel");
+  const prev = sel.value;
+  sel.innerHTML = '<option value="">-- select / create job --</option>' + s.jobs.map(j =>
+    `<option value="${j.job_id}">${j.project_name} (${j.site_name}) [${j.report_type}] ${j.device_count} devices, ${j.photo_count} photos</option>`).join("");
+  sel.value = prev;
+  if (prev && current === null) loadJob(prev);
+}
+async function createJob() {
+  const body = {
+    project_name: val("project_name"), site_name: val("site_name"),
+    project_number: val("project_number"), test_date: val("test_date"),
+    technician: val("technician"), report_type: val("report_type"),
+    scope: val("scope"),
+  };
+  const j = await api("/api/jobs", "POST", body);
+  if (j.error) { msg(j.error, true); return; }
+  current = j.job.metadata.job_id;
+  msg("Job created: " + current);
+  await refreshState();
+  await loadJob(current);
+}
+async function loadJob(id) {
+  if (!id) { current = null; return; }
+  current = id;
+  const j = await api("/api/jobs/" + encodeURIComponent(id), "GET");
+  if (j.error) { msg(j.error, true); return; }
+  renderPayload(j);
+}
+function renderPayload(p) {
+  lastPlan = p.plan.sections || [];
+  document.getElementById("planOut").innerHTML = lastPlan.map(s => `<span class="badge ok">${s.type}</span>`).join("") || "no plan";
+  document.getElementById("recordOut").textContent = JSON.stringify(p.job, null, 1);
+  renderReady(p.ready_to_leave);
+  renderDevices(p.job.air_devices || []);
+  document.getElementById("dlBtn").style.display = "none";
+}
+function renderReady(r) {
+  const box = document.getElementById("readyBox");
+  const lines = [];
+  lines.push(`<span class="badge ${r.ready ? "ready" : "missing"}">${r.readiness}</span>`);
+  if (r.MISSING_BEFORE_LEAVING && r.MISSING_BEFORE_LEAVING.length)
+    lines.push("<b>MISSING BEFORE LEAVING</b><pre>" + r.MISSING_BEFORE_LEAVING.join("&#10;") + "</pre>");
+  if (r.OPTIONAL && r.OPTIONAL.length)
+    lines.push("<b>OPTIONAL</b><pre>" + r.OPTIONAL.join("&#10;") + "</pre>");
+  if (r.questions && r.questions.length)
+    lines.push("<b>QUESTIONS</b><pre>" + r.questions.join("&#10;") + "</pre>");
+  box.innerHTML = lines.join("");
+}
+function renderDevices(devices) {
+  const rows = devices.map(d =>
+    `<div style="padding:3px 0;border-bottom:1px dashed #232936"><b>${d.device_id}</b> ${d.function} ${d.area_served || ""} | design ${d.design_cfm ?? "-"} | as-found ${d.as_found_cfm ?? "-"} | final ${d.final_cfm ?? "-"} CFM | ${d.measurement_method || ""} | ${d.status || ""}</div>`).join("");
+  document.getElementById("devicesBox").innerHTML = rows || "no devices yet";
+}
+async function sendChat() {
+  const text = val("chat");
+  if (!text || !current) return msg("load/create a job first", true);
+  const j = await api("/api/jobs/" + current + "/chat", "POST", { text });
+  if (j.error) return msg(j.error, true);
+  document.getElementById("chatOut").innerHTML = "<pre>" + JSON.stringify(j.captures || [], null, 1) + "</pre>";
+  msg("Chat processed; merged " + (j.merged || 0) + " measurement(s)");
+  renderPayload(j.payload);
+}
+async function ingestPhotos() {
+  const paths = val("photoPaths").split("\\n").map(s => s.trim()).filter(Boolean);
+  if (!paths.length || !current) return msg("provide paths + job", true);
+  const j = await api("/api/jobs/" + current + "/photos", "POST", { photo_paths: paths });
+  if (j.error) return msg(j.error, true);
+  document.getElementById("photoOut").innerHTML = "<pre>" + JSON.stringify(j.photos || [], null, 1) + "</pre>";
+  msg("Ingested " + (j.photos || []).length + " photo(s)");
+  renderPayload(j.payload);
+}
+async function sendMeasurements() {
+  const text = val("meas");
+  if (!text || !current) return msg("load/create a job first", true);
+  const j = await api("/api/jobs/" + current + "/measurements", "POST", { text });
+  if (j.error) return msg(j.error, true);
+  document.getElementById("measOut").innerHTML = "<pre>" + JSON.stringify(j.captures || [], null, 1) + "</pre>";
+  msg("Merged " + (j.merged || 0) + " measurement(s)");
+  renderPayload(j.payload);
+}
+async function addFinding() {
+  if (!current) return msg("load/create a job first", true);
+  const j = await api("/api/jobs/" + current + "/findings", "POST",
+    { title: val("find_title"), detail: val("find_detail"), severity: val("find_sev") });
+  if (j.error) return msg(j.error, true);
+  msg("Finding added");
+  renderPayload(j);
+}
+async function generate() {
+  if (!current) return msg("load/create a job first", true);
+  const j = await api("/api/jobs/" + current + "/generate", "POST", {});
+  if (j.error) return msg(j.error, true);
+  const v = j.validation || {};
+  document.getElementById("genOut").innerHTML = `<span class="badge ${v.blocked ? "missing" : "ready"}">${v.summary}</span><pre>${JSON.stringify(v.checks || [], null, 1)}</pre>`;
+  document.getElementById("dlBtn").style.display = "inline-block";
+  msg("Report generated: " + j.output_name);
+}
+function download() {
+  if (!current) return;
+  const a = document.createElement("a");
+  a.href = "/api/jobs/" + encodeURIComponent(current) + "/download";
+  a.download = "";
+  document.body.appendChild(a); a.click(); a.remove();
+}
+function val(id) { return document.getElementById(id).value.trim(); }
+refreshState();
+</script>
+</body></html>
+"""
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--port", type=int, default=3220)
+    parser.add_argument("--workspace", default=r"C:\SCS_DATA\copilot")
+    parser.add_argument("--masters", default=r"C:\SCS_DATA\masters")
+    args = parser.parse_args()
+    CopilotServer.configure(Path(args.workspace), Path(args.masters))
+    server = ThreadingHTTPServer(("127.0.0.1", args.port), CopilotServer)
+    print(f"[copilot] serving at http://127.0.0.1:{args.port}")
+    print(f"[copilot] workspace {args.workspace}")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

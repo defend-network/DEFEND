@@ -7,6 +7,7 @@ what belongs.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -19,7 +20,12 @@ SectionType = Literal[
     "executive_summary",
     "scope_summary",
     "rtu_nameplate",
+    "equipment_register",
     "building_pressure",
+    "air_distribution",
+    "static_pressure",
+    "deficiencies",
+    "instrument_calibration",
     "traverse_summary",
     "traverse_points",
     "vav_data",
@@ -31,6 +37,20 @@ SectionType = Literal[
 ]
 
 VALID_SECTION_TYPES = frozenset(SectionType.__args__)
+
+# report types that select the FRM 20_Air_Distribution / 19_Static_Pressure
+# sheets instead of the TAB building-pressure sheet
+AIRFLOW_REPORT_TYPES = frozenset({"AIRFLOW_VERIFICATION", "OUTLET_BALANCE", "TAB_AIRFLOW"})
+
+
+def _has_static_pressure_data(record: JobRecord) -> bool:
+    for equipment in record.equipment:
+        for measurement in equipment.measurements:
+            if re.fullmatch(r"sp_[a-i]", measurement.field, re.IGNORECASE):
+                return True
+    return any(
+        r.field == "static_pressure" for r in record.environmental_readings
+    )
 
 
 @dataclass
@@ -116,9 +136,22 @@ def plan_for(record: JobRecord) -> ReportPlan:
 
     if rtu_ahus:
         sections.append(SectionPlan("rtu_nameplate"))
+    elif has_equipment:
+        sections.append(SectionPlan("equipment_register"))
 
-    if has_air_devices:
+    is_airflow = (
+        (record.metadata.report_type or "").upper() in AIRFLOW_REPORT_TYPES
+    )
+    if is_airflow and has_air_devices:
+        sections.append(SectionPlan("air_distribution"))
+    elif has_air_devices:
         sections.append(SectionPlan("building_pressure"))
+
+    if has_air_devices and _has_static_pressure_data(record):
+        sections.append(SectionPlan("static_pressure"))
+
+    if record.findings:
+        sections.append(SectionPlan("deficiencies"))
 
     for traverse in record.traverses:
         sections.append(

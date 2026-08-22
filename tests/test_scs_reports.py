@@ -201,7 +201,7 @@ def test_compose_creates_versioned_output_and_correct_sheets(paths, masters):
     assert wb.sheetnames == [
         "02_Cover", "04_Certification", "06_Abbreviations",
         "03_Executive_Summary", "07_Equipment_Register",
-        "Bldg Press Summary", "Duct Traverse Summary SP",
+        "Bldg Press Summary", "30_Deficiencies", "Duct Traverse Summary SP",
         "Duct Traverse OAU-2", "VAV Data", "31_Photo_Log", "Remarks", "32_Final_Closeout",
     ]
     assert wb["02_Cover"]["C10"].value == "Smoke Test Warehouse"

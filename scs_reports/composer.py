@@ -45,7 +45,9 @@ def output_stem(record: JobRecord) -> str:
         if record.metadata.test_date
         else datetime.now().strftime("%Y-%m-%d")
     )
-    return f"{project}_{number}_TAB_{day}"
+    report_kind = (record.metadata.report_type or "").upper()
+    kind = "AIRFLOW" if report_kind in ("AIRFLOW_VERIFICATION", "OUTLET_BALANCE") else "TAB"
+    return f"{project}_{number}_{kind}_{day}"
 
 
 def _copy_style(source, target) -> None:
@@ -57,6 +59,21 @@ def _copy_style(source, target) -> None:
     target.protection = copy(source.protection)
 
 
+def _populated_span(ws) -> tuple[int, int]:
+    """True used span (row, col) from populated cells, ignoring phantom
+    full-column/full-row dimensions that inflate max_row/max_column."""
+    cells = getattr(ws, "_cells", None)
+    if not cells:
+        return ws.max_row, ws.max_column
+    last_row = last_col = 0
+    for (row, col) in cells:
+        if row > last_row:
+            last_row = row
+        if col > last_col:
+            last_col = col
+    return last_row, last_col
+
+
 def copy_sheet(
     source: Worksheet,
     target: Worksheet,
@@ -65,8 +82,13 @@ def copy_sheet(
     max_row: int | None = None,
     max_col: int | None = None,
 ) -> None:
-    last_row = min(source.max_row, max_row or source.max_row)
-    last_col = min(source.max_column, max_col or source.max_column)
+    span_row, span_col = _populated_span(source)
+    if max_row is None:
+        max_row = min(span_row, 2000)
+    if max_col is None:
+        max_col = min(span_col, 400)
+    last_row = min(source.max_row, max_row)
+    last_col = min(source.max_column, max_col)
     for row in source.iter_rows(min_row=1, max_row=last_row, max_col=last_col):
         for cell in row:
             if cell.value is None and not cell.has_style:
@@ -210,12 +232,30 @@ class Composer:
     ) -> None:
         self.paths = paths or ReportPaths().ensure()
         self.store = store or JobStore(self.paths)
+        self._masters: dict[str, object] = {}
 
     # ---------------------------------------------------------------- helpers
 
     def _load_master(self, filename: str) -> object:
-        path = master_path(self.paths.masters, filename)
-        return load_workbook(path, data_only=False, keep_vba=False)
+        if filename not in self._masters:
+            path = master_path(self.paths.masters, filename)
+            self._masters[filename] = load_workbook(
+                path, data_only=False, keep_vba=False
+            )
+        return self._masters[filename]
+
+    def _cache_master(self, master) -> None:
+        """Keep a cached master alive across sections (replaces close calls)."""
+        return None
+
+    def close_masters(self) -> None:
+        """Release cached master workbooks (read-only; never executed VBA)."""
+        for workbook in self._masters.values():
+            try:
+                workbook.close()
+            except Exception:
+                pass
+        self._masters.clear()
 
     def _add_sheet(self, output, title: str) -> Worksheet:
         if title in output.sheetnames:
@@ -256,7 +296,7 @@ class Composer:
             job_number=record.metadata.project_number or record.metadata.job_id,
         )
         ws["C18"] = "TAB Report"
-        master.close()
+        self._cache_master(master)
         return ws
 
     def _certification(self, output, record: JobRecord) -> Worksheet:
@@ -265,14 +305,14 @@ class Composer:
         copy_sheet(master["04_Certification"], ws)
         self._compose_header_sheet(ws, record)
         ws["E4"] = "STATUS: DRAFT"
-        master.close()
+        self._cache_master(master)
         return ws
 
     def _abbreviations(self, output) -> Worksheet:
         master = self._load_master("Field_Report_Master.xlsm")
         ws = self._add_sheet(output, "06_Abbreviations")
         copy_sheet(master["06_Abbreviations"], ws)
-        master.close()
+        self._cache_master(master)
         return ws
 
     def _executive_summary(self, output, record: JobRecord) -> Worksheet:
@@ -306,7 +346,7 @@ class Composer:
             narrative = record.field_observations
         if narrative:
             ws["A30"] = narrative
-        master.close()
+        self._cache_master(master)
         return ws
 
     def _scope_summary(self, output, record: JobRecord) -> Worksheet:
@@ -344,7 +384,7 @@ class Composer:
         ws["A30"] = "OBSERVATIONS: " + (
             record.field_observations or record.technician_notes
         )
-        master.close()
+        self._cache_master(master)
         return ws
 
     def _rtu_nameplate(self, output, record: JobRecord, rtu_ahus: list[Equipment]) -> Worksheet:
@@ -394,7 +434,7 @@ class Composer:
         remarks = "; ".join(note for note in (e.notes for e in rtu_ahus) if note)
         if remarks:
             ws["A50"] = remarks
-        master.close()
+        self._cache_master(master)
         return ws
 
     def _building_pressure(self, output, record: JobRecord, devices: list[AirDevice]) -> Worksheet:
@@ -458,7 +498,159 @@ class Composer:
         if pressure is not None:
             ws["D39"] = pressure
             ws["E39"] = "NEGATIVE" if pressure < 0 else "POSITIVE"
-        master.close()
+        self._cache_master(master)
+        return ws
+
+    def _air_distribution(
+        self, output, record: JobRecord, devices: list[AirDevice]
+    ) -> Worksheet:
+        master = self._load_master("Field_Report_Master.xlsm")
+        ws = self._add_sheet(output, "20_Air_Distribution")
+        copy_sheet(master["20_Air_Distribution"], ws)
+        _write_header(
+            ws,
+            {
+                "project": "C6",
+                "site": "C7",
+                "contractor": "C8",
+                "job_number": "G6",
+                "test_date": "G7",
+                "technician": "G8",
+            },
+            record,
+        )
+        ws["E4"] = "STATUS: FINAL"
+        systems = ", ".join(
+            dict.fromkeys(e.equipment_id for e in record.equipment if e.equipment_id)
+        )
+        if systems:
+            ws["A11"] = systems
+        areas = ", ".join(
+            dict.fromkeys(
+                d.area_served for d in devices if d.area_served
+            )
+        )
+        if areas:
+            ws["A12"] = areas
+        design_total = sum(d.design_cfm or 0 for d in devices)
+        if design_total:
+            ws["G11"] = design_total
+        instruments = ", ".join(
+            dict.fromkeys(
+                d.measurement_method for d in devices if d.measurement_method
+            )
+        )
+        if instruments:
+            ws["G12"] = instruments
+        for index, device in enumerate(devices):
+            row = 17 + index
+            ws[f"A{row}"] = device.area_served
+            ws[f"B{row}"] = device.device_id
+            ws[f"C{row}"] = device.function
+            ws[f"D{row}"] = device.size
+            ws[f"G{row}"] = device.design_cfm
+            ws[f"H{row}"] = device.avg_velocity_fpm
+            ws[f"I{row}"] = device.as_found_cfm
+            ws[f"J{row}"] = None
+            ws[f"K{row}"] = device.final_cfm
+            ws[f"N{row}"] = device.status
+        self._cache_master(master)
+        return ws
+
+    def _static_pressure(self, output, record: JobRecord) -> Worksheet:
+        master = self._load_master("Field_Report_Master.xlsm")
+        ws = self._add_sheet(output, "19_Static_Pressure_Profile")
+        copy_sheet(master["19_Static_Pressure_Profile"], ws)
+        _write_header(
+            ws,
+            {
+                "project": "C6",
+                "site": "C7",
+                "contractor": "C8",
+                "job_number": "G6",
+                "test_date": "G7",
+                "technician": "G8",
+            },
+            record,
+        )
+        ws["E4"] = "STATUS: FINAL"
+        systems = ", ".join(
+            dict.fromkeys(e.equipment_id for e in record.equipment if e.equipment_id)
+        )
+        if systems:
+            ws["A11"] = systems
+        design = sum(d.design_cfm or 0 for d in record.air_devices)
+        if design:
+            ws["G11"] = design
+        measured = sum(d.final_cfm or 0 for d in record.air_devices)
+        if measured:
+            ws["G13"] = measured
+        points = {
+            m.field.rsplit("_", 1)[-1].upper(): m.value
+            for e in record.equipment
+            for m in e.measurements
+            if re.fullmatch(r"sp_[a-i]", m.field, re.IGNORECASE)
+        }
+        for index in range(9):
+            label = chr(ord("A") + index)
+            value = points.get(label)
+            if value is not None:
+                ws[f"D{17 + index}"] = value
+        for r in record.environmental_readings:
+            if r.field == "static_pressure" and r.location:
+                ws[f"D{17 + ord(r.location.upper()) - ord('A')}"] = r.value
+        self._cache_master(master)
+        return ws
+
+    def _deficiencies(self, output, record: JobRecord) -> Worksheet:
+        master = self._load_master("Field_Report_Master.xlsm")
+        ws = self._add_sheet(output, "30_Deficiencies")
+        copy_sheet(master["30_Deficiencies"], ws)
+        _write_header(
+            ws,
+            {
+                "project": "C6",
+                "site": "C7",
+                "contractor": "C8",
+                "job_number": "G6",
+                "test_date": "G7",
+                "technician": "G8",
+            },
+            record,
+        )
+        ws["E4"] = "STATUS: FINAL"
+        for index, finding in enumerate(record.findings):
+            row = 12 + index
+            ws[f"A{row}"] = f"DEF-{index + 1:03d}"
+            ws[f"C{row}"] = finding.category
+            ws[f"D{row}"] = finding.severity
+            ws[f"F{row}"] = (
+                f"{finding.title}: {finding.detail}" if finding.detail else finding.title
+            )
+            if finding.evidence_refs:
+                ws[f"G{row}"] = ", ".join(finding.evidence_refs)
+            ws[f"L{row}"] = "OPEN"
+        self._cache_master(master)
+        return ws
+
+    def _instrument_calibration(self, output, record: JobRecord) -> Worksheet:
+        master = self._load_master("Field_Report_Master.xlsm")
+        ws = self._add_sheet(output, "05_Instrument_Calibration")
+        copy_sheet(master["05_Instrument_Calibration"], ws)
+        _write_header(
+            ws,
+            {
+                "project": "C6",
+                "site": "C7",
+                "contractor": "C8",
+                "job_number": "G6",
+                "test_date": "G7",
+                "technician": "G8",
+            },
+            record,
+        )
+        ws["E4"] = "STATUS: FINAL"
+        self._cache_master(master)
         return ws
 
     def _traverse_summary(self, output, record: JobRecord, traverses: list[Traverse]) -> Worksheet:
@@ -495,7 +687,7 @@ class Composer:
                 ws[f"J{row}"] = traverse.final_fpm
             ws[f"K{row}"] = f"=J{row}*E{row}"
             ws[f"L{row}"] = traverse.sp or "NA"
-        master.close()
+        self._cache_master(master)
         return ws
 
     def _traverse_points(self, output, record: JobRecord, traverse: Traverse) -> Worksheet:
@@ -526,7 +718,7 @@ class Composer:
         if traverse.final_fpm is not None:
             ws["G24"] = traverse.final_fpm
             ws["G25"] = traverse.final_cfm
-        master.close()
+        self._cache_master(master)
         return ws
 
     def _vav_data(self, output, record: JobRecord, vavs: list[Equipment]) -> Worksheet:
@@ -561,7 +753,7 @@ class Composer:
         notes = "; ".join(note for note in (v.notes for v in vavs) if note)
         if notes:
             ws["A46"] = notes
-        master.close()
+        self._cache_master(master)
         return ws
 
     def _fan_test(self, output, record: JobRecord, fan: Equipment) -> Worksheet:
@@ -611,7 +803,7 @@ class Composer:
         ws["C44"] = record.metadata.technician
         if record.metadata.test_date:
             ws["I44"] = record.metadata.test_date
-        master.close()
+        self._cache_master(master)
         return ws
 
     def _vfd_report(self, output, record: JobRecord, vfd: Equipment) -> Worksheet:
@@ -657,7 +849,7 @@ class Composer:
         ws["C44"] = record.metadata.technician
         if record.metadata.test_date:
             ws["I44"] = record.metadata.test_date
-        master.close()
+        self._cache_master(master)
         return ws
 
     def _photo_log(self, output, record: JobRecord) -> Worksheet:
@@ -680,7 +872,7 @@ class Composer:
         ws.page_setup.fitToWidth = 1
         ws.page_setup.fitToHeight = 0
         ws.sheet_properties.pageSetUpPr.fitToPage = True
-        master.close()
+        self._cache_master(master)
         return ws
 
     def _remarks(self, output, record: JobRecord) -> Worksheet:
@@ -752,7 +944,7 @@ class Composer:
             ws["A33"] = record.known_deficiencies
             ws["B33"] = "See report sheets"
             ws["G33"] = "Review and close"
-        master.close()
+        self._cache_master(master)
         return ws
 
     # ---------------------------------------------------------------- assembly
@@ -791,6 +983,16 @@ class Composer:
                 self._rtu_nameplate(output, record, rtu_ahus)
             elif section.type == "building_pressure":
                 self._building_pressure(output, record, record.air_devices)
+            elif section.type == "air_distribution":
+                self._air_distribution(output, record, record.air_devices)
+            elif section.type == "static_pressure":
+                self._static_pressure(output, record)
+            elif section.type == "deficiencies":
+                self._deficiencies(output, record)
+            elif section.type == "equipment_register":
+                self._rtu_nameplate(output, record, record.equipment)
+            elif section.type == "instrument_calibration":
+                self._instrument_calibration(output, record)
             elif section.type == "traverse_summary":
                 self._traverse_summary(output, record, record.traverses)
             elif section.type == "traverse_points":

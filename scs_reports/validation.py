@@ -16,7 +16,11 @@ from typing import Any
 from openpyxl import load_workbook
 
 from .schema import JobRecord, Provenance
-from .planner import ReportPlan
+from .planner import (
+    AIRFLOW_REPORT_TYPES,
+    ReportPlan,
+    _has_static_pressure_data,
+)
 from .store import MasterStore, ReportPaths
 
 _PLACEHOLDER_PATTERNS = (
@@ -276,13 +280,27 @@ def validate_report(
     has_fans = any(e.equipment_type.value == "FAN" for e in record.equipment)
     has_vfds = any(e.equipment_type.value == "VFD" for e in record.equipment)
     has_vavs = any(e.equipment_type.value in ("VAV", "FCU") for e in record.equipment)
+    has_equipment = bool(record.equipment)
+    has_findings = bool(record.findings)
+    has_pressures = _has_static_pressure_data(record)
+    is_airflow = (record.metadata.report_type or "").upper() in AIRFLOW_REPORT_TYPES
+    airflow_sheet = "air_distribution" if is_airflow else "building_pressure"
+    non_airflow_sheet = "building_pressure" if is_airflow else "air_distribution"
     plan_issues: list[tuple[str, str]] = []
     for message, condition, override_entry in (
         ("rtu_nameplate missing despite RTU/AHU equipment", has_rtu and "rtu_nameplate" not in section_types, "remove:rtu_nameplate"),
-        ("building_pressure missing despite air devices", has_devices and "building_pressure" not in section_types, "remove:building_pressure"),
+        ("airflow sheet missing despite air devices", has_devices and airflow_sheet not in section_types, f"remove:{airflow_sheet}"),
+        ("static_pressure missing despite static data", has_pressures and "static_pressure" not in section_types, "remove:static_pressure"),
+        ("deficiencies missing despite findings", has_findings and "deficiencies" not in section_types, "remove:deficiencies"),
         ("traverse_summary missing despite traverses", has_traverses and "traverse_summary" not in section_types, "remove:traverse_summary"),
         ("rtu_nameplate selected without RTU/AHU equipment", not has_rtu and "rtu_nameplate" in section_types, "add:rtu_nameplate"),
-        ("building_pressure selected without air devices", not has_devices and "building_pressure" in section_types, "add:building_pressure"),
+        ("equipment_register selected without equipment", not has_equipment and "equipment_register" in section_types, "add:equipment_register"),
+        ("equipment_register selected alongside rtu_nameplate", has_rtu and "rtu_nameplate" in section_types and "equipment_register" in section_types, "remove:equipment_register"),
+        ("wrong airflow sheet selected for report type", has_devices and airflow_sheet not in section_types and non_airflow_sheet in section_types, f"add:{airflow_sheet}"),
+        ("airflow sheet selected without air devices", not has_devices and airflow_sheet in section_types, f"add:{airflow_sheet}"),
+        ("non-airflow sheet selected without air devices", not has_devices and non_airflow_sheet in section_types, f"add:{non_airflow_sheet}"),
+        ("static_pressure selected without static data", not has_pressures and "static_pressure" in section_types, "add:static_pressure"),
+        ("deficiencies selected without findings", not has_findings and "deficiencies" in section_types, "add:deficiencies"),
         ("traverse_summary selected without traverses", not has_traverses and "traverse_summary" in section_types, "add:traverse_summary"),
         ("fan_test selected without fan equipment", not has_fans and "fan_test" in section_types, "add:fan_test"),
         ("vfd_report selected without VFD equipment", not has_vfds and "vfd_report" in section_types, "add:vfd_report"),
