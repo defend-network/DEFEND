@@ -31,3 +31,15 @@ The provider's `/events` sweep is truncated at 16,384 bytes, which briefly surfa
 
 ## Request
 Please confirm whether Table Tennis pre-match/live markets for Sbobet and SingBet are expected on the Solo account, and if so, why the current account receives zero Table Tennis markets while football markets are delivered.
+
+## Re-test addendum — 2026-08-22 (UTC)
+Fresh bounded re-test on the same Solo account confirms the same condition:
+
+- Table Tennis events returned: 51 current (pending across International TT Elite Series, International TT Cup, Czech Liga Pro).
+- Sample event IDs tested against `/v3/odds`: `73922828`, `73946574`, `73924232`.
+- `bookmakers=Sbobet,SingBet` → HTTP 200, `bookmaker_keys=[]`, `markets=0`, no error field.
+- `bookmakers=Hard Rock` → HTTP 403: "Access denied. You're allowed max 2 bookmakers. Allowed: Sbobet, SingBet."
+- Hard Rock is present and `active=true` in the 275-entry `/v3/bookmakers` catalog, but is not an enabled account slot, so its Table Tennis coverage cannot be tested under the current selection.
+- Classification remains `TT_PROVIDER_PRICE_FEED_EMPTY` for the two selected books. The Hard Rock limitation is account slot scope, not a request-parameter defect.
+
+No credential values are included in this document.
