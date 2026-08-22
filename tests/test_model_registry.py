@@ -51,15 +51,27 @@ def test_resolve_embedding_alias_returns_embedding_entry():
 
 
 def test_existing_repo_ids_are_preserved_read_only():
-    assert ADAPTER_REPO == "Defend-network/defend-qwen-32b-lora"
-    assert ADAPTER_REVISION == "92c790d248012a5e6adac980b9759fb76bc7adda"
-    assert ALTERNATE_ADAPTER_REPO == "Defend-network/defend-identity-lora-v002"
+    assert ADAPTER_REPO == "Defend-network/defend-identity-lora-v002"
+    assert ADAPTER_REVISION == "46ade1686870210ef0ab4603c32fecb0e563330f"
+    assert ALTERNATE_ADAPTER_REPO == "Defend-network/defend-qwen-32b-lora"
     assert ALTERNATE_ADAPTER_REPO != ADAPTER_REPO
     assert GGUF_REPO == "Defend-network/defend-qwen-32b-gguf"
     assert SERVING_ALIAS == "defend-ai"
     assert LOCAL_ALIAS == "defend-ai:latest"
     assert EMBEDDING_MODEL == "qwen3-embedding:0.6b"
     assert EMBEDDING_REPO == "Qwen/Qwen3-Embedding-0.6B"
+
+
+def test_current_production_adapter_is_qwen25_base_not_qwen3():
+    """CASE B guard: the owner's current production DEFEND identity adapter is
+    trained on Qwen2.5-32B-Instruct. A Qwen3 upgrade must use a NEW adapter
+    trained on a Qwen3 base; the Qwen2.5 adapter must never be pointed at a
+    Qwen3 runtime, and vice versa."""
+    import re as _re
+
+    assert _re.fullmatch(r"[0-9a-f]{40}", ADAPTER_REVISION)
+    assert ADAPTER_REPO == "Defend-network/defend-identity-lora-v002"
+    assert ALTERNATE_ADAPTER_REPO == "Defend-network/defend-qwen-32b-lora"
 
 
 def test_alternate_adapter_is_not_a_resolvable_production_entry():

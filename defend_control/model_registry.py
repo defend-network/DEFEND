@@ -22,14 +22,18 @@ from .types import ServiceState
 
 # -- Exact identifiers already present in the repository -------------------
 
-# Canonical DEFEND AI LoRA adapter repo + pinned revision. The base lineage is
-# derived from adapter_config.json at this immutable adapter revision.
-ADAPTER_REPO = "Defend-network/defend-qwen-32b-lora"
-ADAPTER_REVISION = "92c790d248012a5e6adac980b9759fb76bc7adda"
+# Current production DEFEND identity adapter (owner-audited 2026-08-14):
+# TRL SFT LoRA on Qwen/Qwen2.5-32B-Instruct, pinned immutable revision.
+# This is the owner's CURRENT production DEFEND identity work. The Qwen3
+# upgrade is a base-model upgrade of the same identity program, not a
+# replacement of it.
+ADAPTER_REPO = "Defend-network/defend-identity-lora-v002"
+ADAPTER_REVISION = "46ade1686870210ef0ab4603c32fecb0e563330f"
 
-# Alternate adapter retained as metadata only; it is not a serving entry.
-ALTERNATE_ADAPTER_REPO = "Defend-network/defend-identity-lora-v002"
-ALTERNATE_ADAPTER_REVISION = "46ade1686870210ef0ab4603c32fecb0e563330f"
+# Earlier bnb-4bit adapter retained as the alternate (older, quantized base).
+# Not the current production preference.
+ALTERNATE_ADAPTER_REPO = "Defend-network/defend-qwen-32b-lora"
+ALTERNATE_ADAPTER_REVISION = "92c790d248012a5e6adac980b9759fb76bc7adda"
 
 # Preserved GGUF sibling repo; never served through the vLLM path
 # (huggingface.py:17, plan doc lines 19-20).
