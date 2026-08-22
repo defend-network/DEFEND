@@ -72,7 +72,8 @@ class WeeklyReview:
         if self._artifact_dir is not None:
             import json
 
-            artifact = self._artifact_dir / "TT_MARKET_RESEARCH_REPORT.json"
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            artifact = self._artifact_dir / f"TT_MARKET_RESEARCH_REPORT_{stamp}.json"
             artifact.parent.mkdir(parents=True, exist_ok=True)
             artifact.write_text(json.dumps(report, indent=2, default=str) + "\n", encoding="utf-8")
         return ReviewOutcome(

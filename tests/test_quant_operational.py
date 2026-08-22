@@ -28,6 +28,35 @@ M5_ARTIFACT = REPO / "docs" / "operations" / "TT_M5_LIVE_WEIGHTS_V1.json"
 M5_WEIGHTS = json.loads(M5_ARTIFACT.read_text(encoding="utf-8"))
 M5_FILE_HASH = hashlib.sha256(M5_ARTIFACT.read_bytes()).hexdigest()
 
+OUTCOMES = [
+    {"p": 0.90, "actual": 1.0},
+    {"p": 0.85, "actual": 1.0},
+    {"p": 0.60, "actual": 0.0},
+    {"p": 0.55, "actual": 1.0},
+    {"p": 0.30, "actual": 0.0},
+    {"p": 0.20, "actual": 0.0},
+]
+
+
+def _rows(n=300):
+    base = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    rows = []
+    for index in range(n):
+        home = f"p{index % 8}"
+        away = f"p{(index + 1 + (index // 8) % 2) % 8}"
+        if home == away:
+            away = f"p{(index + 3) % 8}"
+        rows.append(
+            {
+                "event_key": f"e{index}",
+                "home_key": home,
+                "away_key": away,
+                "ts": (base + timedelta(hours=6 * index)).isoformat(),
+                "actual": 1.0 if (index % 3) != 0 else 0.0,
+            }
+        )
+    return rows
+
 
 def _store():
     return InMemoryQuantStore()
@@ -151,11 +180,17 @@ class TestEvaluation:
         )
 
     class _Source:
-        def __init__(self, outcomes):
+        def __init__(self, outcomes, counts=None):
             self.outcomes = outcomes
+            self._counts = counts
 
         def settled_predictions(self):
             return self.outcomes
+
+        def prediction_counts(self):
+            if self._counts is not None:
+                return self._counts
+            return {"total": len(self.outcomes), "available": len(self.outcomes), "settled": len(self.outcomes)}
 
     def test_settled_prediction_creates_one_evaluation_and_error(self):
         store = _store()
@@ -202,8 +237,26 @@ class TestEvaluation:
         store = _store()
         service = EvaluationService(store, outcome_source=self._Source([]))
         state = service.evaluation_state()
-        assert state["state"] == "PREDICTIONS_UNSETTLED"
+        assert state["state"] == "NO_PREDICTIONS"
         assert state["evaluation_rows"] == 0
+
+    def test_predictions_unsettled_state(self):
+        store = _store()
+        service = EvaluationService(
+            store,
+            outcome_source=self._Source([], counts={"total": 50, "available": 50, "settled": 0}),
+        )
+        assert service.evaluation_state()["state"] == "PREDICTIONS_UNSETTLED"
+
+    def test_settled_unlinked_state(self):
+        store = _store()
+        service = EvaluationService(
+            store,
+            outcome_source=self._Source([], counts={"total": 50, "available": 50, "settled": 10}),
+        )
+        state = service.evaluation_state()
+        assert state["state"] == "SETTLED_RESULTS_NOT_LINKED"
+        assert state["settled_unlinked"] == 10
 
 
 class TestPrioritization:
@@ -307,3 +360,157 @@ class TestStageAuthority:
 
 def test_m5_artifact_hash_unchanged():
     assert M5_FILE_HASH == "fe6f18d1fb5eea640fc42d904d9010470ee75f73e594b2c00a86982d3381e229"
+
+
+class TestLifecycleTick:
+    def _orchestrator_with_clock(self, store, tools, clock_state, state="READY"):
+        from defend_markets.quant.config import QuantDirectorSettings
+
+        settings = QuantDirectorSettings(runtime_state=state)
+        return MarketsIntelligenceOrchestrator(
+            store=store, tools=tools, settings=settings, clock=lambda: clock_state["now"]
+        )
+
+    def test_stopped_tick_zero_execution(self):
+        store = _store()
+        tools = InMemoryMarketTools(store, prediction_outcomes=list(OUTCOMES))
+        clock_state = {"now": datetime(2026, 8, 22, 12, 0, tzinfo=timezone.utc)}
+        orchestrator = self._orchestrator_with_clock(store, tools, clock_state, state="STOPPED")
+        orchestrator.register_scheduler_jobs()
+        assert orchestrator.operational_tick()["executed"] == 0
+
+    def test_ready_tick_runs_due_daily_once(self):
+        store = _store()
+        tools = InMemoryMarketTools(store, prediction_outcomes=list(OUTCOMES))
+        clock_state = {"now": datetime(2026, 8, 22, 12, 0, tzinfo=timezone.utc)}
+        orchestrator = self._orchestrator_with_clock(store, tools, clock_state)
+        orchestrator.register_scheduler_jobs()
+        store.job("DAILY_LIGHT_REVIEW")["next_run_at"] = clock_state["now"].isoformat()
+        clock_state["now"] += timedelta(hours=25)
+        result = orchestrator.operational_tick()
+        assert result["executed"] >= 1
+        assert store.job("DAILY_LIGHT_REVIEW")["status"] == "COMPLETED"
+
+    def test_repeated_tick_no_duplicate(self):
+        store = _store()
+        tools = InMemoryMarketTools(store, prediction_outcomes=list(OUTCOMES))
+        clock_state = {"now": datetime(2026, 8, 22, 12, 0, tzinfo=timezone.utc)}
+        orchestrator = self._orchestrator_with_clock(store, tools, clock_state)
+        orchestrator.register_scheduler_jobs()
+        store.job("DAILY_LIGHT_REVIEW")["next_run_at"] = clock_state["now"].isoformat()
+        clock_state["now"] += timedelta(hours=25)
+        orchestrator.operational_tick()
+        second = orchestrator.operational_tick()
+        assert second["executed"] == 0
+
+    def test_restart_does_not_duplicate(self):
+        store = _store()
+        tools = InMemoryMarketTools(store, prediction_outcomes=list(OUTCOMES))
+        clock_state = {"now": datetime(2026, 8, 22, 12, 0, tzinfo=timezone.utc)}
+        orchestrator = self._orchestrator_with_clock(store, tools, clock_state)
+        orchestrator.register_scheduler_jobs()
+        store.job("DAILY_LIGHT_REVIEW")["next_run_at"] = clock_state["now"].isoformat()
+        clock_state["now"] += timedelta(hours=25)
+        orchestrator.operational_tick()
+        restarted = self._orchestrator_with_clock(store, tools, clock_state)
+        restarted.register_scheduler_jobs()
+        result = restarted.operational_tick()
+        assert result["executed"] == 0
+
+    def test_stop_after_ready_disables(self):
+        store = _store()
+        tools = InMemoryMarketTools(store, prediction_outcomes=list(OUTCOMES))
+        clock_state = {"now": datetime(2026, 8, 22, 12, 0, tzinfo=timezone.utc)}
+        orchestrator = self._orchestrator_with_clock(store, tools, clock_state)
+        orchestrator.register_scheduler_jobs()
+        store.job("DAILY_LIGHT_REVIEW")["next_run_at"] = clock_state["now"].isoformat()
+        clock_state["now"] += timedelta(hours=25)
+        stopped = self._orchestrator_with_clock(store, tools, clock_state, state="STOPPED")
+        assert stopped.operational_tick()["executed"] == 0
+
+
+class TestGovernedWorkflow:
+    def _snapshot(self):
+        from defend_markets.quant.research.snapshot import build_snapshot
+
+        return build_snapshot(
+            _rows(n=300),
+            cutoff="2026-08-01T00:00:00Z",
+            target_definition="fixture",
+            feature_schema_version=1,
+        )
+
+    def test_governed_workflow_persists_everything_without_manual_registration(self):
+        from defend_markets.quant.config import QuantDirectorSettings
+        from defend_markets.quant.research.features import M5_FEATURE_NAMES
+
+        store = _store()
+        tools = InMemoryMarketTools(store)
+        orchestrator = MarketsIntelligenceOrchestrator(
+            store=store, tools=tools, settings=QuantDirectorSettings(runtime_state="READY")
+        )
+        snapshot = self._snapshot()
+        store.create_snapshot(snapshot)
+        outcome = orchestrator.evaluate_and_record_challenger(
+            hypothesis_id="hyp-m4-1",
+            challenger_name="form20-x",
+            feature_set=list(M5_FEATURE_NAMES) + ["recent_form20_winrate_diff"],
+            snapshot=snapshot,
+            champion_version="M5_REGULARIZED_LOGISTIC:54affc960a34",
+        )
+        assert outcome["conclusion"] in ("PROMOTED_TO_SHADOW", "REJECTED_NO_LIFT", "REJECTED_REGRESSION", "WALK_FORWARD_COMPLETE")
+        assert store.list_experiments(), "experiment must be persisted"
+        transitions = store.list_stage_transitions(model_id="challenger-form20-x")
+        assert transitions, "stage transition must be audited"
+        assert transitions[0]["gate_version"] == 2
+        assert store.list_research_entries(), "research journal must be updated"
+        model = next(m for m in store.list_models() if m["model_id"] == "challenger-form20-x")
+        assert model["stage"] in ("SHADOW", "REJECTED", "WALK_FORWARD")
+
+    def test_promotion_audit_provenance(self):
+        from defend_markets.quant.config import QuantDirectorSettings
+        from defend_markets.quant.research.features import M5_FEATURE_NAMES
+
+        store = _store()
+        tools = InMemoryMarketTools(store)
+        orchestrator = MarketsIntelligenceOrchestrator(
+            store=store, tools=tools, settings=QuantDirectorSettings(runtime_state="READY")
+        )
+        snapshot = self._snapshot()
+        store.create_snapshot(snapshot)
+        orchestrator.evaluate_and_record_challenger(
+            hypothesis_id="hyp-m4-1b",
+            challenger_name="form20-y",
+            feature_set=list(M5_FEATURE_NAMES) + ["recent_form20_winrate_diff"],
+            snapshot=snapshot,
+            champion_version="M5_REGULARIZED_LOGISTIC:54affc960a34",
+        )
+        audit = store.list_stage_transitions(model_id="challenger-form20-y")[0]
+        assert {"model_id", "from_stage", "to_stage", "experiment_id", "gate_version", "gate_results", "metric_deltas", "actor", "reason", "code_commit"} <= set(audit)
+        assert audit["actor"] == "SYSTEM"
+
+
+class TestRuntimeArtifactDir:
+    def test_weekly_report_written_outside_git_tree(self, tmp_path):
+        from defend_markets.quant.config import QuantDirectorSettings
+        from defend_markets.quant.intelligence import QuantIntelligence
+        from defend_markets.quant.reviews import WeeklyReview
+
+        store = _store()
+        tools = InMemoryMarketTools(store, prediction_outcomes=list(OUTCOMES))
+        orchestrator = MarketsIntelligenceOrchestrator(
+            store=store,
+            tools=tools,
+            settings=QuantDirectorSettings(runtime_state="READY"),
+            artifact_dir=tmp_path / "reports",
+        )
+        orchestrator.run_weekly_review()
+        reports = list((tmp_path / "reports").glob("TT_MARKET_RESEARCH_REPORT_*.json"))
+        assert len(reports) == 1
+        assert orchestrator.latest_runtime_report() is not None
+
+    def test_database_identity_sanitized(self):
+        orchestrator = _orchestrator()
+        identity = orchestrator.database_identity()
+        assert {"db_server", "db_port", "db_name", "schema_version"} <= set(identity)
+        assert "password" not in str(identity)

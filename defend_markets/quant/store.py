@@ -105,7 +105,7 @@ class QuantStore:
     def upsert_job(self, job: dict[str, Any]) -> None:
         raise NotImplementedError
 
-    def claim_job(self, job_name: str, owner: str, lease_seconds: int) -> dict[str, Any] | None:
+    def claim_job(self, job_name: str, owner: str, lease_seconds: int, now: Any = None) -> dict[str, Any] | None:
         raise NotImplementedError
 
     def complete_job(self, job_name: str, *, summary: str, state_hash: str | None, next_run_at: str) -> None:
@@ -166,6 +166,12 @@ class QuantStore:
         raise NotImplementedError
 
     def update_hypothesis_priority(self, hypothesis_id: int, *, priority_score: float, breakdown: dict[str, Any], blocked_reason: str | None) -> None:
+        raise NotImplementedError
+
+    def record_stage_transition(self, audit: dict[str, Any]) -> None:
+        raise NotImplementedError
+
+    def list_stage_transitions(self, model_id: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
         raise NotImplementedError
 
 
@@ -468,7 +474,7 @@ class PostgresQuantStore(QuantStore):
                 ),
             )
 
-    def claim_job(self, job_name, owner, lease_seconds):
+    def claim_job(self, job_name, owner, lease_seconds, now=None):
         with self._database.connect() as connection, connection.cursor() as cursor:
             cursor.execute(
                 "UPDATE quant_scheduler_jobs SET "
@@ -780,6 +786,46 @@ class PostgresQuantStore(QuantStore):
                 (priority_score, Jsonb(breakdown), blocked_reason, hypothesis_id),
             )
 
+    def record_stage_transition(self, audit):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO quant_stage_audit "
+                "(model_id, model_version, from_stage, to_stage, experiment_id, gate_version, gate_results, metric_deltas, actor, reason, code_commit) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                (
+                    audit["model_id"],
+                    audit["model_version"],
+                    audit.get("from_stage"),
+                    audit["to_stage"],
+                    audit.get("experiment_id"),
+                    audit.get("gate_version"),
+                    Jsonb(audit.get("gate_results", {})),
+                    Jsonb(audit.get("metric_deltas", {})),
+                    audit["actor"],
+                    audit.get("reason"),
+                    audit.get("code_commit"),
+                ),
+            )
+
+    def list_stage_transitions(self, model_id=None, limit=200):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            if model_id is None:
+                cursor.execute(
+                    "SELECT audit_id, model_id, model_version, from_stage, to_stage, experiment_id, gate_version, "
+                    "gate_results, metric_deltas, actor, reason, code_commit, created_at "
+                    "FROM quant_stage_audit ORDER BY audit_id DESC LIMIT %s",
+                    (limit,),
+                )
+            else:
+                cursor.execute(
+                    "SELECT audit_id, model_id, model_version, from_stage, to_stage, experiment_id, gate_version, "
+                    "gate_results, metric_deltas, actor, reason, code_commit, created_at "
+                    "FROM quant_stage_audit WHERE model_id = %s ORDER BY audit_id DESC LIMIT %s",
+                    (model_id, limit),
+                )
+            columns = [column.name for column in cursor.description]
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
 
 @dataclass
 class InMemoryQuantStore(QuantStore):
@@ -798,6 +844,7 @@ class InMemoryQuantStore(QuantStore):
     metric_snapshots: list[dict[str, Any]] = field(default_factory=list)
     ai_calls: list[dict[str, Any]] = field(default_factory=list)
     hypotheses: list[dict[str, Any]] = field(default_factory=list)
+    stage_audit: list[dict[str, Any]] = field(default_factory=list)
     _next_research: int = 1
     _next_thread: int = 1
     _next_message: int = 1
@@ -996,11 +1043,13 @@ class InMemoryQuantStore(QuantStore):
             existing["enabled"] = bool(job.get("enabled", True))
             existing["schedule_interval_seconds"] = int(job["schedule_interval_seconds"])
 
-    def claim_job(self, job_name, owner, lease_seconds):
+    def claim_job(self, job_name, owner, lease_seconds, now=None):
         job = self.job(job_name)
         if job is None or not job["enabled"]:
             return None
-        now = _utcnow()
+        now = now or _utcnow()
+        if isinstance(now, str):
+            now = datetime.fromisoformat(now.replace("Z", "+00:00"))
         next_run = datetime.fromisoformat(job["next_run_at"].replace("Z", "+00:00"))
         if next_run > now:
             return None
@@ -1008,10 +1057,9 @@ class InMemoryQuantStore(QuantStore):
             expiry = datetime.fromisoformat(job["lease_expires_at"].replace("Z", "+00:00"))
             if expiry > now:
                 return None
-        job["lease_owner"] = owner
-        job["lease_expires_at"] = (now.replace(tzinfo=None) if now.tzinfo else now)
         from datetime import timedelta
 
+        job["lease_owner"] = owner
         job["lease_expires_at"] = (now + timedelta(seconds=lease_seconds)).isoformat()
         job["status"] = "RUNNING"
         job["attempt_count"] += 1
@@ -1145,3 +1193,12 @@ class InMemoryQuantStore(QuantStore):
                 entry["priority_score"] = priority_score
                 entry["priority_breakdown"] = breakdown
                 entry["blocked_reason"] = blocked_reason
+
+    def record_stage_transition(self, audit):
+        self.stage_audit.append(dict(audit, created_at=_utcnow().isoformat()))
+
+    def list_stage_transitions(self, model_id=None, limit=200):
+        rows = list(reversed(self.stage_audit))
+        if model_id is not None:
+            rows = [row for row in rows if row.get("model_id") == model_id]
+        return rows[:limit]

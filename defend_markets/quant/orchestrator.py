@@ -111,6 +111,7 @@ class MarketsIntelligenceOrchestrator:
         model: DirectorModel | None = None,
         clock: Any | None = None,
         weights_doc: dict[str, Any] | None = None,
+        artifact_dir: Any = None,
     ) -> None:
         self._store = store
         self._tools = tools
@@ -125,8 +126,8 @@ class MarketsIntelligenceOrchestrator:
         )
         self._intelligence = QuantIntelligence(weights_doc=weights_doc)
         self._daily_review = DailyReview()
-        self._weekly_review = WeeklyReview()
-        self._scheduler = Scheduler(store, owner="markets-quant-director")
+        self._weekly_review = WeeklyReview(artifact_dir=artifact_dir)
+        self._scheduler = Scheduler(store, owner="markets-quant-director", clock=self._clock)
         self._approved_expensive = False
         self._health = detect_health(
             initialized=True,
@@ -254,7 +255,17 @@ class MarketsIntelligenceOrchestrator:
         self._store.create_snapshot(snapshot)
         return snapshot
 
-    def run_experiment(
+    def _stage_from_decision(self, result: ExperimentResult) -> tuple[str, str]:
+        if result.decision == "PROMOTION_ALLOWED":
+            return "SHADOW", "PROMOTED_TO_SHADOW"
+        blockers = (result.gates or {}).get("blockers") or []
+        if any("no measurable lift" in reason or "simpler model" in reason for reason in blockers):
+            return "REJECTED", "REJECTED_NO_LIFT"
+        if any("regression" in reason for reason in blockers):
+            return "REJECTED", "REJECTED_REGRESSION"
+        return "WALK_FORWARD", "WALK_FORWARD_COMPLETE"
+
+    def evaluate_and_record_challenger(
         self,
         *,
         hypothesis_id: str,
@@ -266,9 +277,11 @@ class MarketsIntelligenceOrchestrator:
         champion_brier: float | None = None,
         champion_log_loss: float | None = None,
         market_metrics_available: bool = False,
-    ) -> ExperimentResult:
+        actor: str = "SYSTEM",
+    ) -> dict[str, Any]:
+        experiment_id = f"exp-{hypothesis_id}-{challenger_name}"
         spec = build_spec(
-            experiment_id=f"exp-{hypothesis_id}-{challenger_name}",
+            experiment_id=experiment_id,
             hypothesis_id=hypothesis_id,
             snapshot=snapshot,
             champion_version=champion_version,
@@ -283,14 +296,77 @@ class MarketsIntelligenceOrchestrator:
             market_metrics_available=market_metrics_available,
         )
         self._store.save_experiment(spec=spec, result=result)
+
+        model_id = f"challenger-{challenger_name}"
+        current = [entry for entry in self._store.list_models() if entry.get("model_id") == model_id and entry.get("model_version") == experiment_id]
+        from_stage = current[0].get("stage") if current else "RESEARCH"
+        to_stage, conclusion = self._stage_from_decision(result)
+
         self._store.register_model(
-            model_id=f"challenger-{challenger_name}",
-            model_version=spec.experiment_id,
+            model_id=model_id,
+            model_version=experiment_id,
             role="CHALLENGER",
-            stage="RESEARCH" if result.decision == "PROMOTION_BLOCKED" else "WALK_FORWARD",
+            stage=to_stage,
             feature_schema_version=1,
         )
-        return result
+        self._store.record_stage_transition(
+            {
+                "model_id": model_id,
+                "model_version": experiment_id,
+                "from_stage": from_stage,
+                "to_stage": to_stage,
+                "experiment_id": experiment_id,
+                "gate_version": result.promotion_policy_version,
+                "gate_results": result.gates or {},
+                "metric_deltas": result.metric_deltas,
+                "actor": actor,
+                "reason": conclusion,
+                "code_commit": spec.code_commit,
+            }
+        )
+        entry_id = self._store.create_research_entry(
+            hypothesis=f"{hypothesis_id}: {challenger_name}",
+            rationale=conclusion,
+            data_needed=", ".join(feature_set),
+        )
+        self._store.transition_research_entry(
+            entry_id,
+            status="COMPLETED",
+            result_summary=conclusion,
+            evidence={"decision": result.decision, "stage": to_stage, "metric_deltas": result.metric_deltas},
+        )
+        return {
+            "experiment": result.to_dict(),
+            "model_id": model_id,
+            "stage": to_stage,
+            "conclusion": conclusion,
+            "entry_id": entry_id,
+        }
+
+    def run_experiment(
+        self,
+        *,
+        hypothesis_id: str,
+        challenger_name: str,
+        feature_set: list[str],
+        snapshot: DatasetSnapshot,
+        champion_version: str,
+        n_windows: int = 4,
+        champion_brier: float | None = None,
+        champion_log_loss: float | None = None,
+        market_metrics_available: bool = False,
+    ) -> dict[str, Any]:
+        return self.evaluate_and_record_challenger(
+            hypothesis_id=hypothesis_id,
+            challenger_name=challenger_name,
+            feature_set=feature_set,
+            snapshot=snapshot,
+            champion_version=champion_version,
+            n_windows=n_windows,
+            champion_brier=champion_brier,
+            champion_log_loss=champion_log_loss,
+            market_metrics_available=market_metrics_available,
+        )
 
     def advance_stage(self, *, model_id: str, model_version: str, to_stage: str) -> dict[str, Any]:
         allowed = {"RESEARCH", "BACKTEST", "WALK_FORWARD", "SHADOW", "PAPER"}
@@ -505,6 +581,16 @@ class MarketsIntelligenceOrchestrator:
         source = None
         if self._tools is not None and hasattr(self._tools, "_database"):
             source = PostgresOutcomeSource(self._tools._database)
+        if source is None:
+
+            class _EmptySource:
+                def settled_predictions(self):
+                    return []
+
+                def prediction_counts(self):
+                    return {"total": 0, "available": 0, "settled": 0}
+
+            source = _EmptySource()
         return EvaluationService(self._store, outcome_source=source)
 
     def settle_and_evaluate(self) -> dict[str, Any]:
@@ -552,6 +638,52 @@ class MarketsIntelligenceOrchestrator:
             cached_input_tokens=cached_input_tokens,
         )
 
+    def operational_tick(self) -> dict[str, Any]:
+        if not self._settings.markets_ready:
+            return {"executed": 0, "reason": f"runtime state is {self.markets_state()}; no operational execution"}
+        executed = 0
+        review_outcomes: dict[str, Any] = {}
+        for weekly in (False, True):
+            name = "weekly" if weekly else "daily"
+            result = self.run_scheduled_review(weekly=weekly)
+            review_outcomes[name] = result
+            if result.get("ran"):
+                executed += 1
+        settle = self.settle_and_evaluate()
+        inserted = int((settle.get("settle") or {}).get("inserted", 0))
+        if inserted > 0:
+            self.record_event_trigger("SETTLEMENT_BATCH_COMPLETED", {"inserted": inserted}, invoke=False)
+        return {"executed": executed, "reviews": review_outcomes, "settlement": settle}
+
+    def database_identity(self) -> dict[str, Any]:
+        from urllib.parse import urlsplit
+
+        info: dict[str, Any] = {"db_server": None, "db_port": None, "db_name": None, "schema_version": None}
+        database = getattr(self._tools, "_database", None)
+        if database is not None:
+            url = getattr(database, "database_url", "")
+            try:
+                parsed = urlsplit(url)
+                info["db_server"] = parsed.hostname
+                info["db_port"] = parsed.port
+                info["db_name"] = parsed.path.strip("/")
+            except Exception:
+                pass
+            health = database.health()
+            info["schema_version"] = health.get("schema_version")
+        return info
+
+    def latest_runtime_report(self) -> dict[str, Any] | None:
+        artifact_dir = getattr(self._weekly_review, "_artifact_dir", None)
+        if artifact_dir is None or not artifact_dir.is_dir():
+            return None
+        candidates = sorted(artifact_dir.glob("TT_MARKET_RESEARCH_REPORT_*.json"))
+        if not candidates:
+            return None
+        import json as _json
+
+        return _json.loads(candidates[-1].read_text(encoding="utf-8"))
+
     def operational_status(self) -> dict[str, Any]:
         prices = self._tools.price_observations()
         market_available = int(prices.get("observations", 0)) > 0
@@ -564,6 +696,7 @@ class MarketsIntelligenceOrchestrator:
         return {
             "markets_state": self.markets_state(),
             "quant_director": self.health_state(),
+            "database": self.database_identity(),
             "scheduler_leader": scheduler["leader"],
             "daily_job": scheduler["daily"],
             "weekly_job": scheduler["weekly"],

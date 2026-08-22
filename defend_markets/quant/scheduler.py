@@ -33,10 +33,18 @@ class SchedulerJob:
 class Scheduler:
     """Lease-based scheduler over the quant store."""
 
-    def __init__(self, store: Any, *, owner: str, lease_seconds: int = 120) -> None:
+    def __init__(
+        self,
+        store: Any,
+        *,
+        owner: str,
+        lease_seconds: int = 120,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
         self._store = store
         self._owner = owner
         self._lease_seconds = lease_seconds
+        self._clock = clock or utc_now
 
     def register(self, job: SchedulerJob) -> None:
         existing = self._store.job(job.job_name)
@@ -51,12 +59,12 @@ class Scheduler:
         )
 
     def claim(self, job_name: str) -> dict[str, Any] | None:
-        return self._store.claim_job(job_name, self._owner, self._lease_seconds)
+        return self._store.claim_job(job_name, self._owner, self._lease_seconds, now=self._clock())
 
     def complete(self, job_name: str, *, summary: str, state_hash: str | None = None) -> None:
         job = self._store.job(job_name)
         interval = int(job["schedule_interval_seconds"]) if job else 86400
-        next_run = (utc_now() + timedelta(seconds=interval)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        next_run = (self._clock() + timedelta(seconds=interval)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
         self._store.complete_job(job_name, summary=summary, state_hash=state_hash, next_run_at=next_run)
 
     def fail(self, job_name: str, *, error: str) -> None:

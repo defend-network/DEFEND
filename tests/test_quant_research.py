@@ -186,7 +186,7 @@ class TestExperiment:
         )
         assert spec.dataset_snapshot_id == snapshot.snapshot_id
 
-    def test_runner_produces_deterministic_result_and_ablation(self):
+    def test_runner_produces_deterministic_result_and_deltas(self):
         snapshot = self._snapshot()
         spec = build_spec(
             experiment_id="exp-2",
@@ -194,19 +194,31 @@ class TestExperiment:
             snapshot=snapshot,
             champion_version="M5_REGULARIZED_LOGISTIC:abc",
             challenger_name="c2",
-            feature_set=list(M5_FEATURE_NAMES) + ["elo_diff_sq"],
+            feature_set=list(M5_FEATURE_NAMES) + ["recent_form20_winrate_diff"],
         )
         runner = ExperimentRunner(snapshot=snapshot, n_windows=3)
         result = runner.run(spec)
         assert result.rows_used == snapshot.row_count
         assert result.challenger_metrics["n_windows"] >= 1
-        assert "lift" in result.ablation
-        assert isinstance(result.ablation["lift"], (int, float, type(None)))
+        assert result.metric_deltas["delta_brier"] is not None
+        assert result.promotion_policy_version == 2
+        assert "recent_form20_winrate_diff" in result.feature_diagnostics
+        assert "prediction_delta_vs_baseline" in result.feature_diagnostics
 
 
 class TestPromotion:
     def _gates(self):
-        return PromotionGateSet(min_sample=100, brier_tolerance=0.01, logloss_tolerance=0.02, calibration_tolerance=0.05)
+        return PromotionGateSet()
+
+    def _positive_deltas(self):
+        return {
+            "delta_brier": 0.005,
+            "delta_brier_ci_low": 0.001,
+            "delta_brier_ci_high": 0.009,
+            "delta_logloss": 0.01,
+            "delta_logloss_ci_low": 0.001,
+            "delta_logloss_ci_high": 0.02,
+        }
 
     def test_leakage_gate_blocks_promotion(self):
         verdict = self._gates().evaluate(
@@ -216,7 +228,8 @@ class TestPromotion:
             challenger_log_loss=0.6,
             challenger_ece=0.02,
             challenger_brier_std=0.01,
-            ablation_kept=True,
+            added_complexity=True,
+            metric_deltas=self._positive_deltas(),
         )
         assert verdict["promotion"] == "PROMOTION_BLOCKED"
         assert any("leakage" in reason for reason in verdict["blockers"])
@@ -229,7 +242,8 @@ class TestPromotion:
             challenger_log_loss=0.6,
             challenger_ece=0.02,
             challenger_brier_std=0.01,
-            ablation_kept=True,
+            added_complexity=True,
+            metric_deltas=self._positive_deltas(),
             champion_brier=0.24,
         )
         assert verdict["promotion"] == "PROMOTION_BLOCKED"
@@ -242,12 +256,39 @@ class TestPromotion:
             challenger_log_loss=0.6,
             challenger_ece=0.20,
             challenger_brier_std=0.01,
-            ablation_kept=True,
+            added_complexity=True,
+            metric_deltas=self._positive_deltas(),
             champion_brier=0.24,
         )
         assert verdict["promotion"] == "PROMOTION_BLOCKED"
 
-    def test_qualifying_fixture_advances(self):
+    def test_exact_equal_metrics_do_not_pass_usefulness_gate(self):
+        verdict = self._gates().evaluate(
+            leakage_detected=False,
+            sample_n=200,
+            challenger_brier=0.242352,
+            challenger_log_loss=0.677269,
+            challenger_ece=0.012997,
+            challenger_brier_std=0.000673,
+            added_complexity=True,
+            metric_deltas={
+                "delta_brier": 0.0,
+                "delta_brier_ci_low": -0.001,
+                "delta_brier_ci_high": 0.001,
+                "delta_logloss": 0.0,
+                "delta_logloss_ci_low": -0.001,
+                "delta_logloss_ci_high": 0.001,
+            },
+            champion_brier=0.242352,
+            champion_log_loss=0.677269,
+        )
+        assert verdict["promotion"] == "PROMOTION_BLOCKED"
+        usefulness = next(gate for gate in verdict["gates"] if gate["gate"] == "FEATURE_USEFULNESS")
+        assert usefulness["status"] == "FAIL"
+        parsimony = next(gate for gate in verdict["gates"] if gate["gate"] == "PARSIMONY")
+        assert parsimony["status"] == "FAIL"
+
+    def test_positive_lift_passes_usefulness_gate(self):
         verdict = self._gates().evaluate(
             leakage_detected=False,
             sample_n=200,
@@ -255,11 +296,60 @@ class TestPromotion:
             challenger_log_loss=0.60,
             challenger_ece=0.02,
             challenger_brier_std=0.005,
-            ablation_kept=True,
+            added_complexity=True,
+            metric_deltas=self._positive_deltas(),
             champion_brier=0.24,
             champion_log_loss=0.67,
         )
         assert verdict["promotion"] == "PROMOTION_ALLOWED"
+        usefulness = next(gate for gate in verdict["gates"] if gate["gate"] == "FEATURE_USEFULNESS")
+        assert usefulness["status"] == "PASS"
+
+    def test_regression_fails_usefulness_gate(self):
+        verdict = self._gates().evaluate(
+            leakage_detected=False,
+            sample_n=200,
+            challenger_brier=0.25,
+            challenger_log_loss=0.70,
+            challenger_ece=0.02,
+            challenger_brier_std=0.01,
+            added_complexity=True,
+            metric_deltas={
+                "delta_brier": -0.01,
+                "delta_brier_ci_low": -0.02,
+                "delta_brier_ci_high": -0.005,
+                "delta_logloss": -0.01,
+            },
+            champion_brier=0.24,
+        )
+        assert verdict["promotion"] == "PROMOTION_BLOCKED"
+
+    def test_parsimony_prefers_baseline_on_equivalence(self):
+        verdict = self._gates().evaluate(
+            leakage_detected=False,
+            sample_n=200,
+            challenger_brier=0.242352,
+            challenger_log_loss=0.677269,
+            challenger_ece=0.012997,
+            challenger_brier_std=0.000673,
+            added_complexity=True,
+            metric_deltas={"delta_brier": 0.0, "delta_logloss": 0.0},
+        )
+        parsimony = next(gate for gate in verdict["gates"] if gate["gate"] == "PARSIMONY")
+        assert parsimony["status"] == "FAIL"
+
+    def test_policy_version_recorded(self):
+        verdict = self._gates().evaluate(
+            leakage_detected=False,
+            sample_n=200,
+            challenger_brier=0.22,
+            challenger_log_loss=0.6,
+            challenger_ece=0.02,
+            challenger_brier_std=0.005,
+            added_complexity=True,
+            metric_deltas=self._positive_deltas(),
+        )
+        assert verdict["promotion_policy_version"] == 2
 
     def test_market_metrics_not_available_not_zero(self):
         verdict = self._gates().evaluate(
@@ -269,7 +359,8 @@ class TestPromotion:
             challenger_log_loss=0.6,
             challenger_ece=0.02,
             challenger_brier_std=0.01,
-            ablation_kept=True,
+            added_complexity=True,
+            metric_deltas=self._positive_deltas(),
             market_metrics_available=False,
         )
         market = next(gate for gate in verdict["gates"] if gate["gate"] == "MARKET_METRIC")

@@ -37,6 +37,7 @@ class PredictionOutcome:
 
 class OutcomeSource(Protocol):
     def settled_predictions(self) -> Sequence[PredictionOutcome]: ...
+    def prediction_counts(self) -> dict[str, int]: ...
 
 
 class PostgresOutcomeSource:
@@ -68,6 +69,20 @@ class PostgresOutcomeSource:
                 for row in cursor.fetchall()
             ]
         return rows
+
+    def prediction_counts(self) -> dict[str, int]:
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute("SELECT count(*) FROM tt_m5_live_predictions")
+            total = int(cursor.fetchone()[0])
+            cursor.execute("SELECT count(*) FROM tt_m5_live_predictions WHERE availability = 'AVAILABLE'")
+            available = int(cursor.fetchone()[0])
+            cursor.execute(
+                "SELECT count(*) FROM tt_m5_live_predictions p "
+                "JOIN tt_match_results r ON r.event_key = p.canonical_event_id "
+                "WHERE p.availability = 'AVAILABLE' AND r.home_score IS NOT NULL AND r.away_score IS NOT NULL"
+            )
+            settled = int(cursor.fetchone()[0])
+        return {"total": total, "available": available, "settled": settled}
 
 
 class EvaluationService:
@@ -220,19 +235,28 @@ class EvaluationService:
 
     def evaluation_state(self) -> dict[str, Any]:
         counts = self._store.evaluation_counts()
-        predictions = {"total": 0, "unsettled": 0, "settled": 0}
         linked = counts["active"] + counts["superseded"]
-        if counts["active"] == 0 and counts["superseded"] == 0:
+        prediction_counts = self._outcome_source.prediction_counts()
+        total = int(prediction_counts.get("total", 0))
+        available = int(prediction_counts.get("available", 0))
+        settled = int(prediction_counts.get("settled", 0))
+        if total == 0:
+            state = "NO_PREDICTIONS"
+        elif settled == 0:
             state = "PREDICTIONS_UNSETTLED"
+        elif linked == 0:
+            state = "SETTLED_RESULTS_NOT_LINKED"
         else:
             state = "EVALUATION_READY"
         return {
             "state": state,
-            "predictions_total": predictions["total"],
-            "predictions_unsettled": predictions["unsettled"],
-            "predictions_settled": linked,
+            "predictions_total": total,
+            "predictions_available": available,
+            "predictions_non_evaluable": total - available,
+            "predictions_settled": settled,
+            "predictions_unsettled": available - settled,
             "settled_linked": linked,
-            "settled_unlinked": 0,
+            "settled_unlinked": max(0, settled - linked),
             "evaluation_rows": counts["active"],
         }
 
