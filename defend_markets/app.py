@@ -964,4 +964,24 @@ def build_markets_app(dependencies: MarketsDependencies) -> FastAPI:
         )
         return _outcome_payload(outcome)
 
+    if deps.database is not None:
+        try:
+            from defend_markets.quant.config import QuantDirectorSettings
+            from defend_markets.quant.orchestrator import MarketsIntelligenceOrchestrator
+            from defend_markets.quant.routes import build_quant_router
+            from defend_markets.quant.store import PostgresQuantStore
+            from defend_markets.quant.tools import PostgresMarketTools
+
+            quant_settings = QuantDirectorSettings.from_env()
+            quant_store = PostgresQuantStore(deps.database)
+            quant_tools = PostgresMarketTools(deps.database, quant_store)
+            quant_orchestrator = MarketsIntelligenceOrchestrator(
+                store=quant_store,
+                tools=quant_tools,
+                settings=quant_settings,
+            )
+            app.include_router(build_quant_router(quant_orchestrator))
+        except Exception:
+            pass
+
     return app

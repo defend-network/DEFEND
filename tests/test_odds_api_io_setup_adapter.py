@@ -74,3 +74,32 @@ def test_available_tt_coverage_is_reported_when_payload_has_markets(monkeypatch)
 
     assert probe.coverage_state == "AVAILABLE"
     assert "Sbobet" in (probe.coverage_detail or "")
+
+
+def test_truncated_events_sweep_recovers_and_reports_empty(monkeypatch):
+    def fake_fetch(url, **kwargs):
+        if "/sports" in url:
+            return _success([{"name": "Table Tennis", "slug": "table-tennis"}])
+        if "/bookmakers/selected" in url:
+            return _success({"bookmakers": ["Sbobet", "SingBet"]})
+        if "/events?" in url:
+            body = '[{"id": 73859912}, {"id": 73859914}, {"id": "cut'
+            return FetchResult(
+                ok=True, status_code=200, latency_ms=20, error_type=None,
+                body=body, retries=0, headers={},
+            )
+        if "/odds?" in url:
+            return _success({"bookmakers": {}})
+        raise AssertionError(url)
+
+    monkeypatch.setattr(adapters_module, "fetch", fake_fetch)
+    definition = find_provider("odds_api_io")
+    probe = OddsApiIoAdapter().probe(
+        definition,
+        {"ODDS_API_IO_API_KEY": KEY},
+        {},
+    )
+
+    assert probe.ok is True
+    assert probe.coverage_state == "EMPTY"
+    assert "events=2" in (probe.coverage_detail or "")

@@ -362,7 +362,14 @@ class OddsApiIoAdapter(_BaseAdapter):
             backoff_seconds=1.0,
             known_secrets=(key,),
         )
-        events_body = json.loads(events_result.body) if events_result.body else None
+        from defend_markets.shadow import parse_recovered_json
+
+        events_body, _recovered = parse_recovered_json(events_result.body or "")
+        if not isinstance(events_body, list):
+            try:
+                events_body = json.loads(events_result.body) if events_result.body else None
+            except json.JSONDecodeError:
+                events_body = None
         events = events_body if isinstance(events_body, list) else []
         bookmaker_keys: list[str] = []
         market_count = 0
