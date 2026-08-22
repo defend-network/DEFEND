@@ -144,7 +144,7 @@ def check_market_compatibility(
     if missing:
         return MarketCompatibility(
             result=CompatibilityResult.INCOMPLETE_MARKET,
-            reasons=("missing selection sides", sorted(missing)),
+            reasons=("missing selection sides: " + ", ".join(sorted(missing)),),
         )
     if len(present) > len(expected):
         return MarketCompatibility(

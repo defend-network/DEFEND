@@ -18,6 +18,7 @@ from defend_markets.arb.compatibility import (
     MarketCompatibility,
     check_market_compatibility,
 )
+from defend_markets.arb.efficiency import CapitalEfficiency, capital_efficiency
 from defend_markets.arb.freshness import (
     CrossBookFreshnessResult,
     FreshnessPolicy,
@@ -92,6 +93,7 @@ __all__ = [
     "BestPriceResult",
     "BookmakerLimits",
     "CanonicalMarketKey",
+    "CapitalEfficiency",
     "CompatibilityResult",
     "CrossBookFreshnessResult",
     "EventState",
@@ -116,6 +118,7 @@ __all__ = [
     "best_price_candidate",
     "bankroll_constraint_state",
     "build_opportunity",
+    "capital_efficiency",
     "check_market_compatibility",
     "classify",
     "compute_inverse_sum",
