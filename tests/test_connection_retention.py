@@ -378,6 +378,7 @@ def test_lifespan_closes_open_resources_when_later_startup_step_fails(
 
     monkeypatch.setattr(api_server, "DataCore", lambda _root: data)
     monkeypatch.setattr(api_server, "configure_identity_store", lambda _store: None)
+    monkeypatch.setattr(api_server, "DEFEND_AI_PRODUCT_SERVICE", True)
     monkeypatch.setattr(api_server, "build_default_registry", lambda **_kwargs: {})
     monkeypatch.setattr(api_server, "build_model_client", lambda: model)
     monkeypatch.setattr(

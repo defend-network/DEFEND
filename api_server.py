@@ -48,6 +48,16 @@ from production_policy import ProductionPolicy
 API_TOKEN = os.getenv("DEFEND_API_TOKEN", "").strip()
 MODEL_NAME = os.getenv("DEFEND_MODEL", "defend-ai:latest")
 
+# DEFEND AI product service flag. The shared admin surface (Control Center)
+# launches this module WITHOUT the flag so it stays model-independent: no DEFEND
+# AI model client, ControlPlane, tool registry, or RAG stack is created merely
+# because the Control Center is up. Only the DEFEND AI product runtime specs set
+# this flag, at which point the full product stack is built.
+DEFEND_AI_PRODUCT_SERVICE = (
+    os.getenv("DEFEND_AI_PRODUCT_SERVICE", "").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+
 def _default_data_root() -> Path:
     configured = os.getenv("DEFEND_DATA_ROOT", "").strip()
     if configured:
@@ -387,36 +397,56 @@ async def lifespan(app: FastAPI):
         except Exception as error:
             _log_connection_cleanup_failure(error)
         configure_identity_store(data.identity)
-        embedding_settings = EmbeddingSettings.from_env(os.environ)
-        embedding_client = build_embedding_client(embedding_settings)
-        admin_rag_service.embedding_client = embedding_client
-        admin_rag_service.provider_label = embedding_settings.provider_label
-        registry = build_default_registry(
-            memory_manager=data.memory,
-            embedding_client=embedding_client,
-        )
-        model = build_model_client()
-        if hasattr(model, "__aenter__"):
-            await model.__aenter__()
-            model_needs_exit = hasattr(model, "__aexit__")
-        elif hasattr(model, "__aexit__"):
-            model_needs_exit = True
         state.data = data
         app.state.defend_data = data
-        state.model = model
-        state.cp = ControlPlane(
-            tool_registry=registry,
-            model_client=model,
-            memory_manager=data.memory,
-            conversation_store=data.conversations,
-            policy_engine=ProductionPolicy(),
-            parallel_tool_limit=int(os.getenv("DEFEND_PARALLEL_TOOLS", "3")),
-        )
-        backend = os.getenv("DEFEND_MODEL_BACKEND", "ollama")
-        print(
-            f"[DEFEND API] backend={backend} model={MODEL_NAME} "
-            f"data_root={data.paths.root} tools={list(registry.keys())}"
-        )
+
+        # The Control Center admin surface is model-independent. It must never
+        # build the DEFEND AI model client, tool registry, or ControlPlane at
+        # startup; DEFEND AI inference belongs to the independent product
+        # service, which is the only caller that sets DEFEND_AI_PRODUCT_SERVICE.
+        product_service = DEFEND_AI_PRODUCT_SERVICE
+        if product_service:
+            embedding_settings = EmbeddingSettings.from_env(os.environ)
+            embedding_client = build_embedding_client(embedding_settings)
+            admin_rag_service.embedding_client = embedding_client
+            admin_rag_service.provider_label = embedding_settings.provider_label
+            registry = build_default_registry(
+                memory_manager=data.memory,
+                embedding_client=embedding_client,
+            )
+            model = build_model_client()
+            if hasattr(model, "__aenter__"):
+                await model.__aenter__()
+                model_needs_exit = hasattr(model, "__aexit__")
+            elif hasattr(model, "__aexit__"):
+                model_needs_exit = True
+            state.model = model
+            state.cp = ControlPlane(
+                tool_registry=registry,
+                model_client=model,
+                memory_manager=data.memory,
+                conversation_store=data.conversations,
+                policy_engine=ProductionPolicy(),
+                parallel_tool_limit=int(os.getenv("DEFEND_PARALLEL_TOOLS", "3")),
+            )
+            backend = os.getenv("DEFEND_MODEL_BACKEND", "ollama")
+            print(
+                f"[DEFEND API] backend={backend} model={MODEL_NAME} "
+                f"data_root={data.paths.root} tools={list(registry.keys())}"
+            )
+        else:
+            # Admin surface only: no model client, no ControlPlane, no tool
+            # registry, no RAG embedding lane. DEFEND AI capabilities report
+            # explicitly unavailable until the product service is started.
+            async def _admin_rag_unavailable() -> bool:
+                return False
+
+            admin_rag_service.embedding_client = None
+            admin_rag_service._readiness_check = _admin_rag_unavailable
+            print(
+                f"[DEFEND API] admin-surface model-independent; "
+                f"DEFEND AI stopped data_root={data.paths.root}"
+            )
         yield
     finally:
         try:
@@ -432,6 +462,7 @@ async def lifespan(app: FastAPI):
                         data.close()
                 finally:
                     admin_rag_service.embedding_client = None
+                    admin_rag_service._readiness_check = None
                     state.model = None
                     state.cp = None
                     state.data = None
@@ -539,6 +570,23 @@ app.include_router(build_setup_integrations_router(setup_integrations_service))
 
 
 async def _health_payload() -> dict[str, Any]:
+    # The shared admin surface is model-independent. In admin-surface mode
+    # (DEFEND AI stopped) `ok` reflects the platform surface only, and the
+    # DEFEND AI model lane is reported as explicitly stopped rather than failed.
+    if not DEFEND_AI_PRODUCT_SERVICE:
+        return {
+            "ok": state.data is not None,
+            "application_id": "defend",
+            "model": MODEL_NAME,
+            "model_state": "stopped",
+            "product_service": False,
+            "provider": "admin-surface",
+            "adapter_repo": None,
+            "adapter_revision": None,
+            "base_repo": None,
+            "base_revision": None,
+            "tools": [],
+        }
     ok = state.cp is not None and state.model is not None
     model_ok = True
     if state.model is not None and hasattr(state.model, "healthcheck"):
@@ -558,6 +606,7 @@ async def _health_payload() -> dict[str, Any]:
         "application_id": "defend",
         "model": MODEL_NAME,
         "model_state": model_state,
+        "product_service": True,
         "provider": backend,
         "adapter_repo": os.getenv("DEFEND_MODEL_ADAPTER_REPO") or None,
         "adapter_revision": os.getenv("DEFEND_MODEL_ADAPTER_REVISION") or None,
@@ -575,10 +624,18 @@ async def public_health():
 @app.get("/live")
 async def public_live():
     """Liveness: the API process is up and its core components initialized."""
+    if not DEFEND_AI_PRODUCT_SERVICE:
+        return {
+            "ok": state.data is not None,
+            "application_id": "defend",
+            "model": MODEL_NAME,
+            "product_service": False,
+        }
     return {
         "ok": state.cp is not None and state.model is not None and state.data is not None,
         "application_id": "defend",
         "model": MODEL_NAME,
+        "product_service": True,
     }
 
 

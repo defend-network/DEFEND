@@ -32,6 +32,7 @@
       "gpu_families": ["A100", "H100", "H200", "B200"],
       "client": "openai_compatible_client.OpenAICompatibleModelClient (DEFEND_MODEL_BACKEND=vllm, DEFEND_MODEL_BASE_URL=http://127.0.0.1:8001/v1)"
     },
+    "resource_profile_note": "Enforced policy floor is 140000 MB single-GPU (code-enforced in ControlSettings.resource_profile), which selects H100/H200/B200-class cards. The canonical base is 4-bit quantized (bnb-4bit NF4): ~21 GB of weights+KV+overhead would fit on a 48-80 GB card, so the 140 GB floor is conservative headroom, not a hard model requirement. Owner directive asks for least-expensive compatible GPU; reconciling that with the code-enforced floor is an owner decision before any rental.",
     "live_inference_status": "BLOCKED_PENDING_AUTHORIZED_CANONICAL_COMPUTE",
     "local_validation_status": "PLUMBING_ONLY_NON_CANONICAL",
     "system_prompt": {
@@ -50,12 +51,15 @@
   },
   "provenance": {
     "resolved_at": "2026-08-20",
+    "reverified_at": "2026-08-22",
     "resolved_via": "defend_control.huggingface.HuggingFaceClient.resolve_adapter against huggingface.co with authorized token (in-memory only)",
+    "reverification_via": "HuggingFaceClient.resolve_adapter re-run on 2026-08-22; adapter main sha unchanged (92c790d...), adapter_config.json declares base unsloth/Qwen2.5-32B-Instruct-bnb-4bit",
     "adapter_last_modified": "2026-08-08T13:57:46.000Z",
-    "conflict_note": "Directive asserted the canonical base is a Qwen3 30B-class checkpoint. Authoritative immutable metadata (adapter_config.json at pinned adapter revision 92c790d...) declares base_model_name_or_path = unsloth/Qwen2.5-32B-Instruct-bnb-4bit. Per the conflict-resolution rule the immutable adapter metadata prevails; the canonical base is Qwen2.5-32B-Instruct (bnb-4bit). Repo tokenizer archives for qwen3-30b-a3b-instruct-2507 are experimental artifacts, not the canonical stack."
+    "conflict_note": "Directive asserted the canonical base is a Qwen3 30B-class checkpoint. Authoritative immutable metadata (adapter_config.json at pinned adapter revision 92c790d...) declares base_model_name_or_path = unsloth/Qwen2.5-32B-Instruct-bnb-4bit. Per the conflict-resolution rule the immutable adapter metadata prevails; the canonical base is Qwen2.5-32B-Instruct (bnb-4bit). Repo tokenizer archives for qwen3-30b-a3b-instruct-2507 are experimental artifacts, not the canonical stack. Re-verified 2026-08-22: no Qwen3-32B DEFEND AI adapter exists in the org; Qwen3-30B adapters are for DEFENDmarkets and DEFENDcoder only."
   },
   "verification_contracts": [
     "tests/test_canonical_model_manifest.py",
+    "tests/test_admin_surface_model_independent.py",
     "Modelfile SYSTEM block hash equals canonical system prompt sha256 (drift guard)"
   ]
 }

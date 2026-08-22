@@ -131,6 +131,24 @@ manifest records the conflict. `defend-ai:latest`/Ollama Qwen2.5 14B remains a
 legacy local plumbing alias and all dependent benchmarks are classified
 `NON_CANONICAL_MODEL_RESULT` / `LOCAL_LEGACY_DEV_BASELINE`.
 
+Re-verified 2026-08-22 against live Hugging Face metadata: adapter main sha is
+unchanged (`92c790d…`), `adapter_config.json` still declares
+`unsloth/Qwen2.5-32B-Instruct-bnb-4bit` as the base, and the org exposes no
+Qwen3-32B DEFEND AI adapter (Qwen3-30B adapters belong to DEFENDmarkets and
+DEFENDcoder only).
+
+## 6a. Control Center model independence (verified 2026-08-22)
+
+The shared admin surface (`api_server.py` launched by the Control Center) is
+model-independent. It runs with `DEFEND_AI_PRODUCT_SERVICE=0` and therefore
+does NOT construct a DEFEND AI model client, tool registry, ControlPlane, or
+RAG embedding lane at startup. The `/health` payload reports
+`model_state="stopped"` and `tools=[]`, and DEFEND AI capabilities report
+explicitly unavailable. Only the DEFEND AI product runtime process specs
+(`build_local_process_specs` / `build_remote_process_specs`) set
+`DEFEND_AI_PRODUCT_SERVICE=1`, at which point the full product stack is built.
+Regression coverage: `tests/test_admin_surface_model_independent.py`.
+
 ## 7. Continuation evidence
 
 - User-path tool matrix: calculator, time, explicit calculator, memory,

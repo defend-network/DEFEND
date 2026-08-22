@@ -119,6 +119,7 @@ def build_local_process_specs(
         "DEFEND_MODEL_BACKEND": "ollama",
         "DEFEND_MODEL": model_ready.model,
         "OLLAMA_HOST": model_ready.endpoint,
+        "DEFEND_AI_PRODUCT_SERVICE": "1",
         "DEFEND_API_PORT": "8000",
         "DEFEND_OWNER_USER": "MASSA",
         "DEFEND_OWNER_EMAIL": "chairman@defend-network.org",

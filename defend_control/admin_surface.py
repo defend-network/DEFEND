@@ -82,6 +82,10 @@ def build_admin_surface_specs(
         "DEFEND_CORS_ORIGINS": settings.public_web_origin,
         "DEFEND_TRUST_CLOUDFLARE": "true",
         "DEFEND_COOKIE_SECURE": "false",
+        # The shared admin surface is model-independent: no DEFEND AI model
+        # client / ControlPlane is constructed at startup. The DEFEND AI
+        # product runtime is the only caller that enables product service.
+        "DEFEND_AI_PRODUCT_SERVICE": "0",
         **secret_env,
     }
     repo = settings.repo_root

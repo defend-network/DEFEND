@@ -293,6 +293,7 @@ def build_remote_process_specs(
         "DEFEND_MODEL": "defend-ai",
         "DEFEND_MODEL_BASE_URL": model_ready.endpoint,
         "DEFEND_MODEL_API_KEY": vllm_key,
+        "DEFEND_AI_PRODUCT_SERVICE": "1",
         "DEFEND_API_PORT": "8000",
         "DEFEND_OWNER_USER": "MASSA",
         "DEFEND_OWNER_EMAIL": "chairman@defend-network.org",
