@@ -83,6 +83,18 @@ SECRET_CATALOG: tuple[SecretDefinition, ...] = (
         IntegrationOwner.PLATFORM,
         secret_type="token",
     ),
+    # Shared AI provider credentials (one encrypted value serves every
+    # authorized product: DEFENDcoder, DEFENDMarkets, ...).
+    SecretDefinition(
+        "DEEPSEEK_API_KEY",
+        "DeepSeek API key",
+        IntegrationOwner.PLATFORM,
+    ),
+    SecretDefinition(
+        "OPENAI_API_KEY",
+        "OpenAI API key",
+        IntegrationOwner.PLATFORM,
+    ),
     SecretDefinition(
         "CLOUDFLARE_API_TOKEN",
         "Cloudflare API token",
@@ -350,6 +362,30 @@ INTEGRATION_CATALOG: tuple[IntegrationDefinition, ...] = (
         ("HF_TOKEN",),
         True,
         StartupCheck.LOCAL,
+    ),
+    IntegrationDefinition(
+        "deepseek",
+        "DeepSeek API",
+        IntegrationOwner.PLATFORM,
+        "AI Providers",
+        ("coding", "reasoning", "managed_api"),
+        CostClass.USAGE,
+        ("DEEPSEEK_API_KEY",),
+        False,
+        StartupCheck.MANUAL,
+        ("defendcoder", "defendmarkets"),
+    ),
+    IntegrationDefinition(
+        "openai",
+        "OpenAI API",
+        IntegrationOwner.PLATFORM,
+        "AI Providers",
+        ("frontier", "sol", "managed_api"),
+        CostClass.USAGE,
+        ("OPENAI_API_KEY",),
+        False,
+        StartupCheck.MANUAL,
+        ("defendcoder", "defendmarkets"),
     ),
     IntegrationDefinition(
         "cloudflare",

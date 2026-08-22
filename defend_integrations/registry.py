@@ -198,6 +198,34 @@ PROVIDERS: tuple[ProviderDefinition, ...] = (
         optional_secrets=("MODEL_PROVIDER_API_KEY",),
         products=("defend_ai", "defendcoder", "scs"),
     ),
+    ProviderDefinition(
+        provider_id="deepseek",
+        display_name="DeepSeek API",
+        purpose=(
+            "Managed coding/reasoning API. DEFENDcoder default (DeepSeek "
+            "V4 Flash) and DEFENDMarkets Quant Director."
+        ),
+        category="ai_models",
+        auth_type=AuthType.API_KEY,
+        adapter_kind=AdapterKind.PLACEHOLDER,
+        required_secrets=("DEEPSEEK_API_KEY",),
+        products=("defendcoder", "defendmarkets"),
+        notes="Credential-only; model routing policy lives in DEFENDcoder.",
+    ),
+    ProviderDefinition(
+        provider_id="openai",
+        display_name="OpenAI API",
+        purpose=(
+            "Managed frontier API. DEFENDcoder Sol escalation and "
+            "DEFENDMarkets frontier path."
+        ),
+        category="ai_models",
+        auth_type=AuthType.API_KEY,
+        adapter_kind=AdapterKind.PLACEHOLDER,
+        required_secrets=("OPENAI_API_KEY",),
+        products=("defendcoder", "defendmarkets"),
+        notes="Credential-only; optional at DEFENDcoder startup.",
+    ),
     # --------------------------------------------------------- Vast / Compute
     ProviderDefinition(
         provider_id="vast",
