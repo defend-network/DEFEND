@@ -1,65 +1,114 @@
-"""Deterministic supervisory triggers.
+"""Deterministic supervisory triggers with state hashing, debounce, and
+persistence.
 
-The Quant Director never calls an LLM on every tick. State changes are
-filtered by deterministic triggers; only a meaningful trigger may schedule an
-AI call, and the trigger reason is recorded.
+Each trigger produces a normalized state hash; the same trigger type with an
+unchanged hash inside a cooldown is suppressed and counted. Severity is a
+property of the event, never chosen by the model.
 """
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 
+def utc_now_iso() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def state_hash(payload: dict[str, Any]) -> str:
+    return hashlib.sha256(
+        repr(sorted(payload.items(), key=lambda item: str(item[0]))).encode("utf-8")
+    ).hexdigest()
+
+
+class Severity:
+    INFO = "INFO"
+    REVIEW = "REVIEW"
+    IMPORTANT = "IMPORTANT"
+    CRITICAL = "CRITICAL"
+
+
+_TRIGGER_SEVERITY = {
+    "PROVIDER_HEALTH_CHANGED": Severity.IMPORTANT,
+    "NEW_PREDICTION_BATCH": Severity.INFO,
+    "SETTLEMENT_BATCH_COMPLETED": Severity.REVIEW,
+    "CALIBRATION_DRIFT": Severity.IMPORTANT,
+    "DATA_DRIFT": Severity.REVIEW,
+    "DATA_FRESHNESS_DEGRADED": Severity.IMPORTANT,
+    "NEW_CHALLENGER_RESULT": Severity.REVIEW,
+    "PROMOTION_GATE_RESULT": Severity.REVIEW,
+    "MATERIAL_MODEL_MARKET_DISAGREEMENT": Severity.REVIEW,
+    "MARKET_COVERAGE_BECAME_AVAILABLE": Severity.IMPORTANT,
+    "MARKET_COVERAGE_BECAME_EMPTY": Severity.INFO,
+    "CHAMPION_ARTIFACT_MISMATCH": Severity.CRITICAL,
+}
+
+
 @dataclass(frozen=True)
-class TriggerResult:
-    should_run: bool
-    reason: str | None = None
+class TriggerSignal:
+    trigger_type: str
+    evidence: dict[str, Any]
+    state_hash: str
+    severity: str
 
     def to_dict(self) -> dict[str, Any]:
-        return {"should_run": self.should_run, "reason": self.reason}
+        return {
+            "trigger_type": self.trigger_type,
+            "evidence": self.evidence,
+            "state_hash": self.state_hash,
+            "severity": self.severity,
+        }
 
 
-class SupervisoryTriggers:
-    def __init__(self, clock: Callable[[], datetime] | None = None) -> None:
-        self._clock = clock or (lambda: datetime.now(timezone.utc))
-        self._last_prediction_count: int | None = None
-        self._last_settlement_count: int | None = None
-        self._last_health: str | None = None
-        self._last_daily_review: datetime | None = None
+class TriggerLedger:
+    """Persists trigger sightings and debounces unchanged state."""
 
-    def evaluate(
+    def __init__(
         self,
+        store: Any,
         *,
-        markets_ready: bool,
-        tool_state: dict[str, Any],
-        forced: bool = False,
-    ) -> TriggerResult:
-        if not markets_ready:
-            return TriggerResult(False, "runtime not ready; no AI spend")
+        clock: Callable[[], datetime] | None = None,
+        cooldown_seconds: int = 600,
+    ) -> None:
+        self._store = store
+        self._clock = clock or utc_now_iso
+        self._cooldown_seconds = cooldown_seconds
+
+    def _severity(self, trigger_type: str) -> str:
+        return _TRIGGER_SEVERITY.get(trigger_type, Severity.INFO)
+
+    def record(
+        self,
+        trigger_type: str,
+        evidence: dict[str, Any],
+        *,
+        invoke: bool,
+        result: str | None = None,
+    ) -> dict[str, Any]:
         now = self._clock()
-
-        health = str(tool_state.get("provider_state", {}).get("healthy"))
-        if self._last_health is not None and health != self._last_health:
-            self._last_health = health
-            return TriggerResult(True, f"provider health transition to {health}")
-
-        predictions = int(tool_state.get("provider_state", {}).get("available_predictions", 0))
-        if self._last_prediction_count is not None and predictions != self._last_prediction_count:
-            self._last_prediction_count = predictions
-            return TriggerResult(True, f"prediction set changed: {predictions}")
-
-        settlements = int(tool_state.get("journal_summary", {}).get("settled", 0))
-        if self._last_settlement_count is not None and settlements != self._last_settlement_count:
-            self._last_settlement_count = settlements
-            return TriggerResult(True, f"settlement batch completed: {settlements}")
-
-        if self._last_daily_review is None or now - self._last_daily_review >= timedelta(hours=24):
-            self._last_daily_review = now
-            return TriggerResult(True, "scheduled daily review")
-
-        self._last_prediction_count = predictions
-        self._last_settlement_count = settlements
-        self._last_health = health
-        return TriggerResult(False, "no meaningful state change")
+        signal = TriggerSignal(
+            trigger_type=trigger_type,
+            evidence=evidence,
+            state_hash=state_hash(evidence),
+            severity=self._severity(trigger_type),
+        )
+        created = self._store.record_trigger(
+            {
+                "trigger_type": signal.trigger_type,
+                "severity": signal.severity,
+                "trigger_evidence": signal.evidence,
+                "state_hash": signal.state_hash,
+                "first_seen_at": now.isoformat(),
+                "last_seen_at": now.isoformat(),
+                "last_invoked_at": now.isoformat() if invoke else None,
+                "invocation_result": result,
+            }
+        )
+        return {
+            "signal": signal.to_dict(),
+            "first_seen": created,
+            "invoked": invoke,
+        }

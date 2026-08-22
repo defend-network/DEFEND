@@ -117,8 +117,21 @@ def challenger_feature_definitions() -> list[FeatureDefinition]:
             null_behavior="0.0 when elo_diff unavailable",
             normalization="none",
             domain="real",
+            status="REJECTED",
+        ),
+        FeatureDefinition(
+            feature_id="recent_form20_winrate_diff",
+            version=1,
+            name="recent_form20_winrate_diff",
+            description="win rate over the last 20 matches, home minus away",
+            source_fields=("strictly-before outcome history",),
+            calculation="(wins_home_20 - wins_away_20) / 20",
+            available_at_rule="prediction timestamp (strictly-before outcomes only)",
+            null_behavior="0.0 when fewer than one outcome available",
+            normalization="none",
+            domain="real",
             status="CANDIDATE",
-        )
+        ),
     ]
 
 
@@ -143,21 +156,37 @@ def rows_to_feature_matrix(
     feature_ids: Sequence[str],
 ) -> tuple[list[list[float]], list[float]]:
     builder = M5StateBuilder([])
+    form20: dict[str, list[float]] = {}
     matrix: list[list[float]] = []
     targets: list[float] = []
     for row in sorted(rows, key=lambda item: (item["ts"], item["event_key"])):
         ts = datetime.fromisoformat(str(row["ts"]).replace("Z", "+00:00")).replace(tzinfo=timezone.utc)
-        base = builder.features(str(row["home_key"]), str(row["away_key"]), ts)
+        home_key = str(row["home_key"])
+        away_key = str(row["away_key"])
+        base = builder.features(home_key, away_key, ts)
         features = apply_challenger_features(base, feature_ids)
+        if "recent_form20_winrate_diff" in feature_ids:
+            def _rate(key: str) -> float:
+                history = form20.get(key, [])
+                if not history:
+                    return 0.0
+                return (sum(history) / len(history)) * 2.0 - 1.0
+
+            features["recent_form20_winrate_diff"] = _rate(home_key) - _rate(away_key)
         matrix.append([float(features[name]) for name in feature_ids])
         targets.append(float(row["actual"]))
         builder._update(
             M5Match(
                 event_key=str(row["event_key"]),
-                home_key=str(row["home_key"]),
-                away_key=str(row["away_key"]),
+                home_key=home_key,
+                away_key=away_key,
                 ts=ts,
                 actual=float(row["actual"]),
             )
         )
+        for key, actual in ((home_key, float(row["actual"])), (away_key, 1.0 - float(row["actual"]))):
+            history = form20.setdefault(key, [])
+            history.append(actual)
+            if len(history) > 20:
+                del history[0]
     return matrix, targets

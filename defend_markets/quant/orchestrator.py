@@ -36,7 +36,16 @@ from defend_markets.quant.research.experiment import (
 )
 from defend_markets.quant.research.promotion import PromotionGateSet
 from defend_markets.quant.research.snapshot import DatasetSnapshot, build_snapshot
-from defend_markets.quant.triggers import SupervisoryTriggers
+from defend_markets.quant.triggers import TriggerLedger
+from defend_markets.quant.scheduler import Scheduler, SchedulerJob
+from defend_markets.quant.champion import ChampionConflictError, ensure_champion
+from defend_markets.quant.evaluation import EvaluationService
+from defend_markets.quant.prioritization import (
+    SEED_HYPOTHESES,
+    ResearchPrioritizer,
+    seed_hypotheses,
+)
+from defend_markets.quant.budget import estimate_call_cost
 
 
 class DirectorModel(Protocol):
@@ -110,10 +119,14 @@ class MarketsIntelligenceOrchestrator:
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._weights_doc = weights_doc
         self._last_trigger_at: datetime | None = None
-        self._triggers = SupervisoryTriggers(clock=self._clock)
+        self._trigger_ledger = TriggerLedger(
+            store, clock=self._clock,
+            cooldown_seconds=self._settings.trigger_cooldown_seconds,
+        )
         self._intelligence = QuantIntelligence(weights_doc=weights_doc)
         self._daily_review = DailyReview()
         self._weekly_review = WeeklyReview()
+        self._scheduler = Scheduler(store, owner="markets-quant-director")
         self._approved_expensive = False
         self._health = detect_health(
             initialized=True,
@@ -199,13 +212,6 @@ class MarketsIntelligenceOrchestrator:
     def maybe_run_scheduled_review(self) -> dict[str, Any]:
         if not self._settings.markets_ready:
             return {"ran": False, "reason": f"runtime state is {self.markets_state()}; no AI spend"}
-        tool_state = self._tools.all_tool_state()
-        trigger = self._triggers.evaluate(
-            markets_ready=self._settings.markets_ready,
-            tool_state=tool_state,
-        )
-        if not trigger.should_run:
-            return {"ran": False, "reason": trigger.reason or "no meaningful state change"}
         now = self._clock()
         if self._last_trigger_at is not None:
             cooldown = self._settings.trigger_cooldown_seconds
@@ -219,7 +225,7 @@ class MarketsIntelligenceOrchestrator:
         self._store.record_ai_call(
             provider=profile["provider"], model=profile["model"], cost=0.0
         )
-        return {"ran": True, "reason": trigger.reason, "profile": profile}
+        return {"ran": True, "reason": "scheduled review", "profile": profile}
 
     def budget_policy(self) -> dict[str, Any]:
         return {
@@ -446,3 +452,137 @@ class MarketsIntelligenceOrchestrator:
 
     def list_snapshots(self) -> list[dict[str, Any]]:
         return self._store.list_snapshots()
+
+    def ensure_champion(
+        self,
+        *,
+        artifact_path: str,
+        artifact_sha256: str,
+        feature_schema_version: int = 1,
+    ) -> dict[str, Any]:
+        if self._weights_doc is None:
+            import json
+            from pathlib import Path
+
+            self._weights_doc = json.loads(Path(artifact_path).read_text(encoding="utf-8"))
+        return ensure_champion(
+            self._store,
+            weights_doc=self._weights_doc,
+            artifact_path=artifact_path,
+            artifact_sha256=artifact_sha256,
+            feature_schema_version=feature_schema_version,
+        )
+
+    def register_scheduler_jobs(self) -> None:
+        self._scheduler.register(SchedulerJob("DAILY_LIGHT_REVIEW", 86400))
+        self._scheduler.register(SchedulerJob("WEEKLY_RESEARCH_REVIEW", 604800))
+
+    def run_scheduled_review(self, *, weekly: bool = False) -> dict[str, Any]:
+        job_name = "WEEKLY_RESEARCH_REVIEW" if weekly else "DAILY_LIGHT_REVIEW"
+
+        def handler() -> dict[str, Any]:
+            review = self.run_weekly_review() if weekly else self.run_daily_review()
+            return {"summary": f"{job_name}: {review.get('reason', 'ran')}", "result": review}
+
+        return self._scheduler.run_due(job_name, handler=handler)
+
+    def scheduler_status(self) -> dict[str, Any]:
+        return {
+            "leader": self._scheduler._owner,
+            "daily": self._scheduler.status("DAILY_LIGHT_REVIEW"),
+            "weekly": self._scheduler.status("WEEKLY_RESEARCH_REVIEW"),
+        }
+
+    def record_event_trigger(self, trigger_type: str, evidence: dict[str, Any], *, invoke: bool = False) -> dict[str, Any]:
+        return self._trigger_ledger.record(trigger_type, evidence, invoke=invoke)
+
+    def list_event_triggers(self, limit: int = 100) -> list[dict[str, Any]]:
+        return self._store.list_triggers(limit=limit)
+
+    def _evaluation_service(self) -> EvaluationService:
+        from defend_markets.quant.evaluation import PostgresOutcomeSource
+
+        source = None
+        if self._tools is not None and hasattr(self._tools, "_database"):
+            source = PostgresOutcomeSource(self._tools._database)
+        return EvaluationService(self._store, outcome_source=source)
+
+    def settle_and_evaluate(self) -> dict[str, Any]:
+        service = self._evaluation_service()
+        return {
+            "settle": service.settle(),
+            "metrics": service.compute_metrics(),
+        }
+
+    def evaluation_state(self) -> dict[str, Any]:
+        return self._evaluation_service().evaluation_state()
+
+    def prioritize_research(self) -> dict[str, Any]:
+        prices = self._tools.price_observations()
+        market_available = int(prices.get("observations", 0)) > 0
+        hypotheses = seed_hypotheses(self._store, market_prices_available=market_available)
+        selection = ResearchPrioritizer(market_prices_available=market_available).select_next(hypotheses)
+        return {"hypotheses": hypotheses, "selection": selection}
+
+    def record_ai_call_detailed(
+        self,
+        *,
+        profile_alias: str,
+        provider: str,
+        model: str,
+        trigger_type: str | None = None,
+        state_hash: str | None = None,
+        reason_for_route: str | None = None,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        cached_input_tokens: int = 0,
+    ) -> float:
+        from defend_markets.quant.budget import record_call
+
+        return record_call(
+            self._store,
+            profile_alias=profile_alias,
+            provider=provider,
+            model=model,
+            trigger_type=trigger_type,
+            state_hash=state_hash,
+            reason_for_route=reason_for_route,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cached_input_tokens=cached_input_tokens,
+        )
+
+    def operational_status(self) -> dict[str, Any]:
+        prices = self._tools.price_observations()
+        market_available = int(prices.get("observations", 0)) > 0
+        evaluation_state = self.evaluation_state()
+        metrics = self._store.latest_metric_snapshot()
+        champions = self._store.list_champions()
+        champion = champions[0] if champions else None
+        scheduler = self.scheduler_status()
+        usage = self._store.daily_ai_usage(datetime.now(timezone.utc).date().isoformat())
+        return {
+            "markets_state": self.markets_state(),
+            "quant_director": self.health_state(),
+            "scheduler_leader": scheduler["leader"],
+            "daily_job": scheduler["daily"],
+            "weekly_job": scheduler["weekly"],
+            "default_profile": self.runtime_profile(),
+            "champion": {
+                "model_id": champion["model_id"] if champion else None,
+                "version": champion["model_version"] if champion else None,
+                "hash": (champion["artifact_sha256"] or "")[:12] if champion else None,
+            },
+            "evaluation_state": evaluation_state,
+            "metrics": {
+                "brier": metrics.get("brier") if metrics else None,
+                "log_loss": metrics.get("log_loss") if metrics else None,
+                "ece": metrics.get("ece") if metrics else None,
+                "drift_state": metrics.get("drift_state") if metrics else None,
+            },
+            "tt_market_coverage": "AVAILABLE" if market_available else "EMPTY",
+            "ai_daily_calls": usage["calls"],
+            "ai_daily_spend": usage["cost_usd"],
+            "ai_hard_limit": self._settings.daily_cost_hard_limit,
+            "last_triggers": self.list_event_triggers(limit=5),
+        }

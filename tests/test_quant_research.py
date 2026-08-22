@@ -105,7 +105,11 @@ class TestFeatureRegistry:
     def test_challenger_feature_candidate_status(self):
         definitions = challenger_feature_definitions()
         assert any(
-            definition.feature_id == "elo_diff_sq" and definition.status == "CANDIDATE"
+            definition.feature_id == "recent_form20_winrate_diff" and definition.status == "CANDIDATE"
+            for definition in definitions
+        )
+        assert any(
+            definition.feature_id == "elo_diff_sq" and definition.status == "REJECTED"
             for definition in definitions
         )
 

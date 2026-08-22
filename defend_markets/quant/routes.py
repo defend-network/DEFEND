@@ -7,6 +7,8 @@ chat history.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
@@ -147,6 +149,66 @@ def build_quant_router(orchestrator: MarketsIntelligenceOrchestrator) -> APIRout
     async def approve_expensive(_principal: AdminPrincipal = Depends(require_admin)) -> dict:
         _require_markets_admin(_principal)
         return {"approved": orchestrator.approve_expensive()}
+
+    @router.get("/operational-status")
+    async def operational_status(_principal: AdminPrincipal = Depends(require_admin)) -> dict:
+        _require_markets_admin(_principal)
+        return orchestrator.operational_status()
+
+    @router.post("/scheduler/register")
+    async def register_scheduler(_principal: AdminPrincipal = Depends(require_admin)) -> dict:
+        _require_markets_admin(_principal)
+        orchestrator.register_scheduler_jobs()
+        return orchestrator.scheduler_status()
+
+    @router.post("/scheduler/run/{weekly}")
+    async def run_scheduled(
+        weekly: bool,
+        _principal: AdminPrincipal = Depends(require_admin),
+    ) -> dict:
+        _require_markets_admin(_principal)
+        return orchestrator.run_scheduled_review(weekly=weekly)
+
+    @router.get("/scheduler")
+    async def scheduler_status(_principal: AdminPrincipal = Depends(require_admin)) -> dict:
+        _require_markets_admin(_principal)
+        return orchestrator.scheduler_status()
+
+    @router.get("/triggers")
+    async def list_triggers(_principal: AdminPrincipal = Depends(require_admin)) -> dict:
+        _require_markets_admin(_principal)
+        return {"triggers": orchestrator.list_event_triggers()}
+
+    @router.get("/evaluation")
+    async def evaluation_state(_principal: AdminPrincipal = Depends(require_admin)) -> dict:
+        _require_markets_admin(_principal)
+        return {
+            "state": orchestrator.evaluation_state(),
+            "metrics": orchestrator._store.latest_metric_snapshot(),
+        }
+
+    @router.post("/evaluation/settle")
+    async def settle_evaluation(_principal: AdminPrincipal = Depends(require_admin)) -> dict:
+        _require_markets_admin(_principal)
+        return orchestrator.settle_and_evaluate()
+
+    @router.get("/research/prioritized")
+    async def prioritized_research(_principal: AdminPrincipal = Depends(require_admin)) -> dict:
+        _require_markets_admin(_principal)
+        return orchestrator.prioritize_research()
+
+    @router.post("/champion/seed")
+    async def seed_champion(_principal: AdminPrincipal = Depends(require_admin)) -> dict:
+        _require_markets_admin(_principal)
+        try:
+            return orchestrator.ensure_champion(
+                artifact_path=str(
+                    Path(__file__).resolve().parents[2] / "docs" / "operations" / "TT_M5_LIVE_WEIGHTS_V1.json"
+                ),
+                artifact_sha256="fe6f18d1fb5eea640fc42d904d9010470ee75f73e594b2c00a86982d3381e229",
+            )
+        except Exception as exc:  # noqa: BLE001 - surfaced as FAIL_CLOSED, not silent
+            raise HTTPException(status_code=409, detail=f"champion conflict: {type(exc).__name__}") from exc
 
     @router.post("/chat")
     async def chat(
