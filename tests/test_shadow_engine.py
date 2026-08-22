@@ -486,6 +486,34 @@ class TestEngineCycle:
 
         assert store.raw_evidence[0]["provider"] == "odds_api_io"
 
+    def test_due_events_prioritize_first_capture_over_polled_near_commence(self):
+        store = InMemoryShadowStore()
+        near = store.upsert_forward_event(
+            provider="odds_api_io", provider_event_id="near",
+            canonical_event_id="oaio:near", competition="c",
+            player_a_key="pa", player_b_key="pb",
+            player_a_name="Pa", player_b_name="Pb",
+            scheduled_commence=NOW + timedelta(minutes=10),
+            match_level="EXACT_ID", discovered_at=NOW,
+        )
+        store.set_last_odds_poll(near, NOW - timedelta(seconds=1))
+        store.upsert_forward_event(
+            provider="odds_api_io", provider_event_id="far",
+            canonical_event_id="oaio:far", competition="c",
+            player_a_key="pa", player_b_key="pb",
+            player_a_name="Pa", player_b_name="Pb",
+            scheduled_commence=NOW + timedelta(hours=5),
+            match_level="EXACT_ID", discovered_at=NOW,
+        )
+        engine = ShadowEngine(
+            store=store, m5=FakeM5(), client=FakeClient(),
+            config=ShadowConfig(max_poll_events_per_cycle=1),
+            now=lambda: NOW,
+        )
+        due = engine._due_events(NOW)
+        assert len(due) == 1
+        assert due[0]["provider_event_id"] == "far"
+
     def test_odds_poll_gate_and_ruler_flow(self):
         store, client, engine = self._engine(now=NOW)
         engine.discover(canonical_events={
@@ -688,6 +716,93 @@ class TestFrozenM5:
         doc["feature_names"] = ["wrong"]
         with pytest.raises(ValueError):
             FrozenM5(doc, source_ref="test")
+
+
+class TestForwardShadowAndPaper:
+    """M4.3: parallel shadow predictions and the paper/pass ledger."""
+
+    def _shadow_predictor(self):
+        from defend_markets.m5_live import FEATURE_NAMES, ShadowPredictor
+
+        doc = {
+            "model_id": "challenger-recent-form20",
+            "feature_names": list(FEATURE_NAMES) + ["recent_form20_winrate_diff"],
+            "intercept": 0.0,
+            "weights": {**{name: 0.0 for name in FEATURE_NAMES}, "recent_form20_winrate_diff": 0.0},
+            "sha256": "a" * 64,
+        }
+        return ShadowPredictor(doc, source_ref="test")
+
+    def test_shadow_predictor_persists_beside_m5(self):
+        from defend_markets.quant.store import InMemoryQuantStore
+
+        store = InMemoryShadowStore()
+        quant_store = InMemoryQuantStore()
+        client = FakeClient()
+        client.fixture_payload = _fixture_payload()
+        engine = ShadowEngine(
+            store=store,
+            m5=FakeM5(),
+            client=client,
+            now=lambda: NOW,
+            shadow_predictor=self._shadow_predictor(),
+            quant_store=quant_store,
+        )
+        engine.set_state_builder(M5StateBuilder([]))
+        engine.discover(canonical_events={
+            "oaio:id1": {
+                "event_key": "oaio:id1",
+                "provider_event_id": "id1",
+                "participant_keys": ["Sobisek Martin", "Chlebecek Marek"],
+                "competition": "Czech Liga Pro",
+                "commence_at": "2026-08-21T00:00:00Z",
+            }
+        })
+        engine.infer_m5()
+        assert quant_store.shadow_prediction_count(model_id="challenger-recent-form20") >= 1
+
+    def test_record_paper_pass_creates_entries(self):
+        from defend_markets.quant.store import InMemoryQuantStore
+
+        store = InMemoryShadowStore()
+        quant_store = InMemoryQuantStore()
+        client = FakeClient()
+        client.fixture_payload = _fixture_payload()
+        client.odds_payloads["id1"] = _odds_payload()
+        engine = ShadowEngine(
+            store=store,
+            m5=FakeM5(),
+            client=client,
+            now=lambda: NOW,
+            quant_store=quant_store,
+        )
+        engine.discover(canonical_events={
+            "oaio:id1": {
+                "event_key": "oaio:id1",
+                "provider_event_id": "id1",
+                "participant_keys": ["Sobisek Martin", "Chlebecek Marek"],
+                "competition": "Czech Liga Pro",
+                "commence_at": "2026-08-21T00:00:00Z",
+            }
+        })
+        engine._last_discovery_at = None
+        engine.poll_odds()
+        metrics = engine.record_paper_pass()
+        assert metrics.passes >= 1
+        assert quant_store.list_paper_entries()
+
+    def test_shadow_feature_schema_mismatch_rejected(self):
+        from defend_markets.m5_live import ShadowPredictor
+
+        doc = {
+            "model_id": "x",
+            "feature_names": ["wrong"],
+            "intercept": 0.0,
+            "weights": {},
+            "sha256": "a" * 64,
+        }
+        with pytest.raises(ValueError):
+            ShadowPredictor(doc, source_ref="test")
 
 
 class TestTruncatedResponses:

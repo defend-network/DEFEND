@@ -105,6 +105,7 @@ class M5StateBuilder:
         self.elo: dict[str, float] = defaultdict(lambda: _INITIAL_RATING)
         self.recency = RecencyElo(100)
         self.form5: dict[str, list[float]] = defaultdict(list)
+        self.form20: dict[str, list[float]] = defaultdict(list)
         self.depth: dict[str, int] = defaultdict(int)
         self.last_ts: dict[str, datetime] = {}
         self.day_games: dict[str, dict[str, int]] = defaultdict(
@@ -129,6 +130,9 @@ class M5StateBuilder:
             self.form5[key].append(value)
             if len(self.form5[key]) > 5:
                 self.form5[key] = self.form5[key][-5:]
+            self.form20[key].append(value)
+            if len(self.form20[key]) > 20:
+                self.form20[key] = self.form20[key][-20:]
         self.depth[home] += 1
         self.depth[away] += 1
         self.last_ts[home] = m.ts
@@ -196,6 +200,56 @@ class M5StateBuilder:
 
     def history_depth(self, key: str) -> int:
         return self.depth.get(key, 0)
+
+    def form20_winrate_diff(self, home: str, away: str) -> float:
+        def _rate(key: str) -> float:
+            history = self.form20.get(key, [])
+            if not history:
+                return 0.0
+            return (sum(history) / len(history)) * 2.0 - 1.0
+
+        return _rate(home) - _rate(away)
+
+
+class ShadowPredictor:
+    """Frozen challenger model (recent-form20) for parallel shadow predictions.
+
+    Never influences champion decisions. Loads a frozen weight vector that
+    extends the M5 feature set with recent_form20_winrate_diff.
+    """
+
+    def __init__(self, doc: dict[str, Any], *, source_ref: str) -> None:
+        expected = list(FEATURE_NAMES) + ["recent_form20_winrate_diff"]
+        if list(doc["feature_names"]) != expected:
+            raise ValueError(
+                f"shadow feature schema mismatch: {doc['feature_names']} != {expected}"
+            )
+        self._w = np.asarray(
+            [doc["intercept"]] + [doc["weights"][name] for name in expected],
+            dtype=float,
+        )
+        self.model_id = str(doc.get("model_id", "challenger-recent-form20"))
+        self.model_version = f"{self.model_id}:{str(doc['sha256'])[:12]}"
+        self.feature_snapshot_id = str(doc["sha256"])
+        self.source_ref = source_ref
+        self._feature_names = tuple(expected)
+
+    def predict(
+        self, builder: M5StateBuilder, home: str, away: str, ts: datetime
+    ) -> tuple[float, str, dict[str, float]]:
+        available = (
+            builder.history_depth(home) >= 5
+            and builder.history_depth(away) >= 5
+        )
+        base = builder.features(home, away, ts)
+        features = dict(base)
+        features["recent_form20_winrate_diff"] = builder.form20_winrate_diff(home, away)
+        if not available:
+            return 0.5, "INSUFFICIENT_HISTORY", features
+        xv = np.asarray([features[name] for name in self._feature_names], dtype=float)
+        p = _sigmoid(float(self._w[0] + self._w[1:] @ xv))
+        p = min(max(p, 1e-6), 1 - 1e-6)
+        return p, "AVAILABLE", features
 
 
 class FrozenM5:

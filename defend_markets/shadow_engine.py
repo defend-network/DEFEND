@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Protocol
 
 from defend_integrations.matching import compact_name
-from defend_markets.m5_live import FrozenM5, M5Match, M5StateBuilder, MODEL_ID
+from defend_markets.m5_live import FrozenM5, M5Match, M5StateBuilder, MODEL_ID, ShadowPredictor
 from defend_markets.shadow import (
     INTERMEDIATE,
     LAST_VALID_PREMATCH,
@@ -58,6 +58,7 @@ class ShadowConfig:
     max_poll_events_per_cycle: int = 40
     m5_min_games: int = 5
     price_min: float = 1.01
+    paper_edge_threshold: float = 0.05
 
 
 @dataclass
@@ -74,6 +75,9 @@ class CycleMetrics:
     postcommence_observations: int = 0
     m5_predictions: int = 0
     m5_insufficient: int = 0
+    shadow_predictions: int = 0
+    paper_decisions: int = 0
+    passes: int = 0
     ruler_rows: int = 0
     settlements: int = 0
     bookmakers_seen: set[str] = field(default_factory=set)
@@ -93,6 +97,9 @@ class CycleMetrics:
             "postcommence_observations": self.postcommence_observations,
             "m5_predictions": self.m5_predictions,
             "m5_insufficient": self.m5_insufficient,
+            "shadow_predictions": self.shadow_predictions,
+            "paper_decisions": self.paper_decisions,
+            "passes": self.passes,
             "ruler_rows": self.ruler_rows,
             "settlements": self.settlements,
             "bookmakers_seen": sorted(self.bookmakers_seen),
@@ -110,6 +117,8 @@ class ShadowEngine:
         config: ShadowConfig | None = None,
         now: Callable[[], datetime] | None = None,
         provider_label: str = "oddspapi",
+        shadow_predictor: ShadowPredictor | None = None,
+        quant_store: Any | None = None,
     ) -> None:
         self._store = store
         self._m5 = m5
@@ -117,6 +126,8 @@ class ShadowEngine:
         self._settled = settled or (lambda _key: None)
         self._config = config or ShadowConfig()
         self._provider_label = provider_label
+        self._shadow_predictor = shadow_predictor
+        self._quant_store = quant_store
         self._now = now or (lambda: datetime.now(timezone.utc))
         self._state_builder: M5StateBuilder | None = None
         self._last_discovery_at: datetime | None = None
@@ -284,7 +295,7 @@ class ShadowEngine:
     # P1 odds polling + P2 gate
     # ------------------------------------------------------------------ #
     def _due_events(self, now: datetime) -> list[dict[str, Any]]:
-        events: list[dict[str, Any]] = []
+        candidates: list[dict[str, Any]] = []
         for event in self._store.list_forward_events():
             if event["state"] not in ("UPCOMING", "LIVE"):
                 continue
@@ -296,10 +307,17 @@ class ShadowEngine:
             last_poll = event.get("last_odds_poll_at")
             delay = poll_delay_for((commence - now).total_seconds(), now=now)
             if last_poll is None or (now - last_poll).total_seconds() >= delay:
-                events.append(event)
-            if len(events) >= self._config.max_poll_events_per_cycle:
-                break
-        return events
+                candidates.append(event)
+        # First-time capture first: never-polled pre-match events may carry
+        # prices that disappear at commencement, so they must not be crowded
+        # out of the per-cycle cap by already-polled near-commence events.
+        candidates.sort(
+            key=lambda event: (
+                event.get("last_odds_poll_at") is not None,
+                event["scheduled_commence"],
+            )
+        )
+        return candidates[: self._config.max_poll_events_per_cycle]
 
     def _side_for(self, participant_key: str, event: dict[str, Any]) -> str | None:
         a = compact_name(event.get("player_a_name") or "")
@@ -443,33 +461,110 @@ class ShadowEngine:
                 # settlement validation; never create a new prediction after
                 # the event has commenced.
                 continue
-            if self._store.m5_prediction(canonical_id) is not None:
+            if self._store.m5_prediction(canonical_id) is None:
+                p_a, availability, features = self._m5.predict(
+                    builder,
+                    event["player_a_key"],
+                    event["player_b_key"],
+                    min(now, event["scheduled_commence"]),
+                    min_games=self._config.m5_min_games,
+                )
+                created = self._store.insert_m5_prediction(
+                    canonical_event_id=canonical_id,
+                    player_a_key=event["player_a_key"],
+                    player_b_key=event["player_b_key"],
+                    model_id=MODEL_ID,
+                    model_version=self._m5.model_version,
+                    feature_snapshot_id=self._m5.feature_snapshot_id,
+                    generated_at=now,
+                    p_a=round(p_a, 6),
+                    p_b=round(1 - p_a, 6),
+                    availability=availability,
+                    feature_payload=features,
+                )
+                if created:
+                    if availability == "AVAILABLE":
+                        metrics.m5_predictions += 1
+                    else:
+                        metrics.m5_insufficient += 1
+            if self._shadow_predictor is not None and self._quant_store is not None:
+                shadow_created = self._quant_store.upsert_shadow_prediction(
+                    {
+                        "canonical_event_id": canonical_id,
+                        "model_id": self._shadow_predictor.model_id,
+                        "model_version": self._shadow_predictor.model_version,
+                        "feature_snapshot_id": self._shadow_predictor.feature_snapshot_id,
+                        "generated_at": now,
+                        "p_a": round(
+                            self._shadow_predictor.predict(
+                                builder,
+                                event["player_a_key"],
+                                event["player_b_key"],
+                                min(now, event["scheduled_commence"]),
+                            )[0],
+                            6,
+                        ),
+                        "availability": "AVAILABLE",
+                    }
+                )
+                if shadow_created:
+                    metrics.shadow_predictions += 1
+        return metrics
+
+    # ------------------------------------------------------------------ #
+    # P14 paper / pass ledger (one entry per canonical event)
+    # ------------------------------------------------------------------ #
+    def record_paper_pass(self) -> CycleMetrics:
+        metrics = CycleMetrics()
+        now = self._now()
+        for event in self._store.list_forward_events():
+            canonical_id = event.get("canonical_event_id")
+            if not canonical_id or event["match_level"] == "AMBIGUOUS":
                 continue
-            p_a, availability, features = self._m5.predict(
-                builder,
-                event["player_a_key"],
-                event["player_b_key"],
-                min(now, event["scheduled_commence"]),
-                min_games=self._config.m5_min_games,
-            )
-            created = self._store.insert_m5_prediction(
-                canonical_event_id=canonical_id,
-                player_a_key=event["player_a_key"],
-                player_b_key=event["player_b_key"],
-                model_id=MODEL_ID,
-                model_version=self._m5.model_version,
-                feature_snapshot_id=self._m5.feature_snapshot_id,
-                generated_at=now,
-                p_a=round(p_a, 6),
-                p_b=round(1 - p_a, 6),
-                availability=availability,
-                feature_payload=features,
-            )
-            if created:
-                if availability == "AVAILABLE":
-                    metrics.m5_predictions += 1
+            observations = self._store.list_observations(canonical_id)
+            ruler = self._store.list_ruler_rows(canonical_id)
+            prediction = self._store.m5_prediction(canonical_id)
+            model_p_a = float(prediction["p_a"]) if prediction else None
+            if event["scheduled_commence"] <= now:
+                decision, reason, market_p_a, bookmaker, price, obs_id = "PASS", "POST_COMMENCE", None, None, None, None
+            elif not observations:
+                decision, reason, market_p_a, bookmaker, price, obs_id = "PASS", "NO_PRICE", None, None, None, None
+            elif not ruler:
+                decision, reason, market_p_a, bookmaker, price, obs_id = "PASS", "INCOMPLETE_MARKET", None, None, None, None
+            else:
+                row = ruler[-1]
+                disagreement = float(row.get("model_market_disagreement") or 0.0)
+                edge_threshold = self._config.paper_edge_threshold
+                market_p_a = row.get("no_vig_p_a")
+                bookmaker = observations[-1].get("bookmaker") if observations else None
+                price = observations[-1].get("price") if observations else None
+                obs_id = observations[-1].get("observation_id") if observations else None
+                if abs(disagreement) >= edge_threshold and market_p_a is not None:
+                    decision, reason = "PAPER_DECISION", "MODEL_EDGE_GE_THRESHOLD"
+                    metrics.paper_decisions += 1
                 else:
-                    metrics.m5_insufficient += 1
+                    decision, reason = "PASS", "DISAGREEMENT_TOO_SMALL"
+            created = (
+                self._quant_store.upsert_paper_entry(
+                    {
+                        "canonical_event_id": canonical_id,
+                        "provider_event_id": event.get("provider_event_id"),
+                        "decision": decision,
+                        "reason": reason,
+                        "model_p_a": round(model_p_a, 6) if model_p_a is not None else None,
+                        "market_p_a": round(market_p_a, 6) if market_p_a is not None else None,
+                        "bookmaker": bookmaker,
+                        "price": price,
+                        "observation_id": obs_id,
+                        "model_id": MODEL_ID,
+                        "model_version": self._m5.model_version,
+                    }
+                )
+                if self._quant_store is not None
+                else True
+            )
+            if created and decision == "PASS":
+                metrics.passes += 1
         return metrics
 
     # ------------------------------------------------------------------ #
@@ -600,6 +695,7 @@ class ShadowEngine:
             "freeze_promotions": self.freeze_last_valid_prematch(),
             "m5": self.infer_m5().to_dict(),
             "ruler": self.build_ruler_rows().to_dict(),
+            "paper_pass": self.record_paper_pass().to_dict(),
             "settlement": self.settle().to_dict(),
         }
         return metrics

@@ -18,6 +18,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import psycopg
 
@@ -31,7 +32,8 @@ from defend_integrations.stores import (  # noqa: E402
 )
 from defend_control.secrets import DpapiSecretStore  # noqa: E402
 from defend_markets.db import MarketsDatabase  # noqa: E402
-from defend_markets.m5_live import FrozenM5, M5Match, M5StateBuilder  # noqa: E402
+from defend_markets.m5_live import FrozenM5, M5Match, M5StateBuilder, ShadowPredictor  # noqa: E402
+from defend_markets.quant.store import PostgresQuantStore  # noqa: E402
 from defend_markets.shadow import parse_recovered_json  # noqa: E402
 from defend_markets.shadow_engine import OddsClient, ShadowEngine  # noqa: E402
 from defend_markets.shadow_store import PostgresShadowStore  # noqa: E402
@@ -96,10 +98,7 @@ _OAIO_BASE = "https://api.odds-api.io/v3"
 # Bookmaker selection is account-scoped; the exact labels below were attested
 # through /v3/bookmakers/selected. /v3/events may omit embedded odds, so a
 # pending event must still receive a per-event /odds request.
-# Account-selected Solo bookmaker labels returned by
-# /v3/bookmakers/selected. Keep the exact provider spelling; the endpoint
-# accepts these labels as the bookmaker query values.
-_OAIO_SELECTED_BOOKMAKERS = ("Sbobet", "SingBet")
+_OAIO_SELECTED_BOOKMAKERS = ("Bet365", "Hard Rock")
 
 
 def _oaio_event_to_fixture(event: dict[str, Any]) -> dict[str, Any]:
@@ -252,7 +251,7 @@ class OddsApiIOLiveClient:
         self.last_request_count = 1
         url = (
             f"{_OAIO_BASE}/odds?eventId={provider_event_id}"
-            f"&bookmakers={self._bookmakers_param()}&markets=ML&apiKey={self._key}"
+            f"&bookmakers={quote(self._bookmakers_param())}&markets=ML&apiKey={self._key}"
         )
         result, evidence, parsed = probe_get(
             "odds_api_io", "odds", url,
@@ -378,12 +377,24 @@ def build_engine() -> ShadowEngine:
         (REPO / "docs/operations/TT_M5_LIVE_WEIGHTS_V1.json").read_text(encoding="utf-8")
     )
     m5 = FrozenM5(m5_doc, source_ref="docs/operations/TT_M5_LIVE_WEIGHTS_V1.json")
+    shadow_predictor = None
+    try:
+        shadow_doc = json.loads(
+            (REPO / "docs/operations/TT_SHADOW_RECENT_FORM20_V1.json").read_text(encoding="utf-8")
+        )
+        shadow_predictor = ShadowPredictor(
+            shadow_doc, source_ref="docs/operations/TT_SHADOW_RECENT_FORM20_V1.json"
+        )
+    except Exception:
+        shadow_predictor = None
     engine = ShadowEngine(
         store=PostgresShadowStore(db),
         m5=m5,
         client=client,
         settled=settled_reader(db_url),
         provider_label=provider,
+        shadow_predictor=shadow_predictor,
+        quant_store=PostgresQuantStore(db),
     )
     engine.set_state_builder(load_state_builder(db_url))
     return engine

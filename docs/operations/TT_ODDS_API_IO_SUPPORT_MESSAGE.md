@@ -56,3 +56,10 @@ The provider's documented bookmaker-filtered discovery (`GET /v3/events?bookmake
 Conclusion: `CURRENT_PROVIDER_BOOK_TT_COVERAGE_ZERO` for both selected books under this Solo account, which conflicts with the provider's published SBOBET and SingBet integration pages advertising Table Tennis coverage.
 
 Question for provider support: "Your current SBOBET and SingBet integration pages list Table Tennis as a supported sport. Our authenticated selected-bookmaker account discovers Table Tennis events globally (51) but bookmaker-filtered TT discovery and per-event /odds return zero markets for both books, while the same filter returns 53-54 football events. Is Table Tennis currently available for these books on our plan, and if so which competitions/events should return prices?"
+
+## M4.3 addendum — 2026-08-22 (UTC)
+Account bookmaker slots were changed to Bet365 + Hard Rock. Re-test result:
+
+- `Bet365` bookmaker-filtered TT events: 51 (pending across Czech Liga Pro, International TT Cup, International TT Elite Series). Exact filtered event IDs return real prices: bookmaker key `Bet365`, markets ML / Spread / Totals with decimal prices (e.g. ML home 1.66 / away 2.10). Bet365 Table Tennis feed is AVAILABLE on this account.
+- `Hard Rock` bookmaker-filtered TT events: 0. Per-event `/odds?bookmakers=Hard Rock` returns 403 "Allowed: Bet365, Hard Rock" only when Hard Rock is not an enabled slot; with Hard Rock selected the filter returns 0 TT events. This is Odds-API.io exposing zero Hard Rock Table Tennis events to this account (not evidence that Hard Rock's sportsbook lacks Table Tennis).
+- Bet365 prices were ingested into the DEFEND database (Bet365 observations persisted; M5 and recent-form20 shadow predictions recorded).

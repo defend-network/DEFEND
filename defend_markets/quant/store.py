@@ -174,6 +174,21 @@ class QuantStore:
     def list_stage_transitions(self, model_id: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
         raise NotImplementedError
 
+    def upsert_shadow_prediction(self, spec: dict[str, Any]) -> bool:
+        raise NotImplementedError
+
+    def shadow_prediction_count(self, model_id: str | None = None) -> int:
+        raise NotImplementedError
+
+    def list_shadow_predictions(self, limit: int = 500) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
+    def upsert_paper_entry(self, entry: dict[str, Any]) -> bool:
+        raise NotImplementedError
+
+    def list_paper_entries(self, limit: int = 500) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
 
 class PostgresQuantStore(QuantStore):
     def __init__(self, database: MarketsDatabase) -> None:
@@ -826,6 +841,83 @@ class PostgresQuantStore(QuantStore):
             columns = [column.name for column in cursor.description]
             return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
+    def upsert_shadow_prediction(self, spec):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO quant_shadow_predictions "
+                "(canonical_event_id, model_id, model_version, feature_snapshot_id, generated_at, p_a, availability) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (canonical_event_id, model_id, model_version) DO NOTHING "
+                "RETURNING shadow_prediction_id",
+                (
+                    spec["canonical_event_id"],
+                    spec["model_id"],
+                    spec["model_version"],
+                    spec["feature_snapshot_id"],
+                    spec["generated_at"],
+                    spec["p_a"],
+                    spec["availability"],
+                ),
+            )
+            return cursor.fetchone() is not None
+
+    def shadow_prediction_count(self, model_id=None):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            if model_id is None:
+                cursor.execute("SELECT count(*) FROM quant_shadow_predictions")
+            else:
+                cursor.execute(
+                    "SELECT count(*) FROM quant_shadow_predictions WHERE model_id = %s",
+                    (model_id,),
+                )
+            return int(cursor.fetchone()[0])
+
+    def list_shadow_predictions(self, limit=500):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT shadow_prediction_id, canonical_event_id, model_id, model_version, "
+                "feature_snapshot_id, generated_at, p_a, availability, created_at "
+                "FROM quant_shadow_predictions ORDER BY shadow_prediction_id DESC LIMIT %s",
+                (limit,),
+            )
+            columns = [column.name for column in cursor.description]
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+    def upsert_paper_entry(self, entry):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO quant_paper_ledger "
+                "(canonical_event_id, provider_event_id, decision, reason, model_p_a, market_p_a, "
+                "bookmaker, price, observation_id, model_id, model_version) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (canonical_event_id) DO NOTHING RETURNING entry_id",
+                (
+                    entry["canonical_event_id"],
+                    entry.get("provider_event_id"),
+                    entry["decision"],
+                    entry["reason"],
+                    entry.get("model_p_a"),
+                    entry.get("market_p_a"),
+                    entry.get("bookmaker"),
+                    entry.get("price"),
+                    entry.get("observation_id"),
+                    entry.get("model_id"),
+                    entry.get("model_version"),
+                ),
+            )
+            return cursor.fetchone() is not None
+
+    def list_paper_entries(self, limit=500):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT entry_id, canonical_event_id, provider_event_id, decision, reason, model_p_a, "
+                "market_p_a, bookmaker, price, observation_id, model_id, model_version, created_at "
+                "FROM quant_paper_ledger ORDER BY entry_id DESC LIMIT %s",
+                (limit,),
+            )
+            columns = [column.name for column in cursor.description]
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
 
 @dataclass
 class InMemoryQuantStore(QuantStore):
@@ -845,6 +937,8 @@ class InMemoryQuantStore(QuantStore):
     ai_calls: list[dict[str, Any]] = field(default_factory=list)
     hypotheses: list[dict[str, Any]] = field(default_factory=list)
     stage_audit: list[dict[str, Any]] = field(default_factory=list)
+    shadow_predictions: dict[tuple[str, str, str], dict[str, Any]] = field(default_factory=dict)
+    paper_entries: list[dict[str, Any]] = field(default_factory=list)
     _next_research: int = 1
     _next_thread: int = 1
     _next_message: int = 1
@@ -1202,3 +1296,29 @@ class InMemoryQuantStore(QuantStore):
         if model_id is not None:
             rows = [row for row in rows if row.get("model_id") == model_id]
         return rows[:limit]
+
+    def upsert_shadow_prediction(self, spec):
+        key = (spec["canonical_event_id"], spec["model_id"], spec["model_version"])
+        if key in self.shadow_predictions:
+            return False
+        self.shadow_predictions[key] = dict(spec, created_at=_utcnow().isoformat())
+        return True
+
+    def shadow_prediction_count(self, model_id=None):
+        if model_id is None:
+            return len(self.shadow_predictions)
+        return sum(1 for spec in self.shadow_predictions.values() if spec.get("model_id") == model_id)
+
+    def list_shadow_predictions(self, limit=500):
+        rows = sorted(self.shadow_predictions.values(), key=lambda item: item["generated_at"], reverse=True)
+        return rows[:limit]
+
+    def upsert_paper_entry(self, entry):
+        for existing in self.paper_entries:
+            if existing["canonical_event_id"] == entry["canonical_event_id"]:
+                return False
+        self.paper_entries.append(dict(entry, created_at=_utcnow().isoformat()))
+        return True
+
+    def list_paper_entries(self, limit=500):
+        return list(reversed(self.paper_entries))[:limit]

@@ -155,7 +155,7 @@ class TestForwardMatchPipeline:
 class TestOddsApiIoClient:
     def test_uses_attested_selected_bookmakers(self):
         client = OddsApiIOLiveClient("synthetic-key")
-        assert client._bookmakers_param() == "Sbobet,SingBet"
+        assert client._bookmakers_param() == "Bet365,Hard Rock"
 
     def test_pending_empty_embedded_books_still_fetches_odds(self, monkeypatch):
         calls = []
@@ -189,7 +189,8 @@ class TestOddsApiIoClient:
         assert status == 200
         assert truncated is False
         assert calls and calls[0][1] == "odds"
-        assert "bookmakers=Sbobet,SingBet" in calls[0][2]
+        assert "bookmakers=Bet365" in calls[0][2]
+        assert "markets=ML" in calls[0][2]
         assert payload["bookmakers"] == {}
 
     def test_new_canonical_shape_matches_by_exact_id(self):

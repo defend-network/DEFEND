@@ -1,0 +1,32 @@
+{
+  "schema": "TT_SHADOW_RECENT_FORM20",
+  "model_id": "challenger-recent-form20",
+  "feature_names": [
+    "home_indicator",
+    "elo_diff",
+    "recency_elo_diff",
+    "form5_diff",
+    "log_depth_diff",
+    "rest_diff_days",
+    "h2h_winrate_diff",
+    "same_day_diff",
+    "degree_diff",
+    "recent_form20_winrate_diff"
+  ],
+  "intercept": -0.0070126623,
+  "weights": {
+    "home_indicator": -0.0,
+    "elo_diff": 0.0031429751,
+    "recency_elo_diff": -0.000463909,
+    "form5_diff": -0.1063550115,
+    "log_depth_diff": 0.0252814032,
+    "rest_diff_days": -0.0138589646,
+    "h2h_winrate_diff": 0.040806009,
+    "same_day_diff": 0.0137816893,
+    "degree_diff": -0.0017424937,
+    "recent_form20_winrate_diff": -0.2139996693
+  },
+  "fit_n": 148474,
+  "cutoff": "2026-08-16T00:00:00Z",
+  "sha256": "2e9f5445f3f7bccbf8bf9836e72c2109b11a48e5c3fcce37a9386edc27a95d14"
+}
