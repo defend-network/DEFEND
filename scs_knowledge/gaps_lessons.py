@@ -237,3 +237,145 @@ class ApprovedLessonStore:
 
     def list(self) -> list[dict[str, Any]]:
         return list(self._lessons.values())
+
+
+# ---------------------------------------------------------------------------
+# OEM research tasks + weakness registry + coverage matrix (P49-P54, P55-P63,
+# P97-P100, H-addendum)
+# ---------------------------------------------------------------------------
+
+
+class OemResearchStore:
+    """OEMResearchTask: manufacturer/model/family -> required fact -> status ->
+    candidate sources -> selected authoritative source. SOURCE_VERIFIED only
+    with official-manufacturer identity + content + hash + applicability."""
+
+    def __init__(self, store_path: Path) -> None:
+        self._path = Path(store_path)
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._tasks = self._load()
+
+    def _load(self) -> dict[str, dict[str, Any]]:
+        if not self._path.exists():
+            return {}
+        try:
+            return json.loads(self._path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+
+    def _save(self) -> None:
+        self._path.write_text(json.dumps(self._tasks, indent=2), encoding="utf-8")
+
+    def create(self, *, manufacturer: str, model: str | None, family: str | None,
+               required_fact: str) -> dict[str, Any]:
+        task_id = f"OEM-{len(self._tasks) + 1:04d}"
+        task = {
+            "task_id": task_id, "manufacturer": manufacturer, "model": model,
+            "family": family, "required_fact": required_fact, "status": "OPEN",
+            "candidate_sources": [], "selected_source": None,
+            "hash": None, "applicability": "UNKNOWN",
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        self._tasks[task_id] = task
+        self._save()
+        return task
+
+    def add_candidate(self, task_id: str, *, url: str, title: str,
+                      authority: str = "manufacturer") -> None:
+        if task_id in self._tasks:
+            self._tasks[task_id]["candidate_sources"].append({
+                "url": url, "title": title, "authority": authority,
+                "trust": "CANDIDATE"})
+            self._save()
+
+    def mark_verified(self, task_id: str, *, url: str, document_hash: str,
+                      applicability: str) -> None:
+        if task_id in self._tasks:
+            task = self._tasks[task_id]
+            task["status"] = "SOURCE_VERIFIED"
+            task["selected_source"] = {"url": url, "hash": document_hash,
+                                       "applicability": applicability}
+            self._save()
+
+    def list(self) -> list[dict[str, Any]]:
+        return list(self._tasks.values())
+
+
+class SCSWeaknessRegistry:
+    """P55-P63: field question -> failure/gap -> classify -> improve -> resolve.
+    No autonomous source-trust escalation."""
+
+    def __init__(self, store_path: Path) -> None:
+        self._path = Path(store_path)
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._items = self._load()
+
+    def _load(self) -> dict[str, dict[str, Any]]:
+        if not self._path.exists():
+            return {}
+        try:
+            return json.loads(self._path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+
+    def _save(self) -> None:
+        self._path.write_text(json.dumps(self._items, indent=2), encoding="utf-8")
+
+    def record(self, *, question: str, failure_type: str, detail: str,
+               classification: str = "UNCLASSIFIED") -> dict[str, Any]:
+        wid = f"W-{len(self._items) + 1:04d}"
+        item = {
+            "weakness_id": wid, "question": question, "failure_type": failure_type,
+            "detail": detail, "classification": classification,
+            "state": "OPEN", "improvement": None,
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        self._items[wid] = item
+        self._save()
+        return item
+
+    def classify(self, weakness_id: str, classification: str) -> None:
+        if weakness_id in self._items:
+            self._items[weakness_id]["classification"] = classification
+            self._save()
+
+    def resolve(self, weakness_id: str, improvement: str) -> None:
+        if weakness_id in self._items:
+            self._items[weakness_id]["state"] = "RESOLVED"
+            self._items[weakness_id]["improvement"] = improvement
+            self._save()
+
+    def list(self) -> list[dict[str, Any]]:
+        return list(self._items.values())
+
+
+class CoverageMatrix:
+    """P97-P100: coverage derived only from indexed sources - never invented."""
+
+    def __init__(self, library) -> None:
+        self._library = library
+
+    def compute(self) -> dict[str, Any]:
+        sources = self._library.list_sources()
+        counts: dict[str, int] = {}
+        manufacturer_models: dict[str, set[str]] = {}
+        standards: dict[str, int] = {}
+        for source in sources:
+            if source.source_state == "QUARANTINED":
+                continue
+            counts[source.source_type] = counts.get(source.source_type, 0) + 1
+            if source.source_type.startswith("STANDARD_"):
+                standards[source.source_type] = standards.get(source.source_type, 0) + 1
+            if source.manufacturer:
+                manufacturer_models.setdefault(source.manufacturer, set()).add(
+                    source.equipment_family_tags[0] if source.equipment_family_tags else "")
+        return {
+            "coverage_by_source_type": counts,
+            "standards_indexed": standards,
+            "oem_manufacturers": {m: len(ms - {""}) for m, ms in manufacturer_models.items()},
+            "procedures": len(PROCEDURE_REFERENCE),
+            "note": "coverage derived from indexed sources only",
+        }
+
+
+PROCEDURE_REFERENCE = []  # populated by scs_procedures.library import

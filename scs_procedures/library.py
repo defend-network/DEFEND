@@ -278,6 +278,111 @@ def build_library() -> dict[str, SCSProcedure]:
         oem_citations=["OEM fan IOM (when indexed)"],
     )
 
+    library["static_profile"] = SCSProcedure(
+        procedure_id="static_profile", version="1.0",
+        title="Static pressure profile / component drops",
+        scope="Measure a static pressure profile across a system",
+        equipment_classes=["RTU", "AHU", "FAN"], system_types=["SUPPLY_AIR", "RETURN_AIR"],
+        applicable_instruments=["micromanometer", "static_probe"],
+        required_readings=["return_reference", "filter_dp", "coil_dp", "supply_reference"],
+        steps=_steps([
+            ("s1", "Record references", "Return reference and supply reference.", "SCS_PRACTICE"),
+            ("s2", "Component delta-P", "Filter, coil, and any damper pressure drops.", "SCS_PRACTICE"),
+            ("s3", "Assemble TESP", "TESP = |return| + |supply|.", "SCS_PRACTICE"),
+            ("s4", "Compare to allowable", "Percent of OEM/design allowable static.", "OEM_REQUIREMENT"),
+        ]),
+        report_fields=["return_static", "supply_static", "filter_dp", "coil_dp", "tesp", "percent_allowable"],
+    )
+
+    library["oa_percent_check"] = SCSProcedure(
+        procedure_id="oa_percent_check", version="1.0",
+        title="Outside-air fraction check",
+        scope="Estimate OA% from temperature method and compare to design",
+        equipment_classes=["RTU", "AHU", "DOAS", "MAU"], system_types=["OUTSIDE_AIR"],
+        applicable_instruments=["temperature_probe", "velgrid"],
+        required_readings=["oa_temp", "ra_temp", "ma_temp"],
+        steps=_steps([
+            ("s1", "Stabilize", "Steady mode; record OA, return, mixed temps.", "SCS_PRACTICE"),
+            ("s2", "Compute OA fraction", "OA% = (Tra - Tma)/(Tra - Toa) when valid.", "SCS_PRACTICE"),
+            ("s3", "Validate", "Mixed air must lie between the two streams; else measurement suspect.", "SCS_PRACTICE"),
+            ("s4", "Compare to design", "Design OA CFM / % vs estimated.", "SCS_PRACTICE"),
+        ]),
+        report_fields=["oa_temp", "ra_temp", "ma_temp", "oa_fraction", "design_oa_cfm"],
+    )
+
+    library["economizer_check"] = SCSProcedure(
+        procedure_id="economizer_check", version="1.0",
+        title="Economizer / outside-air check",
+        scope="Verify economizer operates and OA control",
+        equipment_classes=["RTU", "AHU"], system_types=["OUTSIDE_AIR"],
+        applicable_instruments=["temperature_probe", "micromanometer"],
+        required_readings=["oa_db", "ra_db", "changeover_setpoint", "damper_position"],
+        steps=_steps([
+            ("s1", "Confirm mode", "Occupied/cooling mode; economizer enabled.", "SCS_PRACTICE"),
+            ("s2", "Check sensors", "OA/RA temperature (or enthalpy) sensors.", "SCS_PRACTICE"),
+            ("s3", "Cycle damper", "Damper responds from min to full OA.", "SCS_PRACTICE"),
+            ("s4", "Verify OA", "Measured OA vs design; no stuck economizing.", "SCS_PRACTICE"),
+        ]),
+    )
+
+    library["fan_rotation_check"] = SCSProcedure(
+        procedure_id="fan_rotation_check", version="1.0",
+        title="Fan rotation check",
+        scope="Verify fan wheel rotation direction",
+        equipment_classes=["FAN", "RTU", "AHU", "EF"], system_types=["SUPPLY_AIR", "EXHAUST_AIR"],
+        applicable_instruments=["visual"],
+        required_readings=["rotation_direction", "airflow_direction"],
+        steps=_steps([
+            ("s1", "Safe observation", "Bump-run or view rotation direction safely.", "SCS_PRACTICE"),
+            ("s2", "Verify airflow direction", "Air moves in the correct duct direction.", "SCS_PRACTICE"),
+            ("s3", "Correct if reversed", "Swap two phases or VFD direction; re-verify.", "SCS_PRACTICE"),
+        ]),
+    )
+
+    library["vfd_rotation_check"] = SCSProcedure(
+        procedure_id="vfd_rotation_check", version="1.0",
+        title="VFD setup / rotation check",
+        scope="Verify VFD direction and speed control",
+        equipment_classes=["VFD", "FAN"], system_types=["SUPPLY_AIR", "EXHAUST_AIR"],
+        applicable_instruments=["tachometer", "vfd"],
+        required_readings=["vfd_direction", "command_frequency", "fan_rpm"],
+        steps=_steps([
+            ("s1", "Confirm direction", "VFD output phase/direction matches fan.", "OEM_REQUIREMENT"),
+            ("s2", "Verify speed response", "Command frequency tracks setpoint; RPM follows.", "SCS_PRACTICE"),
+            ("s3", "Check limits", "Speed within OEM/VFD allowable range.", "OEM_REQUIREMENT"),
+        ]),
+    )
+
+    library["fsd_airflow_impact_check"] = SCSProcedure(
+        procedure_id="fsd_airflow_impact_check", version="1.0",
+        title="Fire/smoke damper airflow-impact check",
+        scope="Check FSD/FD/SD position effect on airflow/access during test",
+        equipment_classes=["DUCT", "AIR_DEVICE"], system_types=["SUPPLY_AIR", "EXHAUST_AIR"],
+        applicable_instruments=["flow_hood", "micromanometer"],
+        required_readings=["damper_position", "airflow"],
+        steps=_steps([
+            ("s1", "Identify dampers in scope", "From plans: FSD/FD/SD affecting airflow/access.", "SCS_PRACTICE"),
+            ("s2", "Verify open during test", "Confirm position per test conditions.", "SCS_PRACTICE"),
+            ("s3", "Check access", "Access door present for servicing (plan context only, not deficiency).", "SCS_PRACTICE"),
+        ]),
+    )
+
+    library["controller_calibration"] = SCSProcedure(
+        procedure_id="controller_calibration", version="1.0",
+        title="Controller / VAV calibration support",
+        scope="Assist VAV/controller flow calibration",
+        equipment_classes=["VAV", "CONTROLLER"], system_types=["SUPPLY_AIR"],
+        applicable_instruments=["micromanometer", "vav_controller"],
+        required_readings=["controller_flow", "measured_vp", "k_factor"],
+        required_inputs=["box_oem_iom"],
+        steps=_steps([
+            ("s1", "Confirm controller model", "Exact controller/box model and OEM IOM.", "OEM_REQUIREMENT"),
+            ("s2", "Compare flows", "Controller reading vs independent measurement.", "SCS_PRACTICE"),
+            ("s3", "Verify K-factor", "K-factor from controller documentation.", "OEM_REQUIREMENT"),
+            ("s4", "Calibrate if in spec", "Follow OEM calibration workflow.", "OEM_REQUIREMENT"),
+        ]),
+    )
+
     return library
 
 

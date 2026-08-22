@@ -25,6 +25,10 @@ SOURCE_ATTRS = (
     "superseded_by_source_id", "active", "confidence", "notes",
 )
 
+# H5/H6: source verification + quarantine state + dedup lineage
+SOURCE_STATES = ("ACTIVE", "QUARANTINED", "CANDIDATE", "SOURCE_VERIFIED",
+                 "DISABLED", "SUPERSEDED")
+
 
 @dataclass
 class KnowledgeSource:
@@ -100,13 +104,21 @@ class SCSKnowledgeLibrary:
             license_or_access_state TEXT,
             equipment_family_tags TEXT, procedure_tags TEXT, topic_tags TEXT,
             supersedes_source_id TEXT, superseded_by_source_id TEXT,
-            active INTEGER DEFAULT 1, confidence TEXT, notes TEXT
+            active INTEGER DEFAULT 1, confidence TEXT, notes TEXT,
+            source_state TEXT DEFAULT 'ACTIVE',
+            duplicate_of_source_id TEXT, ingest_id TEXT,
+            parser_version TEXT, chunking_version TEXT,
+            document_type TEXT, byte_size INTEGER
         );
         CREATE TABLE IF NOT EXISTS chunks (
             chunk_id TEXT PRIMARY KEY, source_id TEXT NOT NULL, text TEXT NOT NULL,
             chunk_type TEXT, section TEXT, page TEXT,
             topic_tags TEXT, procedure_tags TEXT, equipment_family_tags TEXT,
             table_ref TEXT, figure TEXT, active INTEGER DEFAULT 1
+        );
+        CREATE TABLE IF NOT EXISTS tables (
+            table_id TEXT PRIMARY KEY, source_id TEXT NOT NULL, page TEXT,
+            section TEXT, caption TEXT, rows_json TEXT, active INTEGER DEFAULT 1
         );
         """)
         self._db.commit()
@@ -117,10 +129,21 @@ class SCSKnowledgeLibrary:
         row = source.to_dict()
         for list_field in ("equipment_family_tags", "procedure_tags", "topic_tags"):
             row[list_field] = json.dumps(row[list_field])
+        row.setdefault("source_state", "ACTIVE")
+        row.setdefault("duplicate_of_source_id", None)
+        row.setdefault("ingest_id", None)
+        row.setdefault("parser_version", None)
+        row.setdefault("chunking_version", None)
+        row.setdefault("document_type", None)
+        row.setdefault("byte_size", None)
+        columns = list(SOURCE_ATTRS) + ["source_state", "duplicate_of_source_id",
+                                        "ingest_id", "parser_version",
+                                        "chunking_version", "document_type",
+                                        "byte_size"]
         self._db.execute(
-            f"INSERT OR REPLACE INTO sources ({', '.join(SOURCE_ATTRS)}) VALUES "
-            f"({', '.join('?' * len(SOURCE_ATTRS))})",
-            [row.get(a) for a in SOURCE_ATTRS],
+            f"INSERT OR REPLACE INTO sources ({', '.join(columns)}) VALUES "
+            f"({', '.join('?' * len(columns))})",
+            [row.get(c) for c in columns],
         )
         self._db.commit()
 
@@ -130,6 +153,21 @@ class SCSKnowledgeLibrary:
         if row is None:
             return None
         return self._source_from_row(row)
+
+    def find_by_hash(self, document_hash: str) -> list[KnowledgeSource]:
+        rows = self._db.execute("SELECT * FROM sources WHERE document_hash=?",
+                                (document_hash,)).fetchall()
+        return [self._source_from_row(r) for r in rows]
+
+    def set_source_state(self, source_id: str, state: str) -> None:
+        assert state in SOURCE_STATES, state
+        self._db.execute("UPDATE sources SET source_state=? WHERE source_id=?",
+                         (state, source_id))
+        self._db.commit()
+
+    def global_search_eligible(self) -> bool:
+        """CUSTOMER_JOB and QUARANTINED sources never enter global retrieval."""
+        return True
 
     @staticmethod
     def _source_from_row(row) -> KnowledgeSource:
@@ -172,12 +210,16 @@ class SCSKnowledgeLibrary:
                topic: str | None = None, procedure: str | None = None,
                equipment_family: str | None = None, limit: int = 5,
                active_only: bool = True) -> list[dict[str, Any]]:
-        """Hybrid-ish retrieval: lexical match on chunk text + filters."""
-        sql = ("SELECT c.*, s.source_type, s.title, s.edition, s.revision, s.manufacturer "
+        """Lexical + metadata retrieval. Excludes CUSTOMER_JOB / QUARANTINED
+        sources from global search (firewall)."""
+        sql = ("SELECT c.*, s.source_type, s.title, s.edition, s.revision, s.manufacturer, "
+               "s.source_state, s.document_number "
                "FROM chunks c JOIN sources s ON c.source_id = s.source_id WHERE 1=1")
         params: list[Any] = []
         if active_only:
             sql += " AND c.active = 1 AND s.active = 1"
+            sql += " AND s.source_state NOT IN ('QUARANTINED', 'DISABLED')"
+            sql += " AND s.source_type != 'CUSTOMER_JOB'"
         if source_type:
             sql += " AND s.source_type = ?"
             params.append(source_type)

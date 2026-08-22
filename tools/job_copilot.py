@@ -801,18 +801,39 @@ class CopilotServer(BaseHTTPRequestHandler):
         self.wfile.write(png)
 
     def _action_copilot(self, job_id: str):
-        """SCS Copilot: one job-aware question -> tool-routed sourced answer."""
+        """SCS Copilot: job-aware agent loop (AGENTIC) or deterministic fallback."""
         record = self._load(job_id)
         body = self._read_body()
         question = (body.get("question") or "").strip()
         if not question:
             self._send_json({"error": "question required"}, 400)
             return
+        result = self._run_copilot(job_id, record, question)
+        self._send_json(result)
+
+    def _run_copilot(self, job_id: str, record, question: str) -> dict[str, Any]:
+        from scs_copilot.agent import COPILOT_MODE_AGENTIC, run_agent
         from scs_copilot.context import SCSJobContext
+        from scs_copilot.memory import JobConversationMemory
+        from scs_copilot.providers import build_copilot_provider
         from scs_copilot.router import CopilotRouter
+        from scs_copilot.tools import ToolRegistry
+        from scs_diagnostics import airflow as diag_airflow
+        from scs_diagnostics import pressurization as diag_pressure
+        from scs_equipment.instruments import InstrumentRegistry
+        from scs_knowledge.gaps_lessons import (
+            KnowledgeGapLog, OemResearchStore, SCSWeaknessRegistry)
         from scs_knowledge.registry import SCSKnowledgeLibrary
-        from scs_knowledge.gaps_lessons import KnowledgeGapLog
+        from scs_procedures.library import PROCEDURE_LIBRARY
         from scs_reports.plan_graph import MechanicalPlanGraph
+
+        knowledge_dir = self.paths.root / "knowledge"
+        knowledge_dir.mkdir(parents=True, exist_ok=True)
+        library = SCSKnowledgeLibrary(knowledge_dir / "library.db")
+        gaps = KnowledgeGapLog(knowledge_dir / "gaps.json")
+        weaknesses = SCSWeaknessRegistry(knowledge_dir / "weaknesses.json")
+        research = OemResearchStore(knowledge_dir / "research.json")
+        instruments = InstrumentRegistry(knowledge_dir / "instruments.json")
 
         graph = None
         graph_payload = self._load_graph(job_id)
@@ -829,19 +850,112 @@ class CopilotServer(BaseHTTPRequestHandler):
                     setattr(graph, key, value)
         basis = self._load_basis(job_id) or {}
         context = SCSJobContext(job_id=job_id, job=record, graph=graph,
-                                design_basis=basis)
+                                design_basis=basis,
+                                missing_context=(graph.missing_context
+                                                 if graph else []) or [])
         for device in record.air_devices:
             if device.final_cfm is not None:
                 context.record_reading(f"{device.device_id}:final_cfm",
                                        device.final_cfm)
-        knowledge_dir = self.paths.root / "knowledge"
-        knowledge_dir.mkdir(parents=True, exist_ok=True)
-        library = SCSKnowledgeLibrary(knowledge_dir / "library.db")
-        gaps = KnowledgeGapLog(knowledge_dir / "gaps.json")
-        router = CopilotRouter(context=context, knowledge=library, gaps=gaps)
-        answer = router.route(question)
+
+        diagnostics = {
+            "LOW_AIRFLOW": diag_airflow.low_airflow_graph(),
+            "HIGH_STATIC": diag_airflow.high_static_graph(),
+            "NEGATIVE_BUILDING_PRESSURE": diag_pressure.negative_building_pressure_graph(),
+            "POSITIVE_BUILDING_PRESSURE": diag_pressure.positive_building_pressure_graph(),
+            "BELT_SLIP": diag_airflow.belt_slip_graph(),
+            "DIRTY_FILTER_OR_RETURN_RESTRICTION": diag_airflow.dirty_filter_graph(),
+            "DUCT_RESTRICTION": diag_airflow.duct_restriction_graph(),
+            "SENSOR_ERROR": diag_airflow.sensor_error_graph(),
+            "CONTROL_MODE_ERROR": diag_airflow.control_mode_error_graph(),
+            "ECONOMIZER_ERROR": diag_airflow.economizer_error_graph(),
+            "INCORRECT_FAN_ROTATION": diag_airflow.fan_rotation_graph(),
+            "LOW_OUTSIDE_AIR": diag_airflow.low_oa_graph(),
+            "HIGH_OUTSIDE_AIR": diag_airflow.high_oa_graph(),
+            "VAV_PICKUP_CALIBRATION": diag_airflow.vav_pickup_calibration_graph(),
+        }
+        registry = ToolRegistry(context=context, knowledge=library, gaps=gaps,
+                                procedures=PROCEDURE_LIBRARY,
+                                diagnostics=diagnostics,
+                                instruments=instruments.all(),
+                                resolver=None)
+        memory = JobConversationMemory()
+        # seed memory from job readings
+        for key, value in context.readings.items():
+            memory.record_reading(key, value.get("value"), source="job")
+        provider = build_copilot_provider()
+        deterministic = CopilotRouter(context=context, knowledge=library, gaps=gaps)
+        answer = run_agent(question, provider=provider, registry=registry,
+                           context=context, memory=memory,
+                           deterministic_router=deterministic)
+        answer["job_id"] = job_id
+        answer["knowledge_gaps_open"] = len(gaps.unresolved())
+        answer["weakness_registry_open"] = len(weaknesses.list())
+        answer["oem_research_tasks"] = len(research.list())
         library.close()
-        self._send_json({"question": question, **answer})
+        # persist answer trace for reproducibility
+        answers_path = self.paths.job_dir(job_id) / "answers.json"
+        history = []
+        if answers_path.exists():
+            try:
+                history = json.loads(answers_path.read_text(encoding="utf-8"))
+            except Exception:
+                history = []
+        history.append({"answer_id": answer.get("answer_id"),
+                        "question": question, "trace": answer.get("trace"),
+                        "mode": answer.get("copilot_mode")})
+        answers_path.write_text(json.dumps(history[-200:], indent=2), encoding="utf-8")
+        return answer
+
+    def _action_knowledge_import(self, job_id: str):
+        """Import an owner-authorized local document into the private library."""
+        body = self._read_body()
+        source = body.get("path") or ""
+        path = Path(source)
+        if not path.exists() or not path.is_file():
+            self._send_json({"error": "source file not found"}, 400)
+            return
+        from scs_knowledge.ingestor import ingest_file
+        from scs_knowledge.registry import SCSKnowledgeLibrary
+        knowledge_dir = self.paths.root / "knowledge"
+        library = SCSKnowledgeLibrary(knowledge_dir / "library.db")
+        private_root = knowledge_dir / "documents"
+        result = ingest_file(library, path, private_root=private_root)
+        library.close()
+        self._send_json({"ingest": result.to_dict()})
+
+    def _action_knowledge(self, job_id: str):
+        body = self._read_body()
+        query = body.get("query") or ""
+        if not query:
+            self._send_json({"error": "query required"}, 400)
+            return
+        from scs_knowledge.retrieval import hybrid_retrieve
+        from scs_knowledge.registry import SCSKnowledgeLibrary
+        knowledge_dir = self.paths.root / "knowledge"
+        library = SCSKnowledgeLibrary(knowledge_dir / "library.db")
+        results = hybrid_retrieve(library, query, limit=5)
+        library.close()
+        self._send_json({"results": results})
+
+    def _action_instruments(self, job_id: str):
+        body = self._read_body()
+        from scs_equipment.instruments import InstrumentRegistry
+        knowledge_dir = self.paths.root / "knowledge"
+        instruments = InstrumentRegistry(knowledge_dir / "instruments.json")
+        if body.get("register"):
+            profile = instruments.register(
+                manufacturer=body.get("manufacturer", ""),
+                model=body.get("model", ""),
+                capabilities=body.get("capabilities", ""),
+                range_=body.get("range"), resolution=body.get("resolution"),
+                accuracy=body.get("accuracy"), setup=body.get("setup"),
+                manual_source_id=body.get("manual_source_id"))
+            self._send_json({"registered": profile, "all": instruments.all()})
+            return
+        results = instruments.lookup(model=body.get("model"),
+                                     capability=body.get("capability"))
+        self._send_json({"instruments": results, "all": instruments.all()})
 
     def _action_calculate(self, job_id: str):
         body = self._read_body()
