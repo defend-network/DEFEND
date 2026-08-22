@@ -49,39 +49,41 @@ class WeaknessDetector:
         prices = snapshot.get("prices", {})
         events = snapshot.get("events", {})
         predictions = snapshot.get("predictions", {})
-        provider = snapshot.get("provider", {})
+        coverage = snapshot.get("coverage", {})
+        pairing = snapshot.get("pairing", {})
+        bookmakers = snapshot.get("bookmakers", {})
         passes = snapshot.get("pass_reasons", {})
 
-        discovered = int(events.get("discovered", 0))
-        priced = int(prices.get("unique_events_priced", 0))
-        if discovered > 0 and priced / discovered < 0.5:
-            rate = round(priced / discovered, 4)
+        eligible = int(coverage.get("eligible_events", 0))
+        priced = int(coverage.get("priced_events", 0))
+        rate = coverage.get("coverage_rate")
+        if eligible > 0 and rate is not None and rate < 0.5:
             specs.append(
                 self._spec(
                     now,
                     weakness_type="PRICE_COVERAGE_LOW",
                     category="MARKET_DATA_COVERAGE",
-                    title="Bet365 event price coverage is low",
-                    description=f"{priced} of {discovered} discovered events have prices ({rate})",
+                    title="Selected-book price coverage is low",
+                    description=f"cohort-aligned: {priced} of {eligible} eligible events priced ({rate}); same-book/same-window/same-cohort",
                     severity="HIGH" if rate < 0.3 else "MEDIUM",
-                    evidence={"metric_name": "price_coverage_rate", "metric_value": rate, "sample_size": discovered},
-                    state_hash=state_hash({"priced": priced, "discovered": discovered}),
+                    evidence={"metric_name": "coverage_rate", "metric_value": rate, "sample_size": eligible},
+                    state_hash=state_hash({"coverage_rate": rate, "eligible": eligible, "priced": priced}),
                 )
             )
 
-        m5 = int(predictions.get("m5_available", 0))
-        shadow = int(predictions.get("shadow_available", 0))
-        if shadow < m5:
+        pair_rate = pairing.get("rate")
+        failure = pairing.get("failure_reasons", {})
+        if failure.get("m5_without_shadow", 0) > 0:
             specs.append(
                 self._spec(
                     now,
                     weakness_type="SHADOW_COVERAGE_GAP",
                     category="MODEL_COVERAGE",
-                    title="Recent-form20 shadow coverage lags M5",
-                    description=f"shadow AVAILABLE={shadow} vs M5 AVAILABLE={m5}",
+                    title="Prospective shadow pairing incomplete",
+                    description=f"{failure.get('m5_without_shadow')} freshly generated M5 predictions lack a shadow prediction",
                     severity="LOW",
-                    evidence={"metric_name": "shadow_available", "metric_value": shadow, "comparison_value": m5, "sample_size": m5},
-                    state_hash=state_hash({"m5": m5, "shadow": shadow}),
+                    evidence={"metric_name": "m5_without_shadow", "metric_value": failure.get("m5_without_shadow"), "sample_size": pairing.get("eligible", 0)},
+                    state_hash=state_hash(pairing),
                 )
             )
 
@@ -115,19 +117,20 @@ class WeaknessDetector:
                 )
             )
 
-        if provider.get("hard_rock_selected") and provider.get("hard_rock_tt_events", 0) == 0:
-            specs.append(
-                self._spec(
-                    now,
-                    weakness_type="PROVIDER_COVERAGE",
-                    category="PROVIDER_COVERAGE",
-                    title="Odds-API.io exposes zero Hard Rock TT events",
-                    description="Hard Rock is selected but bookmaker-filtered TT discovery returns 0; likely provider capture gap, not Hard Rock absence",
-                    severity="MEDIUM",
-                    evidence={"metric_name": "hard_rock_tt_events", "metric_value": 0, "sample_size": 1},
-                    state_hash=state_hash({"hard_rock_tt_events": 0}),
+        for bookmaker_id, entry in bookmakers.items():
+            if entry.get("selected") and entry.get("attestation_state") == "ZERO_CURRENT_COVERAGE":
+                specs.append(
+                    self._spec(
+                        now,
+                        weakness_type="PROVIDER_COVERAGE",
+                        category="PROVIDER_COVERAGE",
+                        title=f"Selected book {bookmaker_id} has zero current TT capture",
+                        description="bookmaker-filtered TT discovery returned 0 in the attested window; does not imply the bookmaker never offers TT",
+                        severity="MEDIUM",
+                        evidence={"metric_name": "filtered_events", "metric_value": entry.get("filtered_events", 0), "sample_size": 1},
+                        state_hash=state_hash({"bookmaker": bookmaker_id, "attestation_state": "ZERO_CURRENT_COVERAGE"}),
+                    )
                 )
-            )
         return specs
 
     @staticmethod

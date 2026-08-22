@@ -240,6 +240,12 @@ class QuantStore:
     def list_paper_tickets(self, limit: int = 500) -> list[dict[str, Any]]:
         raise NotImplementedError
 
+    def upsert_bookmaker_coverage(self, entry: dict[str, Any]) -> None:
+        raise NotImplementedError
+
+    def list_bookmaker_coverage(self, limit: int = 200) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
 
 class PostgresQuantStore(QuantStore):
     def __init__(self, database: MarketsDatabase) -> None:
@@ -1268,6 +1274,54 @@ class PostgresQuantStore(QuantStore):
             columns = [column.name for column in cursor.description]
             return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
+    def upsert_bookmaker_coverage(self, entry):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO quant_bookmaker_coverage "
+                "(bookmaker_id, sport_slug, attestation_state, selected, filtered_events, pending_events, live_events, "
+                "priced_events, observations, competitions, market_types, coverage_window_start, coverage_window_end, "
+                "first_observation_at, last_observation_at, last_attested_at, error_state, evidence_refs) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                (
+                    entry["bookmaker_id"],
+                    entry.get("sport_slug", "table-tennis"),
+                    entry["attestation_state"],
+                    entry.get("selected", False),
+                    entry.get("filtered_events", 0),
+                    entry.get("pending_events", 0),
+                    entry.get("live_events", 0),
+                    entry.get("priced_events", 0),
+                    entry.get("observations", 0),
+                    Jsonb(entry.get("competitions", {})),
+                    Jsonb(entry.get("market_types", [])),
+                    entry["coverage_window_start"],
+                    entry["coverage_window_end"],
+                    entry.get("first_observation_at"),
+                    entry.get("last_observation_at"),
+                    entry["last_attested_at"],
+                    entry.get("error_state"),
+                    Jsonb(entry.get("evidence_refs", [])),
+                ),
+            )
+
+    def list_bookmaker_coverage(self, limit=200):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT coverage_id, bookmaker_id, sport_slug, attestation_state, selected, filtered_events, "
+                "pending_events, live_events, priced_events, observations, competitions, market_types, "
+                "coverage_window_start, coverage_window_end, first_observation_at, last_observation_at, "
+                "last_attested_at, error_state, evidence_refs, created_at "
+                "FROM quant_bookmaker_coverage ORDER BY bookmaker_id, last_attested_at DESC"
+            )
+            columns = [column.name for column in cursor.description]
+            rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
+        latest: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            bookmaker_id = str(row["bookmaker_id"])
+            if bookmaker_id not in latest:
+                latest[bookmaker_id] = row
+        return list(latest.values())[:limit]
+
 
 @dataclass
 class InMemoryQuantStore(QuantStore):
@@ -1296,6 +1350,7 @@ class InMemoryQuantStore(QuantStore):
     repair_packets: list[dict[str, Any]] = field(default_factory=list)
     decision_evaluations: list[dict[str, Any]] = field(default_factory=list)
     paper_tickets: dict[tuple[str, str, str, str], dict[str, Any]] = field(default_factory=dict)
+    bookmaker_coverage: list[dict[str, Any]] = field(default_factory=list)
     _next_research: int = 1
     _next_thread: int = 1
     _next_message: int = 1
@@ -1773,3 +1828,14 @@ class InMemoryQuantStore(QuantStore):
 
     def list_paper_tickets(self, limit=500):
         return list(reversed(list(self.paper_tickets.values())))[:limit]
+
+    def upsert_bookmaker_coverage(self, entry):
+        self.bookmaker_coverage.append(dict(entry, created_at=_utcnow().isoformat()))
+
+    def list_bookmaker_coverage(self, limit=200):
+        latest: dict[str, dict[str, Any]] = {}
+        for row in reversed(self.bookmaker_coverage):
+            bookmaker_id = str(row["bookmaker_id"])
+            if bookmaker_id not in latest:
+                latest[bookmaker_id] = row
+        return list(latest.values())[:limit]

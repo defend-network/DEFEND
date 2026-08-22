@@ -22,11 +22,17 @@ M5_ARTIFACT = REPO / "docs" / "operations" / "TT_M5_LIVE_WEIGHTS_V1.json"
 
 def _snapshot(**overrides):
     base = {
-        "prices": {"observations": 74, "unique_events_priced": 19},
+        "prices": {"observations": 122, "unique_events_priced": 31},
         "events": {"discovered": 87, "matched": 87},
-        "predictions": {"total": 122, "m5_available": 103, "shadow_available": 50},
+        "predictions": {"total": 122, "m5_available": 119, "shadow_available": 66},
+        "coverage": {"eligible_events": 51, "priced_events": 21, "coverage_rate": 0.4118, "cohort_aligned": True},
+        "pairing": {"eligible": 119, "complete": 66, "rate": 0.5546, "failure_reasons": {"m5_without_shadow": 53}},
+        "bookmakers": {
+            "Bet365": {"bookmaker_id": "Bet365", "selected": True, "attestation_state": "AVAILABLE"},
+            "Betway": {"bookmaker_id": "Betway", "selected": True, "attestation_state": "ZERO_CURRENT_COVERAGE"},
+        },
+        "selected_bookmakers": ["Bet365", "Betway"],
         "pass_reasons": {"NO_PRICE": 120, "DISAGREEMENT_TOO_SMALL": 60},
-        "provider": {"hard_rock_selected": True, "hard_rock_tt_events": 0},
     }
     base.update(overrides)
     return base
@@ -58,8 +64,13 @@ class TestWeaknessDetection:
         snapshot = _snapshot(pass_reasons={"NO_PRICE": 180, "DISAGREEMENT_TOO_SMALL": 20})
         assert any(spec["weakness_type"] == "PASS_REASON_SPIKE" for spec in WeaknessDetector().detect(snapshot))
 
-    def test_hard_rock_provider_gap_detected(self):
-        assert any(spec["weakness_type"] == "PROVIDER_COVERAGE" for spec in WeaknessDetector().detect(_snapshot()))
+    def test_provider_coverage_detected_generically(self):
+        specs = WeaknessDetector().detect(_snapshot())
+        assert any(spec["weakness_type"] == "PROVIDER_COVERAGE" and "Betway" in spec["title"] for spec in specs)
+
+    def test_no_bookmaker_hardcoding_in_detector(self):
+        source = open("defend_markets/quant/weakness.py", encoding="utf-8").read()
+        assert "hard_rock" not in source.casefold()
 
     def test_weakness_can_reopen(self):
         store = InMemoryQuantStore()
@@ -76,10 +87,13 @@ def snapshot_present_specs(snapshot):
 
 
 class TestImprovementOrchestrator:
+    def _orchestrator(self):
+        store = InMemoryQuantStore()
+        return ImprovementOrchestrator(store, _FakeDatabase(), live_selected=["Bet365", "Betway"])
+
     def test_run_once_records_and_selects_action(self):
         store = InMemoryQuantStore()
-        fake = _FakeDatabase()
-        orchestrator = ImprovementOrchestrator(store, fake)
+        orchestrator = ImprovementOrchestrator(store, _FakeDatabase(), live_selected=["Bet365", "Betway"])
         result = orchestrator.run_once()
         assert result["recorded"]
         assert store.weakness_counts()["total"] >= 1
@@ -87,52 +101,81 @@ class TestImprovementOrchestrator:
 
     def test_actions_have_verification_metric(self):
         store = InMemoryQuantStore()
-        ImprovementOrchestrator(store, _FakeDatabase()).run_once()
+        ImprovementOrchestrator(store, _FakeDatabase(), live_selected=["Bet365", "Betway"]).run_once()
         action = store.list_improvement_actions()[0]
         assert action["verification_metric"]
 
+    def test_actions_close_with_measured_outcome(self):
+        store = InMemoryQuantStore()
+        ImprovementOrchestrator(store, _FakeDatabase(), live_selected=["Bet365", "Betway"]).run_once()
+        actions = store.list_improvement_actions()
+        assert all(action["status"] == "COMPLETED" for action in actions)
+        assert all(action["outcome"] in ("IMPROVED", "RESOLVED", "NO_CHANGE", "INCONCLUSIVE") for action in actions)
+
     def test_daily_learning_review(self):
         store = InMemoryQuantStore()
-        review = ImprovementOrchestrator(store, _FakeDatabase()).daily_learning_review()
+        review = ImprovementOrchestrator(store, _FakeDatabase(), live_selected=["Bet365", "Betway"]).daily_learning_review()
         assert review["current_champion"] == "M5_REGULARIZED_LOGISTIC"
         assert "top_5_weaknesses" in review
-        assert "weaknesses" in review
+        assert "bookmaker_state" in review
 
 
-class _FakeDatabase:
-    def __init__(self, values=None):
-        self._values = values or [
-            (74,), (19,), (87,), (87,), (122,), (103,), (50,), (("NO_PRICE", 120), ("DISAGREEMENT_TOO_SMALL", 60)),
-        ]
-        self._index = 0
-
-    def connect(self):
-        return _FakeConnection(self._values)
-
-
-class _FakeConnection:
-    def __init__(self, values):
-        self._values = values
-        self._index = 0
-
-    def cursor(self):
-        return self
+class _FakeCursor:
+    def __init__(self, db):
+        self._db = db
+        self._sql = ""
 
     def execute(self, sql, params=None):
-        self._row = self._values[min(self._index, len(self._values) - 1)]
-        self._index += 1
+        self._sql = sql
 
     def fetchone(self):
-        return self._row
+        s = self._sql
+        if "min(generated_at)" in s:
+            return (datetime(2026, 8, 22, 12, 0, tzinfo=timezone.utc),)
+        if "count(distinct provider_event_id)" in s:
+            return (31,)
+        if "JOIN quant_shadow_predictions" in s:
+            return (66,)
+        if "FROM quant_shadow_predictions WHERE availability" in s:
+            return (66,)
+        if "tt_m5_live_predictions WHERE availability" in s:
+            return (119,)
+        if "FROM tt_m5_live_predictions" in s:
+            return (122,)
+        if "FROM tt_forward_events WHERE canonical_event_id IS NOT NULL" in s:
+            return (87,)
+        if "FROM tt_forward_events" in s:
+            return (87,)
+        if "FROM tt_market_observations" in s:
+            return (122,)
+        return (0,)
 
     def fetchall(self):
-        return list(self._row)
+        if "GROUP BY reason" in self._sql:
+            return [("NO_PRICE", 120), ("DISAGREEMENT_TOO_SMALL", 60)]
+        return []
 
     def __enter__(self):
         return self
 
     def __exit__(self, *args):
         pass
+
+
+class _FakeConnection:
+    def cursor(self):
+        return _FakeCursor(self)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        pass
+
+
+class _FakeDatabase:
+    def connect(self):
+        return _FakeConnection()
 
 
 class TestPaperModelCorrection:
