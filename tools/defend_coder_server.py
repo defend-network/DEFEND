@@ -1,18 +1,18 @@
-"""Local/control-plane entrypoint for the DEFENDcoder API.
+"""Standalone entrypoint for the DEFENDcoder product.
 
 Startup:
 CoderSettings -> PostgreSQL -> migrations -> repository -> authentication
 -> model agent wiring -> FastAPI -> uvicorn.
 
-The model runtime remains a separate service owned by Control Center. The
-control plane publishes a shared status file (CODER_MODEL_STATUS_FILE)
-that this process reads for the consumer runtime status; when the file is
-missing or stale the status is honestly OFFLINE.
+DEFENDcoder is an independent product and owns its own model runtime and
+runtime status. Control Center is an OPTIONAL supervisor only: it may launch
+this process, read health/status, and stop the child it launched. It is NOT
+required for startup, model routing, providers, runtime status, configuration,
+or persistence.
 """
 
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
 import sys
@@ -29,91 +29,26 @@ from defend_coder.preparation import RunPreparationService
 from defend_coder.repositories import CoderRepository
 from defend_coder.run_store import RunAttemptStore, RunCheckpointStore
 from defend_coder.runs import RunRunner, RunsRepository
+from defend_coder.runtime_status import coder_runtime_status
 from defend_coder.tool_ledger import DurableToolLedger
 from defend_coder.tools import CoderToolkit
 
-DEFAULT_STATUS_FILE = str(
-    Path(
-        os.environ.get("LOCALAPPDATA", ".")
-    )
-    / "DEFEND"
-    / "coder-model-status.json"
-)
-
-_STATUS_STATE_MAP = {
-    "ready": "ready",
-    "starting": "starting",
-    "offline": "offline",
-    "failed": "failed",
-    "running": "ready",
-    "starting_local": "starting",
-    "provisioning": "starting",
-    "preparing": "starting",
-    "approval_required": "starting",
-    "stopped": "offline",
-    "no_offer": "offline",
-}
-
 
 def runtime_status() -> dict[str, object]:
-    """Read the model status published by Control Center.
+    """DEFENDcoder-owned runtime status (derived from product authority).
 
-    The status file is the single source of truth for the consumer
-    runtime view; the control plane writes it from its own observations.
+    This is a placeholder closure; ``main`` binds it to the live credential
+    store so it reports truthful provider configuration. Never a
+    Control-Center-published artifact.
     """
-    status_path = os.environ.get("CODER_MODEL_STATUS_FILE")
-    if not status_path:
-        status_path = DEFAULT_STATUS_FILE
-
-    try:
-        raw = json.loads(
-            Path(status_path).read_text(encoding="utf-8")
-        )
-    except OSError:
-        return {
-            "state": "offline",
-            "provider": None,
-            "model": None,
-            "alias": None,
-            "context_limit": None,
-            "context_used": None,
-            "detail": (
-                "Control Center is not publishing coder runtime status"
-            ),
-        }
-    except ValueError:
-        return {
-            "state": "offline",
-            "provider": None,
-            "model": None,
-            "alias": None,
-            "context_limit": None,
-            "context_used": None,
-            "detail": "published coder runtime status is malformed",
-        }
-
-    if not isinstance(raw, dict):
-        return {
-            "state": "offline",
-            "provider": None,
-            "model": None,
-            "alias": None,
-            "context_limit": None,
-            "context_used": None,
-            "detail": "published coder runtime status is malformed",
-        }
-
-    raw_state = str(raw.get("state") or "offline")
-    state = _STATUS_STATE_MAP.get(raw_state, "offline")
-
     return {
-        "state": state,
-        "provider": raw.get("provider"),
-        "model": raw.get("model_name"),
-        "alias": raw.get("alias"),
-        "context_limit": raw.get("context_limit"),
-        "context_used": raw.get("context_used"),
-        "detail": raw.get("detail"),
+        "state": "starting",
+        "provider": None,
+        "model": None,
+        "alias": "DEFENDcoder",
+        "context_limit": None,
+        "context_used": None,
+        "detail": "runtime status not yet bound",
     }
 
 
@@ -166,12 +101,15 @@ def main() -> None:
     def _secret_store_loader() -> object:
         from pathlib import Path
 
-        from defend_control.secrets import DpapiSecretStore
+        from shared_platform.dpapi import DpapiSecretStore
 
         local = os.environ.get("LOCALAPPDATA") or "."
         return DpapiSecretStore(Path(local) / "DEFEND" / "secrets.dpapi")
 
     credentials = CredentialStore(store_loader=_secret_store_loader)
+
+    def _runtime_status() -> dict[str, object]:
+        return coder_runtime_status(credentials)
 
     # Durable authority: hydrate identity/prompt-core/technical profiles from
     # the immutable store. POSTGRES is the default production mode and FAILS
@@ -322,7 +260,7 @@ def main() -> None:
         settings=settings,
         db=database,
         auth=auth,
-        runtime_status=runtime_status,
+        runtime_status=_runtime_status,
         repository=repository,
         runs_repository=runs_repository,
         runner=runner,

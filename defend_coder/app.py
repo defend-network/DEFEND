@@ -132,7 +132,7 @@ def _default_secret_store() -> object:
     """Platform DPAPI secret store loader (defendcoder product)."""
     from pathlib import Path as _Path
 
-    from defend_control.secrets import DpapiSecretStore
+    from shared_platform.dpapi import DpapiSecretStore
 
     local = os.environ.get("LOCALAPPDATA") or "."
     return DpapiSecretStore(_Path(local) / "DEFEND" / "secrets.dpapi")
