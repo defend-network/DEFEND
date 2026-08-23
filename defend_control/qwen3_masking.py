@@ -68,7 +68,7 @@ def build_qwen3_masked_example(tokenizer, messages: list[dict]) -> MaskedExample
         role_spans.append((role, idx, end))
         if role == "assistant":
             for pos in range(idx, end):
-                labels[pos] = pos
+                labels[pos] = input_ids[pos]  # target token ID, never the positional index
         idx = end
 
     return MaskedExample(input_ids=input_ids, labels=labels, role_spans=role_spans)
@@ -94,10 +94,22 @@ def qwen3_masking_proof(tokenizer, messages: list[dict]) -> tuple[bool, dict]:
     counts = {"system": 0, "user": 0, "assistant": 0, "marker": 0}
     for span in example.role_spans:
         counts[span[0]] = counts.get(span[0], 0) + (span[2] - span[1])
+    # Target-label invariant: every trainable label must equal its input token ID,
+    # and every masked label must be -100.
+    target_ids_correct = True
+    trainable = 0
+    for i, label in enumerate(example.labels):
+        if label == -100:
+            continue
+        trainable += 1
+        if label != example.input_ids[i]:
+            target_ids_correct = False
+    ok = ok and target_ids_correct and trainable > 0
     return ok, {
         "ok": ok,
         "failures": failures,
         "token_count": len(example.input_ids),
         "role_token_counts": counts,
-        "assistant_trainable": sum(1 for lab in example.labels if lab != -100),
+        "assistant_trainable": trainable,
+        "target_label_token_ids_correct": target_ids_correct,
     }

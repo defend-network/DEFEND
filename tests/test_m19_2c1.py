@@ -214,8 +214,8 @@ class FakeVast:
         self.mutations.append("destroy")
         return self.destroy_ok
 
-    def instance_absent(self, instance_id):
-        return self.absent_ok
+    def instance_state(self, instance_id):
+        return "ABSENT" if self.absent_ok else "PRESENT"
 
 
 class FakeRemote:
@@ -233,8 +233,7 @@ class FakeRemote:
 
 
 EXPECTED_STAGES = [
-    "HOST_PREFLIGHT", "TOKENIZER_TEMPLATE_PROOF", "QLORA_LOAD",
-    "TRAIN_5_STEPS", "SAVE_TEMP_ADAPTER", "FRESH_RELOAD", "SANITY_INFERENCE",
+    "HOST_PREFLIGHT", "TOKENIZER_TEMPLATE_PROOF", "TRAIN_5_STEPS", "FRESH_RELOAD",
 ]
 
 

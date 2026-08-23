@@ -76,31 +76,99 @@ class ConcreteVastGateway:
     def destroy(self, instance_id: int) -> bool:
         return self._get_client().destroy_instance(instance_id, confirmed_instance_id=instance_id)
 
-    def instance_absent(self, instance_id: int) -> bool:
+    def instance_state(self, instance_id: int) -> str:
+        """Tri-state read-only instance verification (never fail-open).
+
+        ABSENT only from authoritative not-found/deleted provider evidence;
+        transport/auth/5xx/malformed → UNKNOWN.
+        """
+        import urllib.error
+        import urllib.request
+
+        from .qwen3_canary_executor import INSTANCE_ABSENT, INSTANCE_PRESENT, INSTANCE_UNKNOWN
+
+        key = getattr(self._get_client(), "_api_key", None)
+        if not key:
+            return INSTANCE_UNKNOWN
+        url = f"https://console.vast.ai/api/v0/instances/{instance_id}/"
+        req = urllib.request.Request(url, headers={"Accept": "application/json", "Authorization": f"Bearer {key}"})
         try:
-            self._get_client().show_instance(instance_id)
-            return False
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                document = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            return INSTANCE_ABSENT if exc.code == 404 else INSTANCE_UNKNOWN
         except Exception:
-            return True
+            return INSTANCE_UNKNOWN
+        instances = document.get("instances") if isinstance(document, dict) else None
+        return _classify_instance_response(instances)
+
+
+class CanaryRemoteTarget:
+    """Immutable connection identity bound once for the run."""
+
+    def __init__(self, *, instance_id: int, host: str, port: int, user: str, offer_id: int, hourly_rate: Decimal) -> None:
+        self.instance_id = instance_id
+        self.host = host
+        self.port = port
+        self.user = user
+        self.offer_id = offer_id
+        self.hourly_rate = hourly_rate
+
+
+BLOCKED_HOSTS = frozenset({"ssh3.vast.ai"})
+
+
+def _classify_instance_response(instances) -> str:
+    """Map a raw provider ``instances`` field to tri-state. ``None``/empty is
+    authoritative ABSENT; non-empty mapping/list is PRESENT."""
+    from .qwen3_canary_executor import INSTANCE_ABSENT, INSTANCE_PRESENT, INSTANCE_UNKNOWN
+
+    if instances is None:
+        return INSTANCE_ABSENT
+    if isinstance(instances, dict) and instances:
+        return INSTANCE_PRESENT
+    if isinstance(instances, list) and instances:
+        return INSTANCE_PRESENT
+    if isinstance(instances, (dict, list)):
+        return INSTANCE_ABSENT
+    return INSTANCE_UNKNOWN
 
 
 class ConcreteRemoteHost:
-    """Runs canary stages on the paid host via an injected SSH runner.
+    """Runs canary stages on the rented Vast host over SSH.
 
-    The default runner is a real ``ssh`` subprocess with a hard timeout; tests
-    inject a fake runner. Each paid stage receives a bounded timeout derived
-    from remaining budget (never an unbounded hang).
+    Every stage is bound to an immutable ``CanaryRemoteTarget``; local-only
+    execution is impossible through the production path. The default runner is
+    a real ``ssh`` subprocess; tests inject a fake runner.
     """
 
-    def __init__(self, ssh_runner: Callable[[str, float], dict] | None = None) -> None:
+    def __init__(self, target: CanaryRemoteTarget | None = None, ssh_runner: Callable[[list[str], float], dict] | None = None) -> None:
+        self._target = target
         self._ssh_runner = ssh_runner or self._default_ssh_runner
 
-    @staticmethod
-    def _default_ssh_runner(command: str, timeout: float) -> dict:
-        proc = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=timeout)
-        return {"status": "PASS" if proc.returncode == 0 else "FAIL", "detail": proc.stdout.strip()[-200:]}
+    @property
+    def target(self) -> CanaryRemoteTarget | None:
+        return self._target
 
-    def _stage_command(self, stage: str, instance_id: int, adapter_dir: str) -> str:
+    def bind_target(self, target: CanaryRemoteTarget) -> None:
+        if self._target is not None:
+            raise RuntimeError("remote target already bound")
+        self._target = target
+
+    @staticmethod
+    def _default_ssh_runner(argv: list[str], timeout: float) -> dict:
+        proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+        return {"status": "PASS" if proc.returncode == 0 else "FAIL", "detail": proc.stdout.strip()[-300:]}
+
+    @staticmethod
+    def _build_ssh_command(target: CanaryRemoteTarget, remote_command: str) -> list[str]:
+        return ["ssh", "-p", str(target.port), f"{target.user}@{target.host}", remote_command]
+
+    def _stage_command(self, stage: str, adapter_dir: str, git_head: str) -> str:
+        if stage == "HOST_PREFLIGHT":
+            return "python -m defend_control.qwen3_canary_train --help >/dev/null; python -c \"import torch;print('CUDA', torch.cuda.is_available(), torch.__version__)\""
+        if stage == "TOKENIZER_TEMPLATE_PROOF":
+            return "python -c \"from defend_control.qwen3_masking import qwen3_masking_proof; print('MASK_PROOF=OK')\""
         if stage == "TRAIN_5_STEPS":
             return (
                 f"python -m defend_control.qwen3_canary_train --data-file /workspace/defend/sft.jsonl "
@@ -108,15 +176,18 @@ class ConcreteRemoteHost:
             )
         if stage == "FRESH_RELOAD":
             return f"python -m defend_control.qwen3_canary_reload --adapter-dir {adapter_dir}"
-        if stage == "SANITY_INFERENCE":
-            return f"python -m defend_control.qwen3_canary_reload --adapter-dir {adapter_dir}"
-        if stage == "HOST_PREFLIGHT":
-            return "python -m defend_control.qwen3_canary_train --help"
-        return f"echo STAGE={stage}"
+        raise ValueError(f"unknown canary stage {stage!r}")
 
     def run_stage(self, stage: str, instance_id: int, adapter_dir: str, timeout_seconds: float) -> dict:
-        command = self._stage_command(stage, instance_id, adapter_dir)
+        if self._target is None:
+            return {"status": "FAIL", "detail": "no remote target bound"}
+        if instance_id != self._target.instance_id:
+            return {"status": "FAIL", "detail": "instance ID mismatch vs bound target"}
+        if self._target.host in BLOCKED_HOSTS:
+            return {"status": "FAIL", "detail": "blocked host"}
+        remote_command = self._stage_command(stage, adapter_dir, "")
+        argv = self._build_ssh_command(self._target, remote_command)
         try:
-            return self._ssh_runner(command, timeout_seconds)
+            return self._ssh_runner(argv, timeout_seconds)
         except subprocess.TimeoutExpired:
             return {"status": "FAIL", "detail": "remote stage timeout"}

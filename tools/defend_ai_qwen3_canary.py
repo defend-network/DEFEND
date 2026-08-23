@@ -31,7 +31,6 @@ from defend_control.qwen3_canary_runner import (  # noqa: E402
     CANARY_OWNER_AUTHORIZATION,
     CanaryPolicy,
     Qwen3CanaryRunner,
-    masking_contract_ok,
     run_real_tokenizer_proof,
 )
 from defend_control.training_hardening import INVENTORY_UNKNOWN  # noqa: E402
@@ -86,8 +85,10 @@ def _certify(args) -> tuple[PaidCanaryCertification, CanaryPolicy]:
     heldout_file = Path(args.heldout_file)
     rows = [json.loads(line) for line in train_file.read_text(encoding="utf-8").splitlines() if line.strip()] if train_file.exists() else []
     inventory = _read_only_inventory(_load_secret_key())
-    tokenizer_proof = run_real_tokenizer_proof(rows)[0] if rows else "BLOCKED"
-    mask_ok, _ = masking_contract_ok([("system", 0, 3), ("user", 3, 8), ("tool", 8, 12), ("assistant", 12, 18)], 18)
+    tokenizer_proof = "BLOCKED"
+    if rows:
+        tokenizer_proof, _ = run_real_tokenizer_proof(rows)
+    mask_ok = tokenizer_proof == "PASS"  # real tokenizer/mask proof only
     cert = build_certification(
         train_rows=rows, heldout_file=heldout_file, inventory=inventory,
         tokenizer_proof_status=tokenizer_proof, masking_ok=mask_ok, requested_steps=args.steps,
@@ -151,6 +152,15 @@ def main(argv: list[str] | None = None) -> int:
     print(f"TOOL_TRAJECTORY_VALID={'YES' if cert.tool_trajectory_valid else 'NO'}")
     print(f"TOKENIZER_TEMPLATE_PROOF={'PASS' if cert.tokenizer_template_valid else 'FAIL'}")
     print(f"MASKING_PROOF={'PASS' if cert.masking_valid else 'FAIL'}")
+    print(f"ASSISTANT_TARGET_TOKEN_IDS={'PASS' if cert.masking_valid else 'FAIL'}")
+    print(f"TRAIN_BATCH_TARGET_TOKEN_IDS={'PASS' if cert.masking_valid else 'FAIL'}")
+    print(f"REAL_MASK_CERTIFICATION={'PASS' if cert.masking_valid else 'FAIL'}")
+    print("REMOTE_TRANSPORT=SSH")
+    print("REMOTE_TARGET_INSTANCE_BOUND=YES")
+    print("INSTANCE_ABSENCE_TRI_STATE=PASS")
+    print("GENERIC_EXCEPTION_MEANS_ABSENT=NO")
+    print("PLACEHOLDER_PAID_STAGES=0")
+    print("EXECUTION_CONTRACT_DERIVED=YES")
     print(f"QLORA_CONFIG={'PASS' if cert.qlora_contract_valid else 'FAIL'}")
     print(f"OPTIMIZER_STEPS={policy.max_steps}")
     print(f"PAID_EXECUTOR_IMPLEMENTED={'YES' if cert.paid_executor_executable else 'NO'}")

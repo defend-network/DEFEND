@@ -174,7 +174,11 @@ _CANARY_BASE_REVISION = "9216db5781bf21249d130ec9da846c4624c16137"
 
 
 def build_execution_contract() -> ExecutionContract:
-    """Derive execution-contract gates from actual module/function presence."""
+    """Derive execution-contract gates from actual module/function capability.
+
+    No unconditional PASS booleans: every field is introspected from the real
+    concrete implementation's callables/attributes.
+    """
     contract = ExecutionContract()
 
     try:
@@ -187,20 +191,66 @@ def build_execution_contract() -> ExecutionContract:
         contract = replace(contract, reload_entrypoint_valid=bool(getattr(r, "main", None)) and getattr(r, "CANARY_BASE_REVISION", "") == _CANARY_BASE_REVISION)
     except Exception:
         pass
+
+    concrete_vast_valid = False
+    concrete_host_valid = False
     try:
         from .qwen3_canary_hosts import ConcreteRemoteHost, ConcreteVastGateway
-        contract = replace(contract, concrete_vast_gateway_valid=hasattr(ConcreteVastGateway, "create"), concrete_remote_host_valid=hasattr(ConcreteRemoteHost, "run_stage"))
+        concrete_vast_valid = bool(
+            hasattr(ConcreteVastGateway, "create")
+            and hasattr(ConcreteVastGateway, "destroy")
+            and hasattr(ConcreteVastGateway, "instance_state")  # tri-state
+            and hasattr(ConcreteVastGateway, "select_offer")
+        )
+        concrete_host_valid = bool(
+            hasattr(ConcreteRemoteHost, "run_stage")
+            and hasattr(ConcreteRemoteHost, "_build_ssh_command")  # SSH argv builder
+            and hasattr(ConcreteRemoteHost, "bind_target")  # instance-bound target
+            and hasattr(ConcreteRemoteHost, "_stage_command")
+        )
+    except Exception:
+        pass
+    contract = replace(contract, concrete_vast_gateway_valid=concrete_vast_valid, concrete_remote_host_valid=concrete_host_valid)
+
+    # exact-ID destroy: concrete gateway.destroy uses confirmed_instance_id.
+    exact_id_destroy_valid = False
+    try:
+        from .qwen3_canary_hosts import ConcreteVastGateway
+        import inspect
+        src = inspect.getsource(ConcreteVastGateway.destroy)
+        exact_id_destroy_valid = "confirmed_instance_id" in src
     except Exception:
         pass
 
-    # Executor capabilities are structural facts of this module.
+    # billing verify: concrete gateway exposes tri-state instance_state.
+    billing_verify_valid = False
+    try:
+        from .qwen3_canary_hosts import ConcreteVastGateway
+        billing_verify_valid = hasattr(ConcreteVastGateway, "instance_state")
+    except Exception:
+        pass
+
+    # spend watchdog: executor exposes budget deadline contract.
+    spend_watchdog_valid = hasattr(Qwen3CanaryExecutor, "_budget_deadlines")
+
+    # production guard: candidate identity cross-binding exists.
+    production_guard_valid = bool(callable(validate_candidate_canary_identity))
+
+    # paid CLI wired: the CLI entrypoint exposes run_paid_canary -> executor.
+    paid_cli_wired = False
+    try:
+        import tools.defend_ai_qwen3_canary as cli
+        paid_cli_wired = callable(getattr(cli, "run_paid_canary", None))
+    except Exception:
+        pass
+
     return replace(
         contract,
-        exact_id_destroy_valid=True,
-        billing_verify_valid=True,
-        spend_watchdog_valid=True,
-        production_guard_valid=True,
-        paid_cli_wired=True,
+        exact_id_destroy_valid=exact_id_destroy_valid,
+        billing_verify_valid=billing_verify_valid,
+        spend_watchdog_valid=spend_watchdog_valid,
+        production_guard_valid=production_guard_valid,
+        paid_cli_wired=paid_cli_wired,
     )
 
 
@@ -319,7 +369,12 @@ class VastGateway(Protocol):
     def select_offer(self, policy: CanaryPolicy) -> VastOffer | None: ...
     def create(self, offer: VastOffer) -> object: ...  # returns object with .instance_id/.dph_total
     def destroy(self, instance_id: int) -> bool: ...
-    def instance_absent(self, instance_id: int) -> bool: ...
+    def instance_state(self, instance_id: int) -> str: ...  # PRESENT | ABSENT | UNKNOWN
+
+
+INSTANCE_PRESENT = "PRESENT"
+INSTANCE_ABSENT = "ABSENT"
+INSTANCE_UNKNOWN = "UNKNOWN"
 
 
 class RemoteHost(Protocol):
@@ -424,7 +479,7 @@ class Qwen3CanaryExecutor:
 
             adapter_dir = f"canary-artifacts/{self.run_id}/adapter"
             adapter_dir_out = adapter_dir
-            for stage in ("HOST_PREFLIGHT", "TOKENIZER_TEMPLATE_PROOF", "QLORA_LOAD", "TRAIN_5_STEPS", "SAVE_TEMP_ADAPTER", "FRESH_RELOAD", "SANITY_INFERENCE"):
+            for stage in ("HOST_PREFLIGHT", "TOKENIZER_TEMPLATE_PROOF", "TRAIN_5_STEPS", "FRESH_RELOAD"):
                 now = self.clock()
                 if now > teardown_deadline:
                     raise _BudgetExceeded("teardown deadline reached before stage start")
@@ -444,8 +499,8 @@ class Qwen3CanaryExecutor:
                 try:
                     destroyed = self.vast.destroy(canary_id)
                     mutations += 1
-                    absent = self.vast.instance_absent(canary_id)
-                    billing_verified = bool(destroyed and absent)
+                    state = self.vast.instance_state(canary_id)
+                    billing_verified = bool(destroyed and state == INSTANCE_ABSENT)
                     if not billing_verified:
                         billing_risk = "HIGH"
                 except Exception:
