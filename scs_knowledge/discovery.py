@@ -338,60 +338,68 @@ class KnowledgeDiscoveryStore:
         if not path.exists():
             self._mark_stale(record)
             return record
-        # Phase 1: stage an immutable private snapshot and bind to its bytes.
+        # Deterministic source identity: ingest derives SRC-{sha[:10]} from the
+        # snapshot bytes, and the snapshot SHA == discovery SHA, so cleanup can
+        # always locate any partially-created source even if ingest throws
+        # before returning a result (defect A2).
+        expected_source_id = f"SRC-{record['file_sha256'][:10]}"
+        # Phase 1: stage an immutable private snapshot (auto-removed on exit).
         import shutil
-        import tempfile
-        staging_dir = Path(tempfile.mkdtemp(prefix="scs_stage_"))
-        snapshot = staging_dir / record["filename"]
-        shutil.copy2(path, snapshot)
-        if sha256_of(snapshot) != record["file_sha256"]:
-            self._mark_stale(record)
-            return record
-        result = None
-        try:
-            if record.get("state") == "CLASSIFIED":
-                record["approved_by"] = verified_by
-                record["approved_at"] = _now()
-                self._set_state(record, "OWNER_APPROVED")
-                for key in ("source_type", "manufacturer", "model", "model_series",
-                            "family_tags", "applicability", "edition"):
-                    value = metadata.get(key)
-                    if value is not None:
-                        if key == "source_type":
-                            record["candidate_source_type"] = value
-                        else:
-                            record[key] = value
-                self._save()
-            result = ingest_file(library, snapshot, private_root=private_root)
-            if result.sha256 != record["file_sha256"]:
-                _quarantine(library, result.source_id)
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory(prefix="scs_stage_") as staging:
+            snapshot = Path(staging) / record["filename"]
+            shutil.copy2(path, snapshot)
+            if sha256_of(snapshot) != record["file_sha256"]:
                 self._mark_stale(record)
                 return record
-            if result.source_state == "QUARANTINED":
-                self.mark_parse_failed(discovery_id, "ingestion quarantined")
-                return self.get(discovery_id)
-            library.verify_source(
-                result.source_id, method="OWNER_APPROVED", verified_by=verified_by,
-                verification_evidence=f"sha={record['file_sha256'][:16]} owner-approved",
-                manufacturer=record.get("manufacturer"),
-                document_number=None, edition=record.get("edition"), revision=None)
-            library.mark_discovery_managed(result.source_id)
-            self.mark_indexed(discovery_id, result.source_id)
-        except (DiscoveryLedgerError, KnowledgeRootNotConfigured, ForbiddenTransition):
-            raise
-        except Exception as error:
-            _quarantine(library, result.source_id)
-            self.mark_parse_failed(discovery_id, f"{type(error).__name__}: {error}")
-        return self.get(discovery_id)
+            try:
+                if record.get("state") == "CLASSIFIED":
+                    record["approved_by"] = verified_by
+                    record["approved_at"] = _now()
+                    self._set_state(record, "OWNER_APPROVED")
+                    for key in ("source_type", "manufacturer", "model", "model_series",
+                                "family_tags", "applicability", "edition"):
+                        value = metadata.get(key)
+                        if value is not None:
+                            if key == "source_type":
+                                record["candidate_source_type"] = value
+                            else:
+                                record[key] = value
+                    self._save()
+                result = ingest_file(library, snapshot, private_root=private_root)
+                if result.sha256 != record["file_sha256"]:
+                    _cleanup_quarantine(library, expected_source_id, result.source_id)
+                    self._mark_stale(record)
+                    return record
+                if result.source_state == "QUARANTINED":
+                    _cleanup_quarantine(library, expected_source_id, result.source_id)
+                    self.mark_parse_failed(discovery_id, "ingestion quarantined")
+                    return self.get(discovery_id)
+                library.verify_source(
+                    result.source_id, method="OWNER_APPROVED", verified_by=verified_by,
+                    verification_evidence=f"sha={record['file_sha256'][:16]} owner-approved",
+                    manufacturer=record.get("manufacturer"),
+                    document_number=None, edition=record.get("edition"), revision=None)
+                library.mark_discovery_managed(result.source_id)
+                self.mark_indexed(discovery_id, result.source_id)
+            except (DiscoveryLedgerError, KnowledgeRootNotConfigured, ForbiddenTransition):
+                raise
+            except Exception as error:
+                try:
+                    _cleanup_quarantine(library, expected_source_id)
+                except Exception as cleanup_error:
+                    raise DiscoveryLedgerError(
+                        f"KNOWLEDGE_CLEANUP_FAILED: {type(cleanup_error).__name__}"
+                        f": {cleanup_error}") from error
+                self.mark_parse_failed(discovery_id, f"{type(error).__name__}: {error}")
+            return self.get(discovery_id)
 
 
-def _quarantine(library, source_id: str | None) -> None:
-    if not source_id:
-        return
-    try:
-        library.set_source_state(source_id, "QUARANTINED")
-    except Exception:
-        pass
+def _cleanup_quarantine(library, *source_ids: str | None) -> None:
+    """Quarantine every candidate source id; raises on any failure (no swallow)."""
+    for source_id in source_ids:
+        if source_id:
+            library.quarantine_source(source_id)
 
 
 def _now() -> str:

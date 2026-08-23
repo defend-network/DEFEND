@@ -246,6 +246,25 @@ class SCSKnowledgeLibrary:
             (source_id,))
         self._db.commit()
 
+    def quarantine_source(self, source_id: str) -> None:
+        """Atomically disable a source and all its chunks/tables (fail-closed).
+
+        Raises on any failure — a failed cleanup must never be swallowed into
+        apparent success (M1.5B3 defect A)."""
+        try:
+            self._db.execute("BEGIN")
+            self._db.execute(
+                "UPDATE sources SET source_state='QUARANTINED', active=0 "
+                "WHERE source_id=?", (source_id,))
+            self._db.execute(
+                "UPDATE chunks SET active=0 WHERE source_id=?", (source_id,))
+            self._db.execute(
+                "UPDATE tables SET active=0 WHERE source_id=?", (source_id,))
+            self._db.commit()
+        except Exception:
+            self._db.rollback()
+            raise
+
     def verify_source(self, source_id: str, *, method: str,
                       verified_by: str = "owner",
                       verification_evidence: str | None = None,

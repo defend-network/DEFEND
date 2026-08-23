@@ -292,6 +292,14 @@ def _shared_lock(path: Path) -> threading.RLock:
         return _GLOBAL_LOCKS[key]
 
 
+class JobMemoryCorrupt(Exception):
+    """Raised when writes are attempted against a corrupt durable memory file."""
+
+    def __init__(self, job_id: str) -> None:
+        super().__init__(f"JOB_MEMORY_CORRUPT: {job_id}; writes blocked pending recovery")
+        self.job_id = job_id
+
+
 class JobMemoryStore:
     """Durable per-job conversation memory (P12-P14).
 
@@ -304,21 +312,37 @@ class JobMemoryStore:
     def __init__(self, directory: Path) -> None:
         self._dir = Path(directory)
         self._dir.mkdir(parents=True, exist_ok=True)
+        self._corrupt: set[str] = set()
 
     def _path(self, job_id: str) -> Path:
         safe = re.sub(r"[^A-Za-z0-9._-]", "_", job_id)
         return self._dir / f"{safe}.memory.json"
 
-    def _load_path(self, path: Path, job_id: str) -> JobConversationMemory:
+    def _load_path(self, path: Path, job_id: str) -> tuple[JobConversationMemory, str]:
         if not path.exists():
-            return JobConversationMemory(job_id=job_id)
+            return JobConversationMemory(job_id=job_id), "EMPTY"
         try:
             state = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(state, dict):
+                raise ValueError("memory state is not an object")
             memory = JobConversationMemory.from_state(state)
             memory.job_id = job_id
-            return memory
+            return memory, "OK"
         except Exception:
-            return JobConversationMemory(job_id=job_id)
+            # M1.5B3/M1.5C: corrupt durable memory is explicit and write-blocked,
+            # never silently replaced with a fresh empty store.
+            self._corrupt.add(job_id)
+            return JobConversationMemory(job_id=job_id), "CORRUPT"
+
+    def memory_state(self, job_id: str) -> str:
+        path = self._path(job_id)
+        with _shared_lock(path):
+            _memory, state = self._load_path(path, job_id)
+            return state
+
+    def _require_writable(self, job_id: str) -> None:
+        if job_id in self._corrupt:
+            raise JobMemoryCorrupt(job_id)
 
     def _write_path(self, path: Path, memory: JobConversationMemory) -> None:
         tmp = path.with_name(path.name + f".{uuid.uuid4().hex[:8]}.tmp")
@@ -329,13 +353,15 @@ class JobMemoryStore:
     def load(self, job_id: str) -> JobConversationMemory:
         path = self._path(job_id)
         with _shared_lock(path):
-            return self._load_path(path, job_id)
+            memory, _state = self._load_path(path, job_id)
+            return memory
 
     def save(self, memory: JobConversationMemory) -> None:
         if not memory.job_id:
             return
         path = self._path(memory.job_id)
         with _shared_lock(path):
+            self._require_writable(memory.job_id)
             self._write_path(path, memory)
 
     def update(self, job_id: str,
@@ -343,7 +369,8 @@ class JobMemoryStore:
         """P13: atomic load -> mutate -> write under the shared lock."""
         path = self._path(job_id)
         with _shared_lock(path):
-            memory = self._load_path(path, job_id)
+            self._require_writable(job_id)
+            memory, _state = self._load_path(path, job_id)
             mutator(memory)
             self._write_path(path, memory)
             return memory
@@ -354,7 +381,8 @@ class JobMemoryStore:
         current state (P13). Independent updates are never lost (P14)."""
         path = self._path(job_id)
         with _shared_lock(path):
-            current = self._load_path(path, job_id)
+            self._require_writable(job_id)
+            current, _state = self._load_path(path, job_id)
             current.merge_from(working)
             self._write_path(path, current)
             return current
@@ -364,6 +392,7 @@ class JobMemoryStore:
         with _shared_lock(path):
             if path.exists():
                 path.unlink()
+            self._corrupt.discard(job_id)
 
 
 def _normalize_question(question: str) -> str:
