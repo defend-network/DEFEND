@@ -238,6 +238,99 @@ def test_preflight_paid_host_torch_unavailable_fails():
     assert any("torch import failed" in f for f in evidence["failures"])
 
 
+def test_reload_failure_is_not_success():
+    from defend_control.qwen3_canary_executor import (
+        INSTANCE_ABSENT, ProductionInventory, Qwen3CanaryExecutor,
+    )
+    from defend_control.training_hardening import INVENTORY_NONE_FOUND
+    from types import SimpleNamespace
+
+    class Vast:
+        def __init__(self):
+            self.mutations = []
+        def inventory(self):
+            return ProductionInventory(INVENTORY_NONE_FOUND, True, ())
+        def select_offer(self, policy):
+            from defend_control.types import VastOffer
+            return VastOffer(123, "A100 PCIE", 81920, Decimal("0.96"), Decimal("0.99"))
+        def create(self, offer):
+            self.mutations.append("create")
+            return SimpleNamespace(instance_id=999, dph_total=Decimal("0.96"))
+        def resolve_target(self, instance_id):
+            return {"host": "x", "port": 22, "user": "root"}
+        def destroy(self, instance_id):
+            self.mutations.append("destroy")
+            return True
+        def instance_state(self, instance_id):
+            return INSTANCE_ABSENT
+
+    class Remote:
+        def __init__(self):
+            self.calls = []
+        def bind_target(self, t):
+            self._t = t
+        def run_stage(self, stage, iid, ad, to):
+            self.calls.append(stage)
+            if stage == "TRAIN_5_STEPS":
+                return {"returncode": 0, "stdout": 'DEFEND_CANARY_RESULT={"status": "PASS", "steps_completed": 5}', "stderr": ""}
+            if stage == "FRESH_RELOAD":
+                return {"returncode": 1, "stdout": 'DEFEND_CANARY_RESULT={"status": "FAIL"}', "stderr": "reload failed"}
+            return {"returncode": 0, "stdout": 'DEFEND_CANARY_RESULT={"status": "PASS"}', "stderr": ""}
+
+    vast = Vast()
+    remote = Remote()
+    ex = Qwen3CanaryExecutor(policy=CanaryPolicy(), vast=vast, remote=remote, clock=lambda: 0.0, sleep=lambda s: None)
+    result = ex.run()
+    assert result.billing_termination_verified is True  # cleanup succeeded
+    assert result.status == "FAILED"  # but execution failed
+    assert "FRESH_RELOAD" in remote.calls
+
+
+def test_train_steps_4_fails_before_reload():
+    from defend_control.qwen3_canary_executor import (
+        INSTANCE_ABSENT, ProductionInventory, Qwen3CanaryExecutor,
+    )
+    from defend_control.training_hardening import INVENTORY_NONE_FOUND
+    from types import SimpleNamespace
+
+    class Vast:
+        def __init__(self):
+            self.mutations = []
+        def inventory(self):
+            return ProductionInventory(INVENTORY_NONE_FOUND, True, ())
+        def select_offer(self, policy):
+            from defend_control.types import VastOffer
+            return VastOffer(123, "A100 PCIE", 81920, Decimal("0.96"), Decimal("0.99"))
+        def create(self, offer):
+            self.mutations.append("create")
+            return SimpleNamespace(instance_id=999, dph_total=Decimal("0.96"))
+        def resolve_target(self, instance_id):
+            return {"host": "x", "port": 22, "user": "root"}
+        def destroy(self, instance_id):
+            self.mutations.append("destroy")
+            return True
+        def instance_state(self, instance_id):
+            return INSTANCE_ABSENT
+
+    class Remote:
+        def __init__(self):
+            self.calls = []
+        def bind_target(self, t):
+            self._t = t
+        def run_stage(self, stage, iid, ad, to):
+            self.calls.append(stage)
+            if stage == "TRAIN_5_STEPS":
+                return {"returncode": 0, "stdout": 'DEFEND_CANARY_RESULT={"status": "PASS", "steps_completed": 4}', "stderr": ""}
+            return {"returncode": 0, "stdout": 'DEFEND_CANARY_RESULT={"status": "PASS"}', "stderr": ""}
+
+    vast = Vast()
+    remote = Remote()
+    ex = Qwen3CanaryExecutor(policy=CanaryPolicy(), vast=vast, remote=remote, clock=lambda: 0.0, sleep=lambda s: None)
+    result = ex.run()
+    assert result.status == "FAILED"
+    assert "FRESH_RELOAD" not in remote.calls  # reload must not run after 4 steps
+
+
 def test_teardown_eventual_absent():
     from defend_control.qwen3_canary_executor import (
         INSTANCE_ABSENT, INSTANCE_PRESENT, ProductionInventory, Qwen3CanaryExecutor,

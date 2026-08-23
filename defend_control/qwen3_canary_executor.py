@@ -516,6 +516,7 @@ class Qwen3CanaryExecutor:
         billing_verified = False
         billing_risk = "NONE"
         adapter_dir_out = ""
+        execution_failed = False
 
         try:
             inventory = self.vast.inventory()
@@ -546,20 +547,22 @@ class Qwen3CanaryExecutor:
             budget_deadline, teardown_deadline = self._budget_deadlines(self.clock(), actual_rate)
             evidence.append(PhaseEvidence("INSTANCE_CREATE", "PASS", True, True, f"instance={canary_id} rate={actual_rate}"))
 
-            # Bind an immutable provider-derived remote target before any stage.
+            # Target binding is a mandatory production invariant (not optional).
             bind = getattr(self.remote, "bind_target", None)
-            if bind is not None:
-                target_info = self.vast.resolve_target(canary_id)
-                if not target_info or not target_info.get("host") or not target_info.get("port"):
-                    raise RuntimeError("SSH endpoint unresolved for created instance")
-                from .qwen3_canary_hosts import BLOCKED_HOSTS, CanaryRemoteTarget
+            if bind is None:
+                raise RuntimeError("remote host lacks mandatory target binding")
+            target_info = self.vast.resolve_target(canary_id)
+            if not target_info or not target_info.get("host") or not target_info.get("port"):
+                raise RuntimeError("SSH endpoint unresolved for created instance")
+            from .qwen3_canary_hosts import BLOCKED_HOSTS, CanaryRemoteTarget
 
-                if target_info.get("host") in BLOCKED_HOSTS:
-                    raise RuntimeError("created instance resolved to blocked host")
-                bind(CanaryRemoteTarget(
-                    instance_id=canary_id, host=target_info["host"], port=target_info["port"],
-                    user=target_info.get("user", "root"), offer_id=offer.offer_id, hourly_rate=actual_rate,
-                ))
+            if target_info.get("host") in BLOCKED_HOSTS:
+                raise RuntimeError("created instance resolved to blocked host")
+            bind(CanaryRemoteTarget(
+                instance_id=canary_id, host=target_info["host"], port=target_info["port"],
+                user=target_info.get("user", "root"), offer_id=offer.offer_id, hourly_rate=actual_rate,
+            ))
+            evidence.append(PhaseEvidence("TARGET_READY", "PASS", False, True, f"instance={canary_id}"))
 
             adapter_dir = f"canary-artifacts/{self.run_id}/adapter"
             adapter_dir_out = adapter_dir
@@ -572,14 +575,15 @@ class Qwen3CanaryExecutor:
                 raw = self.remote.run_stage(stage, canary_id, adapter_dir, timeout)
                 result = parse_canary_result(raw.get("stdout", ""), int(raw.get("returncode", 1)), stage)
                 evidence.append(PhaseEvidence(stage, result.status, False, True, result.detail))
-                if stage == "TRAIN_5_STEPS":
-                    if result.steps_completed is None:
-                        raise RuntimeError("TRAIN result missing authoritative steps_completed")
-                    steps = result.steps_completed
                 if result.status == "FAIL":
                     raise RuntimeError(f"{stage} failed: {result.detail}")
+                if stage == "TRAIN_5_STEPS":
+                    if result.steps_completed != self.policy.max_steps:
+                        raise RuntimeError(f"TRAIN steps {result.steps_completed} != {self.policy.max_steps}")
+                    steps = result.steps_completed
 
         except Exception as exc:
+            execution_failed = True
             evidence.append(PhaseEvidence("FAILED", "FAIL", False, True, f"{type(exc).__name__}"))
         finally:
             if canary_id is not None:
@@ -590,9 +594,10 @@ class Qwen3CanaryExecutor:
             evidence.append(PhaseEvidence("DESTROY", "PASS" if billing_verified else "FAIL", True, canary_id is not None,
                                            f"verified={billing_verified}"))
 
-        if canary_id is not None and steps != self.policy.max_steps:
+        if canary_id is not None and (steps != self.policy.max_steps or execution_failed):
             billing_risk = "HIGH" if not billing_verified else billing_risk
-        status = "SUCCESS" if (steps == self.policy.max_steps and billing_verified) else "FAILED"
+        # Execution success and cleanup success are independent dimensions.
+        status = "SUCCESS" if (not execution_failed and steps == self.policy.max_steps and billing_verified) else "FAILED"
         return CanaryRunResult(
             self.run_id, status, mutations, canary_id, steps, billing_verified, billing_risk, evidence,
             self.git_head, adapter_dir_out,
