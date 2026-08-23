@@ -271,33 +271,47 @@ def build_field_router(context: ApplicationContext,
     # ---- knowledge ----------------------------------------------------------
 
     def _discovery_store() -> Any:
-        from scs_copilot.job_service import FieldJobRuntime
-        from scs_knowledge import resolve_knowledge_root
+        from pathlib import Path as _Path
         from scs_knowledge.discovery import KnowledgeDiscoveryStore
-        runtime = FieldJobRuntime.from_workspace(_field_workspace())
-        root = resolve_knowledge_root(runtime.paths.root)
-        return KnowledgeDiscoveryStore(root / "discovery.json", root=root)
+        from scs_data.settings import ScsSettingsStore
+        settings = ScsSettingsStore(_Path(context.data_root) / "settings.json")
+        root, _source = settings.knowledge_root()
+        if root is None:
+            raise HTTPException(
+                status_code=409,
+                detail="KNOWLEDGE_AUTHORITY_BLOCKED_ROOT_NOT_CONFIGURED")
+        root_path = _Path(root)
+        return KnowledgeDiscoveryStore(root_path / "discovery.json", root=root_path)
+
+    def _knowledge_root() -> tuple[Any, str]:
+        from pathlib import Path as _Path
+        from scs_data.settings import ScsSettingsStore
+        settings = ScsSettingsStore(_Path(context.data_root) / "settings.json")
+        root, source = settings.knowledge_root()
+        if root is None:
+            raise HTTPException(
+                status_code=409,
+                detail="KNOWLEDGE_AUTHORITY_BLOCKED_ROOT_NOT_CONFIGURED")
+        return _Path(root), source
 
     @router.get("/api/scs/knowledge/status")
     def knowledge_status(request: Request):
         actor = principal(request)
         require(actor, Permission.VIEW_KNOWLEDGE)
-        from scs_copilot.job_service import FieldJobRuntime
-        from scs_knowledge import resolve_knowledge_root
         from scs_knowledge.discovery import inventory
         from scs_knowledge.registry import SCSKnowledgeLibrary
-        runtime = FieldJobRuntime.from_workspace(_field_workspace())
-        root = resolve_knowledge_root(runtime.paths.root)
+        root, source = _knowledge_root()
         library = SCSKnowledgeLibrary(root / "library.db")
         try:
             inv = inventory(library)
         finally:
             library.close()
         store = _discovery_store()
-        configured = "SCS_KNOWLEDGE_ROOT" in os.environ
+        configured = source in ("persisted", "env")
         return {
             "knowledge_root": str(root),
             "configured": configured,
+            "source": source,
             "state": "CONFIGURED" if configured else "NOT_CONFIGURED",
             "discovery": store.list(),
             "discovery_ledger_state": store.ledger_state,
@@ -338,11 +352,8 @@ def build_field_router(context: ApplicationContext,
         from scs_knowledge.discovery import (
             DiscoveryLedgerError, KnowledgeRootNotConfigured)
         store = _discovery_store()
-        from scs_copilot.job_service import FieldJobRuntime
-        from scs_knowledge import resolve_knowledge_root
         from scs_knowledge.registry import SCSKnowledgeLibrary
-        runtime = FieldJobRuntime.from_workspace(_field_workspace())
-        root = resolve_knowledge_root(runtime.paths.root)
+        root, _source = _knowledge_root()
         library = SCSKnowledgeLibrary(root / "library.db")
         try:
             try:
@@ -383,12 +394,9 @@ def build_field_router(context: ApplicationContext,
             if result is None:
                 raise HTTPException(status_code=404, detail="Candidate not found")
             return {"document": result}
-        from scs_copilot.job_service import FieldJobRuntime
-        from scs_knowledge import resolve_knowledge_root
         from scs_knowledge.discovery import block_source
         from scs_knowledge.registry import SCSKnowledgeLibrary
-        runtime = FieldJobRuntime.from_workspace(_field_workspace())
-        root = resolve_knowledge_root(runtime.paths.root)
+        root, _source = _knowledge_root()
         library = SCSKnowledgeLibrary(root / "library.db")
         try:
             result = block_source(library, body.source_id or "")

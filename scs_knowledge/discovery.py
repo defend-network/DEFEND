@@ -400,32 +400,49 @@ class KnowledgeDiscoveryStore:
         record["blocked_reason"] = reason or "ingest failed"
         self._save()
 
-    def archive_and_rediscover(self, *, actor: str = "owner") -> dict[str, Any]:
-        """Explicit owner recovery for an INCOMPATIBLE/CORRUPT legacy ledger
-        (B4-03). Preserves the old ledger + its SHA under private SCS storage,
-        then creates a fresh versioned ledger and re-discovers. Refuses if the
-        legacy ledger contains apparently authoritative records."""
+    def archive_and_rediscover(self, *, actor: str = "owner",
+                               confirm_unknown_authority: bool = False) -> dict[str, Any]:
+        """Explicit owner recovery for an INCOMPATIBLE/CORRUPT legacy ledger.
+
+        INCOMPATIBLE (parseable): inspect legacy records; refuse if any appear
+        authoritative; otherwise archive + fresh rediscover in one owner action.
+
+        CORRUPT (unreadable): authority is UNKNOWN. Archive the bytes + SHA and
+        return CORRUPT_UNKNOWN_AUTHORITY requiring a SECOND explicit owner
+        confirmation (confirm_unknown_authority=True) before a fresh ledger is
+        created. No auto-migration of unprovable authority."""
         import hashlib
         if self.ledger_state not in ("INCOMPATIBLE", "CORRUPT"):
             return {"state": self.ledger_state, "archived": False}
         raw = self._path.read_bytes()
         sha = hashlib.sha256(raw).hexdigest()
-        # safety check: refuse to discard authoritative legacy records
-        legacy = self._read_legacy_records(raw)
-        if any(r.get("state") in ("OWNER_APPROVED", "INDEXED", "VERIFIED")
-               for r in legacy):
-            return {"state": "LEGACY_LEDGER_AUTHORITY_PRESENT", "archived": False}
         archive_dir = self._path.parent / "_recovery"
         archive_dir.mkdir(parents=True, exist_ok=True)
         archive_path = archive_dir / f"discovery.legacy.{sha[:16]}.json"
-        archive_path.write_bytes(raw)
+        if self.ledger_state == "INCOMPATIBLE":
+            legacy = self._read_legacy_records(raw)
+            if any(r.get("state") in ("OWNER_APPROVED", "INDEXED", "VERIFIED")
+                   for r in legacy):
+                return {"state": "LEGACY_LEDGER_AUTHORITY_PRESENT", "archived": False}
+            archive_path.write_bytes(raw)
+        else:  # CORRUPT: cannot prove authority
+            archive_path.write_bytes(raw)
+            if not confirm_unknown_authority:
+                return {
+                    "state": "CORRUPT_UNKNOWN_AUTHORITY", "archived": True,
+                    "old_manifest_sha256": sha,
+                    "requires_confirmation": True,
+                    "auto_approved_count": 0,
+                }
+        old_state = self.ledger_state
         self._path.unlink()
         self._records = {}
         self.ledger_state = "EMPTY"
         count = len(self.discover(self._root))
         return {
             "state": "RECOVERED", "archived": True,
-            "old_manifest_sha256": sha, "old_manifest_state": "INCOMPATIBLE_LEGACY",
+            "old_manifest_sha256": sha,
+            "old_manifest_state": old_state,
             "recovery_actor": actor,
             "recovery_timestamp": _now(),
             "new_manifest_version": MANIFEST_VERSION,
