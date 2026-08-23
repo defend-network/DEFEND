@@ -15,6 +15,7 @@ import {
   fetchRunToolExecutions,
   fetchRouting,
   FileEntry,
+  GitStatusResponse,
   listFiles,
   listRuns,
   ModelTargetPublic,
@@ -252,7 +253,7 @@ export default function WorkspaceShell({
   const [tab, setTab] = useState<ExecutionTab>("terminal");
   const [viewingFile, setViewingFile] = useState<string | null>(null);
   const [toolExecutions, setToolExecutions] = useState<ToolExecution[]>([]);
-  const [gitStatus, setGitStatus] = useState<string | null>(null);
+  const [gitStatus, setGitStatus] = useState<GitStatusResponse | null>(null);
   const [gitDirty, setGitDirty] = useState(false);
   const [resumeBusy, setResumeBusy] = useState(false);
 
@@ -343,7 +344,7 @@ export default function WorkspaceShell({
     }
     void fetchGitStatus(fetch, "/v1", activeWorkspace.workspace_id)
       .then((g) => {
-        setGitStatus(g.is_repo ? g.status : null);
+        setGitStatus(g.is_repo ? g : null);
         setGitDirty(g.dirty);
       })
       .catch(() => {
@@ -1500,7 +1501,7 @@ function OutputPane({
   logMessages: RunMessage[];
   run: RunRecord | null;
   changedFiles: string[];
-  gitStatus: string | null;
+  gitStatus: GitStatusResponse | null;
   gitDirty: boolean;
 }) {
   if (tab === "terminal") {
@@ -1513,13 +1514,31 @@ function OutputPane({
     if (diffMessages.length > 0) {
       return <MessageList messages={diffMessages} empty="No diff output yet." />;
     }
-    if (gitStatus) {
-      return (
-        <pre>
-          git status:
-          {"\n" + gitStatus}
-        </pre>
-      );
+    if (
+      gitStatus &&
+      (gitStatus.dirty ||
+        gitStatus.staged_diff ||
+        gitStatus.unstaged_diff ||
+        gitStatus.untracked.length > 0 ||
+        gitStatus.conflicts.length > 0)
+    ) {
+      const g = gitStatus;
+      const parts: string[] = [];
+      if (g.staged_diff) {
+        parts.push("STAGED CHANGES (git diff --cached):\n" + g.staged_diff);
+        if (g.staged_diff_truncated) parts.push("[staged diff truncated]");
+      }
+      if (g.unstaged_diff) {
+        parts.push("UNSTAGED CHANGES (git diff):\n" + g.unstaged_diff);
+        if (g.unstaged_diff_truncated) parts.push("[unstaged diff truncated]");
+      }
+      if (g.untracked.length > 0) {
+        parts.push("UNTRACKED FILES:\n" + g.untracked.map((p) => `  ${p}`).join("\n"));
+      }
+      if (g.conflicts.length > 0) {
+        parts.push("CONFLICTS:\n" + g.conflicts.map((p) => `  ${p}`).join("\n"));
+      }
+      return <pre>{parts.join("\n\n")}</pre>;
     }
     if (gitDirty === false && changedFiles.length === 0) {
       return <pre>Working tree is clean; no uncommitted changes.</pre>;

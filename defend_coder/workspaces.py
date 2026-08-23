@@ -74,6 +74,25 @@ class WorkspaceService:
 
         raise WorkspaceAccessError("workspace not found")
 
+    def allocate_consumer_root(self, account_id: UUID, name: str) -> str:
+        """Server-authoritative workspace root for a consumer account.
+
+        A consumer must never claim an arbitrary/foreign/sibling path. The
+        server derives a deterministic root under the configured root.
+        """
+        slug = _slugify(name)
+        return str(self._configured_root / "consumers" / account_id.hex / slug)
+
+    def validate_admin_root(self, root: str) -> str:
+        """Validate that an admin-selected root stays inside the configured
+        admin root. Fail closed on escape."""
+        candidate = Path(root).resolve()
+        if not _is_within(candidate, self._configured_root):
+            raise WorkspaceAccessError(
+                "workspace root escapes configured root"
+            )
+        return str(candidate)
+
 
 def _validate_relative_path(relative_path: str) -> Path:
     if not isinstance(relative_path, str):
@@ -124,3 +143,10 @@ def _is_within(
         return False
 
     return True
+
+
+def _slugify(name: str) -> str:
+    import re
+
+    slug = re.sub(r"[^a-zA-Z0-9_-]+", "-", name).strip("-").lower()
+    return slug or "workspace"

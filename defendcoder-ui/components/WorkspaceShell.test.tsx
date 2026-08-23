@@ -61,7 +61,14 @@ function routedFetch(routes: Record<string, RouteHandler>) {
           json: async () => ({
             is_repo: true,
             status: "",
-            diff: "",
+            unstaged_diff: "",
+            staged_diff: "",
+            unstaged_diff_truncated: false,
+            staged_diff_truncated: false,
+            untracked: [],
+            conflicts: [],
+            staged_count: 0,
+            unstaged_count: 0,
             dirty: false,
           }),
         };

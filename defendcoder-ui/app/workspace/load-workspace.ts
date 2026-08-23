@@ -463,9 +463,15 @@ export async function fetchFileContent(
 export type GitStatusResponse = {
   is_repo: boolean;
   status: string;
-  diff: string;
+  unstaged_diff: string;
+  staged_diff: string;
+  unstaged_diff_truncated?: boolean;
+  staged_diff_truncated?: boolean;
+  untracked: string[];
+  conflicts: string[];
+  staged_count: number;
+  unstaged_count: number;
   dirty: boolean;
-  diff_truncated?: boolean;
   error?: string;
 };
 

@@ -613,7 +613,9 @@ def test_run_without_agent_is_503(client, db, auth, settings):
 
 
 def test_run_end_to_end_with_fake_agent(client, settings):
-    csrf = _login_with_csrf(client)
+    csrf = _login_with_csrf(
+        client, username="admin", password="admin-password", role="admin"
+    )
     workspace_id = _create_workspace(client, csrf, settings)
 
     response = client.post(
@@ -955,7 +957,9 @@ def test_files_listing_requires_session(client):
 
 
 def test_files_listing_shows_workspace_tree(client, settings):
-    csrf = _login_with_csrf(client)
+    csrf = _login_with_csrf(
+        client, username="admin", password="admin-password", role="admin"
+    )
     workspace_id = _create_workspace(client, csrf, settings)
     root = Path(settings.workspace_root) / 'consumer' / 'project'
     (root / 'src').mkdir(parents=True)

@@ -238,45 +238,78 @@ def _message_dict(message: object) -> dict[str, object]:
 
 
 def _git_snapshot(root: Path) -> dict[str, object]:
-    """Read-only git status + bounded diff from the workspace root.
+    """Read-only git truth from the workspace root.
 
-    Server/git truth is authoritative; the UI never fabricates changed files.
+    Distinguishes unstaged/staged/untracked/conflict state server-side so the
+    UI never fabricates a changed-file list. Diffs are bounded with explicit
+    truncation flags.
     """
     if not (root / ".git").exists():
-        return {"is_repo": False, "status": "", "diff": "", "dirty": False}
-    try:
-        status = subprocess.run(
-            ["git", "status", "--porcelain"],
-            cwd=str(root),
-            capture_output=True,
-            text=True,
-            errors="replace",
-            timeout=30,
-        )
-    except (subprocess.TimeoutExpired, OSError):
-        return {"is_repo": True, "status": "", "diff": "", "error": "git status failed"}
-    if status.returncode != 0:
-        return {"is_repo": True, "status": "", "diff": "", "error": "not a git work tree"}
-    short = status.stdout
-    try:
-        diff = subprocess.run(
-            ["git", "diff"],
-            cwd=str(root),
-            capture_output=True,
-            text=True,
-            errors="replace",
-            timeout=30,
-        )
-    except (subprocess.TimeoutExpired, OSError):
-        diff_text = ""
-    else:
-        diff_text = diff.stdout[:64 * 1024]
+        return {
+            "is_repo": False,
+            "status": "",
+            "unstaged_diff": "",
+            "staged_diff": "",
+            "untracked": [],
+            "conflicts": [],
+            "dirty": False,
+        }
+
+    def _run(args: list[str]) -> str | None:
+        try:
+            result = subprocess.run(
+                ["git", *args],
+                cwd=str(root),
+                capture_output=True,
+                text=True,
+                errors="replace",
+                timeout=30,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return None
+        if result.returncode != 0:
+            return None
+        return result.stdout
+
+    short = _run(["status", "--porcelain"]) or ""
+    lines = [ln for ln in short.splitlines() if ln.strip()]
+
+    untracked: list[str] = []
+    conflicts: list[str] = []
+    staged_count = 0
+    unstaged_count = 0
+    for line in lines:
+        x = line[:1]
+        y = line[1:2]
+        path = line[3:].strip()
+        if x == "?" and y == "?":
+            untracked.append(path)
+            continue
+        # Conflict markers: U in either column, or AA/DD.
+        if x == "U" or y == "U" or (x == "A" and y == "A") or (x == "D" and y == "D"):
+            conflicts.append(path)
+        if x not in (" ", "?"):
+            staged_count += 1
+        if y not in (" ", "?"):
+            unstaged_count += 1
+
+    unstaged = _run(["diff"]) or ""
+    staged = _run(["diff", "--cached"]) or ""
+    unstaged_truncated = len(unstaged) > 64 * 1024
+    staged_truncated = len(staged) > 64 * 1024
+
     return {
         "is_repo": True,
         "status": short,
-        "diff": diff_text,
-        "dirty": bool(short.strip()),
-        "diff_truncated": len(diff.stdout) > 64 * 1024 if diff_text else False,
+        "unstaged_diff": unstaged[: 64 * 1024],
+        "staged_diff": staged[: 64 * 1024],
+        "unstaged_diff_truncated": unstaged_truncated,
+        "staged_diff_truncated": staged_truncated,
+        "untracked": untracked,
+        "conflicts": conflicts,
+        "staged_count": staged_count,
+        "unstaged_count": unstaged_count,
+        "dirty": bool(lines),
     }
 
 
@@ -655,10 +688,25 @@ def build_coder_app(
         account = current_account(request)
         require_csrf(request)
 
+        # Filesystem authority: consumers get a server-authoritative root;
+        # admins may select a root only inside the configured admin root.
+        if account.role == "admin":
+            try:
+                root = workspace_service.validate_admin_root(
+                    payload.workspace_root
+                )
+            except WorkspaceAccessError as error:
+                raise HTTPException(status_code=400, detail=str(error)) from None
+        else:
+            root = workspace_service.allocate_consumer_root(
+                account.account_id,
+                payload.name,
+            )
+
         workspace = repository.create_workspace(
             owner_account_id=account.account_id,
             name=payload.name,
-            workspace_root=payload.workspace_root,
+            workspace_root=root,
             repository_url=payload.repository_url,
             default_branch=payload.default_branch,
         )
