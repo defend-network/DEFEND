@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from .ingestor import PARSER_VERSION, classify_document, ingest_file, sha256_of
+from .registry import SourceIdCollision, source_id_for_sha256
 
 INGESTION_STATES = ("DISCOVERED", "CLASSIFIED", "OWNER_APPROVED", "INDEXED",
                     "BLOCKED", "STALE_CHANGED", "PARSE_FAILED")
@@ -326,6 +327,7 @@ class KnowledgeDiscoveryStore:
         The source is staged into a private immutable snapshot whose SHA must
         equal the discovery SHA; parsing/indexing consumes ONLY the snapshot.
         Any byte disagreement fails closed (STALE_CHANGED, no authority)."""
+        # PHASE 1 — pre-mutation validation (no library mutation yet)
         self._require_ok_ledger()
         self._require_root()
         record = self._records.get(discovery_id)
@@ -338,12 +340,8 @@ class KnowledgeDiscoveryStore:
         if not path.exists():
             self._mark_stale(record)
             return record
-        # Deterministic source identity: ingest derives SRC-{sha[:10]} from the
-        # snapshot bytes, and the snapshot SHA == discovery SHA, so cleanup can
-        # always locate any partially-created source even if ingest throws
-        # before returning a result (defect A2).
-        expected_source_id = f"SRC-{record['file_sha256'][:10]}"
-        # Phase 1: stage an immutable private snapshot (auto-removed on exit).
+        # Deterministic source identity via the single canonical derivation.
+        expected_source_id = source_id_for_sha256(record["file_sha256"])
         import shutil
         from tempfile import TemporaryDirectory
         with TemporaryDirectory(prefix="scs_stage_") as staging:
@@ -352,6 +350,7 @@ class KnowledgeDiscoveryStore:
             if sha256_of(snapshot) != record["file_sha256"]:
                 self._mark_stale(record)
                 return record
+            # PHASE 2 — mutation begins here; ANY failure enters cleanup.
             try:
                 if record.get("state") == "CLASSIFIED":
                     record["approved_by"] = verified_by
@@ -368,11 +367,11 @@ class KnowledgeDiscoveryStore:
                     self._save()
                 result = ingest_file(library, snapshot, private_root=private_root)
                 if result.sha256 != record["file_sha256"]:
-                    _cleanup_quarantine(library, expected_source_id, result.source_id)
+                    _cleanup_quarantine(library, expected_source_id)
                     self._mark_stale(record)
                     return record
                 if result.source_state == "QUARANTINED":
-                    _cleanup_quarantine(library, expected_source_id, result.source_id)
+                    _cleanup_quarantine(library, expected_source_id)
                     self.mark_parse_failed(discovery_id, "ingestion quarantined")
                     return self.get(discovery_id)
                 library.verify_source(
@@ -382,17 +381,70 @@ class KnowledgeDiscoveryStore:
                     document_number=None, edition=record.get("edition"), revision=None)
                 library.mark_discovery_managed(result.source_id)
                 self.mark_indexed(discovery_id, result.source_id)
-            except (DiscoveryLedgerError, KnowledgeRootNotConfigured, ForbiddenTransition):
-                raise
             except Exception as error:
+                # B4-02: no exception class is exempt after mutation began.
                 try:
                     _cleanup_quarantine(library, expected_source_id)
                 except Exception as cleanup_error:
                     raise DiscoveryLedgerError(
                         f"KNOWLEDGE_CLEANUP_FAILED: {type(cleanup_error).__name__}"
                         f": {cleanup_error}") from error
-                self.mark_parse_failed(discovery_id, f"{type(error).__name__}: {error}")
+                self._mark_failed(discovery_id, f"{type(error).__name__}: {error}")
             return self.get(discovery_id)
+
+    def _mark_failed(self, discovery_id: str, reason: str) -> None:
+        record = self._records.get(discovery_id)
+        if record is None:
+            return
+        record["state"] = "PARSE_FAILED"
+        record["blocked_reason"] = reason or "ingest failed"
+        self._save()
+
+    def archive_and_rediscover(self, *, actor: str = "owner") -> dict[str, Any]:
+        """Explicit owner recovery for an INCOMPATIBLE/CORRUPT legacy ledger
+        (B4-03). Preserves the old ledger + its SHA under private SCS storage,
+        then creates a fresh versioned ledger and re-discovers. Refuses if the
+        legacy ledger contains apparently authoritative records."""
+        import hashlib
+        if self.ledger_state not in ("INCOMPATIBLE", "CORRUPT"):
+            return {"state": self.ledger_state, "archived": False}
+        raw = self._path.read_bytes()
+        sha = hashlib.sha256(raw).hexdigest()
+        # safety check: refuse to discard authoritative legacy records
+        legacy = self._read_legacy_records(raw)
+        if any(r.get("state") in ("OWNER_APPROVED", "INDEXED", "VERIFIED")
+               for r in legacy):
+            return {"state": "LEGACY_LEDGER_AUTHORITY_PRESENT", "archived": False}
+        archive_dir = self._path.parent / "_recovery"
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        archive_path = archive_dir / f"discovery.legacy.{sha[:16]}.json"
+        archive_path.write_bytes(raw)
+        self._path.unlink()
+        self._records = {}
+        self.ledger_state = "EMPTY"
+        count = len(self.discover(self._root))
+        return {
+            "state": "RECOVERED", "archived": True,
+            "old_manifest_sha256": sha, "old_manifest_state": "INCOMPATIBLE_LEGACY",
+            "recovery_actor": actor,
+            "recovery_timestamp": _now(),
+            "new_manifest_version": MANIFEST_VERSION,
+            "new_discovery_count": count,
+            "auto_approved_count": 0,
+        }
+
+    @staticmethod
+    def _read_legacy_records(raw: bytes) -> list[dict[str, Any]]:
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except Exception:
+            return []
+        if isinstance(data, dict):
+            # legacy unversioned flat dict OR versioned wrapper
+            records = data.get("records", data)
+            if isinstance(records, dict):
+                return [r for r in records.values() if isinstance(r, dict)]
+        return []
 
 
 def _cleanup_quarantine(library, *source_ids: str | None) -> None:

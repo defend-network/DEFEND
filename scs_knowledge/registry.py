@@ -49,6 +49,17 @@ VERIFICATION_METHODS = ("DETERMINISTIC_METADATA", "OWNER_APPROVED",
                         "MANUFACTURER_SOURCE_VERIFIED")
 
 
+def source_id_for_sha256(digest: str) -> str:
+    """One canonical source-id derivation (B4-04). Ingest and discovery
+    cleanup must both use this — no duplicate/truncated algorithms."""
+    return f"SRC-{digest[:10]}"
+
+
+class SourceIdCollision(Exception):
+    """Raised when a truncated source id collides with a different document."""
+
+
+
 @dataclass
 class KnowledgeSource:
     source_id: str
@@ -195,8 +206,12 @@ class SCSKnowledgeLibrary:
     def add_source(self, source: KnowledgeSource) -> None:
         existing = self.get_source(source.source_id)
         if existing is not None:
-            # Source identity is immutable (P37). Only version/link relations
-            # may be updated explicitly - never silently replace trusted data.
+            # Source identity is immutable (P37). Never silently replace trusted
+            # data. A truncated-id collision with a DIFFERENT document fails
+            # closed (B4-04) rather than mixing two documents under one id.
+            if (existing.document_hash and source.document_hash
+                    and existing.document_hash != source.document_hash):
+                raise SourceIdCollision(source.source_id)
             if source.superseded_by_source_id or source.supersedes_source_id:
                 self._db.execute(
                     "UPDATE sources SET supersedes_source_id=COALESCE(?, supersedes_source_id), "

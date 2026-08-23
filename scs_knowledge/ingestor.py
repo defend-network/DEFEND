@@ -28,7 +28,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from .registry import KnowledgeChunk, KnowledgeSource, SCSKnowledgeLibrary
+from .registry import (
+    KnowledgeChunk, KnowledgeSource, SCSKnowledgeLibrary, source_id_for_sha256)
 
 PARSER_VERSION = "ingest-1.1"
 CHUNKING_VERSION = "structure-v1"
@@ -177,7 +178,7 @@ def ingest_file(library: SCSKnowledgeLibrary, path: Path, *,
     # P53: reject unsupported OCR engines truthfully (no silent RapidOCR)
     if ocr_engine and ocr_engine.lower() not in SUPPORTED_OCR_ENGINES:
         return IngestResult(
-            ingest_id=ingest_id, source_id=f"SRC-{digest[:10]}",
+            ingest_id=ingest_id, source_id=source_id_for_sha256(digest),
             filename=path.name, sha256=digest, byte_size=path.stat().st_size,
             document_type=path.suffix.lower(),
             source_classification="UNKNOWN", source_state="QUARANTINED",
@@ -205,7 +206,7 @@ def ingest_file(library: SCSKnowledgeLibrary, path: Path, *,
     quarantined = classification in ("UNKNOWN", "CUSTOMER_JOB") or (
         path.suffix.lower() == ".pdf" and text_pages == 0 and not ocr_used and sparse_pages)
     state = "QUARANTINED" if quarantined else "CANDIDATE"
-    source_id = f"SRC-{digest[:10]}"
+    source_id = source_id_for_sha256(digest)
 
     # P38: link prior versions by filename stem (changed hash -> new version)
     supersedes_source_id = None

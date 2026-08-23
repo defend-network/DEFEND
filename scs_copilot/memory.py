@@ -312,13 +312,12 @@ class JobMemoryStore:
     def __init__(self, directory: Path) -> None:
         self._dir = Path(directory)
         self._dir.mkdir(parents=True, exist_ok=True)
-        self._corrupt: set[str] = set()
 
     def _path(self, job_id: str) -> Path:
         safe = re.sub(r"[^A-Za-z0-9._-]", "_", job_id)
         return self._dir / f"{safe}.memory.json"
 
-    def _load_path(self, path: Path, job_id: str) -> tuple[JobConversationMemory, str]:
+    def _load_state(self, path: Path, job_id: str) -> tuple[JobConversationMemory | None, str]:
         if not path.exists():
             return JobConversationMemory(job_id=job_id), "EMPTY"
         try:
@@ -329,20 +328,21 @@ class JobMemoryStore:
             memory.job_id = job_id
             return memory, "OK"
         except Exception:
-            # M1.5B3/M1.5C: corrupt durable memory is explicit and write-blocked,
-            # never silently replaced with a fresh empty store.
-            self._corrupt.add(job_id)
-            return JobConversationMemory(job_id=job_id), "CORRUPT"
+            # M1.5B4: durable file truth is authoritative. Corruption is
+            # explicit and write-blocked — never a silent fresh empty store.
+            return None, "CORRUPT"
 
     def memory_state(self, job_id: str) -> str:
         path = self._path(job_id)
         with _shared_lock(path):
-            _memory, state = self._load_path(path, job_id)
+            _memory, state = self._load_state(path, job_id)
             return state
 
-    def _require_writable(self, job_id: str) -> None:
-        if job_id in self._corrupt:
+    def _load_or_raise(self, path: Path, job_id: str) -> JobConversationMemory:
+        memory, state = self._load_state(path, job_id)
+        if state == "CORRUPT":
             raise JobMemoryCorrupt(job_id)
+        return memory  # EMPTY -> fresh empty memory; OK -> durable memory
 
     def _write_path(self, path: Path, memory: JobConversationMemory) -> None:
         tmp = path.with_name(path.name + f".{uuid.uuid4().hex[:8]}.tmp")
@@ -353,15 +353,14 @@ class JobMemoryStore:
     def load(self, job_id: str) -> JobConversationMemory:
         path = self._path(job_id)
         with _shared_lock(path):
-            memory, _state = self._load_path(path, job_id)
-            return memory
+            return self._load_or_raise(path, job_id)
 
     def save(self, memory: JobConversationMemory) -> None:
         if not memory.job_id:
             return
         path = self._path(memory.job_id)
         with _shared_lock(path):
-            self._require_writable(memory.job_id)
+            self._load_or_raise(path, memory.job_id)  # blocks overwrite of corrupt
             self._write_path(path, memory)
 
     def update(self, job_id: str,
@@ -369,8 +368,7 @@ class JobMemoryStore:
         """P13: atomic load -> mutate -> write under the shared lock."""
         path = self._path(job_id)
         with _shared_lock(path):
-            self._require_writable(job_id)
-            memory, _state = self._load_path(path, job_id)
+            memory = self._load_or_raise(path, job_id)
             mutator(memory)
             self._write_path(path, memory)
             return memory
@@ -381,11 +379,31 @@ class JobMemoryStore:
         current state (P13). Independent updates are never lost (P14)."""
         path = self._path(job_id)
         with _shared_lock(path):
-            self._require_writable(job_id)
-            current, _state = self._load_path(path, job_id)
+            current = self._load_or_raise(path, job_id)
             current.merge_from(working)
             self._write_path(path, current)
             return current
+
+    def archive_corrupt_and_reset(self, job_id: str, *, actor: str = "operator") -> dict[str, Any]:
+        """Explicit owner/operator recovery (B4-01/B4-03): preserve the corrupt
+        durable bytes under private SCS storage with their SHA, then begin a
+        fresh EMPTY memory. Never invoked automatically."""
+        import hashlib
+        path = self._path(job_id)
+        with _shared_lock(path):
+            _memory, state = self._load_state(path, job_id)
+            if state != "CORRUPT":
+                return {"state": state, "archived": False}
+            raw = path.read_bytes()
+            sha = hashlib.sha256(raw).hexdigest()
+            archive_dir = self._dir / "_recovery"
+            archive_dir.mkdir(parents=True, exist_ok=True)
+            archive_path = archive_dir / f"{job_id}.corrupt.{sha[:16]}.json"
+            archive_path.write_bytes(raw)
+            path.unlink()
+            return {"state": "RECOVERED", "archived": True,
+                    "archive_sha": sha, "actor": actor,
+                    "recovered_at": datetime.now().isoformat(timespec="seconds")}
 
     def delete(self, job_id: str) -> None:
         path = self._path(job_id)
