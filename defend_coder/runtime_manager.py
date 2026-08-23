@@ -162,7 +162,17 @@ class CoderRuntimeManager:
         return self.runtime_ready()
 
     def next_availability(self) -> bool:
-        return self.model_selectable()
+        """Routing availability == health-backed runtime readiness.
+
+        NEXT may receive a run NOW only when the runtime is READY (exact
+        instance + endpoint + matching health). STARTING / STOPPED_RETAINED /
+        PROVISIONING / PENDING_HOST_APPROVAL / FAILED / UNKNOWN / ABSENT are
+        NOT routable.
+        """
+        return self.runtime_ready()
+
+    def routing_available(self) -> bool:
+        return self.runtime_ready()
 
     def get_runtime_endpoint(self, product_id: str = "defendcoder") -> str | None:
         del product_id

@@ -989,3 +989,35 @@ def test_files_listing_rejects_path_escape(client, settings):
     )
 
     assert response.status_code == 400
+
+
+class TestOwnerRuntimeAPI:
+    def test_owner_runtime_status(self, client):
+        csrf = _login_with_csrf(
+            client, username="admin", password="admin-password", role="admin"
+        )
+        response = client.get("/v1/admin/runtime", headers={"X-CSRF-Token": csrf})
+        assert response.status_code == 200
+        body = response.json()
+        assert "state" in body
+        assert "runtime_ready" in body
+        assert "routing_available" in body
+
+    def test_non_owner_cannot_read_runtime_admin_status(self, client):
+        _login_with_csrf(client)  # consumer
+        response = client.get("/v1/admin/runtime")
+        assert response.status_code == 403
+
+    def test_non_owner_cannot_mutate_runtime(self, client):
+        csrf = _login_with_csrf(client)  # consumer
+        response = client.post(
+            "/v1/admin/runtime/stop-retain", headers={"X-CSRF-Token": csrf}
+        )
+        assert response.status_code == 403
+
+    def test_runtime_mutation_requires_csrf(self, client):
+        _login_with_csrf(
+            client, username="admin", password="admin-password", role="admin"
+        )
+        response = client.post("/v1/admin/runtime/stop-retain")
+        assert response.status_code in (400, 401, 403)

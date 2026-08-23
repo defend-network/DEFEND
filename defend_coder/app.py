@@ -360,6 +360,10 @@ def build_coder_app(
                         seconds=idle_timeout_seconds
                     ),
                 )
+                # Product-owned runtime idle authority: STOP/RETAIN (never
+                # destroy) via the product runtime manager.
+                if _runtime_manager is not None:
+                    _runtime_manager.maybe_reap_idle()
             except Exception:
                 continue
 
@@ -511,6 +515,25 @@ def build_coder_app(
                     "on a terminal run"
                 ),
             )
+
+    def _owner_runtime_status() -> dict[str, object]:
+        """Sanitized owner/admin runtime view (no secrets)."""
+        if _runtime_manager is None:
+            return {"state": "UNKNOWN"}
+        status = _runtime_manager.runtime_status()
+        return {
+            "state": status.get("state"),
+            "model": status.get("model"),
+            "provider": status.get("provider"),
+            "instance_id": status.get("instance_id"),
+            "gpu": status.get("gpu"),
+            "hourly_cost": status.get("hourly_cost"),
+            "endpoint": status.get("endpoint"),
+            "runtime_ready": _runtime_manager.runtime_ready(),
+            "routing_available": _runtime_manager.routing_available(),
+            "model_selectable": _runtime_manager.model_selectable(),
+            "runtime_resumable": _runtime_manager.runtime_resumable(),
+        }
 
     def _resume_same_run(
         detail: RunDetail,
@@ -1319,6 +1342,63 @@ def build_coder_app(
         account = current_account(request)
         _require_owner(account)
         return {"providers": _credentials.status()}
+
+    # ---- Owner runtime authority (admin-only, CSRF on mutations) ----
+
+    @app.get("/v1/admin/runtime")
+    def admin_runtime_status(request: Request) -> dict[str, object]:
+        account = current_account(request)
+        _require_owner(account)
+        return _owner_runtime_status()
+
+    @app.post("/v1/admin/runtime/plan")
+    def admin_runtime_plan(request: Request) -> dict[str, object]:
+        account = current_account(request)
+        _require_owner(account)
+        require_csrf(request)
+        if _runtime_manager is None or _runtime_manager._control_plane is None:
+            return {"state": "PROVIDER_NOT_CONFIGURED", "plan": None}
+        try:
+            plan = _runtime_manager.plan_runtime()
+        except Exception as error:  # noqa: BLE001
+            return {"state": "PROVIDER_NOT_CONFIGURED", "plan": None, "detail": str(error)}
+        public = plan.as_public_dict() if hasattr(plan, "as_public_dict") else {"alias": getattr(plan, "alias", None)}
+        return {"state": "PLANNED", "plan": public}
+
+    @app.post("/v1/admin/runtime/resume")
+    def admin_runtime_resume(request: Request) -> dict[str, object]:
+        account = current_account(request)
+        _require_owner(account)
+        require_csrf(request)
+        try:
+            result = _runtime_manager.resume_retained(authorize_resume=True)
+        except Exception as error:  # noqa: BLE001
+            raise HTTPException(status_code=409, detail=str(error)) from None
+        return {"state": "RESUMING", "detail": result}
+
+    @app.post("/v1/admin/runtime/stop-retain")
+    def admin_runtime_stop_retain(request: Request) -> dict[str, object]:
+        account = current_account(request)
+        _require_owner(account)
+        require_csrf(request)
+        result = _runtime_manager.stop_runtime()
+        return {"state": result.get("state"), "retained": result.get("retained")}
+
+    @app.post("/v1/admin/runtime/destroy")
+    def admin_runtime_destroy(
+        request: Request,
+        instance_id: int,
+    ) -> dict[str, object]:
+        account = current_account(request)
+        _require_owner(account)
+        require_csrf(request)
+        try:
+            result = _runtime_manager.destroy_exact(instance_id=instance_id)
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from None
+        except Exception as error:  # noqa: BLE001
+            raise HTTPException(status_code=409, detail=str(error)) from None
+        return {"state": "DESTROYING", "detail": result}
 
     @app.post("/v1/admin/model-credentials/{provider}")
     def set_model_credential(

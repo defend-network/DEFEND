@@ -34,6 +34,7 @@ import FileViewer from "./FileViewer";
 import ModelSelector, { ModelMode } from "./ModelSelector";
 import RecoveryCard from "./RecoveryCard";
 import RunInspector from "./RunInspector";
+import RuntimePanel from "./RuntimePanel";
 
 type Account = {
   username: string;
@@ -1269,6 +1270,10 @@ export default function WorkspaceShell({
                 </div>
 
                 <RecoveryCard executions={toolExecutions} />
+
+                {account.role === "admin" ? (
+                  <RuntimePanel role={account.role} csrfToken={csrfToken()} />
+                ) : null}
 
                 {inspectingRunId && activeWorkspace ? (
                   <RunInspector
