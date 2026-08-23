@@ -9,11 +9,23 @@ from uuid import UUID
 from .agent_client import (
     AgentChatClient,
     AgentChatResponse,
-    ModelError,
-    ModelTimeoutError,
-    ModelUnavailableError,
 )
-from .prompts import SYSTEM_PROMPT, PROMPT_VERSION
+from .identity import default_identity_profile
+from .prompts import PROMPT_VERSION
+from .provider_adapters import (
+    ChatCompletionsProvider,
+    CoderGenerationRequest,
+    CoderGenerationResult,
+    CoderProvider,
+    CoderProviderAuthenticationError,
+    CoderProviderConfigurationError,
+    CoderProviderError,
+    CoderProviderProtocolError,
+    CoderProviderRateLimited,
+    CoderProviderTimeout,
+    CoderProviderUnavailable,
+)
+from .registry import PromptAuthorityComposer
 from .telemetry import ModelCallRecord, build_call_record
 from .tools import CoderToolkit
 
@@ -80,7 +92,8 @@ class CodingAgent:
     def __init__(
         self,
         *,
-        client: AgentChatClient,
+        client: AgentChatClient | None = None,
+        provider: CoderProvider | None = None,
         toolkit: CoderToolkit,
         log: Callable[[str], None] | None = None,
         max_steps: int = 12,
@@ -91,12 +104,28 @@ class CodingAgent:
         cancelled: Callable[[], bool] | None = None,
         telemetry_sink: Callable[[ModelCallRecord], None] | None = None,
         phase_max_tokens: dict[str, int] | None = None,
+        system_authority: str | None = None,
+        max_output_tokens: int = 4096,
+        timeout_seconds: float = 600.0,
     ) -> None:
-        if not isinstance(client, AgentChatClient):
-            raise TypeError("client must be an AgentChatClient")
         if not isinstance(toolkit, CoderToolkit):
             raise TypeError("toolkit must be a CoderToolkit")
-        self._client = client
+        if provider is not None:
+            self._provider = provider
+            self._ceiling = max(1, int(max_output_tokens))
+            self._timeout_seconds = max(1.0, float(timeout_seconds))
+        elif isinstance(client, AgentChatClient):
+            # Legacy client is wrapped as a normalized provider (internal
+            # transport reuse). The agent itself is provider-neutral.
+            self._provider = ChatCompletionsProvider(
+                client.provider,
+                client.model_name,
+                transport=client,
+            )
+            self._ceiling = client.max_tokens
+            self._timeout_seconds = client.timeout_seconds
+        else:
+            raise TypeError("a CoderProvider or AgentChatClient is required")
         self._toolkit = toolkit
         self._log = log or (lambda _line: None)
         self._max_steps = max(1, min(100, int(max_steps)))
@@ -109,12 +138,24 @@ class CodingAgent:
         self._is_cancelled = cancelled or (lambda: False)
         self._telemetry_sink = telemetry_sink
         self._phase_max_tokens = self._resolve_phase_budgets(phase_max_tokens)
+        # Provider-scoped, per-turn private reasoning state (never visible,
+        # never persisted, never crosses provider).
+        self._reasoning_by_call: dict[str, str] = {}
+        self._protocol_state: dict[str, Any] = {}
+        self._provider_key: tuple[str, str] | None = None
+        # ONE prompt authority: the resolved system authority is always the
+        # composed bundle (identity + owner directive + contracts). When the
+        # caller does not supply one, compose from the default identity via
+        # the SAME composer — never a separate SYSTEM_PROMPT path.
+        self._system_authority = system_authority or (
+            PromptAuthorityComposer().compose(default_identity_profile())
+        )
 
     def _resolve_phase_budgets(
         self,
         overrides: dict[str, int] | None,
     ) -> dict[str, int]:
-        ceiling = self._client.max_tokens
+        ceiling = self._ceiling
         budgets: dict[str, int] = {}
         for phase, default in _PHASE_BUDGET_DEFAULTS.items():
             if overrides and phase in overrides:
@@ -151,7 +192,7 @@ class CodingAgent:
         phase: str,
         roundtrip_seconds: float,
         remaining_action_budget: int,
-        response: AgentChatResponse | None = None,
+        response: CoderGenerationResult | None = None,
         error: Exception | None = None,
     ) -> None:
         if self._telemetry_sink is None:
@@ -183,6 +224,32 @@ class CodingAgent:
         except Exception as exc:  # noqa: BLE001
             self._log(f"agent: telemetry sink failed: {exc!r}")
 
+    def _record_provider_private_state(
+        self,
+        response: CoderGenerationResult,
+    ) -> None:
+        """Track provider-scoped, per-turn reasoning state.
+
+        On a provider/model change, prior private state is discarded so it
+        can never cross a provider boundary.
+        """
+        key = (response.provider, response.model)
+        if self._provider_key != key:
+            self._provider_key = key
+            self._reasoning_by_call = {}
+            self._protocol_state = {}
+        self._protocol_state = dict(response.protocol_state)
+        reasoning = response.protocol_state.get("reasoning_content")
+        if reasoning:
+            for call in response.tool_calls:
+                self._reasoning_by_call[call.id] = reasoning
+
+    def _continuation_state(self) -> dict[str, Any]:
+        return {
+            **self._protocol_state,
+            "reasoning_by_call": self._reasoning_by_call,
+        }
+
     def _set_phase(self, phase: str) -> None:
         try:
             self._phase_sink(phase)
@@ -211,7 +278,7 @@ class CodingAgent:
             )
 
         messages: list[dict[str, Any]] = [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": self._system_authority},
             {"role": "user", "content": prompt},
         ]
         tool_schemas = self._toolkit.schema()
@@ -262,14 +329,17 @@ class CodingAgent:
                 )
                 call_started = time.monotonic()
                 try:
-                    response = self._client.chat(
-                        messages,
-                        tools=tool_schemas,
-                        max_tokens=self._max_tokens_for(call_phase),
-                        on_request_started=lambda: self._set_phase(
-                            "model_generating"
-                        ),
+                    self._set_phase("model_generating")
+                    response = self._provider.generate(
+                        CoderGenerationRequest(
+                            system_authority=self._system_authority,
+                            conversation=tuple(messages[1:]),
+                            tools=tuple(tool_schemas),
+                            max_output_tokens=self._max_tokens_for(call_phase),
+                            continuation_state=self._continuation_state(),
+                        )
                     )
+                    self._record_provider_private_state(response)
                     call_error = None
                 except Exception as error:
                     response = None
@@ -323,6 +393,9 @@ class CodingAgent:
                         }
                         for call in response.tool_calls
                     ]
+                # Provider protocol state (e.g. DeepSeek reasoning_content)
+                # is NOT embedded in the conversation: the provider replays it
+                # internally from continuation_state on the next turn.
                 messages.append(assistant_message)
 
                 sink(
@@ -394,21 +467,26 @@ class CodingAgent:
             )
             self._log("agent: step limit reached")
             return self._finalize(sink, messages, steps, started_at)
-        except ModelTimeoutError as error:
+        except CoderProviderTimeout as error:
             return self._fail(
                 sink,
                 "model_timeout",
                 f"model request timed out: {error}",
                 steps,
             )
-        except ModelUnavailableError as error:
+        except (
+            CoderProviderUnavailable,
+            CoderProviderAuthenticationError,
+            CoderProviderConfigurationError,
+            CoderProviderRateLimited,
+        ) as error:
             return self._fail(
                 sink,
                 "model_unavailable",
-                f"model endpoint is unreachable: {error}",
+                f"model endpoint is unavailable: {error}",
                 steps,
             )
-        except ModelError as error:
+        except CoderProviderProtocolError as error:
             return self._fail(
                 sink,
                 "model_error",
@@ -458,7 +536,7 @@ class CodingAgent:
             )
 
         budget = min(
-            self._client.timeout_seconds,
+            self._timeout_seconds,
             self._finalization_timeout,
         )
         if budget < 1.0:
@@ -482,16 +560,17 @@ class CodingAgent:
         )
         call_started = time.monotonic()
         try:
-            response = self._client.chat(
-                finalization_messages,
-                tools=None,
-                timeout_seconds=budget,
-                max_tokens=self._max_tokens_for("finalizing"),
-                on_request_started=lambda: self._set_phase(
-                    "model_generating"
-                ),
+            response = self._provider.generate(
+                CoderGenerationRequest(
+                    system_authority=self._system_authority,
+                    conversation=tuple(finalization_messages[1:]),
+                    tools=(),
+                    max_output_tokens=self._max_tokens_for("finalizing"),
+                    timeout_seconds=budget,
+                    continuation_state=self._continuation_state(),
+                )
             )
-        except ModelTimeoutError as error:
+        except CoderProviderTimeout as error:
             self._emit_call(
                 step=steps + 1,
                 phase="finalizing",
@@ -509,7 +588,7 @@ class CodingAgent:
                 steps=steps,
                 reason="action_limit",
             )
-        except (ModelUnavailableError, ModelError) as error:
+        except CoderProviderError as error:
             self._emit_call(
                 step=steps + 1,
                 phase="finalizing",

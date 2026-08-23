@@ -258,7 +258,7 @@ def test_step_limit_triggers_reserved_finalization_turn(tmp_path):
         "finalization" in (event.get("content") or "").lower()
         for event in log_events
     )
-    finalization_request = agent._client.requests[-1]
+    finalization_request = agent._provider._transport.requests[-1]
     assert finalization_request["tools"] is None
     assert finalization_request["messages"][-1]["role"] == "user"
     assert "finalization" in finalization_request["messages"][-1]["content"].lower()
@@ -286,7 +286,7 @@ def test_step_limit_with_finalization_disabled_marks_partial(tmp_path):
     assert outcome.reason == "action_limit"
     assert outcome.steps == 2
     assert "maximum of 2" in (outcome.error or "")
-    assert agent._client.requests[-1]["tools"] is not None
+    assert agent._provider._transport.requests[-1]["tools"] is not None
 
 
 def test_step_limit_finalization_failure_marks_partial(tmp_path):
@@ -340,7 +340,7 @@ def test_step_limit_finalization_timeout_marks_partial(tmp_path):
 
 def test_empty_prompt_is_rejected_before_any_model_call(tmp_path):
     agent, ws, events, logs = _agent(tmp_path, [])
-    calls_before = len(agent._client.requests)
+    calls_before = len(agent._provider._transport.requests)
 
     outcome = agent.run(
         prompt="   ",
@@ -352,7 +352,7 @@ def test_empty_prompt_is_rejected_before_any_model_call(tmp_path):
     assert outcome.state == "failed"
     assert "prompt" in (outcome.error or "")
     assert outcome.reason == "invalid_prompt"
-    assert len(agent._client.requests) == calls_before
+    assert len(agent._provider._transport.requests) == calls_before
 
 
 def test_system_prompt_precedes_user_prompt(tmp_path):
@@ -366,11 +366,11 @@ def test_system_prompt_precedes_user_prompt(tmp_path):
         sink=lambda **kw: events.append(kw),
     )
 
-    first_request = agent._client.requests[0]["messages"]
+    first_request = agent._provider._transport.requests[0]["messages"]
     assert first_request[0]["role"] == "system"
     assert "DEFENDcoder" in first_request[0]["content"]
     assert first_request[1] == {"role": "user", "content": "First task."}
-    assert agent._client.requests[0]["tools"]
+    assert agent._provider._transport.requests[0]["tools"]
 
 
 def test_tool_history_is_visible_to_subsequent_requests(tmp_path):
@@ -392,7 +392,7 @@ def test_tool_history_is_visible_to_subsequent_requests(tmp_path):
         sink=lambda **kw: events.append(kw),
     )
 
-    second = agent._client.requests[1]["messages"]
+    second = agent._provider._transport.requests[1]["messages"]
     assert second[2]["role"] == "assistant"
     assert second[2]["tool_calls"][0]["id"] == "c1"
     assert second[3]["role"] == "tool"

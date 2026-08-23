@@ -1,0 +1,307 @@
+"""DEFENDcoder model-target normalization (DeepSeek / Next / Sol).
+
+Each backend resolves into a normalized ``ModelTarget`` that never carries
+secrets. The run layer picks a target by tier, then builds an
+OpenAI-compatible client from the target plus the server-side secret
+resolver. Self-hosted Next stays loopback-only; managed-API backends
+(DeepSeek, Sol) use remote HTTPS endpoints.
+
+Product identity is always DEFENDcoder (see ``router.py``); the model is an
+implementation detail reported by the verified runtime.
+"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field
+from typing import Callable
+
+from .agent_client import AgentChatClient
+from .model_config import CoderModelConfig
+from .router import NEXT_ALIAS, NEXT_MODEL, SOL_MODEL, TIER_1_MODEL
+
+#: DeepSeek managed-API environment names (legitimate DEFEND abstraction,
+#: resolved through the secret store by the caller; never logged/printed).
+DEEPSEEK_API_KEY_ENV = "DEEPSEEK_API_KEY"
+DEEPSEEK_API_KEY_FILE_ENV = "DEEPSEEK_API_KEY_FILE"
+DEEPSEEK_MODEL_ENV = "DEEPSEEK_MODEL"
+DEEPSEEK_BASE_URL_ENV = "DEEPSEEK_BASE_URL"
+#: Optional explicit JSON for DeepSeek thinking-mode parameters (e.g.
+#: {"thinking": {"enabled": true, "effort": "max"}}). When absent nothing is
+#: sent — never blindly inject unsupported provider parameters.
+DEEPSEEK_THINKING_PARAMS_ENV = "DEEPSEEK_THINKING_PARAMS"
+
+_ALLOWED_EFFORT = frozenset({"low", "medium", "high", "max"})
+
+
+class ConfigurationError(ValueError):
+    pass
+
+
+@dataclass(frozen=True)
+class DeepSeekThinkingPolicy:
+    """Typed DeepSeek thinking policy (current official V4 API shape).
+
+    Official request shape: ``"thinking": {"type": "enabled"}`` plus a
+    top-level ``"reasoning_effort": "high"``. No invented parameters.
+    """
+
+    enabled: bool = False
+    effort: str = "high"
+
+    def __post_init__(self) -> None:
+        if self.effort not in _ALLOWED_EFFORT:
+            raise ConfigurationError(
+                f"unsupported reasoning effort {self.effort!r}; "
+                f"expected one of {sorted(_ALLOWED_EFFORT)}"
+            )
+
+    def to_request_body(self) -> dict[str, object] | None:
+        if not self.enabled:
+            return None
+        return {
+            "thinking": {"type": "enabled"},
+            "reasoning_effort": self.effort,
+        }
+
+
+def parse_deepseek_thinking_policy(
+    env: dict[str, str] | None = None,
+) -> DeepSeekThinkingPolicy:
+    """Parse the typed DeepSeek thinking policy; fail closed on unknowns."""
+    import json
+
+    env = env if env is not None else os.environ
+    raw = (env.get(DEEPSEEK_THINKING_PARAMS_ENV) or "").strip()
+    if not raw:
+        return DeepSeekThinkingPolicy()
+    try:
+        parsed = json.loads(raw)
+    except ValueError as error:
+        raise ConfigurationError(
+            f"{DEEPSEEK_THINKING_PARAMS_ENV} is not valid JSON"
+        ) from error
+    if not isinstance(parsed, dict):
+        raise ConfigurationError(
+            f"{DEEPSEEK_THINKING_PARAMS_ENV} must be a JSON object"
+        )
+    allowed_top = {"thinking", "reasoning_effort"}
+    unknown_top = set(parsed) - allowed_top
+    if unknown_top:
+        raise ConfigurationError(
+            f"unsupported DeepSeek fields: {sorted(unknown_top)}"
+        )
+    thinking = parsed.get("thinking")
+    enabled = False
+    if thinking is not None:
+        if not isinstance(thinking, dict):
+            raise ConfigurationError("'thinking' must be an object")
+        unknown_thinking = set(thinking) - {"type"}
+        if unknown_thinking:
+            raise ConfigurationError(
+                f"unsupported DeepSeek 'thinking' fields: {sorted(unknown_thinking)}"
+            )
+        thinking_type = thinking.get("type", "disabled")
+        if thinking_type not in ("enabled", "disabled"):
+            raise ConfigurationError(
+                f"unsupported thinking type {thinking_type!r}"
+            )
+        enabled = thinking_type == "enabled"
+    effort = str(parsed.get("reasoning_effort", "high"))
+    return DeepSeekThinkingPolicy(enabled=enabled, effort=effort)
+
+
+def deepseek_thinking_params(
+    env: dict[str, str] | None = None,
+) -> dict[str, object] | None:
+    """Backward-compatible view of the typed thinking policy."""
+    return parse_deepseek_thinking_policy(env).to_request_body()
+
+#: Sol frontier provider environment names.
+SOL_API_KEY_ENV = "OPENAI_API_KEY"
+SOL_API_KEY_FILE_ENV = "OPENAI_API_KEY_FILE"
+SOL_BASE_URL_ENV = "OPENAI_BASE_URL"
+
+DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-flash"
+DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+DEFAULT_SOL_BASE_URL = "https://api.openai.com/v1"
+
+#: Platform runtime registry forward port for the "defendcoder" product
+#: (see defend_control.product_runtime.PRODUCT_FORWARD_PORTS). The Next
+#: endpoint is resolved from the runtime manager; this constant is the
+#: registry-scoped default when no manager is attached.
+NEXT_FORWARD_PORT = 8403
+
+#: Short handoff context the escalation flow carries between models.
+HANDOFF_FIELDS = (
+    "OBJECTIVE",
+    "WORKSPACE",
+    "CURRENT_TASK",
+    "COMPLETED",
+    "CURRENT_FAILURE",
+    "RELEVANT_FILES",
+    "LATEST_TESTS",
+    "ATTEMPTS",
+    "CONSTRAINTS",
+    "NEXT_ACTION",
+)
+
+
+@dataclass(frozen=True)
+class ModelTarget:
+    """Normalized, secret-free description of a model backend."""
+
+    tier: str
+    alias: str
+    provider: str
+    model_id: str
+    endpoint: str | None
+    runtime_kind: str
+    requires_external_runtime: bool
+    availability: bool
+    cost_class: str
+    managed_api: bool = field(default=False)
+
+    def as_public_dict(self) -> dict[str, object]:
+        return {
+            "tier": self.tier,
+            "alias": self.alias,
+            "provider": self.provider,
+            "model": self.model_id,
+            "runtime_kind": self.runtime_kind,
+            "requires_external_runtime": self.requires_external_runtime,
+            "available": self.availability,
+            "cost_class": self.cost_class,
+        }
+
+
+def _env_secret(
+    env: dict[str, str],
+    name: str,
+    file_name: str | None = None,
+) -> str | None:
+    value = (env.get(name) or "").strip()
+    if value:
+        return value
+    if file_name:
+        path = (env.get(file_name) or "").strip()
+        if path:
+            try:
+                return open(path, encoding="utf-8").read().strip() or None
+            except OSError:
+                return None
+    return None
+
+
+def deepseek_target(
+    env: dict[str, str] | None = None,
+    *,
+    availability: bool | None = None,
+) -> ModelTarget:
+    """TIER_1 managed-API target. Availability is resolved dynamically by
+    the credential store; the caller may pass an explicit value so a
+    credential saved after startup takes effect without a restart."""
+    env = env if env is not None else os.environ
+    if availability is None:
+        key = _env_secret(env, DEEPSEEK_API_KEY_ENV, DEEPSEEK_API_KEY_FILE_ENV)
+        availability = bool(key)
+    return ModelTarget(
+        tier="DEEPSEEK",
+        alias=TIER_1_MODEL,
+        provider="deepseek",
+        model_id=(env.get(DEEPSEEK_MODEL_ENV) or "").strip()
+        or DEFAULT_DEEPSEEK_MODEL,
+        endpoint=(env.get(DEEPSEEK_BASE_URL_ENV) or "").strip()
+        or DEFAULT_DEEPSEEK_BASE_URL,
+        runtime_kind="managed_api",
+        requires_external_runtime=False,
+        availability=availability,
+        cost_class="api",
+        managed_api=True,
+    )
+
+
+def sol_target(
+    env: dict[str, str] | None = None,
+    *,
+    availability: bool | None = None,
+) -> ModelTarget:
+    """TIER_3 frontier managed-API target. Optional at startup; availability
+    is resolved dynamically from the credential store."""
+    env = env if env is not None else os.environ
+    if availability is None:
+        key = _env_secret(env, SOL_API_KEY_ENV, SOL_API_KEY_FILE_ENV)
+        availability = bool(key)
+    return ModelTarget(
+        tier="SOL",
+        alias=SOL_MODEL,
+        provider="openai",
+        model_id=SOL_MODEL,
+        endpoint=(env.get(SOL_BASE_URL_ENV) or "").strip()
+        or DEFAULT_SOL_BASE_URL,
+        runtime_kind="managed_api",
+        requires_external_runtime=False,
+        availability=availability,
+        cost_class="frontier_api",
+        managed_api=True,
+    )
+
+
+def next_target(*, availability: bool = True, endpoint: str | None = None) -> ModelTarget:
+    """TIER_2 self-hosted Next. Availability is the RUNTIME availability;
+    the target itself is always resolvable (it may be STOPPED_RETAINED).
+    The endpoint comes from the platform runtime manager forward port, never
+    a hard-coded legacy tunnel port."""
+    return ModelTarget(
+        tier="NEXT",
+        alias=NEXT_ALIAS,
+        provider="self_hosted",
+        model_id=NEXT_MODEL,
+        endpoint=endpoint or f"http://127.0.0.1:{NEXT_FORWARD_PORT}/v1",
+        runtime_kind="vllm",
+        requires_external_runtime=True,
+        availability=availability,
+        cost_class="gpu_hourly",
+    )
+
+
+def build_client(
+    target: ModelTarget,
+    *,
+    api_key: str | None,
+    max_tokens: int = 4096,
+    max_model_len: int = 8192,
+    temperature: float = 0.3,
+    urlopen: Callable[..., object] | None = None,
+    default_extra_body: dict[str, object] | None = None,
+) -> AgentChatClient:
+    """Build an OpenAI-compatible client for a resolved target.
+
+    ``api_key`` is supplied by the server secret resolver; it is never
+    stored on the target or in run records. ``default_extra_body`` carries
+    optional provider-specific protocol params (e.g. DeepSeek thinking
+    effort) and is only merged when the caller configured them.
+    """
+    if not isinstance(target, ModelTarget):
+        raise TypeError("target must be a ModelTarget")
+    if not target.endpoint:
+        raise ValueError("target has no endpoint")
+    requires_key = target.managed_api
+    if requires_key and not api_key:
+        raise ValueError(f"provider {target.provider} requires an API key")
+    config = CoderModelConfig(
+        alias=target.alias,
+        model_name=target.model_id,
+        base_url=target.endpoint,
+        api_key=api_key,
+        requires_api_key=requires_key,
+        managed_api=target.managed_api,
+    )
+    return AgentChatClient(
+        config,
+        max_tokens=max_tokens,
+        max_model_len=max_model_len,
+        temperature=temperature,
+        urlopen=urlopen,
+        default_extra_body=default_extra_body,
+    )

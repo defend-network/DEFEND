@@ -8,10 +8,16 @@ import time
 from typing import Any, Callable
 from uuid import UUID, uuid4
 
+from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from .agent import CodingAgent, RunLog
 from .agent_client import AgentChatClient
+from .provider_adapters import (
+    ChatCompletionsProvider,
+    CoderProvider,
+    RoutingCoderProvider,
+)
 from .db import CoderDatabase
 from .repositories import WorkspaceRecord
 from .telemetry import (
@@ -60,6 +66,8 @@ _RUN_PHASES = frozenset({
     "completed",
     "failed",
     "cancelled",
+    "awaiting_escalation_approval",
+    "resuming",
 })
 
 
@@ -99,8 +107,49 @@ class RunDetail:
     messages: tuple[RunMessageRecord, ...]
 
 
+@dataclass(frozen=True)
+class RunRouting:
+    """Per-run model routing (additive; never a process-global)."""
+
+    run_id: UUID
+    requested_mode: str = "AUTO"
+    selected_tier: str = "DEEPSEEK"
+    selected_model: str = "deepseek"
+    selected_provider: str | None = None
+    route_reason: str | None = None
+    escalated_from: str | None = None
+    escalation_approved_at: object | None = None
+    escalation_approved_by: str | None = None
+    identity_profile_id: str | None = None
+    identity_version: str | None = None
+    identity_hash: str | None = None
+
+    def as_public_dict(self) -> dict[str, object]:
+        return {
+            "requested_mode": self.requested_mode,
+            "selected_tier": self.selected_tier,
+            "selected_model": self.selected_model,
+            "selected_provider": self.selected_provider,
+            "route_reason": self.route_reason,
+            "escalated_from": self.escalated_from,
+            "escalation_approved_at": (
+                self.escalation_approved_at.isoformat()
+                if self.escalation_approved_at is not None
+                else None
+            ),
+            "escalation_approved_by": self.escalation_approved_by,
+            "identity_profile_id": self.identity_profile_id,
+            "identity_version": self.identity_version,
+            "identity_hash": self.identity_hash,
+        }
+
+
 class RunConflictError(RuntimeError):
     """Another agent run is already active on the same workspace."""
+
+
+class RunAuthorityError(RuntimeError):
+    """Execution cannot begin without a valid persisted authority envelope."""
 
 
 class RunsRepository:
@@ -614,6 +663,347 @@ class RunsRepository:
         )
 
 
+    def set_run_routing(
+        self,
+        run_id: UUID,
+        *,
+        requested_mode: str,
+        selected_tier: str,
+        selected_model: str,
+        selected_provider: str | None,
+        route_reason: str | None = None,
+        escalated_from: str | None = None,
+        escalation_approved_at: object | None = None,
+        escalation_approved_by: str | None = None,
+    ) -> None:
+        """Persist the per-run model routing (additive, never global)."""
+        with self._db.connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE coder_runs
+                    SET requested_mode = %s,
+                        selected_tier = %s,
+                        selected_model = %s,
+                        selected_provider = %s,
+                        route_reason = %s,
+                        escalated_from = %s,
+                        escalation_approved_at = %s,
+                        escalation_approved_by = %s
+                    WHERE run_id = %s
+                    """,
+                    (
+                        requested_mode,
+                        selected_tier,
+                        selected_model,
+                        selected_provider,
+                        route_reason,
+                        escalated_from,
+                        escalation_approved_at,
+                        escalation_approved_by,
+                        run_id,
+                    ),
+                )
+
+    def max_message_seq(self, run_id: UUID) -> int:
+        """Highest existing message seq for a run (continuation continuity)."""
+        with self._db.connect() as connection:
+            with connection.cursor(row_factory=dict_row) as cursor:
+                cursor.execute(
+                    """
+                    SELECT COALESCE(MAX(seq), 0) AS seq
+                    FROM coder_run_messages
+                    WHERE run_id = %s
+                    """,
+                    (run_id,),
+                )
+                row = cursor.fetchone()
+        return int(row["seq"]) if row else 0
+
+    def get_run_routing(self, run_id: UUID) -> RunRouting | None:
+        with self._db.connect() as connection:
+            with connection.cursor(row_factory=dict_row) as cursor:
+                cursor.execute(
+                    """
+                    SELECT
+                        requested_mode,
+                        selected_tier,
+                        selected_model,
+                        selected_provider,
+                        route_reason,
+                        escalated_from,
+                        escalation_approved_at,
+                        escalation_approved_by,
+                        identity_profile_id,
+                        identity_version,
+                        identity_hash
+                    FROM coder_runs
+                    WHERE run_id = %s
+                    """,
+                    (run_id,),
+                )
+                row = cursor.fetchone()
+        if row is None:
+            return None
+        return RunRouting(
+            run_id=run_id,
+            requested_mode=row["requested_mode"],
+            selected_tier=row["selected_tier"],
+            selected_model=row["selected_model"],
+            selected_provider=row["selected_provider"],
+            route_reason=row["route_reason"],
+            escalated_from=row["escalated_from"],
+            escalation_approved_at=row["escalation_approved_at"],
+            escalation_approved_by=row["escalation_approved_by"],
+            identity_profile_id=row["identity_profile_id"],
+            identity_version=row["identity_version"],
+            identity_hash=row["identity_hash"],
+        )
+
+    def set_run_identity(
+        self,
+        run_id: UUID,
+        *,
+        profile_id: str,
+        version: str,
+        identity_hash: str,
+    ) -> None:
+        """Pin the server-owned identity profile onto a run (reproducible)."""
+        with self._db.connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE coder_runs
+                    SET identity_profile_id = %s,
+                        identity_version = %s,
+                        identity_hash = %s
+                    WHERE run_id = %s
+                    """,
+                    (profile_id, version, identity_hash, run_id),
+                )
+
+    def get_run_identity(
+        self,
+        run_id: UUID,
+    ) -> tuple[str, str, str] | None:
+        """(profile_id, version, hash) pinned on a run, or None."""
+        with self._db.connect() as connection:
+            with connection.cursor(row_factory=dict_row) as cursor:
+                cursor.execute(
+                    """
+                    SELECT identity_profile_id, identity_version, identity_hash
+                    FROM coder_runs
+                    WHERE run_id = %s
+                    """,
+                    (run_id,),
+                )
+                row = cursor.fetchone()
+        if row is None or row["identity_profile_id"] is None:
+            return None
+        return (
+            row["identity_profile_id"],
+            row["identity_version"],
+            row["identity_hash"],
+        )
+
+    def set_run_prompt_bundle(
+        self,
+        run_id: UUID,
+        *,
+        bundle_id: str,
+        version: str,
+        bundle_hash: str,
+    ) -> None:
+        """Pin the exact prompt bundle onto a run."""
+        with self._db.connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE coder_runs
+                    SET prompt_bundle_id = %s,
+                        prompt_bundle_version = %s,
+                        prompt_bundle_hash = %s
+                    WHERE run_id = %s
+                    """,
+                    (bundle_id, version, bundle_hash, run_id),
+                )
+
+    def get_run_prompt_bundle(
+        self,
+        run_id: UUID,
+    ) -> tuple[str, str, str] | None:
+        """(bundle_id, version, hash) pinned on a run, or None."""
+        with self._db.connect() as connection:
+            with connection.cursor(row_factory=dict_row) as cursor:
+                cursor.execute(
+                    """
+                    SELECT prompt_bundle_id, prompt_bundle_version,
+                           prompt_bundle_hash
+                    FROM coder_runs
+                    WHERE run_id = %s
+                    """,
+                    (run_id,),
+                )
+                row = cursor.fetchone()
+        if row is None or row["prompt_bundle_id"] is None:
+            return None
+        return (
+            row["prompt_bundle_id"],
+            row["prompt_bundle_version"],
+            row["prompt_bundle_hash"],
+        )
+
+    def create_escalation_proposal(
+        self,
+        run_id: UUID,
+        proposal: object,
+    ) -> None:
+        """Persist a pending EscalationProposal for owner interaction."""
+        with self._db.connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO coder_escalation_proposals(
+                        proposal_id,
+                        run_id,
+                        from_model,
+                        to_model,
+                        reason_code,
+                        human_summary,
+                        evidence,
+                        attempt_count,
+                        tests_failed,
+                        estimated_incremental_cost,
+                        target_runtime_state,
+                        requires_gpu_resume,
+                        status,
+                        created_at,
+                        expires_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        proposal.proposal_id,
+                        run_id,
+                        proposal.from_model,
+                        proposal.to_model,
+                        str(proposal.reason_code.value),
+                        proposal.human_summary,
+                        Jsonb(list(proposal.evidence)),
+                        proposal.attempt_count,
+                        proposal.tests_failed,
+                        proposal.estimated_incremental_cost,
+                        proposal.target_runtime_state,
+                        proposal.requires_gpu_resume,
+                        "pending",
+                        proposal.created_at,
+                        proposal.expires_at,
+                    ),
+                )
+
+    def list_escalation_proposals(
+        self,
+        run_id: UUID,
+    ) -> tuple[dict[str, object], ...]:
+        with self._db.connect() as connection:
+            with connection.cursor(row_factory=dict_row) as cursor:
+                cursor.execute(
+                    """
+                    SELECT
+                        proposal_id,
+                        from_model,
+                        to_model,
+                        reason_code,
+                        human_summary,
+                        evidence,
+                        attempt_count,
+                        tests_failed,
+                        estimated_incremental_cost,
+                        target_runtime_state,
+                        requires_gpu_resume,
+                        status,
+                        created_at,
+                        expires_at,
+                        approved_at,
+                        approved_by
+                    FROM coder_escalation_proposals
+                    WHERE run_id = %s
+                    ORDER BY created_at DESC
+                    """,
+                    (run_id,),
+                )
+                rows = cursor.fetchall()
+        proposals: list[dict[str, object]] = []
+        for row in rows:
+            evidence = row["evidence"] or []
+            proposals.append(
+                {
+                    "proposal_id": row["proposal_id"],
+                    "from_model": row["from_model"],
+                    "to_model": row["to_model"],
+                    "reason_code": row["reason_code"],
+                    "human_summary": row["human_summary"],
+                    "evidence": list(evidence) if isinstance(evidence, list) else [],
+                    "attempt_count": row["attempt_count"],
+                    "tests_failed": row["tests_failed"],
+                    "estimated_incremental_cost": (
+                        row["estimated_incremental_cost"]
+                    ),
+                    "target_runtime_state": row["target_runtime_state"],
+                    "requires_gpu_resume": row["requires_gpu_resume"],
+                    "status": row["status"],
+                    "created_at": (
+                        row["created_at"].isoformat()
+                        if row["created_at"] is not None
+                        else None
+                    ),
+                    "expires_at": (
+                        row["expires_at"].isoformat()
+                        if row["expires_at"] is not None
+                        else None
+                    ),
+                    "approved_at": (
+                        row["approved_at"].isoformat()
+                        if row["approved_at"] is not None
+                        else None
+                    ),
+                    "approved_by": row["approved_by"],
+                }
+            )
+        return tuple(proposals)
+
+    def update_escalation_proposal_status(
+        self,
+        run_id: UUID,
+        proposal_id: str,
+        *,
+        status: str,
+        approved_by: str | None = None,
+        approved_at: object | None = None,
+    ) -> bool:
+        if status not in ("pending", "approved", "denied", "expired"):
+            raise ValueError(f"invalid proposal status {status!r}")
+        with self._db.connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE coder_escalation_proposals
+                    SET status = %s,
+                        approved_at = %s,
+                        approved_by = %s
+                    WHERE run_id = %s AND proposal_id = %s
+                    """,
+                    (
+                        status,
+                        approved_at,
+                        approved_by,
+                        run_id,
+                        proposal_id,
+                    ),
+                )
+                return cursor.rowcount == 1
+
+
 class RunRunner:
     """Owns the worker thread that executes a single agent run."""
 
@@ -621,21 +1011,30 @@ class RunRunner:
         self,
         *,
         repository: RunsRepository,
-        client: AgentChatClient,
         toolkit_factory: Callable[[Callable[[int], str]], CoderToolkit],
+        provider_resolver: Callable[[UUID], CoderProvider] | None = None,
         log: Callable[[str], None] | None = None,
         max_steps: int = 12,
         max_loop_seconds: float = 2400.0,
         finalization_enabled: bool = True,
         finalization_timeout_seconds: float = 600.0,
         phase_max_tokens: dict[str, int] | None = None,
+        proposal_factory: Callable[[object, object], object | None] | None = None,
+        authority_resolver: Callable[[UUID], str] | None = None,
+        envelope_loader: Callable[[UUID], object | None] | None = None,
+        # Deprecated legacy wiring (internal transport reuse only):
+        client: AgentChatClient | None = None,
+        client_resolver: Callable[[object], AgentChatClient] | None = None,
     ) -> None:
-        if not isinstance(client, AgentChatClient):
-            raise TypeError("client must be an AgentChatClient")
         if not callable(toolkit_factory):
             raise TypeError("toolkit_factory must be callable")
         self._repository = repository
-        self._client = client
+        self._provider_resolver = provider_resolver
+        self._legacy_client = client
+        self._legacy_client_resolver = client_resolver
+        self._proposal_factory = proposal_factory
+        self._authority_resolver = authority_resolver
+        self._envelope_loader = envelope_loader
         self._toolkit_factory = toolkit_factory
         self._log = log or (lambda _line: None)
         self._max_steps = max(1, min(100, int(max_steps)))
@@ -655,9 +1054,6 @@ class RunRunner:
             "max_loop_seconds": self._max_loop_seconds,
             "finalization_enabled": self._finalization_enabled,
             "finalization_timeout_seconds": self._finalization_timeout,
-            "model_timeout_seconds": self._client.timeout_seconds,
-            "connect_timeout_seconds": self._client.connect_timeout_seconds,
-            "max_tokens": self._client.max_tokens,
         }
 
     def cancel(self, run_id: UUID) -> None:
@@ -667,36 +1063,83 @@ class RunRunner:
             raise KeyError(f"run {run_id} is not active on this server")
         event.set()
 
+    def start_existing(
+        self,
+        *,
+        run_id: UUID,
+        workspace: WorkspaceRecord,
+        prompt: str,
+    ) -> None:
+        """Start the worker for an ALREADY-prepared, ALREADY-routed run.
+
+        Authority is validated BEFORE the run may transition to RUNNING: a
+        persisted execution envelope must exist and its workspace/prompt must
+        match the request. Without a valid envelope, execution cannot begin.
+        """
+        if self._envelope_loader is not None:
+            envelope = self._envelope_loader(run_id)
+            if envelope is None:
+                raise RunAuthorityError(
+                    f"run {run_id} has no persisted execution envelope; "
+                    "prepare_run must commit before execution"
+                )
+            if str(envelope.workspace_id) != str(workspace.workspace_id):
+                raise RunAuthorityError(
+                    f"run {run_id} envelope workspace mismatch"
+                )
+        self._repository.update_run_status(run_id, status="running")
+        cancel_event = threading.Event()
+        self._cancel_events[run_id] = cancel_event
+        thread = threading.Thread(
+            target=self._execute,
+            args=(run_id, workspace, prompt, cancel_event),
+            name=f"coder-run-{run_id}",
+            daemon=True,
+        )
+        thread.start()
+
     def start(
         self,
         *,
         workspace: WorkspaceRecord,
         prompt: str,
     ) -> RunRecord:
-        active = self._repository.get_active_run_for_workspace(
-            workspace.workspace_id
+        """Disabled: a run may only execute through prepare_run + start_existing.
+
+        The old self-creating path bypassed authority/route persistence and is
+        removed so execution can never begin without a valid persisted envelope.
+        """
+        raise RunAuthorityError(
+            "RunRunner.start is disabled; use prepare_run then start_existing"
         )
-        if active is not None:
-            raise RunConflictError(
-                "an agent run is already active for this workspace"
+
+    def _resolve_provider(self, run_id: UUID) -> CoderProvider:
+        """Resolve the ACTUAL CoderProvider for a run, per generation.
+
+        Prefers the normalized provider_resolver (production). Legacy
+        client/client_resolver wiring is wrapped for backward compatibility
+        only and is NOT the production authority path.
+        """
+        if self._provider_resolver is not None:
+            return RoutingCoderProvider(
+                lambda: self._provider_resolver(run_id)
             )
+        if self._legacy_client_resolver is not None:
+            def _resolve() -> CoderProvider:
+                routing = self._repository.get_run_routing(run_id)
+                client = self._legacy_client_resolver(routing)
+                return ChatCompletionsProvider(
+                    client.provider, client.model_name, transport=client
+                )
 
-        run = self._repository.create_run(
-            workspace=workspace,
-            prompt=prompt,
-        )
-        self._repository.update_run_status(run.run_id, status="running")
-        cancel_event = threading.Event()
-        self._cancel_events[run.run_id] = cancel_event
-
-        thread = threading.Thread(
-            target=self._execute,
-            args=(run.run_id, workspace, prompt, cancel_event),
-            name=f"coder-run-{run.run_id}",
-            daemon=True,
-        )
-        thread.start()
-        return run
+            return RoutingCoderProvider(_resolve)
+        if self._legacy_client is not None:
+            return ChatCompletionsProvider(
+                self._legacy_client.provider,
+                self._legacy_client.model_name,
+                transport=self._legacy_client,
+            )
+        raise RuntimeError("no provider resolver configured")
 
     def _execute(
         self,
@@ -707,8 +1150,14 @@ class RunRunner:
     ) -> None:
         run_log = RunLog()
         toolkit = self._toolkit_factory(run_log.tail)
+        provider = self._resolve_provider(run_id)
+        system_authority = (
+            self._authority_resolver(run_id)
+            if self._authority_resolver is not None
+            else None
+        )
         agent = CodingAgent(
-            client=self._client,
+            provider=provider,
             toolkit=toolkit,
             log=run_log.append,
             max_steps=self._max_steps,
@@ -723,9 +1172,10 @@ class RunRunner:
                 run_id, record
             ),
             phase_max_tokens=self._phase_max_tokens,
+            system_authority=system_authority,
         )
         seq_lock = threading.Lock()
-        seq_counter = 0
+        seq_counter = self._repository.max_message_seq(run_id)
         persistence_seconds = 0.0
         persistence_lock = threading.Lock()
 
@@ -802,6 +1252,37 @@ class RunRunner:
             )
             self._repository.update_run_phase(run_id, "cancelled")
         else:
+            # Quality failure path: a grounded escalation proposal may be
+            # created, but it NEVER switches the model or starts compute.
+            if self._proposal_factory is not None:
+                try:
+                    proposal = self._proposal_factory(run_id, outcome)
+                except Exception as error:  # noqa: BLE001
+                    self._log(
+                        f"run {run_id}: proposal evaluation failed: {error!r}"
+                    )
+                    proposal = None
+                if proposal is not None:
+                    self._repository.create_escalation_proposal(
+                        run_id, proposal
+                    )
+                    self._repository.update_run_phase(
+                        run_id, "awaiting_escalation_approval"
+                    )
+                    self._repository.append_message(
+                        run_id,
+                        role="log",
+                        content=(
+                            "Escalation proposal awaiting owner approval; "
+                            "the run did not change models."
+                        ),
+                        kind="log",
+                        ok=True,
+                    )
+                    self._log(
+                        f"run {run_id}: escalation proposal "
+                        f"{proposal.proposal_id} awaiting approval"
+                    )
             self._repository.update_run_status(
                 run_id,
                 status="failed",

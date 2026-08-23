@@ -5,10 +5,12 @@ import os
 
 import pytest
 
-from defend_coder.db import CoderDatabase
+from defend_coder.db import CoderDatabase, _MIGRATIONS
 from defend_coder.repositories import CoderRepository
 from defend_coder.runs import RunsRepository
 from defend_coder.telemetry import build_call_record
+
+LATEST_SCHEMA = _MIGRATIONS[-1][0]
 
 
 pytestmark = pytest.mark.skipif(
@@ -44,8 +46,8 @@ def repo(db):
 
 
 def test_migrate_is_idempotent(db):
-    assert db.migrate() == 5
-    assert db.migrate() == 5
+    assert db.migrate() == LATEST_SCHEMA
+    assert db.migrate() == LATEST_SCHEMA
 
 
 def test_health_reports_ready_after_migration(db):
@@ -54,7 +56,7 @@ def test_health_reports_ready_after_migration(db):
     assert health == {
         "ok": True,
         "application_id": "coder",
-        "schema_version": 5,
+        "schema_version": LATEST_SCHEMA,
         "database": "ready",
     }
 

@@ -103,14 +103,19 @@ class CoderToolkit:
         repository: CoderRepository,
         configured_root: str | Path,
         log_reader: Callable[[int], str] | None = None,
+        enabled: bool = True,
     ) -> None:
         self._workspaces = WorkspaceService(
             repository=repository,
             configured_root=configured_root,
         )
         self._log_reader = log_reader
+        self._enabled = bool(enabled)
 
     def schema(self) -> list[dict[str, Any]]:
+        if not self._enabled:
+            # Workspace-less chat: NO filesystem/terminal/git/tool authority.
+            return []
         return [
             {
                 "type": "function",
@@ -341,6 +346,13 @@ class CoderToolkit:
         account_id: UUID,
         workspace_id: UUID,
     ) -> ToolResult:
+        if not self._enabled:
+            return ToolResult(
+                "tool error: no workspace is attached; filesystem, "
+                "terminal, git, and test tools are unavailable in chat mode",
+                kind="log",
+                ok=False,
+            )
         try:
             handler = self._handlers().get(name)
             if handler is None:

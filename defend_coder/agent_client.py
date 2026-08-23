@@ -43,6 +43,10 @@ class AgentChatResponse:
     tool_calls: tuple[ToolCall, ...]
     usage: dict[str, int] | None = None
     finish_reason: str | None = None
+    #: INTERNAL provider protocol state only (DeepSeek thinking-mode tool
+    #: calls MUST replay it on continuation). Never surfaced to the user,
+    #: UI, logs, DB transcript, or telemetry.
+    reasoning_content: str | None = None
 
 
 class _HttpClientTransport:
@@ -154,6 +158,7 @@ class AgentChatClient:
         temperature: float = 0.3,
         urlopen: Any = None,
         clock: Callable[[], float] = time.monotonic,
+        default_extra_body: dict[str, Any] | None = None,
     ) -> None:
         if not isinstance(config, CoderModelConfig):
             raise TypeError("config must be a CoderModelConfig")
@@ -179,6 +184,9 @@ class AgentChatClient:
         self._max_tokens = max(1, int(max_tokens))
         self._max_model_len = max(64, int(max_model_len))
         self._temperature = float(temperature)
+        self._default_extra_body = (
+            dict(default_extra_body) if default_extra_body else None
+        )
         if urlopen is None:
             self._urlopen = _HttpClientTransport(self._connect_timeout)
         else:
@@ -270,6 +278,11 @@ class AgentChatClient:
             tool_calls=tuple(tool_calls),
             usage=usage if isinstance(usage, dict) else None,
             finish_reason=finish_reason or None,
+            reasoning_content=(
+                message.get("reasoning_content")
+                if isinstance(message.get("reasoning_content"), str)
+                else None
+            ),
         )
 
     def chat(
@@ -308,6 +321,19 @@ class AgentChatClient:
             "temperature": self._temperature,
             "max_tokens": max_tokens,
         }
+        # Provider-specific protocol params (e.g. DeepSeek thinking effort)
+        # are injected ONLY when explicitly configured — never blindly, so
+        # an unsupported parameter cannot break a live provider. Core request
+        # fields are immutable: provider config can never override model,
+        # messages, tools, authorization, or the token budget.
+        _PROTECTED = frozenset(
+            {"model", "messages", "tools", "tool_choice", "max_tokens"}
+        )
+        if self._default_extra_body:
+            for key, value in self._default_extra_body.items():
+                if key in _PROTECTED:
+                    continue
+                payload[key] = value
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
@@ -392,3 +418,68 @@ class AgentChatClient:
         except (KeyError, IndexError, TypeError, AttributeError):
             finish_reason = None
         return self._parse_message(message, usage, finish_reason)
+
+
+class RoutingAgentClient(AgentChatClient):
+    """Run-scoped delegating client for TRUE per-run provider execution.
+
+    The actual provider client is resolved from the run's persisted routing
+    immediately before every generation call, so an owner-approved mid-run
+    escalation changes the REAL backend (DeepSeek -> Next -> Sol) without
+    restarting the run. Hidden provider reasoning content is never echoed
+    to the model or surfaced to the UI/logs/telemetry.
+    """
+
+    def __init__(
+        self,
+        resolver: Callable[[], AgentChatClient],
+    ) -> None:
+        # Parent constructor only needs a valid loopback config; real
+        # requests go through the resolver.
+        base = CoderModelConfig(
+            alias="routing",
+            model_name="routing",
+            base_url="http://127.0.0.1:9/v1",
+        )
+        super().__init__(base)
+        self._resolver = resolver
+
+    def _client(self) -> AgentChatClient:
+        return self._resolver()
+
+    def chat(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        *,
+        timeout_seconds: float | None = None,
+        max_tokens: int | None = None,
+        on_request_started: Callable[[], None] | None = None,
+    ) -> AgentChatResponse:
+        return self._client().chat(
+            messages,
+            tools=tools,
+            timeout_seconds=timeout_seconds,
+            max_tokens=max_tokens,
+            on_request_started=on_request_started,
+        )
+
+    @property
+    def model_name(self) -> str:
+        return self._client().model_name
+
+    @property
+    def provider(self) -> str:
+        return self._client().provider
+
+    @property
+    def timeout_seconds(self) -> float:
+        return self._client().timeout_seconds
+
+    @property
+    def connect_timeout_seconds(self) -> float:
+        return self._client().connect_timeout_seconds
+
+    @property
+    def max_tokens(self) -> int:
+        return self._client().max_tokens

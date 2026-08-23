@@ -124,6 +124,9 @@ def test_composed_prompt_contains_all_section_headers():
 
 
 def test_exactly_one_system_message_is_sent(tmp_path):
+    from defend_coder.identity import default_identity_profile
+    from defend_coder.registry import PromptAuthorityComposer
+
     messages = _agent_request_messages(tmp_path)
     system_messages = [
         message
@@ -131,7 +134,9 @@ def test_exactly_one_system_message_is_sent(tmp_path):
         if message.get("role") == "system"
     ]
     assert len(system_messages) == 1
-    assert system_messages[0]["content"] == compose_system_prompt()
+    assert system_messages[0]["content"] == (
+        PromptAuthorityComposer().compose(default_identity_profile())
+    )
 
 
 def test_owner_directive_present_verbatim_and_once():

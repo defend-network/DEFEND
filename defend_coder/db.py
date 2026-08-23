@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
+import re
 from typing import Any, Iterator
 
 
@@ -15,6 +16,46 @@ _MIGRATIONS = (
         5,
         Path(__file__).with_name("migrations")
         / "0005_completion_state_telemetry.sql",
+    ),
+    (
+        6,
+        Path(__file__).with_name("migrations")
+        / "0006_run_routing.sql",
+    ),
+    (
+        7,
+        Path(__file__).with_name("migrations")
+        / "0007_run_escalation_phase.sql",
+    ),
+    (
+        8,
+        Path(__file__).with_name("migrations")
+        / "0008_run_identity.sql",
+    ),
+    (
+        9,
+        Path(__file__).with_name("migrations")
+        / "0009_run_prompt_bundle.sql",
+    ),
+    (
+        10,
+        Path(__file__).with_name("migrations")
+        / "0010_authority_tables.sql",
+    ),
+    (
+        11,
+        Path(__file__).with_name("migrations")
+        / "0011_authority_active_invariants.sql",
+    ),
+    (
+        12,
+        Path(__file__).with_name("migrations")
+        / "0012_run_core.sql",
+    ),
+    (
+        13,
+        Path(__file__).with_name("migrations")
+        / "0013_tool_ledger_identity.sql",
     ),
 )
 
@@ -105,9 +146,14 @@ class CoderDatabase:
 
 def _migration_statements(path: Path) -> tuple[str, ...]:
     script = path.read_text(encoding="utf-8")
+    # Strip ``--`` line comments BEFORE splitting on ``;``: comments may
+    # legitimately contain semicolons and must never become statements.
+    cleaned = "\n".join(
+        re.sub(r"--.*$", "", line) for line in script.splitlines()
+    )
     return tuple(
         statement.strip()
-        for statement in script.split(";")
+        for statement in cleaned.split(";")
         if statement.strip()
     )
 
