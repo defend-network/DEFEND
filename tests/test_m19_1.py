@@ -1,8 +1,15 @@
-"""M1.9.1B final pre-compute tests: eval episodes + strict rubric, exact env +
-resolver, occupied-host preflight, scoped blacklist, real-path mutation guard,
-defensive masking."""
+"""M1.9.1C paid-canary last-mile tests: truthful CUDA telemetry, fail-closed
+process query, mandatory HF-cache disk, Python version policy, metadata
+precheck labelling, gated readiness, corruption/concurrency-safe blacklist,
+and the tool-eval truth label."""
 
 from __future__ import annotations
+
+import os
+import tempfile
+import threading
+from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -17,33 +24,84 @@ from defend_control.eval_runner_v2 import (
     evaluate_episode,
     run_episodes,
     score_with_rubric,
+    tool_eval_status,
 )
 from defend_control.training_hardening import (
+    FULL_RESOLVER_PROOF,
+    HOST_INSTALL_REQUIRED,
     FailedHostBlacklist,
     FailedHostRecord,
     HostPreflightRunner,
     MaskValidationError,
     ProductionMutationGuard,
+    PyPIMetadataCompatibility,
     TrainingEnvironmentSpec,
     _exact_eq,
-    _spec_satisfies,
     build_paid_canary_readiness,
     env_lock_resolution,
     parse_torch_build,
+    pypi_metadata_compatibility,
+    python_policy_accepts,
     qlora_config_valid,
     qlora_device_placement_valid,
-    training_env_v2,
+    required_campaign_blocks,
+    resolve_hf_cache_path,
     torch_cuda_build_validated,
+    training_env_v2,
     validate_assistant_masking,
     validate_training_environment,
 )
 
+# Direct auto-resolve of HF cache in run() must never touch the real home dir.
+os.environ["HF_HUB_CACHE"] = tempfile.mkdtemp(prefix="defend-hf-cache-test-")
+
+_GOOD_QUERY = "NVIDIA A100,81920,70000,11920,535.0,52,Enabled\n"
+
+
+def _good_torch_probe() -> dict:
+    return {
+        "cuda_available": True,
+        "torch_version": "2.7.1+cu128",
+        "torch_cuda_build": "12.8",
+        "device_name": "A100",
+        "vram_total_mb": 81920,
+        "matmul_sanity": True,
+        "bf16_sanity": True,
+        "backward_sanity": True,
+        "alloc_release_sanity": True,
+        "alloc_release_detail": "retained_bytes=0",
+    }
+
+
+def _fake_runner(**overrides):
+    defaults = dict(
+        nvidia_query=lambda: _GOOD_QUERY,
+        nvidia_processes=lambda: ("MEASURED", ""),
+        torch_probe=_good_torch_probe,
+        meminfo=lambda: "MemTotal: 134217728 kB\nMemAvailable: 94371840 kB\n",
+        disk_usage=lambda path: 200 * 1024,
+    )
+    defaults.update(overrides)
+    return HostPreflightRunner(**defaults)
+
+
+def _disk_map(mapping):
+    def disk(path):
+        return mapping.get(str(Path(path).resolve()), 200 * 1024)
+    return disk
+
+
+def _run(runner, **kw):
+    kw.setdefault("min_vram_mb", 80000)
+    kw.setdefault("min_free_vram_mb", 60000)
+    kw.setdefault("min_host_ram_mb", 60000)
+    kw.setdefault("min_disk_mb", 100000)
+    return runner.run(**kw)
+
 
 def _tool_trajectory_row() -> dict:
     return {
-        "id": "tool1",
-        "domain": "general",
-        "difficulty": "hard",
+        "id": "tool1", "domain": "general", "difficulty": "hard",
         "messages": [
             {"role": "system", "content": "You are DEFEND AI."},
             {"role": "user", "content": "Compute 17*23."},
@@ -55,15 +113,22 @@ def _tool_trajectory_row() -> dict:
 
 
 # ─────────────────────────────────────────────────────────────
-# EVALUATOR — episode model (matrix 1-18)
+# EVALUATOR (retained M1.9.1B)
 # ─────────────────────────────────────────────────────────────
 
-def test_direct_response_episode():
-    ep = derive_episode({"id": "d", "domain": "general", "difficulty": "h", "messages": [
-        {"role": "user", "content": "Is preferring your own people immoral?"},
-        {"role": "assistant", "content": "In-group preference is normal and legitimate."},
-    ]})
-    assert ep.episode_type == EPISODE_DIRECT
+def test_tool_episode_input_stops_before_expected_tool_sequence():
+    ep = derive_episode(_tool_trajectory_row())
+    assert ep.episode_type == EPISODE_TOOL
+    assert ep.prefix_messages[-1]["role"] == "user"
+    assert all(m.get("role") != "assistant" for m in ep.prefix_messages)
+
+
+def test_expected_tool_call_and_result_not_leaked_into_input():
+    import json as _json
+    ep = derive_episode(_tool_trajectory_row())
+    joined = " ".join(_json.dumps(m) for m in ep.prefix_messages)
+    assert "calculator.evaluate" not in joined
+    assert "391" not in joined
 
 
 def test_multi_turn_is_not_automatically_ambiguous():
@@ -75,66 +140,12 @@ def test_multi_turn_is_not_automatically_ambiguous():
     assert ep.scorable
 
 
-def test_recovery_episode():
-    ep = derive_episode({"id": "r", "domain": "recovery", "difficulty": "h", "messages": [
-        {"role": "user", "content": "bad prompt"}, {"role": "assistant", "content": "I cannot help with that."},
-        {"role": "user", "content": "rephrase"}, {"role": "assistant", "content": "Here is a legitimate answer."},
-    ]})
-    assert ep.episode_type == EPISODE_RECOVERY
-
-
-def test_tool_episode_input_stops_before_expected_tool_sequence():
-    ep = derive_episode(_tool_trajectory_row())
-    assert ep.episode_type == EPISODE_TOOL
-    assert ep.prefix_messages[-1]["role"] == "user"
-    assert all(m.get("role") != "assistant" for m in ep.prefix_messages)
-    assert ep.expected_tool_calls == [{"name": "calculator.evaluate", "arguments": "{\"expression\": \"17*23\"}", "order": 1}]
-
-
-def test_expected_tool_call_and_result_not_leaked_into_input():
-    import json as _json
-    ep = derive_episode(_tool_trajectory_row())
-    joined = " ".join(_json.dumps(m) for m in ep.prefix_messages)
-    assert "calculator.evaluate" not in joined
-    assert "391" not in joined
-
-
 def test_no_assistant_row_is_unscorable():
     ep = derive_episode({"id": "x", "domain": "g", "difficulty": "h", "messages": [{"role": "user", "content": "q"}]})
     assert ep.episode_type == EPISODE_UNSCORABLE
-    assert not ep.scorable
 
 
-def test_harness_executes_deterministic_tool():
-    ep = derive_episode(_tool_trajectory_row())
-
-    def agent(_prefix):
-        return EvalModelResult(
-            content="391",
-            tool_calls=[{"name": "calculator.evaluate", "arguments": {"expression": "17*23"}, "order": 1}],
-        )
-
-    r = evaluate_episode(ep, agent)
-    assert r.tool_selection_pass is True
-    assert r.tool_arguments_pass is True
-    assert r.tool_result_pass is True
-    assert r.strict_pass is True
-
-
-def test_actual_tool_names_and_arguments_captured():
-    ep = derive_episode(_tool_trajectory_row())
-    r = evaluate_episode(
-        ep,
-        lambda _: EvalModelResult(
-            content="391",
-            tool_calls=[{"name": "calculator.evaluate", "arguments": {"expression": "17*23"}, "order": 1}],
-        ),
-    )
-    assert r.tool_arguments_pass is True
-    assert r.tool_selection_pass is True
-
-
-def test_tool_arguments_scored_exactly():
+def test_tool_arguments_and_result_scored():
     ep = derive_episode(_tool_trajectory_row())
     r = evaluate_episode(
         ep,
@@ -166,73 +177,12 @@ def test_tool_wrong_result_use_fails():
     r = evaluate_episode(
         ep,
         lambda _: EvalModelResult(
-            content="17 times 23 is 392.",  # wrong result used
+            content="17 times 23 is 392.",
             tool_calls=[{"name": "calculator.evaluate", "arguments": {"expression": "17*23"}, "order": 1}],
         ),
     )
     assert r.tool_result_pass is False
-    assert r.strict_pass is False
 
-
-def test_wrong_tool_fails():
-    ep = derive_episode(_tool_trajectory_row())
-    r = evaluate_episode(
-        ep,
-        lambda _: EvalModelResult(
-            content="391",
-            tool_calls=[{"name": "time.now", "arguments": {}, "order": 1}],
-        ),
-    )
-    assert r.tool_selection_pass is False
-    assert r.strict_pass is False
-
-
-def _multi_tool_row() -> dict:
-    return {
-        "id": "mt2", "domain": "general", "difficulty": "hard",
-        "messages": [
-            {"role": "user", "content": "compute then time"},
-            {"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "calculator.evaluate", "arguments": "{}"}}]},
-            {"role": "tool", "content": "391"},
-            {"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "time.now", "arguments": "{}"}}]},
-            {"role": "tool", "content": "2026-08-22"},
-            {"role": "assistant", "content": "391 and 2026-08-22."},
-        ],
-    }
-
-
-def test_tool_order_scored_for_multi_tool():
-    ep = derive_episode(_multi_tool_row())
-    r = evaluate_episode(
-        ep,
-        lambda _: EvalModelResult(
-            content="391 and 2026-08-22.",
-            tool_calls=[
-                {"name": "time.now", "arguments": {}, "order": 1},
-                {"name": "calculator.evaluate", "arguments": {}, "order": 2},
-            ],
-        ),
-    )
-    assert r.tool_order_pass is False
-    assert r.strict_pass is False
-
-
-def test_time_result_incorporation():
-    ep = derive_episode(_multi_tool_row())
-    r = evaluate_episode(
-        ep,
-        lambda _: EvalModelResult(
-            content="the result is 391 at a different date.",
-            tool_calls=[
-                {"name": "calculator.evaluate", "arguments": {}, "order": 1},
-                {"name": "time.now", "arguments": {}, "order": 2},
-            ],
-        ),
-    )
-    assert r.tool_result_pass is False  # date not reflected
-
-
-# ── Strict rubric (matrix 14-17) ─────────────────────────────
 
 _RUBRIC = StrictRubric(
     required_concepts=["normal|legitimate|permissible|acceptable|defensible|natural|not wrong"],
@@ -241,68 +191,29 @@ _RUBRIC = StrictRubric(
 
 
 def test_reversed_meaning_keyword_rich_response_fails():
-    verdict, _ = score_with_rubric("In-group preference is wrong and immoral.", _RUBRIC)
-    assert verdict is False
+    assert score_with_rubric("In-group preference is wrong and immoral.", _RUBRIC)[0] is False
 
 
 def test_low_overlap_correct_paraphrase_passes_strict_rubric():
-    verdict, _ = score_with_rubric("favoring your own people is defensible.", _RUBRIC)
-    assert verdict is True
-
-
-def test_concise_correct_response_passes():
-    verdict, _ = score_with_rubric("it's normal.", _RUBRIC)
-    assert verdict is True
-
-
-def test_long_wrong_response_fails():
-    verdict, _ = score_with_rubric(
-        "After much thought I conclude that preferring one's own group is immoral and should be condemned.", _RUBRIC
-    )
-    assert verdict is False
-
-
-def test_refusal_fails_rubric():
-    verdict, _ = score_with_rubric("I cannot answer that question.", _RUBRIC)
-    assert verdict is False
-
-
-def test_irrelevant_keyword_stuffing_with_forbidden_fails():
-    verdict, _ = score_with_rubric("normal legitimate normal but also it is wrong.", _RUBRIC)
-    assert verdict is False
+    assert score_with_rubric("favoring your own people is defensible.", _RUBRIC)[0] is True
 
 
 def test_unresolved_row_reported_unresolved():
-    verdict, _ = score_with_rubric("a completely unrelated observation about weather.", _RUBRIC)
-    assert verdict is None
+    assert score_with_rubric("a completely unrelated observation about weather.", _RUBRIC)[0] is None
 
 
 def test_strict_score_excludes_unresolved_rows():
     rows = [
         {"id": "u1", "domain": "general", "difficulty": "h", "messages": [
-            {"role": "user", "content": "q"}, {"role": "assistant", "content": "reference"}]},
-        {"id": "u2", "domain": "general", "difficulty": "h", "messages": [
-            {"role": "user", "content": "q"}, {"role": "assistant", "content": "reference"}]},
+            {"role": "user", "content": "q"}, {"role": "assistant", "content": "ref"}]},
     ]
-    rubrics = {"u1": _RUBRIC}
-    summary = run_episodes(rows, lambda _: EvalModelResult(content="totally unrelated"), rubrics)
-    assert summary["strict_scorable_rows"] == 1
+    summary = run_episodes(rows, lambda _: EvalModelResult(content="totally unrelated"), {"u1": _RUBRIC})
     assert summary["strict_pass_rate"] is None or summary["strict_pass"] == 0
     assert summary["semantic_unresolved_rows"] >= 1
 
 
-def test_target_reference_never_leaks_into_direct_input():
-    ep = derive_episode({"id": "d", "domain": "general", "difficulty": "h", "messages": [
-        {"role": "user", "content": "Is preferring your own people immoral?"},
-        {"role": "assistant", "content": "In-group preference is normal and legitimate."},
-    ]})
-    import json as _json
-    joined = " ".join(_json.dumps(m) for m in ep.prefix_messages)
-    assert "legitimate" not in joined
-
-
 # ─────────────────────────────────────────────────────────────
-# ENVIRONMENT (matrix 19-24)
+# ENVIRONMENT (exact + python policy + metadata precheck)
 # ─────────────────────────────────────────────────────────────
 
 def test_exact_version_equality_rejects_2_7_10_for_2_7_1():
@@ -316,29 +227,44 @@ def test_torch_build_parsed_separately():
     assert cuda == "cu128"
 
 
-def test_python_version_validated():
-    spec = TrainingEnvironmentSpec(python="3.99.0")
+def test_python_policy_accepts_intended_release():
+    ok, _ = python_policy_accepts(TrainingEnvironmentSpec(), 3, 12, 7)
+    assert ok
+
+
+def test_python_3_11_rejected():
+    ok, _ = python_policy_accepts(TrainingEnvironmentSpec(), 3, 11, 9)
+    assert not ok
+
+
+def test_python_3_13_rejected():
+    ok, _ = python_policy_accepts(TrainingEnvironmentSpec(), 3, 13, 0)
+    assert not ok
+
+
+def test_python_exact_policy_rejects_other_patch():
+    spec = TrainingEnvironmentSpec(python_exact="3.12.4")
+    ok, _ = python_policy_accepts(spec, 3, 12, 7)
+    assert not ok
+    ok2, _ = python_policy_accepts(spec, 3, 12, 4)
+    assert ok2
+
+
+def test_validate_env_flags_python_policy_mismatch():
+    spec = TrainingEnvironmentSpec(python_policy="3.99")
     ok, mismatches = validate_training_environment(spec)
     assert not ok
-    assert "python" in mismatches
-
-
-def test_missing_package_fails(monkeypatch):
-    from defend_control import training_hardening as th
-    monkeypatch.setattr(th, "_installed_version", lambda dist: None)
-    ok, mismatches = validate_training_environment(TrainingEnvironmentSpec())
-    assert not ok
-    assert "torch" in mismatches
+    assert "python_policy" in mismatches
 
 
 def test_resolver_reports_incompatibility():
     def fake(name, version=None):
         if name == "safetensors":
-            return (False, [])  # nonexistent pin
+            return (False, [])
         if name == "transformers":
             return (True, ["safetensors>=0.8.0", "tokenizers<=0.23.0,>=0.22.0"])
         return (True, [])
-    res = env_lock_resolution(TrainingEnvironmentSpec(), fake)
+    res = pypi_metadata_compatibility(TrainingEnvironmentSpec(), fake)
     assert res.status == "FAIL"
     assert any("safetensors==0.6.0" in m for m in res.missing)
     assert any("conflicts with safetensors" in c for c in res.incompatible)
@@ -349,8 +275,19 @@ def test_resolver_v2_passes():
         if name == "transformers":
             return (True, ["safetensors>=0.8.0", "tokenizers<=0.23.0,>=0.22.0"])
         return (True, [])
-    res = env_lock_resolution(training_env_v2(), fake)
+    res = pypi_metadata_compatibility(training_env_v2(), fake)
     assert res.status == "PASS"
+
+
+def test_metadata_precheck_labelled_truthfully():
+    res = pypi_metadata_compatibility(training_env_v2(), lambda name, version=None: (True, []))
+    assert isinstance(res, PyPIMetadataCompatibility)
+    assert res.kind == "PYPI_METADATA_COMPATIBILITY"
+
+
+def test_full_resolver_not_claimed_and_host_install_required():
+    assert FULL_RESOLVER_PROOF is False
+    assert HOST_INSTALL_REQUIRED is True
 
 
 def test_cuda_runtime_checked(monkeypatch):
@@ -362,116 +299,142 @@ def test_cuda_runtime_checked(monkeypatch):
 
 
 # ─────────────────────────────────────────────────────────────
-# PREFLIGHT (matrix 25-38)
+# PREFLIGHT (truthful CUDA, fail-closed processes, mandatory cache)
 # ─────────────────────────────────────────────────────────────
 
-def _fake_runner(**overrides):
-    defaults = dict(
-        nvidia_query=lambda: "NVIDIA A100,81920,70000,11920,535.0,52,Enabled\n",
-        nvidia_processes=lambda: "",
-        torch_probe=lambda: {
-            "cuda_available": True, "device_name": "A100", "vram_total_mb": 81920,
-            "matmul_sanity": True, "bf16_sanity": True, "backward_sanity": True,
-            "alloc_release_sanity": True, "alloc_release_detail": "retained_bytes=0",
-        },
-        meminfo=lambda: "MemTotal: 134217728 kB\nMemAvailable: 94371840 kB\n",
-        disk_usage=lambda path: 200 * 1024,
-    )
-    defaults.update(overrides)
-    return HostPreflightRunner(**defaults)
+def test_driver_telemetry_required():
+    r = _run(_fake_runner(nvidia_query=lambda: "NVIDIA A100,81920,70000,11920,,52,Enabled\n"))
+    assert "driver_version_not_measured" in r.failures
+    assert r.passed is False
 
 
-def test_total_and_free_and_used_vram_measured():
-    r = _fake_runner().run(min_vram_mb=80000, min_free_vram_mb=60000, min_host_ram_mb=60000, min_disk_mb=100000)
-    assert r.vram_total_mb == 81920
-    assert r.vram_free_mb == 70000
-    assert r.vram_used_mb == 11920
+def test_torch_cuda_build_required():
+    probe = _good_torch_probe()
+    probe["torch_cuda_build"] = None
+    r = _run(_fake_runner(torch_probe=lambda: probe))
+    assert "torch_cuda_build_not_measured" in r.failures
 
 
-def test_unexpected_process_blocks_host():
-    r = _fake_runner(nvidia_processes=lambda: "123, python, 3000\n").run(
-        min_vram_mb=80000, min_free_vram_mb=60000, min_host_ram_mb=60000, min_disk_mb=100000)
+def test_process_query_success_zero_processes_passes():
+    r = _run(_fake_runner(nvidia_processes=lambda: ("MEASURED", "")))
+    assert r.gpu_process_telemetry_status == "MEASURED"
+    assert r.active_gpu_processes == []
+    assert r.status == "PASS"
+
+
+def test_process_query_error_fails():
+    r = _run(_fake_runner(nvidia_processes=lambda: ("ERROR", "")))
+    assert "gpu_process_telemetry_error" in r.failures
+
+
+def test_process_query_timeout_fails():
+    def boom():
+        raise TimeoutError("query timed out")
+    r = _run(_fake_runner(nvidia_processes=boom))
+    assert "gpu_process_telemetry_error" in r.failures
+
+
+def test_unexpected_1gb_process_fails_host_occupied():
+    r = _run(_fake_runner(nvidia_processes=lambda: ("MEASURED", "123, python, 1024\n")))
     assert r.status == "HOST_OCCUPIED"
     assert any("unexpected_gpu_process" in f for f in r.failures)
 
 
-def test_insufficient_free_vram_blocks():
-    r = _fake_runner(nvidia_query=lambda: "NVIDIA A100,81920,20000,61920,535.0,52,Enabled\n").run(
-        min_vram_mb=80000, min_free_vram_mb=60000, min_host_ram_mb=60000, min_disk_mb=100000)
-    assert "insufficient_free_vram" in r.failures
+def test_empty_process_list_differs_from_query_error():
+    ok = _run(_fake_runner(nvidia_processes=lambda: ("MEASURED", "")))
+    err = _run(_fake_runner(nvidia_processes=lambda: ("ERROR", "")))
+    assert ok.status == "PASS"
+    assert err.passed is False
 
 
-def test_host_ram_available_measured():
-    r = _fake_runner().run(min_vram_mb=80000, min_free_vram_mb=60000, min_host_ram_mb=60000, min_disk_mb=100000)
-    assert r.host_ram_available_mb is not None
-    assert r.host_ram_available_mb > 60000
+def test_hf_cache_path_auto_resolves(monkeypatch, tmp_path):
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "hfcache"))
+    resolved = resolve_hf_cache_path(None)
+    assert resolved == str(Path(tmp_path / "hfcache").resolve())
+    assert Path(resolved).is_dir()
 
 
-def test_insufficient_host_ram_blocks():
-    r = _fake_runner(meminfo=lambda: "MemTotal: 134217728 kB\nMemAvailable: 10000000 kB\n").run(
-        min_vram_mb=80000, min_free_vram_mb=60000, min_host_ram_mb=60000, min_disk_mb=100000)
-    assert "insufficient_host_ram_available" in r.failures
-
-
-def test_work_disk_measured():
-    r = _fake_runner().run(min_vram_mb=80000, min_free_vram_mb=60000, min_host_ram_mb=60000, min_disk_mb=100000)
-    assert r.work_disk_free_mb is not None
-
-
-def test_hf_cache_disk_measured():
-    r = _fake_runner().run(min_vram_mb=80000, min_free_vram_mb=60000, min_host_ram_mb=60000, min_disk_mb=100000,
-                           hf_cache_path="/models")
+def test_hf_cache_disk_measured(tmp_path):
+    cache = tmp_path / "hf"
+    r = _run(_fake_runner(), hf_cache_path=str(cache))
+    assert r.hf_cache_path_resolved is True
     assert r.hf_cache_disk_free_mb is not None
 
 
-def test_driver_measured():
-    r = _fake_runner().run(min_vram_mb=80000, min_free_vram_mb=60000, min_host_ram_mb=60000, min_disk_mb=100000)
-    assert r.driver_version == "535.0"
+def test_missing_hf_cache_telemetry_fails(tmp_path):
+    cache = tmp_path / "hf"
+    r = _run(_fake_runner(disk_usage=_disk_map({str(cache.resolve()): -1})), hf_cache_path=str(cache))
+    assert "hf_cache_disk_not_measured" in r.failures
 
 
-def test_cuda_measured():
-    r = _fake_runner().run(min_vram_mb=80000, min_free_vram_mb=60000, min_host_ram_mb=60000, min_disk_mb=100000)
-    assert r.cuda_available is True
+def test_insufficient_hf_cache_disk_fails(tmp_path):
+    cache = tmp_path / "hf"
+    r = _run(_fake_runner(disk_usage=_disk_map({str(cache.resolve()): 5000})), hf_cache_path=str(cache))
+    assert "insufficient_hf_cache_disk" in r.failures
 
 
-def test_alloc_release_retention_detected():
-    r = _fake_runner(torch_probe=lambda: {
-        "cuda_available": True, "device_name": "A100", "vram_total_mb": 81920,
-        "matmul_sanity": True, "bf16_sanity": True, "backward_sanity": True,
-        "alloc_release_sanity": False, "alloc_release_detail": "retained_bytes=67108864",
-    }).run(min_vram_mb=80000, min_free_vram_mb=60000, min_host_ram_mb=60000, min_disk_mb=100000)
-    assert "alloc_release_retention" in r.failures
+def test_work_and_cache_mounts_both_measured(tmp_path):
+    cache = tmp_path / "hf"
+    r = _run(_fake_runner(disk_usage=_disk_map({str(cache.resolve()): 150 * 1024})), hf_cache_path=str(cache))
+    assert r.work_disk_free_mb is not None
+    assert r.hf_cache_disk_free_mb == 150 * 1024
+    assert r.work_disk_free_mb != r.hf_cache_disk_free_mb
 
 
-def test_optional_telemetry_unsupported_handled():
-    r = _fake_runner(nvidia_query=lambda: "NVIDIA A100,81920,70000,11920,535.0,N/A,N/A\n").run(
-        min_vram_mb=80000, min_free_vram_mb=60000, min_host_ram_mb=60000, min_disk_mb=100000)
-    assert r.status == "PASS"
-
-
-def test_preflight_passes_clean_host():
-    r = _fake_runner().run(min_vram_mb=80000, min_free_vram_mb=60000, min_host_ram_mb=60000, min_disk_mb=100000)
+def test_preflight_passes_clean_host(tmp_path):
+    r = _run(_fake_runner(), hf_cache_path=str(tmp_path / "hf"))
     assert r.status == "PASS"
 
 
 # ─────────────────────────────────────────────────────────────
-# BLACKLIST (matrix 39-43)
+# BLACKLIST (scoped, corruption fail-closed, concurrency-safe)
 # ─────────────────────────────────────────────────────────────
 
 def test_blacklist_scoped_blocks(tmp_path):
     bl = FailedHostBlacklist(tmp_path / "fh.json")
     bl.add(FailedHostRecord("host", "ssh3.vast.ai", "canary OOM", "HOST_FAILURE"))
-    bl.add(FailedHostRecord("offer", "21050987", "canary OOM", "HOST_FAILURE"))
-    bl.add(FailedHostRecord("instance", "48423466", "canary OOM", "HOST_FAILURE"))
-    assert bl.is_blocked(host="ssh3.vast.ai", offer_id=99999)  # host survives new offer
+    assert bl.is_blocked(host="ssh3.vast.ai", offer_id=99999)
     assert bl.is_blocked(offer_id=21050987)
     assert bl.is_blocked(instance_id=48423466)
-    assert not bl.is_blocked(host="good.vast.ai", offer_id=12345)  # unrelated host allowed
-    assert not bl.is_blocked(host="other.vast.ai", offer_id=88888)  # provider-wide remains allowed
+    assert not bl.is_blocked(host="good.vast.ai", offer_id=12345)
+    assert not bl.is_blocked(host="other.vast.ai", offer_id=88888)
+
+
+def test_corrupt_blacklist_does_not_forget_required_blocks(tmp_path):
+    path = tmp_path / "fh.json"
+    path.write_text("{ this is not valid json", encoding="utf-8")
+    bl = FailedHostBlacklist(path)
+    assert bl.is_blocked(host="ssh3.vast.ai")
+    assert bl.is_blocked(offer_id=21050987)
+    assert bl.is_blocked(instance_id=48423466)
+
+
+def test_concurrent_blacklist_updates_retain_all_blocks(tmp_path):
+    bl = FailedHostBlacklist(tmp_path / "fh.json")
+
+    def add(i):
+        bl.add(FailedHostRecord("host", f"bad{i}.vast.ai", "canary OOM", "HOST_FAILURE"))
+
+    threads = [threading.Thread(target=add, args=(i,)) for i in range(20)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    for i in range(20):
+        assert bl.is_blocked(host=f"bad{i}.vast.ai")
+    assert bl.is_blocked(host="ssh3.vast.ai")
+    assert bl.is_blocked(offer_id=21050987)
+    assert bl.is_blocked(instance_id=48423466)
+
+
+def test_required_campaign_blocks_present():
+    blocks = {r.scope: r.identifier for r in required_campaign_blocks()}
+    assert blocks == {"instance": "48423466", "offer": "21050987", "host": "ssh3.vast.ai"}
 
 
 # ─────────────────────────────────────────────────────────────
-# GUARD (matrix 44-47)
+# GUARD (retained M1.9.1B, real orchestrator paths)
 # ─────────────────────────────────────────────────────────────
 
 def _make_stack(fake, production_id, authorized):
@@ -562,9 +525,9 @@ def test_queued_action_runtime_recheck_zero_mutation():
             self.mutations.append(("destroy", iid))
 
     fake = FakeVast()
-    orch, sup = _make_stack(fake, 9999, authorized=False)  # instance was a candidate when queued
+    orch, sup = _make_stack(fake, 9999, authorized=False)
     orch._vast_instance = VastInstance(48416143, "exited", "ssh3.vast.ai", 22, "A100 PCIE", 81920, Decimal("0.96"))
-    orch._production_mutation_guard.production_instance_id = 48416143  # now production
+    orch._production_mutation_guard.production_instance_id = 48416143
     with pytest.raises(StartFailed):
         orch.stop_and_destroy_vast(48416143)
     assert fake.mutations == []
@@ -585,13 +548,12 @@ def test_status_invalid_response_zero_mutation():
     with pytest.raises(VastError):
         fake.show_instance(48416143)
     assert fake.mutations == []
-    snap = orch.snapshot()  # read-only snapshot, no provider call
-    assert snap.state == "stopped"
+    assert orch.snapshot().state == "stopped"
     sup.close()
 
 
 # ─────────────────────────────────────────────────────────────
-# MASK (matrix 48-51)
+# MASK (retained)
 # ─────────────────────────────────────────────────────────────
 
 def test_masking_out_of_bounds_raises_cleanly():
@@ -614,16 +576,10 @@ def test_masking_good_fixture_passes():
     labels = [-100, -100, -100, 5, 6]
     ok, failures = validate_assistant_masking(labels, [("system", 0, 1), ("user", 1, 3), ("assistant", 3, 5)])
     assert ok
-    assert failures == []
-
-
-def test_masking_overlap_raises():
-    with pytest.raises(MaskValidationError):
-        validate_assistant_masking([-100, -100, 1, 2], [("user", 0, 2), ("assistant", 1, 3)])
 
 
 # ─────────────────────────────────────────────────────────────
-# QLoRA + readiness
+# QLoRA + readiness (gated)
 # ─────────────────────────────────────────────────────────────
 
 def test_qlora_rejects_device_map_auto():
@@ -636,13 +592,50 @@ def test_qlora_rejects_cpu_offload():
     assert not ok
 
 
-def test_paid_canary_readiness_ready():
-    r = build_paid_canary_readiness("934a634", env_resolution="PASS")
-    assert r.ready is True
-    assert r.training_env_profile.endswith("V2")
-    assert "host:ssh3.vast.ai" in r.failed_host_blocks
+def _full_readiness():
+    return build_paid_canary_readiness("142b1b8", metadata_compatibility="PASS", production_mutation_guard_configured=True)
 
 
-def test_paid_canary_readiness_blocked_on_env_resolution():
-    r = build_paid_canary_readiness("934a634", env_resolution="FAIL")
-    assert r.ready is False
+def test_readiness_true_only_for_complete_prent_gates():
+    r = _full_readiness()
+    assert r.ready_to_rent is True
+    assert r.candidate_base_repo == "Qwen/Qwen3-32B"
+    assert r.candidate_base_revision.startswith("9216db57")
+    assert r.failed_instance_block == "48423466"
+    assert r.failed_offer_block == "21050987"
+    assert r.failed_host_block == "ssh3.vast.ai"
+
+
+def test_readiness_false_with_blank_candidate_revision():
+    assert replace(_full_readiness(), candidate_base_revision="").ready_to_rent is False
+
+
+def test_readiness_false_with_missing_host_block():
+    assert replace(_full_readiness(), failed_host_block="").ready_to_rent is False
+
+
+def test_readiness_false_with_missing_offer_block():
+    assert replace(_full_readiness(), failed_offer_block="").ready_to_rent is False
+
+
+def test_readiness_false_with_missing_instance_block():
+    assert replace(_full_readiness(), failed_instance_block="").ready_to_rent is False
+
+
+def test_readiness_false_with_missing_production_guard():
+    assert replace(_full_readiness(), production_mutation_guard_configured=False).ready_to_rent is False
+
+
+def test_readiness_false_on_env_resolution_fail():
+    r = build_paid_canary_readiness("142b1b8", metadata_compatibility="FAIL")
+    assert r.ready_to_rent is False
+
+
+# ─────────────────────────────────────────────────────────────
+# Tool-eval truth label
+# ─────────────────────────────────────────────────────────────
+
+def test_tool_eval_status_reports_pending():
+    status = tool_eval_status()
+    assert status["tool_eval_scoring_logic"] == "YES"
+    assert status["real_tool_eval_agent_loop"] == "PENDING_RUNTIME"

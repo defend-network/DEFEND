@@ -31,6 +31,19 @@ from typing import Callable
 EVALUATOR_VERSION = "v2.3"
 EVAL_DATASET_SHA = "5ee2369ea383a8590dd123fa66db8a885154a2a0bf5abc8e98c174bcdf27835a"
 
+TOOL_EVAL_SCORING_LOGIC = "YES"
+REAL_TOOL_EVAL_AGENT_LOOP = "PENDING_RUNTIME"
+
+
+def tool_eval_status() -> dict:
+    """Truthful tool-evaluation status: the scoring logic is implemented and
+    tested, but a real model→tool→result→model agent loop is not yet wired
+    (the production agent does that at eval time; the fixture is scoring only)."""
+    return {
+        "tool_eval_scoring_logic": TOOL_EVAL_SCORING_LOGIC,
+        "real_tool_eval_agent_loop": REAL_TOOL_EVAL_AGENT_LOOP,
+    }
+
 EPISODE_DIRECT = "DIRECT_RESPONSE"
 EPISODE_TOOL = "TOOL_AGENT_TRAJECTORY"
 EPISODE_RECOVERY = "RECOVERY_MULTI_TURN"
