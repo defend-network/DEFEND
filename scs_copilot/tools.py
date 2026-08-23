@@ -519,6 +519,7 @@ class ToolRegistry:
             job_id = getattr(self.context, "job_id", None)
             session = DiagnosticSession(template, job_id=job_id)
         session.record_observation(args.get("key"), args.get("value"), "field")
+        session.apply_observation(args.get("key"), args.get("value"))
         if self.memory is not None:
             self.memory.active_graphs[graph_id] = session.to_dict()
         return {"ok": True, "tool": "diagnostic.update", "data": session.to_dict()}

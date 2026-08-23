@@ -8,6 +8,7 @@ the durable JobMemoryStore.
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Any
 
@@ -95,14 +96,35 @@ class DiagnosticSession:
 
     def update_cause(self, cause_id: str, observation: str, supports: bool,
                      basis: str) -> None:
+        order = ["UNASSESSED", "POSSIBLE", "SUPPORTED", "STRONGLY_SUPPORTED"]
         for cause in self.causes:
             if cause.get("cause_id") == cause_id:
                 if supports:
                     cause.setdefault("supporting_observations", []).append(observation)
+                    belief = cause.get("belief", "UNASSESSED")
+                    if belief in order:
+                        cause["belief"] = order[min(order.index(belief) + 1,
+                                                    len(order) - 1)]
                 else:
                     cause.setdefault("contradicting_observations", []).append(observation)
+                    if cause.get("belief") in ("SUPPORTED", "STRONGLY_SUPPORTED"):
+                        cause["belief"] = "POSSIBLE"
+                    elif cause.get("belief") in ("POSSIBLE", "UNASSESSED"):
+                        cause["belief"] = "CONTRADICTED"
                 self.updated_at = datetime.now().isoformat(timespec="seconds")
                 return
+
+    def apply_observation(self, key: str, value: Any) -> None:
+        """Advance cause beliefs from an observation (P22): a cause whose
+        required measurement matches this observation gains support."""
+        norm = re.sub(r"[^A-Z0-9]", "", (key or "").upper())
+        for cause in self.causes:
+            for required in cause.get("required_measurements", []):
+                rnorm = re.sub(r"[^A-Z0-9]", "", (required or "").upper())
+                if rnorm and rnorm == norm:
+                    self.update_cause(cause["cause_id"], f"{key}={value}",
+                                      supports=True, basis="observation")
+                    break
 
     def to_graph(self) -> DiagnosticGraph:
         graph = DiagnosticGraph(

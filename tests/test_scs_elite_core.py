@@ -151,7 +151,8 @@ def test_grounded_oem_claim_renders_with_citation():
                "source_refs": ["SRC-OEM1"], "evidence_refs": [], "calculator_ref": None,
                "inference": False, "applicability": "FAMILY", "confidence": "HIGH"}]
     evidence = {"oem_sources": {"SRC-OEM1"},
-                "source_map": {"SRC-OEM1": {"source_type": "OEM_IOM", "source_id": "SRC-OEM1"}}}
+                "source_map": {"SRC-OEM1": {"source_type": "OEM_IOM", "source_id": "SRC-OEM1",
+                                            "applicability": "FAMILY"}}}
     report = verify_claims(claims, evidence)
     assert report["CLAIMS_VERIFIED"] == 1
     visible = render_visible(report["verified"])

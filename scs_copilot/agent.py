@@ -133,6 +133,9 @@ def run_agent(question: str, *, provider, registry, context, memory,
         answer["pre_route_state"] = route_state
         answer["copilot_mode"] = COPILOT_MODE_DETERMINISTIC
         answer["completeness"] = answer_completeness(pre_route)
+        # P25: deterministic procedure/diagnostic routes must ALSO create
+        # durable job-scoped sessions (not just return template data).
+        _materialize_deterministic_session(pre_route, registry, answer)
         # one verified answer pipeline (P2): verify deterministic facts
         _verify_deterministic_answer(answer, pre_route)
         answer["trace"] = {
@@ -205,26 +208,37 @@ def run_agent(question: str, *, provider, registry, context, memory,
                                             "provider_latency_ms": provider_latency_ms,
                                             "model": response.get("model"),
                                             "provider": response.get("provider")})
-        # P20/P66: preserve the assistant tool-call request so the provider's
-        # native tool-turn continuation matches tool results to tool calls.
-        messages.append({"role": "assistant", "content": None,
-                         "tool_calls": calls})
+        # P9: the provider owns native message serialization. Preserve the
+        # assistant tool-call request in provider-native format so tool results
+        # match tool calls by the provider's own contract.
+        tool_call_msg = getattr(provider, "tool_call_message", None)
+        tool_result_msg = getattr(provider, "tool_result_message", None)
+        messages.append(tool_call_msg(calls) if tool_call_msg else
+                        {"role": "assistant", "content": None, "tool_calls": calls})
         for call_index, call in enumerate(calls, start=1):
             name = call.get("name")
             arguments = call.get("arguments") or {}
+            provider_tool_call_id = call.get("id")
             tools_requested += 1
-            tool_calls.append({"name": name, "arguments": arguments})
             result = registry.execute(name, arguments)
             if not result.get("ok"):
                 tools_rejected += 1
+            # P8: SCS evidence id is DISTINCT from the provider tool-call id.
             evidence_id = result.get("evidence_id") or new_evidence_id()
             tool_result_ids.append(evidence_id)
+            tool_calls.append({
+                "name": name, "arguments": arguments,
+                "provider_tool_call_id": provider_tool_call_id,
+                "evidence_id": evidence_id,
+                "ok": result.get("ok", False),
+            })
             if result.get("ok") and result.get("data"):
                 _collect_evidence(result, final_facts, calculator_ids, source_ids)
-            messages.append({"role": "tool",
-                             "tool_call_id": evidence_id,
-                             "content": __import__("json").dumps(
-                                 registry.compact_observation(result))})
+            observation_json = __import__("json").dumps(
+                registry.compact_observation(result))
+            messages.append(tool_result_msg(provider_tool_call_id, observation_json)
+                            if tool_result_msg else
+                            {"role": "tool", "content": observation_json})
         if iterations >= MAX_TOOL_ITERATIONS:
             break
 
@@ -249,6 +263,28 @@ def run_agent(question: str, *, provider, registry, context, memory,
                  "tools_requested": tools_requested, "tools_rejected": tools_rejected,
                  "provider_calls": provider_calls,
                  "provider_latency_ms": provider_latency_ms})
+
+
+def _materialize_deterministic_session(pre_route: dict[str, Any],
+                                       registry, answer: dict[str, Any]) -> None:
+    """Create durable job-scoped sessions for deterministic procedure/
+    diagnostic routes (P25) so they survive restart like agentic sessions."""
+    tool = pre_route.get("tool")
+    try:
+        if tool == "procedure.start":
+            procedure_id = (pre_route.get("procedure") or {}).get("procedure_id")
+            if procedure_id:
+                result = registry.execute("procedure.start", {"procedure_id": procedure_id})
+                if result.get("ok"):
+                    answer["procedure"] = result.get("data")
+        elif tool == "diagnostic.start":
+            graph_id = (pre_route.get("graph") or {}).get("graph_id")
+            if graph_id:
+                result = registry.execute("diagnostic.start", {"graph_id": graph_id})
+                if result.get("ok"):
+                    answer["graph"] = result.get("data")
+    except Exception:
+        pass
 
 
 def _verify_deterministic_answer(answer: dict[str, Any], pre_route: dict[str, Any]) -> None:
@@ -392,6 +428,12 @@ def _collect_evidence(result, final_facts, calculator_ids, source_ids):
                                         "citation": {"source_type": "FIELD_MEASUREMENT"}})
         if data.get("source_id"):
             source_ids.append(data["source_id"])
+        if data.get("graph_id") and isinstance(data.get("causes"), list):
+            # P22: capture real DiagnosticSession state as verification evidence
+            final_facts.append({"label": "DIAGNOSTIC", "concept": "DIAGNOSTIC",
+                                "value": data.get("graph_id"),
+                                "evidence_id": evidence_id,
+                                "diagnostic": data})
         if data.get("identity"):
             identity = data["identity"]
             resolution = identity.get("resolution")

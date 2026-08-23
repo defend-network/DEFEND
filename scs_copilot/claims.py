@@ -169,33 +169,46 @@ def _tolerance(unit: str) -> float:
 
 
 # ---------------------------------------------------------------------------
-# Concept identity (P4)
+# Concept identity (P3/P4): hierarchical - dimension is NOT semantic concept
 # ---------------------------------------------------------------------------
 
-_BASE_SYNONYMS = {
-    "CFM": "CFM", "AIRFLOW": "CFM", "SUPPLY_CFM": "CFM", "OA_CFM": "CFM",
-    "TOTAL_CFM": "CFM", "HEAT_CFM": "CFM", "COOL_CFM": "CFM", "VAV_CFM": "CFM",
-    "EXHAUST_CFM": "CFM", "NOMINAL_CFM": "CFM", "DESIGN_CFM": "CFM",
-    "FPM": "FPM", "VELOCITY": "FPM",
-    "ESP": "STATIC_PRESSURE", "TESP": "STATIC_PRESSURE",
-    "STATIC_PRESSURE": "STATIC_PRESSURE", "STATIC": "STATIC_PRESSURE",
-    "SUPPLY_STATIC": "STATIC_PRESSURE", "RETURN_STATIC": "STATIC_PRESSURE",
-    "FILTER_DP": "STATIC_PRESSURE", "COIL_DP": "STATIC_PRESSURE",
-    "RPM": "RPM", "SPEED": "RPM", "MAX_RPM": "RPM", "FAN_RPM": "RPM",
-    "PERCENT_DESIGN": "PERCENT", "PERCENT": "PERCENT", "OA_FRACTION": "PERCENT",
-    "TEMPERATURE": "TEMPERATURE", "DB": "TEMPERATURE", "WB": "TEMPERATURE",
-    "DUCT_AREA": "AREA", "AREA": "AREA",
-    "MAX_ESP": "STATIC_PRESSURE", "MAXIMUM_ESP": "STATIC_PRESSURE",
-    "STANDARD_REQUIREMENT": "STANDARD_REQUIREMENT",
-    "OEM_REQUIREMENT": "OEM_REQUIREMENT",
-    "PROCEDURE": "PROCEDURE",
+# P4: equivalence ONLY through this explicit reviewed alias map. Distinct
+# semantic concepts (SUPPLY_STATIC vs RETURN_STATIC vs FILTER_DP vs COIL_DP;
+# SUPPLY_CFM vs OA_CFM vs EXHAUST_CFM) MUST remain distinct. Compatible units
+# do not make concepts interchangeable (P3).
+_CONCEPT_ALIASES = {
+    # generic synonyms (reviewed)
+    "AIRFLOW": "CFM",
+    "VELOCITY": "FPM",
+    "SPEED": "RPM",
+    "STATIC": "STATIC_PRESSURE",
+    # explicit TESP identity (SCS canonical definition)
+    "TOTAL_EXTERNAL_STATIC_PRESSURE": "TESP",
+    "TOTAL_EXTERNAL_STATIC": "TESP",
+    "EXTERNAL_STATIC_PRESSURE": "TESP",
+    "MAXIMUM_ESP": "MAX_ESP",
+    "PERCENT": "PERCENT",
+    "MAXIMUM_RPM": "MAX_RPM",
+    "SUPPLY_AIRFLOW": "SUPPLY_CFM",
+    "RETURN_AIRFLOW": "RETURN_CFM",
+    "OUTSIDE_AIR_CFM": "OA_CFM",
+    "OUTDOOR_AIR_CFM": "OA_CFM",
 }
 
 _CLASS_PREFIXES = ("DESIGN_", "FIELD_", "OEM_", "CALCULATED_")
 
+# Entity token extraction (P1): token-boundary equipment/device IDs.
+_ENTITY_RE = re.compile(
+    r"\b(?:RTU|AHU|VAV|EF|SF|DOAS|MAU|FCU|HP|SA|RA|EA|RG|RF|EG|SD|FD|BD|VD|MD|CD|BKD|VFD|ERV|CU|AC|CH|HX|T|DP|SP|DS)-\d{1,3}\b")
+
 
 def concept_key(concept: str | None) -> tuple[str, str]:
-    """Return (class, canonical-base) for a semantic concept (P4)."""
+    """Return (class, canonical-base) with strict semantic identity (P3/P4).
+
+    The class prefix (DESIGN/FIELD/OEM/CALCULATED) is part of identity, and the
+    base is normalized ONLY through the explicit alias map - never broad
+    dimension collapse.
+    """
     c = (concept or "").strip().upper()
     cls = ""
     for prefix in _CLASS_PREFIXES:
@@ -203,11 +216,38 @@ def concept_key(concept: str | None) -> tuple[str, str]:
             cls = prefix.rstrip("_")
             c = c[len(prefix):]
             break
-    return (cls, _BASE_SYNONYMS.get(c, c))
+    return (cls, _CONCEPT_ALIASES.get(c, c))
 
 
 def concepts_match(a: str | None, b: str | None) -> bool:
     return concept_key(a) == concept_key(b)
+
+
+def entity_in_text(text: str) -> str | None:
+    """Extract a single explicit equipment/device entity ID (P1)."""
+    match = _ENTITY_RE.search(str(text or "").upper())
+    return match.group(0) if match else None
+
+
+ENTITY_EXACT = "ENTITY_EXACT"
+ENTITY_GLOBAL = "ENTITY_GLOBAL"
+ENTITY_UNRESOLVED = "ENTITY_UNRESOLVED"
+ENTITY_CONFLICT = "ENTITY_CONFLICT"
+
+
+def entity_relation(claim_entity: str | None,
+                    fact_entity: str | None) -> str:
+    """Explicit entity match semantics (P0). Missing entity is never a
+    wildcard for job/equipment-specific evidence."""
+    c = (claim_entity or "").strip().upper() or None
+    f = (fact_entity or "").strip().upper() or None
+    if c and f:
+        return ENTITY_EXACT if c == f else ENTITY_CONFLICT
+    if c and not f:
+        return ENTITY_UNRESOLVED
+    if not c and f:
+        return ENTITY_UNRESOLVED
+    return ENTITY_GLOBAL
 
 
 # ---------------------------------------------------------------------------
@@ -251,7 +291,9 @@ def build_evidence(facts: list[dict[str, Any]]) -> dict[str, Any]:
     evidence: dict[str, Any] = {
         "calculators": set(), "plan_sources": set(), "oem_sources": set(),
         "standard_sources": set(), "values": [], "facts": [],
-        "source_map": {},
+        "source_map": {}, "diagnostics": {},
+        "diagnostic_support": 0, "diagnostic_contradiction": 0,
+        "diagnostic_resolved": False,
     }
     for index, fact in enumerate(facts or [], start=1):
         citation = fact.get("citation") or {}
@@ -261,6 +303,22 @@ def build_evidence(facts: list[dict[str, Any]]) -> dict[str, Any]:
         source_type = citation.get("source_type")
         calculator_id = citation.get("formula")
         fact_evidence_id = fact.get("evidence_id") or f"EVID-F{index:03d}"
+        # P22: diagnostic evidence derives from real session state
+        if fact.get("diagnostic") and isinstance(fact["diagnostic"], dict):
+            diagnostic = fact["diagnostic"]
+            evidence["diagnostics"][diagnostic.get("graph_id") or fact_evidence_id] = diagnostic
+            for cause in diagnostic.get("causes", []):
+                belief = cause.get("belief")
+                if belief == "STRONGLY_SUPPORTED":
+                    evidence["diagnostic_support"] += 2
+                elif belief == "SUPPORTED":
+                    evidence["diagnostic_support"] += 1
+                elif belief == "CONTRADICTED":
+                    evidence["diagnostic_contradiction"] += 1
+                elif belief == "RESOLVED":
+                    evidence["diagnostic_resolved"] = True
+            if diagnostic.get("resolution_note"):
+                evidence["diagnostic_resolved"] = True
         evidence_fact = EvidenceFact(
             evidence_id=fact_evidence_id,
             concept=fact.get("concept"),
@@ -341,18 +399,32 @@ def _concept_for(clause: str, claim_type: str) -> str:
     upper = clause.upper()
     if "OA FRACTION" in upper or "OUTSIDE AIR FRACTION" in upper:
         return "OA_FRACTION"
-    if "ESP" in upper or "STATIC" in upper or "TESP" in upper:
-        return "OEM_MAX_ESP" if claim_type == "OEM" else "STATIC_PRESSURE"
-    if "FILTER" in upper and ("DP" in upper or "PRESSURE" in upper):
+    if "FILTER" in upper and ("DP" in upper or "DELTA" in upper or "PRESSURE" in upper):
         return "FILTER_DP"
-    if "COIL" in upper and ("DP" in upper or "PRESSURE" in upper):
+    if "COIL" in upper and ("DP" in upper or "DELTA" in upper or "PRESSURE" in upper):
         return "COIL_DP"
+    if "RETURN" in upper and ("STATIC" in upper or "SP" in upper):
+        return "RETURN_STATIC"
+    if "SUPPLY" in upper and ("STATIC" in upper or "SP" in upper):
+        return "SUPPLY_STATIC"
+    if "TESP" in upper or "TOTAL EXTERNAL" in upper:
+        return "TESP"
+    if "ESP" in upper or "STATIC" in upper:
+        return "OEM_MAX_ESP" if claim_type == "OEM" else "STATIC_PRESSURE"
     if "RPM" in upper or "SPEED" in upper:
         return "RPM"
     if "%" in upper and "DESIGN" in upper:
         return "PERCENT_DESIGN"
     if "%" in upper:
         return "PERCENT"
+    if "OUTSIDE AIR" in upper and ("CFM" in upper or "AIR" in upper):
+        return "OA_CFM"
+    if "EXHAUST" in upper and ("CFM" in upper or "AIR" in upper):
+        return "EXHAUST_CFM"
+    if "RETURN" in upper and ("CFM" in upper or "AIR" in upper):
+        return "RETURN_CFM"
+    if "SUPPLY" in upper and ("CFM" in upper or "AIR" in upper):
+        return "SUPPLY_CFM"
     if "CFM" in upper or "AIRFLOW" in upper:
         return "DESIGN_SUPPLY_CFM" if claim_type == "DESIGN" else "CFM"
     if "TEMPERATURE" in upper or " DEG" in upper:
@@ -397,6 +469,7 @@ def extract_claims_from_prose(content: str,
             "concept": _concept_for(clause, claim_type),
             "value": _numeric_value(clause),
             "unit": _unit_of(clause),
+            "entity_id": entity_in_text(clause),
             "assertion_text": clause,
             "evidence_refs": [], "calculator_ref": None, "source_refs": [],
             "inference": claim_type == "DIAGNOSTIC_INFERENCE",
@@ -450,6 +523,8 @@ def extract_structured_claims(content: str,
             "calculator_ref": rc.get("calculator_ref"),
             "inference": claim_type == "DIAGNOSTIC_INFERENCE",
             "applicability": rc.get("applicability") or "UNKNOWN",
+            "edition": rc.get("edition"),
+            "manufacturer": rc.get("manufacturer"),
             "confidence": rc.get("confidence") or "HIGH",
             "_invalid_evidence_refs": invalid_refs,
         })
@@ -480,6 +555,45 @@ def _extract_json(content: str) -> Any:
 # Verification (P1, P4, P5, P6, P7, P8)
 # ---------------------------------------------------------------------------
 
+_APPLICABILITY_RANK = {
+    "EXACT_MODEL": 5, "MODEL_SERIES": 4, "FAMILY": 3,
+    "GENERAL_MANUFACTURER": 2, "UNKNOWN": 1,
+}
+
+
+def _oem_applicability_ok(claim: dict[str, Any], source_id: str | None,
+                          source_map: dict[str, Any]) -> bool:
+    """P6: the cited OEM source must prove sufficient applicability for the
+    claim. An exact-model limit cannot render from GENERAL_MANUFACTURER."""
+    required = (claim.get("applicability") or "UNKNOWN").upper()
+    claim_entity = claim.get("entity_id")
+    if required == "UNKNOWN" and not claim_entity:
+        return True  # claim makes no exact-model applicability assertion
+    meta = source_map.get(source_id) or {}
+    source_applicability = (meta.get("applicability") or "UNKNOWN").upper()
+    if source_applicability in ("EXACT_APPLICABILITY",):
+        source_applicability = "EXACT_MODEL"
+    if source_applicability in ("FAMILY_APPLICABILITY",):
+        source_applicability = "FAMILY"
+    if source_applicability in ("GENERAL_MANUFACTURER_REFERENCE",):
+        source_applicability = "GENERAL_MANUFACTURER"
+    req_rank = _APPLICABILITY_RANK.get(required, 1)
+    src_rank = _APPLICABILITY_RANK.get(source_applicability, 1)
+    return src_rank >= req_rank
+
+
+def _standard_edition_ok(claim: dict[str, Any], source_id: str | None,
+                         source_map: dict[str, Any]) -> bool:
+    """P7: a standard edition-specific claim requires edition identity."""
+    claim_edition = (claim.get("edition") or "").strip()
+    if not claim_edition:
+        return True
+    meta = source_map.get(source_id) or {}
+    source_edition = (meta.get("edition") or "").strip()
+    if source_edition and claim_edition and source_edition != claim_edition:
+        return False
+    return True
+
 
 def _verify_claim(claim: dict[str, Any], evidence: dict[str, Any]) -> tuple[bool, str | None, str]:
     """Verify a single claim. Returns (ok, blocked_reason, diagnostic_strength)."""
@@ -503,22 +617,24 @@ def _verify_claim(claim: dict[str, Any], evidence: dict[str, Any]) -> tuple[bool
                 continue
             if not concepts_match(claim.get("concept"), fact.concept):
                 continue
-            if entity_id and fact.entity_id and entity_id != fact.entity_id:
+            # P0: missing entity is never a wildcard for job-specific evidence.
+            relation = entity_relation(entity_id, fact.entity_id)
+            if relation in (ENTITY_CONFLICT, ENTITY_UNRESOLVED):
                 continue
             if not numeric_values_match(value, unit, fact.value, fact.unit):
                 continue
             return True
         return False
 
-    def _bound_sources(refs: list[str], pool: set, prefix: str) -> bool:
+    def _bound_source(refs: list[str], pool: set, prefix: str) -> str | None:
         refs = refs or []
-        if any(r in pool for r in refs):
-            return True
         for r in refs:
+            if r in pool:
+                return r
             meta = source_map.get(r)
             if meta and str(meta.get("source_type") or "").startswith(prefix):
-                return True
-        return False
+                return r
+        return None
 
     if claim_type == "CALCULATED":
         if claim.get("calculator_ref") in calculators:
@@ -531,27 +647,33 @@ def _verify_claim(claim: dict[str, Any], evidence: dict[str, Any]) -> tuple[bool
             return True, None, "RESOLVED"
         return False, "UNSUPPORTED_NUMERIC", "POSSIBLE"
     if claim_type == "DESIGN":
-        if _bound_sources(claim.get("source_refs"), plan_sources, "PROJECT_"):
+        if _bound_source(claim.get("source_refs"), plan_sources, "PROJECT_"):
             return True, None, "RESOLVED"
         if value is not None and _fact_value_matches():
             return True, None, "RESOLVED"
         return False, "DESIGN_EVIDENCE_NOT_INDEXED", "POSSIBLE"
     if claim_type == "FIELD":
-        if _bound_sources(claim.get("source_refs"), set(), "FIELD_MEASUREMENT"):
+        if _bound_source(claim.get("source_refs"), set(), "FIELD_MEASUREMENT"):
             return True, None, "RESOLVED"
         if value is not None and _fact_value_matches():
             return True, None, "RESOLVED"
         return False, "FIELD_MEASUREMENT_MISSING", "POSSIBLE"
     if claim_type == "OEM":
-        if _bound_sources(claim.get("source_refs"), oem_sources, "OEM_"):
-            return True, None, "RESOLVED"
-        return False, "AUTHORITATIVE_OEM_SOURCE_NOT_INDEXED", "POSSIBLE"
+        bound = _bound_source(claim.get("source_refs"), oem_sources, "OEM_")
+        if not bound:
+            return False, "AUTHORITATIVE_OEM_SOURCE_NOT_INDEXED", "POSSIBLE"
+        if not _oem_applicability_ok(claim, bound, source_map):
+            return False, "OEM_APPLICABILITY_INSUFFICIENT", "POSSIBLE"
+        return True, None, "RESOLVED"
     if claim_type == "STANDARD":
-        if _bound_sources(claim.get("source_refs"), standard_sources, "STANDARD_"):
-            return True, None, "RESOLVED"
-        return False, "AUTHORITATIVE_STANDARD_SOURCE_NOT_INDEXED", "POSSIBLE"
+        bound = _bound_source(claim.get("source_refs"), standard_sources, "STANDARD_")
+        if not bound:
+            return False, "AUTHORITATIVE_STANDARD_SOURCE_NOT_INDEXED", "POSSIBLE"
+        if not _standard_edition_ok(claim, bound, source_map):
+            return False, "STANDARD_EDITION_MISMATCH", "POSSIBLE"
+        return True, None, "RESOLVED"
     if claim_type == "PROCEDURE_REQUIREMENT":
-        if _bound_sources(claim.get("source_refs"), standard_sources | oem_sources, ""):
+        if _bound_source(claim.get("source_refs"), standard_sources | oem_sources, ""):
             return True, None, "RESOLVED"
         return False, "PROCEDURE_SOURCE_NOT_INDEXED", "POSSIBLE"
     if claim_type == "DIAGNOSTIC_INFERENCE":

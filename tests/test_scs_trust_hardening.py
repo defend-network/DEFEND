@@ -363,11 +363,11 @@ def test_audit_e_unknown_answer_not_marked_resolved():
 
 def test_audit_e_open_measurement_resolved():
     memory = JobConversationMemory()
-    memory.record_open_measurement("fan_rpm", "need fan RPM")
-    assert memory.open_measurements["fan_rpm"]["state"] == "OPEN"
-    memory.resolve_open_measurement("fan_rpm", 1130)
-    assert memory.open_measurements["fan_rpm"]["state"] == "ANSWERED"
-    assert memory.latest_reading("fan_rpm") == 1130
+    memory.record_open_measurement("fan rpm", "need fan RPM")
+    assert memory.open_measurements["FAN_RPM"]["state"] == "OPEN"
+    memory.resolve_open_measurement("fan rpm", 1130)
+    assert memory.open_measurements["FAN_RPM"]["state"] == "ANSWERED"
+    assert memory.latest_reading("fan rpm") == 1130
 
 
 def test_audit_e_reading_stages_preserved():

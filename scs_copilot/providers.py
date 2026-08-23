@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import uuid
 from abc import ABC, abstractmethod
 from typing import Any
 
@@ -33,6 +34,10 @@ def _normalize_arguments(arguments: Any) -> dict[str, Any]:
     return {}
 
 
+def new_provider_tool_call_id() -> str:
+    return f"ptc-{uuid.uuid4().hex[:12]}"
+
+
 class SCSCopilotModelProvider(ABC):
     provider_name: str
     privacy_class: str = "LOCAL_PRIVATE"  # LOCAL_PRIVATE | EXTERNAL_MANAGED (P48)
@@ -41,7 +46,25 @@ class SCSCopilotModelProvider(ABC):
     def complete(self, messages: list[dict[str, Any]], *,
                  tools: list[dict[str, Any]] | None = None,
                  timeout: float = 90.0) -> dict[str, Any]:
-        """Return {content, tool_calls, finish_reason, usage, model, provider}."""
+        """Return {content, tool_calls, finish_reason, usage, model, provider}.
+
+        Each tool_call is {name, arguments, id} where ``id`` is the PROVIDER
+        tool-call id (P8) - distinct from any SCS evidence id."""
+
+    def tool_result_message(self, tool_call_id: str | None,
+                            content: str) -> dict[str, Any]:
+        """Serialize a tool result into the provider's NATIVE message format
+        (P9). The provider owns this serialization; the agent loop must not
+        assume a normalized dict is valid Ollama syntax."""
+        return {"role": "tool", "content": content}
+
+    def tool_call_message(self, tool_calls: list[dict[str, Any]]) -> dict[str, Any]:
+        """Serialize internal tool-call records into the provider's NATIVE
+        assistant message format (P9)."""
+        return {"role": "assistant", "content": None,
+                "tool_calls": [{"function": {"name": tc["name"],
+                                             "arguments": tc.get("arguments", {})},
+                                "id": tc.get("id")} for tc in tool_calls]}
 
 
 class OllamaCopilotProvider(SCSCopilotModelProvider):
@@ -78,10 +101,11 @@ class OllamaCopilotProvider(SCSCopilotModelProvider):
                 name = fn.get("name")
                 if not name:
                     continue
+                provider_id = tc.get("id") or new_provider_tool_call_id()
                 tool_calls.append({
                     "name": name,
                     "arguments": _normalize_arguments(fn.get("arguments", {})),
-                    "id": tc.get("id"),
+                    "id": provider_id,
                 })
             return {
                 "content": message.get("content") or "",
@@ -95,6 +119,16 @@ class OllamaCopilotProvider(SCSCopilotModelProvider):
             return self._failed("timeout")
         except Exception as error:
             return self._failed(type(error).__name__)
+
+    def tool_result_message(self, tool_call_id: str | None,
+                            content: str) -> dict[str, Any]:
+        """Ollama native tool result: role 'tool' + content. The provider
+        tool-call id is preserved when available (P8/P17); Ollama matches by
+        position and ignores the extra field if unsupported."""
+        message = {"role": "tool", "content": content}
+        if tool_call_id:
+            message["tool_call_id"] = tool_call_id
+        return message
 
     def _failed(self, reason: str) -> dict[str, Any]:
         return {"content": "", "tool_calls": [], "finish_reason": reason,

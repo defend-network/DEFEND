@@ -125,8 +125,9 @@ def _match_room(room: str | None, basis: dict) -> str | None:
 
 
 def _seed_memory_from_job(memory, record, context) -> None:
-    """Seed durable memory from JobRecord (P24): AS_FOUND / INTERMEDIATE /
-    FINAL readings stay separate; design values remain DESIGN, not readings."""
+    """Seed durable memory from JobRecord (P15-P17): idempotent via stable
+    source identity; AS_FOUND / INTERMEDIATE / FINAL stay separate; design
+    values remain DESIGN; measurement time is preserved or marked unknown."""
     for device in getattr(record, "air_devices", []) or []:
         device_id = getattr(device, "device_id", None)
         if not device_id:
@@ -135,13 +136,17 @@ def _seed_memory_from_job(memory, record, context) -> None:
             context.design_basis.setdefault("equipment", []).append(
                 {"tag": device_id, "supply_cfm": device.design_cfm})
         if getattr(device, "as_found_cfm", None) is not None:
-            memory.record_reading(f"{device_id}:cfm", device.as_found_cfm,
-                                  stage="AS_FOUND", equipment_id=device_id,
-                                  source="job")
+            memory.record_reading(
+                f"{device_id}:cfm", device.as_found_cfm, stage="AS_FOUND",
+                equipment_id=device_id, source="job_record",
+                source_key=f"JOB_RECORD:{device_id}:CFM:AS_FOUND",
+                recorded_at="SOURCE_TIMESTAMP_UNKNOWN")
         if getattr(device, "final_cfm", None) is not None:
-            memory.record_reading(f"{device_id}:cfm", device.final_cfm,
-                                  stage="FINAL", equipment_id=device_id,
-                                  source="job")
+            memory.record_reading(
+                f"{device_id}:cfm", device.final_cfm, stage="FINAL",
+                equipment_id=device_id, source="job_record",
+                source_key=f"JOB_RECORD:{device_id}:CFM:FINAL",
+                recorded_at="SOURCE_TIMESTAMP_UNKNOWN")
 
 
 def answer_plan_question(text: str, basis: dict) -> dict:
@@ -397,7 +402,10 @@ class CopilotServer(BaseHTTPRequestHandler):
         path = unquote(parsed.path)
         length = int(self.headers.get("Content-Length", 0))
         if length > MAX_REQUEST_BYTES:
+            # P24: reject with 413 without parsing the body; close the
+            # connection (do not drain an unbounded body).
             self._send_json({"error": "request body too large"}, 413)
+            self.close_connection = True
             return
         if path == "/api/jobs":
             self._create_job()
@@ -929,28 +937,35 @@ class CopilotServer(BaseHTTPRequestHandler):
         answer = run_agent(question, provider=provider, registry=registry,
                            context=context, memory=memory,
                            deterministic_router=deterministic)
-        memory_store.save(memory)
+        # P13: optimistic commit - merge the working snapshot onto the freshly
+        # loaded current state so concurrent requests never lose updates.
+        memory_store.commit(job_id, memory)
         answer["job_id"] = job_id
         answer["knowledge_gaps_open"] = len(gaps.unresolved())
         answer["weakness_registry_open"] = len(weaknesses.list())
         answer["oem_research_tasks"] = len(research.list())
         answer["knowledge_root"] = str(knowledge_dir)
         library.close()
-        # P74: persist the safe rendered answer + verified claim refs
-        answers_path = self.paths.job_dir(job_id) / "answers.json"
-        history = []
-        if answers_path.exists():
-            try:
-                history = json.loads(answers_path.read_text(encoding="utf-8"))
-            except Exception:
-                history = []
-        history.append({"answer_id": answer.get("answer_id"),
-                        "question": question, "trace": answer.get("trace"),
-                        "mode": answer.get("copilot_mode"),
-                        "answer": answer.get("answer"),
-                        "verified_claim_ids": answer.get("trace", {}).get("verified_claim_ids", []),
-                        "blocked_claim_ids": answer.get("trace", {}).get("blocked_claim_ids", [])})
-        answers_path.write_text(json.dumps(history[-200:], indent=2), encoding="utf-8")
+        # P21: persist the safe rendered answer + verified/blocked claim refs
+        # through the concurrency-safe AnswerHistoryStore.
+        from scs_copilot.answer_history import AnswerHistoryStore
+        answers = AnswerHistoryStore(self.paths.job_subdir(job_id, "answers"))
+        answers.append(job_id, {
+            "answer_id": answer.get("answer_id"),
+            "question": question,
+            "mode": answer.get("copilot_mode"),
+            "answer": answer.get("answer"),
+            "verified_claim_ids": answer.get("trace", {}).get("verified_claim_ids", []),
+            "blocked_claim_ids": answer.get("trace", {}).get("blocked_claim_ids", []),
+            "tool_execution_ids": answer.get("trace", {}).get("tool_result_ids", []),
+            "tool_calls": answer.get("trace", {}).get("tool_calls", []),
+            "source_ids": answer.get("trace", {}).get("source_ids", []),
+            "calculator_ids": answer.get("trace", {}).get("calculator_ids", []),
+            "provider": (answer.get("trace", {}).get("quality", {}) or {}).get("provider"),
+            "model": (answer.get("trace", {}).get("quality", {}) or {}).get("model"),
+            "policy_version": answer.get("trace", {}).get("system_policy_version"),
+            "timestamp": answer.get("trace", {}).get("created_at"),
+        })
         return answer
 
     def _action_knowledge_import(self, job_id: str):
