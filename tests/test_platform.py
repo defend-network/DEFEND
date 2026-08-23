@@ -87,14 +87,20 @@ def _platform(tmp_path, *, processes=(), product_states=None, manifests=None):
     supervision = ProductSupervisionManifestStore(manifests)
     audit = PlatformAuditLog(tmp_path / "audit.json")
     states = product_states or {}
+    display_names = {
+        "defend": "DEFEND AI",
+        "coder": "DEFENDcoder",
+        "markets": "DEFENDmarkets",
+        "sports": "DEFEND Sports",
+        "scs": "SCS AI",
+    }
     products = tuple(
         _FakeProduct(
             product_id,
-            {"defend": "DEFEND AI", "coder": "DEFENDcoder",
-             "sports": "DEFENDmarkets", "scs": "SCS AI"}[product_id],
+            display_names[product_id],
             states.get(product_id, "stopped"),
         )
-        for product_id in ("defend", "coder", "sports", "scs")
+        for product_id in ("defend", "coder", "markets", "sports", "scs")
     )
     service = PlatformService(
         supervision=supervision,
@@ -113,15 +119,16 @@ def test_overview_reports_four_products_and_posture(tmp_path):
         product_states={"defend": "ready", "coder": "running", "scs": "stopped"},
     )
     overview = service.overview()
-    assert len(overview["products"]) == 4
+    assert len(overview["products"]) == 5  # four canonical + legacy Sports
     posture = overview["posture"]
-    assert posture["total"] == 4
+    assert posture["total"] == 5
     assert posture["running"] == 2
-    assert posture["stopped"] == 2
+    assert posture["stopped"] == 3
     states = {row["product_id"]: row["state"] for row in overview["products"]}
     assert states["defend"] == "RUNNING"
     assert states["coder"] == "RUNNING"
     assert states["sports"] == "STOPPED"
+    assert states["markets"] == "STOPPED"
 
 
 def test_overview_includes_owned_process_identity(tmp_path):

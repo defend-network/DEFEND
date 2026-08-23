@@ -32,6 +32,7 @@ from .platform_credentials import PlatformCredentialRegistry
 from .supervision import ProductSupervisionManifestStore, validate_product_manifests
 
 _PRODUCT_PROCESS_PREFIXES = {
+    "markets": "markets",
     "sports": "sports",
     "coder": "coder",
     "scs": "scs",

@@ -129,13 +129,17 @@ def build_compatibility_manifests(
     Manifest provenance is stamped explicitly on every manifest:
 
     - CODER: consumed from the product-owned launch contract
-      ``defend_coder.launch.build_launch_manifest()`` (Section 13). Control
-      Center does NOT redefine 8301/3301/8403, commands or health URL.
-    - DEFEND AI / SCS: no canonical application supervision manifest exists
-      yet (DEFEND AI's ``defend_ai.launch`` holds GPU LaunchSpecs, not an
-      application process manifest), so ``manifest_source=COMPATIBILITY_LEGACY``.
-    - DEFENDMarkets: the latest Markets lane is not part of this integration;
-      current representation is legacy.
+      ``defend_coder.launch.build_launch_manifest()`` (8301/3301/8403).
+    - MARKETS: consumed from the product-owned launch contract
+      ``defend_markets.launch.build_manifest()`` (8500/3500).
+    - SCS: consumed from the product-owned supervision contract
+      ``scs_data.supervision.supervision_manifest()`` when an ApplicationContext
+      can be built without side effects; else COMPATIBILITY_LEGACY.
+    - DEFEND AI: no canonical application supervision manifest exists
+      (``defend_ai.launch`` holds GPU LaunchSpecs, not an application process
+      manifest) -> COMPATIBILITY_LEGACY / PRODUCT_CONTRACT_REQUIRED.
+    - DEFEND Sports: LEGACY transition surface only (never masquerades as
+      DEFENDmarkets).
     """
     repository = Path(repository).resolve()
     py = str(python_executable)
@@ -179,12 +183,41 @@ def build_compatibility_manifests(
         else repository / "defendcoder-ui"
     )
 
-    scs_core_api = port_attr("scs_api_port") or 8100
-    scs_ai_api = port_attr("scs_ai_api_port") or 8300
-    scs_web = port_attr("scs_web_port") or 3100
-    scs_origin = text_attr("scs_ai_public_origin") or text_attr("scs_public_origin") or "https://ai.sunshineclimatesolutions.com"
+    markets_manifest = _load_markets_launch_manifest(repository)
+    if markets_manifest is not None:
+        markets_api = int(markets_manifest.api_port)
+        markets_web = int(markets_manifest.ui_port)
+        markets_launch = tuple(markets_manifest.api_argv(py))
+        markets_ui_launch = tuple(markets_manifest.ui_argv())
+        markets_health = str(markets_manifest.api_health_url)
+        markets_origin = str(markets_manifest.open_url)
+        markets_source = "product:defend_markets.launch.build_manifest"
+    else:
+        markets_api = None
+        markets_web = None
+        markets_launch = None
+        markets_ui_launch = None
+        markets_health = None
+        markets_origin = None
+        markets_source = "COMPATIBILITY_LEGACY"
 
-    return (
+    scs_manifest = _load_scs_supervision_manifest()
+    if scs_manifest is not None:
+        scs_api = int(scs_manifest["api_port"])
+        scs_web = int(scs_manifest["web_port"])
+        scs_health = str(scs_manifest["health_url"])
+        scs_origin = str(scs_manifest["open_url"])
+        scs_setup = scs_manifest.get("setup_url")
+        scs_source = "product:scs_data.supervision.supervision_manifest"
+    else:
+        scs_api = port_attr("scs_ai_api_port") or port_attr("scs_api_port") or 8300
+        scs_web = port_attr("scs_web_port") or 3100
+        scs_health = f"http://127.0.0.1:{port_attr('scs_api_port') or 8100}/health"
+        scs_origin = text_attr("scs_ai_public_origin") or text_attr("scs_public_origin") or "https://ai.sunshineclimatesolutions.com"
+        scs_setup = None
+        scs_source = "COMPATIBILITY_LEGACY"
+
+    manifests = [
         ProductSupervisionManifest(
             product_id="defend",
             display_name="DEFEND AI",
@@ -195,7 +228,7 @@ def build_compatibility_manifests(
             health_url=defend_health,
             open_url=text_attr("public_web_origin") or "https://ai.defend-network.org",
             graceful_stop="request_shutdown",
-            manifest_source="COMPATIBILITY_LEGACY (no canonical app supervision manifest; defend_ai.launch is GPU LaunchSpec)",
+            manifest_source="COMPATIBILITY_LEGACY (PRODUCT_CONTRACT_REQUIRED: no canonical app supervision manifest; defend_ai.launch is GPU LaunchSpec)",
         ),
         ProductSupervisionManifest(
             product_id="coder",
@@ -212,8 +245,36 @@ def build_compatibility_manifests(
             manifest_source=coder_source,
         ),
         ProductSupervisionManifest(
-            product_id="sports",
+            product_id="markets",
             display_name="DEFENDmarkets",
+            ports=tuple(p for p in (markets_api, markets_web) if p is not None),
+            api_port=markets_api,
+            web_port=markets_web,
+            api_launch=markets_launch,
+            ui_launch=markets_ui_launch,
+            working_dir=repository,
+            health_url=markets_health,
+            open_url=markets_origin,
+            graceful_stop="request_shutdown",
+            manifest_source=markets_source,
+        ),
+        ProductSupervisionManifest(
+            product_id="scs",
+            display_name="SCS AI",
+            ports=(scs_api, scs_web),
+            api_port=scs_api,
+            web_port=scs_web,
+            api_launch=(py, "-m", "uvicorn", "scs_ai.runtime:app", "--host", "127.0.0.1", "--port", str(scs_api)),
+            working_dir=repository,
+            health_url=scs_health,
+            open_url=scs_origin,
+            setup_url=scs_setup,
+            graceful_stop="request_shutdown",
+            manifest_source=scs_source,
+        ),
+        ProductSupervisionManifest(
+            product_id="sports",
+            display_name="DEFEND Sports",
             ports=(sports_api, sports_web),
             api_port=sports_api,
             web_port=sports_web,
@@ -222,22 +283,10 @@ def build_compatibility_manifests(
             health_url=f"http://127.0.0.1:{sports_api}/health",
             open_url=sports_origin,
             graceful_stop="request_shutdown",
-            manifest_source="COMPATIBILITY_LEGACY (latest Markets lane NOT integrated; MARKETS_MANIFEST_STATE=LEGACY/PENDING_LATEST_MARKETS_LANE)",
+            manifest_source="COMPATIBILITY_LEGACY (transition/data-inspection surface; never masquerades as DEFENDmarkets)",
         ),
-        ProductSupervisionManifest(
-            product_id="scs",
-            display_name="SCS AI",
-            ports=(scs_core_api, scs_ai_api, scs_web),
-            api_port=scs_ai_api,
-            web_port=scs_web,
-            api_launch=(py, "-m", "uvicorn", "scs_ai.runtime:app", "--host", "127.0.0.1", "--port", str(scs_ai_api)),
-            working_dir=repository,
-            health_url=f"http://127.0.0.1:{scs_core_api}/health",
-            open_url=scs_origin,
-            graceful_stop="request_shutdown",
-            manifest_source="COMPATIBILITY_LEGACY (no clean product launch manifest loadable without side effects)",
-        ),
-    )
+    ]
+    return tuple(manifests)
 
 
 def _load_coder_launch_manifest() -> object | None:
@@ -250,6 +299,48 @@ def _load_coder_launch_manifest() -> object | None:
         from defend_coder.launch import build_launch_manifest
 
         return build_launch_manifest()
+    except Exception:
+        return None
+
+
+def _load_markets_launch_manifest(repository: Path) -> object | None:
+    """Best-effort load of the product-owned Markets launch contract."""
+    try:
+        from defend_markets.launch import build_manifest
+
+        return build_manifest(repository)
+    except Exception:
+        return None
+
+
+def _load_scs_supervision_manifest() -> dict[str, Any] | None:
+    """Best-effort load of the product-owned SCS supervision manifest.
+
+    Reads the SCS-owned environment configuration (SCS_API_PORT / SCS_WEB_PORT
+    / SCS_PUBLIC_ORIGIN / SCS_DATA_ROOT) into an ``ApplicationContext`` and
+    delegates to ``scs_data.supervision.supervision_manifest``. It does NOT
+    import ``scs_api.runtime`` (which starts databases / mailer at import) and
+    therefore never causes product side effects. Fails closed (None) otherwise.
+    """
+    import os
+
+    try:
+        from scs_data.supervision import supervision_manifest
+        from shared_platform.application import ApplicationContext
+
+        context = ApplicationContext(
+            application_id="scs",
+            data_root=Path(os.environ.get("SCS_DATA_ROOT", r"C:\SCS_DATA")),
+            environment_prefix="SCS",
+            secret_namespace="SCS",
+            session_cookie="scs_employee_session",
+            public_origin=os.environ.get(
+                "SCS_PUBLIC_ORIGIN", "https://ai.sunshineclimatesolutions.com"
+            ),
+            api_port=int(os.environ.get("SCS_API_PORT", "8100")),
+            web_port=int(os.environ.get("SCS_WEB_PORT", "3100")),
+        )
+        return supervision_manifest(context)
     except Exception:
         return None
 

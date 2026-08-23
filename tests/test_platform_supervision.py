@@ -84,15 +84,29 @@ def test_compatibility_manifests_source_product_owned_config():
         settings, Path(r"C:\DEFEND"), "python.exe"
     )
     by_id = {m.product_id: m for m in manifests}
-    assert set(by_id) == {"defend", "coder", "sports", "scs"}
+    assert set(by_id) == {"defend", "coder", "markets", "sports", "scs"}
     coder = by_id["coder"]
     assert coder.api_port == 8301
     assert coder.web_port == 3301
     assert coder.open_url.startswith("http://127.0.0.1")
+    markets = by_id["markets"]
+    assert markets.api_port == 8500
+    assert markets.web_port == 3500
     scs = by_id["scs"]
-    assert set(scs.ports) == {8100, 8300, 3100}
-    assert scs.api_port == 8300
+    assert scs.api_port == 8100
     assert scs.web_port == 3100
+
+
+def test_markets_manifest_consumes_product_owned_launch_contract():
+    settings = _SettingsStub()
+    manifests = build_compatibility_manifests(
+        settings, Path(r"C:\DEFEND"), "python.exe"
+    )
+    markets = next(m for m in manifests if m.product_id == "markets")
+    assert markets.manifest_source == "product:defend_markets.launch.build_manifest"
+    assert markets.api_port == 8500
+    assert markets.web_port == 3500
+    assert markets.health_url == "http://127.0.0.1:8500/health"
 
 
 def test_coder_manifest_consumes_product_owned_launch_contract():
@@ -114,16 +128,21 @@ def test_coder_manifest_consumes_product_owned_launch_contract():
     assert coder.api_launch == tuple(product.api_command)
 
 
-def test_ai_and_scs_manifest_sources_are_compatibility_legacy():
+def test_ai_manifest_requires_product_contract_scs_and_markets_are_product_owned():
     settings = _SettingsStub()
     manifests = build_compatibility_manifests(
         settings, Path(r"C:\DEFEND"), "python.exe"
     )
     by_id = {m.product_id: m for m in manifests}
     assert by_id["defend"].manifest_source.startswith("COMPATIBILITY_LEGACY")
-    assert by_id["scs"].manifest_source.startswith("COMPATIBILITY_LEGACY")
-    # Markets: latest lane not integrated -> legacy/pending.
-    assert "PENDING_LATEST_MARKETS_LANE" in by_id["sports"].manifest_source
+    assert "PRODUCT_CONTRACT_REQUIRED" in by_id["defend"].manifest_source
+    assert by_id["scs"].manifest_source.startswith(
+        "product:scs_data.supervision.supervision_manifest"
+    )
+    assert by_id["markets"].manifest_source.startswith(
+        "product:defend_markets.launch.build_manifest"
+    )
+    assert by_id["sports"].manifest_source.startswith("COMPATIBILITY_LEGACY")
 
 
 def test_compatibility_manifests_are_collision_free_by_default():
@@ -284,9 +303,11 @@ def test_health_failure_is_degraded_not_running():
 def test_neutral_platform_modules_import_no_provider_clients():
     """Section 8A: NEUTRAL_PLATFORM_MODULES_IMPORT_PROVIDER_CLIENTS=NO.
 
-    The neutral platform/supervision layer imports no provider clients. This
-    does NOT claim the whole Control Center application is clean (the coder
-    provider path remains LEGACY_ACTIVE — see the separate honest test).
+    The neutral platform/supervision layer imports no provider CLIENTS (Vast /
+    model-provider HTTP transports). It MAY import product-owned manifest
+    contracts (defend_markets.launch, scs_data.supervision, defend_coder.launch)
+    because supervision CONSUMES those contracts - that is its job, not a
+    provider call.
     """
     import defend_control.platform as platform_module
     import defend_control.platform_audit as audit_module
@@ -308,38 +329,44 @@ def test_neutral_platform_modules_import_no_provider_clients():
         )
         for forbidden in (
             "coder_vast_backend",
-            "defend_markets",
-            "defend_ai",
-            "scs_ai",
-            "scs_api",
+            "remote_vllm",
             "openai",
             "huggingface",
             "defend_control.vast",
+            "shared_platform.vast",
+            "VastClient",
         ):
             assert forbidden not in import_lines, (module.__name__, forbidden)
 
 
-def test_actual_control_center_coder_provider_path_is_legacy_active():
-    """Honest Section 8B: the real Control Center app still wires provider
-    clients through _build_coder_plane().
+def test_control_center_coder_provider_path_is_removed():
+    """P0.2 / Section 6: Coder R3 removed Control Center provider construction.
 
-    The neutral Platform modules are clean, but the Control Center application
-    itself retains a LEGACY_ACTIVE coder provider path until Coder R3 migrates
-    it. This test documents that truth instead of hiding it.
+    ``_build_coder_plane`` returns None and must NOT construct CoderControlPlane
+    / VastCoderBackend / CoderRemoteVllmBootstrap / SshTunnel / VastClient.
+    The active coder runtime now lives under ``defend_coder.runtime``.
     """
     import tools.defend_control_center as tools_module
 
     source = open(tools_module.__file__, encoding="utf-8").read()
     assert "_build_coder_plane" in source
-    for client in (
-        "CoderControlPlane",
-        "CoderRemoteVllmBootstrap",
-        "VastCoderBackend",
-        "SshTunnel",
-        "VastClient",
+    assert "return None" in source
+    for forbidden_construction in (
+        "CoderControlPlane(",
+        "CoderRemoteVllmBootstrap(",
+        "VastCoderBackend(",
+        "SshTunnel(",
+        "VastClient(",
     ):
-        assert client in source, client
-    assert "LEGACY_ACTIVE" not in source  # the report marks this, not the code
+        assert forbidden_construction not in source, forbidden_construction
+
+
+def test_coder_runtime_lives_under_product():
+    """P0.2 / Section 6: the active coder runtime is product-owned."""
+    import defend_coder.runtime  # noqa: F401
+
+    from defend_coder.runtime.control_plane import CoderControlPlane  # noqa: F401
+    from shared_platform.ssh_tunnel import SshTunnel  # noqa: F401
 
 
 def test_shared_dpapi_is_single_implementation_identity():
