@@ -127,7 +127,7 @@ export function OverviewPanel() {
   const apiReady = healthySources === provider_health.sources.length && provider_health.sources.length > 0;
 
   return (
-    <div className="dm-board">
+    <div className="dm-board dm-board-overview">
       <HardRockStatusCard />
       <section className="dm-hero">
         <div className="dm-hero-copy">

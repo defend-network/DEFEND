@@ -5,6 +5,21 @@ import { PendingPanel } from "@/components/markets/PendingPanel";
 
 vi.mock("next/navigation", () => ({ usePathname: () => "/markets" }));
 
+// M4.8.1 owner gate: MarketsShell is wrapped in MarketsOwnerGate. Mock a valid
+// owner session so the gate renders the shell (not the login form).
+vi.mock("@/lib/adminAuth", () => ({
+  loadAdminSession: () => ({
+    username: "owner",
+    role: "owner",
+    token: "test-token",
+    loggedInAt: new Date().toISOString(),
+    expiresAt: new Date(Date.now() + 3600000).toISOString(),
+  }),
+  isOwner: () => true,
+  clearAdminSession: () => {},
+  saveAdminSession: () => {},
+}));
+
 afterEach(() => {
   vi.unstubAllGlobals();
 });

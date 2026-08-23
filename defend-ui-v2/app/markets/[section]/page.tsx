@@ -6,7 +6,7 @@ import { JournalPanel } from "@/components/markets/JournalPanel";
 
 type PendingSectionId = Exclude<
   MarketsSectionId,
-  "" | "sports" | "data-health" | "journal"
+  "" | "sports" | "data-health" | "journal" | "arbitrage"
 >;
 
 const PENDING_SECTIONS: PendingSectionId[] = [
@@ -25,12 +25,15 @@ export function generateStaticParams() {
   return PENDING_SECTIONS.map((section) => ({ section }));
 }
 
-export default function MarketsSectionPage({
+// Next 15+/16 async route-parameter contract: params is a Promise and must be
+// awaited. The prior sync `params: { section: string }` destructuring yielded
+// `undefined` at runtime and triggered notFound() -> 404.
+export default async function MarketsSectionPage({
   params,
 }: {
-  params: { section: string };
+  params: Promise<{ section: string }>;
 }) {
-  const { section } = params;
+  const { section } = await params;
   if (section === "journal") {
     return (
       <MarketsShell>

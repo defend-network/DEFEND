@@ -2670,3 +2670,22 @@ body:before {
   .tt-board-row { grid-template-columns: 1fr 1fr 1fr; }
   .tt-board-head { display: none; }
 }
+
+/* M4.8.2A owner Overview background (scoped to Overview only) */
+.dm-board-overview {
+  position: relative;
+  background:
+    linear-gradient(rgba(6, 10, 22, 0.86), rgba(6, 10, 22, 0.90)),
+    url("/defendmarkets-bg.jpg") center / cover no-repeat;
+  border-radius: 12px;
+  padding: 20px;
+}
+.dm-board-overview .dm-hero,
+.dm-board-overview .dm-kpis,
+.dm-board-overview .dm-panel {
+  position: relative;
+  z-index: 1;
+}
+@media (max-width: 720px) {
+  .dm-board-overview { padding: 12px; }
+}
