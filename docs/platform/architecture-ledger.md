@@ -8,7 +8,7 @@ lanes own the internal behavior of DEFEND AI, DEFENDcoder, DEFENDMarkets and
 SCS; Control Center supervises; `shared_platform/` holds genuinely neutral
 infrastructure. Keep this file updated through code and tests where practical.
 
-Last updated: P0.3 legacy quarantine + canonical stack truth (`agent/platform-legacy-quarantine-v1`).
+Last updated: P0.3R strict legacy excision (`agent/platform-legacy-quarantine-r1`).
 
 ---
 
@@ -195,7 +195,7 @@ are TEMPORARY legacy compatibility shims -> the shared_platform implementations.
 | Platform | four-product integration PASS; neutral identity NOT_ESTABLISHED; neutral billing NOT_ESTABLISHED |
 | Shared | secure store PASS; logical secrets PASS; Vast neutral PASS (VAST_PRODUCT_POLICY=NO); SSH neutral PASS (SSH_PRODUCT_POLICY=NO); processes PASS |
 
-## P0.3 stack taxonomy (see `docs/platform/stack-registry.json`)
+## P0.3R strict legacy excision (see `docs/platform/stack-registry.json`)
 
 ### CANONICAL PRODUCTS
 `defend_ai/`, `defend_coder/`, `defend_markets/`, `defend_data/` (DEFEND AI),
@@ -205,18 +205,17 @@ are TEMPORARY legacy compatibility shims -> the shared_platform implementations.
 `shared_platform/`, `defend_integrations/`.
 
 ### CONTROL CENTER
-`defend_control/` (supervision only; see compatibility shims below).
+`defend_control/` — supervision/platform only. NOTE: still contains DEFEND-AI
+orchestration (controller/orchestrator) and bespoke product service classes;
+see OPEN MIGRATIONS.
 
 ### LEGACY ACTIVE (transitional)
 `legacy_stack/defend_sports/`, `legacy_stack/control_center/coder_billing.py`,
-`TableTennis/`, and the explicitly-named legacy tools
-(`tools/legacy_defend_sports_server.py`, `tools/defend_sports_ingest.py`,
-`tools/defend_coder_vast_diagnose.py`, `tools/defend_tt_*`).
+`legacy_stack/table_tennis/`, `legacy_stack/tools/`.
 
 ### COMPATIBILITY SHIMS
-`defend_control/{coder_*, secrets, redaction, processes, windows_job, vast,
-ssh_tunnel, deployment_profiles}.py` — logic-free re-exports, each carrying
-`LEGACY_COMPATIBILITY_SHIM_ONLY` + `CANONICAL_TARGET` and enforced by AST test.
+NONE — the 13 defend_control shims were deleted in P0.3R (consumers migrated to
+`shared_platform.*` / `defend_coder.runtime.*` / `defend_ai.deployment_profiles`).
 
 ### HISTORICAL REQUIRED
 `legacy_stack/defend_sports/migrations/`, `evals/`, `bench/`.
@@ -224,8 +223,20 @@ ssh_tunnel, deployment_profiles}.py` — logic-free re-exports, each carrying
 ### ARCHIVED
 (none yet — `archive/` reserved, non-importable, no `__init__.py`).
 
-### OPEN MIGRATIONS
+### OPEN MIGRATIONS (P0.3R residual debt)
+- AUDIT-01 (CRITICAL): `defend_markets/collector.py` still imports AND writes
+  `legacy_stack.defend_sports.*` (TheOddsApiSportsProvider, IngestionService,
+  SportsRepository, SportsDatabase). `MARKETS_LEGACY_SPORTS_DB_WRITE=ACTIVE`.
+  Owner: DEFENDMarkets lane — migrate collector to `MarketsDatabase`/
+  `MarketsRepository`/`FeedService`.
+- AUDIT-02/03: `defend_control/{controller,orchestrator,local_model,remote_vllm,
+  preflight}.py` still contain DEFEND-AI provider authority (Vast rent/destroy,
+  Ollama). Owner: DEFEND AI lane (whole-product runtime isolation, Section 22).
+- AUDIT-02/06: `defend_control/products.py` still holds product settings +
+  `build_*_process_spec` + bespoke service classes (DefendService, SportsService,
+  ScsService, CoderService). Owner: Platform generic-supervisor convergence.
+- AUDIT-07: old `SetupDialog` (tkinter) still in `defend_control/ui.py`.
 - DEFEND AI application supervision manifest (`PRODUCT_CONTRACT_REQUIRED`) — AI lane.
-- Coder lifecycle wiring + launch-manifest drift — Coder lane.
-- Markets -> legacy-sports read-only data relationship (`defend_markets/collector.py` -> `legacy_stack.defend_sports`, Section 13 exception) — Markets lane.
+- Root-level DEFEND-AI runtime files (`api_server.py`, `control_plane.py`, ...)
+  classified `CANONICAL_DEFEND_AI_MISPLACED` — NEXT DEFEND AI directive moves them.
 - Neutral identity + neutral billing — future Platform milestone (NOT started).
