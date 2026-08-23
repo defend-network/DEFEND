@@ -298,6 +298,7 @@ class _App:
         account: AuthenticatedAccount,
         *,
         configure_deepseek: bool = True,
+        provider_factory: object | None = None,
     ) -> None:
         workspace = _workspace(account.account_id)
         self.workspace = workspace
@@ -327,6 +328,7 @@ class _App:
             idle_timeout_seconds=0,
             runtime_adapter=self.runtime,
             credentials=CredentialStore(store_loader=self.credentials),
+            provider_factory=provider_factory,
         )
         from fastapi.testclient import TestClient
 
@@ -842,38 +844,37 @@ class TestWorkspaceLessChat:
             AgentChatClient,
             AgentChatResponse,
         )
-        from defend_coder.model_config import CoderModelConfig
+        from defend_coder.provider_adapters import (
+            CoderGenerationRequest,
+            CoderGenerationResult,
+        )
 
-        class FakeChatClient(AgentChatClient):
-            def __init__(self):
-                super().__init__(
-                    CoderModelConfig(
-                        alias="deepseek",
-                        model_name="deepseek-v4-flash",
-                        base_url="https://api.deepseek.com",
-                        api_key="sk-fake",
-                        requires_api_key=True,
-                        managed_api=True,
-                    )
-                )
+        class FakeChatProvider:
+            provider_id = "deepseek"
+            model_id = "deepseek-v4-flash"
+            protocol = "chat_completions"
 
-            def chat(self, messages, tools=None, *, timeout_seconds=None,
-                     max_tokens=None, on_request_started=None):
-                # Identity answer; never claims tools.
-                return AgentChatResponse(
-                    content=(
+            def generate(self, request: CoderGenerationRequest):
+                return CoderGenerationResult(
+                    visible_content=(
                         "I am DEFENDcoder, the software-engineering AI in "
                         "the DEFEND platform."
                     ),
                     tool_calls=(),
                     usage={"prompt_tokens": 8, "completion_tokens": 6},
+                    finish_reason="stop",
+                    provider="deepseek",
+                    model="deepseek-v4-flash",
                 )
 
-        harness = _App(_account())
-        monkeypatch.setattr(
-            "defend_coder.app.build_client",
-            lambda target, api_key: FakeChatClient(),
-        )
+        class _FakeFactory:
+            def __init__(self, credentials):
+                self._credentials = credentials
+
+            def for_model(self, model):
+                return FakeChatProvider()
+
+        harness = _App(_account(), provider_factory=_FakeFactory(None))
         response = harness.client.post(
             "/v1/chat",
             headers=harness._headers(),

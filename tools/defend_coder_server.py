@@ -19,7 +19,6 @@ import sys
 
 import uvicorn
 
-from defend_coder.agent_client import AgentChatClient
 from defend_coder.app import build_coder_app
 from defend_coder.auth import AuthService
 from defend_coder.config import CoderSettings
@@ -149,17 +148,8 @@ def main() -> None:
     # client is dispatched per-run from its persisted routing.
     from defend_coder.credentials import CredentialStore
     from defend_coder.identity import default_identity_profile
-    from defend_coder.model_config import CoderModelConfig
-    from defend_coder.providers import (
-        DEFAULT_DEEPSEEK_MODEL,
-        NEXT_MODEL,
-        SOL_MODEL,
-        build_client,
-        deepseek_target,
-        deepseek_thinking_params,
-        next_target,
-        sol_target,
-    )
+    from defend_coder.provider_adapters import CoderProviderFactory
+    from defend_coder.providers import DEFAULT_DEEPSEEK_MODEL
     from defend_coder.registry import (
         IdentityRegistry,
         PromptAuthorityComposer,
@@ -215,44 +205,17 @@ def main() -> None:
         )
         return authority_resolver.compose_authority(envelope)
 
-    def _client_for(routing) -> object:
+    provider_factory = CoderProviderFactory(credentials)
+
+    def _provider_for(run_id):
+        """Resolve the ACTUAL CoderProvider from the current persisted route."""
+        routing = runs_repository.get_run_routing(run_id)
         model = (
             routing.selected_model
             if routing is not None and routing.selected_model
             else DEFAULT_DEEPSEEK_MODEL
         )
-        live = {
-            DEFAULT_DEEPSEEK_MODEL: deepseek_target(
-                availability=credentials.configured("deepseek")
-            ),
-            NEXT_MODEL: next_target(),
-            SOL_MODEL: sol_target(
-                availability=credentials.configured("sol")
-            ),
-        }
-        target = live.get(model)
-        if target is None:
-            raise ValueError(f"no configured target for model {model!r}")
-        if target.managed_api:
-            api_key = credentials.resolve(
-                "deepseek" if model == DEFAULT_DEEPSEEK_MODEL else "sol"
-            )
-            if not api_key:
-                raise ValueError(
-                    f"provider {target.provider} requires a configured key"
-                )
-        else:
-            api_key = None
-        thinking_params = (
-            deepseek_thinking_params()
-            if model == DEFAULT_DEEPSEEK_MODEL
-            else None
-        )
-        return build_client(
-            target,
-            api_key=api_key,
-            default_extra_body=thinking_params,
-        )
+        return provider_factory.for_model(model)
 
     def _proposal_for(run_id, outcome):
         # Deterministic, grounded auto-escalation: quality failures only, one
@@ -289,16 +252,7 @@ def main() -> None:
 
     runner = RunRunner(
         repository=runs_repository,
-        # Base client is only used for policy/back-compat; real execution is
-        # dispatched per-run through client_resolver.
-        client=AgentChatClient(
-            CoderModelConfig(
-                alias="routing",
-                model_name="routing",
-                base_url="http://127.0.0.1:9/v1",
-            )
-        ),
-        client_resolver=_client_for,
+        provider_resolver=_provider_for,
         proposal_factory=_proposal_for,
         authority_resolver=_authority_for,
         toolkit_factory=lambda log_reader: CoderToolkit(

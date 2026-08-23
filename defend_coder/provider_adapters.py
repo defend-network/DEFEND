@@ -18,6 +18,9 @@ from typing import Any, Callable, Protocol
 
 from .agent_client import (
     AgentChatClient,
+    ModelError,
+    ModelTimeoutError,
+    ModelUnavailableError,
     ToolCall,
 )
 from .credentials import CredentialStore
@@ -28,6 +31,58 @@ from .providers import (
     next_target,
     sol_target,
 )
+
+
+class CoderProviderError(RuntimeError):
+    """Normalized provider failure taxonomy (adapter boundary)."""
+
+
+class CoderProviderTimeout(CoderProviderError):
+    pass
+
+
+class CoderProviderUnavailable(CoderProviderError):
+    pass
+
+
+class CoderProviderAuthenticationError(CoderProviderError):
+    pass
+
+
+class CoderProviderRateLimited(CoderProviderError):
+    pass
+
+
+class CoderProviderConfigurationError(CoderProviderError):
+    pass
+
+
+class CoderProviderProtocolError(CoderProviderError):
+    pass
+
+
+def _map_chat_error(error: BaseException) -> CoderProviderError:
+    if isinstance(error, ModelTimeoutError):
+        return CoderProviderTimeout(str(error))
+    if isinstance(error, ModelUnavailableError):
+        return CoderProviderUnavailable(str(error))
+    if isinstance(error, ModelError):
+        return CoderProviderProtocolError(str(error))
+    return CoderProviderProtocolError(f"{type(error).__name__}: {error}")
+
+
+@dataclass(frozen=True)
+class ProviderContinuationState:
+    """Provider-SCOPED opaque continuation state.
+
+    Private state from provider A is never passed to provider B. The agent
+    discards it when the route changes.
+    """
+
+    provider_id: str
+    model_id: str
+    protocol: str
+    state: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -72,6 +127,36 @@ class CoderProvider(Protocol):
     ) -> CoderGenerationResult: ...
 
 
+class RoutingCoderProvider:
+    """Re-resolves the ACTUAL provider before every generation, at the
+    normalized CoderProvider boundary (never below it through a concrete
+    HTTP client). Used for mid-run owner-approved escalation.
+    """
+
+    def __init__(self, resolver: Callable[[], CoderProvider]) -> None:
+        self._resolver = resolver
+
+    def _current(self) -> CoderProvider:
+        return self._resolver()
+
+    @property
+    def provider_id(self) -> str:
+        return self._current().provider_id
+
+    @property
+    def model_id(self) -> str:
+        return self._current().model_id
+
+    @property
+    def protocol(self) -> str:
+        return self._current().protocol
+
+    def generate(
+        self, request: CoderGenerationRequest
+    ) -> CoderGenerationResult:
+        return self._current().generate(request)
+
+
 def _normalize_tool_calls(
     calls: tuple[ToolCall, ...],
 ) -> tuple[dict[str, Any], ...]:
@@ -92,15 +177,33 @@ def _inject_reasoning(
     conversation: tuple[dict[str, Any], ...],
     continuation_state: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    """DeepSeek thinking-mode tool-call continuation: replay the assistant's
-    reasoning_content onto the last assistant tool-call message (internal)."""
-    reasoning = continuation_state.get("reasoning_content")
-    if not reasoning:
+    """DeepSeek thinking-mode tool-call continuation.
+
+    Reasoning is bound EXACTLY to the assistant tool turn that produced it
+    (by tool_call_id), never broadcast to every historical assistant message
+    and never exposed. ``continuation_state["reasoning_by_call"]`` maps
+    tool_call_id -> reasoning_content (provider-scoped).
+    """
+    reasoning_by_call = continuation_state.get("reasoning_by_call") or {}
+    if not reasoning_by_call:
         return list(conversation)
     result: list[dict[str, Any]] = []
     for message in conversation:
-        if message.get("role") == "assistant" and message.get("tool_calls"):
-            if "reasoning_content" not in message:
+        tool_calls = (
+            message.get("tool_calls")
+            if message.get("role") == "assistant"
+            else None
+        )
+        if tool_calls and "reasoning_content" not in message:
+            reasoning = next(
+                (
+                    reasoning_by_call[call["id"]]
+                    for call in tool_calls
+                    if call.get("id") in reasoning_by_call
+                ),
+                None,
+            )
+            if reasoning:
                 message = dict(message)
                 message["reasoning_content"] = reasoning
         result.append(message)
@@ -137,12 +240,17 @@ class ChatCompletionsProvider:
             {"role": "system", "content": request.system_authority},
             *conversation,
         ]
-        response = self._transport.chat(
-            messages,
-            tools=list(request.tools) or None,
-            max_tokens=request.max_output_tokens,
-            timeout_seconds=request.timeout_seconds,
-        )
+        try:
+            response = self._transport.chat(
+                messages,
+                tools=list(request.tools) or None,
+                max_tokens=request.max_output_tokens,
+                timeout_seconds=request.timeout_seconds,
+            )
+        except CoderProviderError:
+            raise
+        except Exception as error:  # noqa: BLE001
+            raise _map_chat_error(error) from None
         return CoderGenerationResult(
             visible_content=response.content,
             tool_calls=response.tool_calls,

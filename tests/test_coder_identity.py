@@ -190,8 +190,13 @@ class TestIdentityAppliedByAgent:
 
 class TestOneRoutingSourceOfTruth:
     def test_legacy_base_client_never_owns_execution_when_resolver_set(self):
-        from defend_coder.runs import RunRunner, RunsRepository
-        from defend_coder.agent_client import RoutingAgentClient
+        from defend_coder.agent_client import AgentChatClient
+        from defend_coder.model_config import CoderModelConfig
+        from defend_coder.provider_adapters import (
+            DeepSeekProvider,
+            RoutingCoderProvider,
+        )
+        from defend_coder.runs import RunRunner
 
         class _NoopRepo:
             def get_run_routing(self, run_id):
@@ -206,26 +211,16 @@ class TestOneRoutingSourceOfTruth:
                 base_url="http://127.0.0.1:8003/v1",
             )
         )
-        resolved = AgentChatClient(
-            CoderModelConfig(
-                alias="deepseek",
-                model_name="deepseek-v4-flash",
-                base_url="https://api.deepseek.com",
-                api_key="sk-fake",
-                requires_api_key=True,
-                managed_api=True,
-            )
-        )
+        routed = DeepSeekProvider("deepseek-v4-flash", transport=base)
         runner = RunRunner(
             repository=_NoopRepo(),  # type: ignore[arg-type]
-            client=base,
-            client_resolver=lambda routing: resolved,
+            provider_resolver=lambda run_id: routed,
             toolkit_factory=lambda _: None,  # type: ignore[arg-type]
         )
-        run_client = runner._resolve_client(uuid4())
-        assert isinstance(run_client, RoutingAgentClient)
-        # The resolved client is the routed DeepSeek backend, never `base`.
-        assert run_client.model_name == "deepseek-v4-flash"
+        run_provider = runner._resolve_provider(uuid4())
+        assert isinstance(run_provider, RoutingCoderProvider)
+        # The resolved provider is the routed DeepSeek backend, never `base`.
+        assert run_provider.model_id == "deepseek-v4-flash"
 
     def test_auto_resolves_deepseek_v4_flash(self):
         from defend_coder.router import ModelSelector

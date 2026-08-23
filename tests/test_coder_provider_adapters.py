@@ -156,7 +156,11 @@ class TestDeepSeekProvider:
             CoderGenerationRequest(
                 system_authority="DEFEND authority",
                 conversation=conversation,
-                continuation_state={"reasoning_content": "private internal reasoning"},
+                continuation_state={
+                    "reasoning_by_call": {
+                        "c1": "private internal reasoning"
+                    }
+                },
             )
         )
         # The outgoing payload replayed reasoning_content on the assistant

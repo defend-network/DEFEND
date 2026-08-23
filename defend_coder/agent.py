@@ -8,10 +8,6 @@ from uuid import UUID
 
 from .agent_client import (
     AgentChatClient,
-    AgentChatResponse,
-    ModelError,
-    ModelTimeoutError,
-    ModelUnavailableError,
 )
 from .identity import default_identity_profile
 from .prompts import PROMPT_VERSION
@@ -20,6 +16,13 @@ from .provider_adapters import (
     CoderGenerationRequest,
     CoderGenerationResult,
     CoderProvider,
+    CoderProviderAuthenticationError,
+    CoderProviderConfigurationError,
+    CoderProviderError,
+    CoderProviderProtocolError,
+    CoderProviderRateLimited,
+    CoderProviderTimeout,
+    CoderProviderUnavailable,
 )
 from .registry import PromptAuthorityComposer
 from .telemetry import ModelCallRecord, build_call_record
@@ -134,7 +137,10 @@ class CodingAgent:
         self._is_cancelled = cancelled or (lambda: False)
         self._telemetry_sink = telemetry_sink
         self._phase_max_tokens = self._resolve_phase_budgets(phase_max_tokens)
-        self._continuation_state: dict[str, Any] = {}
+        # Provider-scoped, per-turn private reasoning state (never visible,
+        # never persisted, never crosses provider).
+        self._reasoning_by_call: dict[str, str] = {}
+        self._provider_key: tuple[str, str] | None = None
         # ONE prompt authority: the resolved system authority is always the
         # composed bundle (identity + owner directive + contracts). When the
         # caller does not supply one, compose from the default identity via
@@ -215,6 +221,24 @@ class CodingAgent:
             self._telemetry_sink(record)
         except Exception as exc:  # noqa: BLE001
             self._log(f"agent: telemetry sink failed: {exc!r}")
+
+    def _record_provider_private_state(
+        self,
+        response: CoderGenerationResult,
+    ) -> None:
+        """Track provider-scoped, per-turn reasoning state.
+
+        On a provider/model change, prior private state is discarded so it
+        can never cross a provider boundary.
+        """
+        key = (response.provider, response.model)
+        if self._provider_key != key:
+            self._provider_key = key
+            self._reasoning_by_call = {}
+        reasoning = response.protocol_state.get("reasoning_content")
+        if reasoning:
+            for call in response.tool_calls:
+                self._reasoning_by_call[call.id] = reasoning
 
     def _set_phase(self, phase: str) -> None:
         try:
@@ -302,10 +326,12 @@ class CodingAgent:
                             conversation=tuple(messages[1:]),
                             tools=tuple(tool_schemas),
                             max_output_tokens=self._max_tokens_for(call_phase),
-                            continuation_state=self._continuation_state,
+                            continuation_state={
+                                "reasoning_by_call": self._reasoning_by_call
+                            },
                         )
                     )
-                    self._continuation_state = dict(response.protocol_state)
+                    self._record_provider_private_state(response)
                     call_error = None
                 except Exception as error:
                     response = None
@@ -433,21 +459,26 @@ class CodingAgent:
             )
             self._log("agent: step limit reached")
             return self._finalize(sink, messages, steps, started_at)
-        except ModelTimeoutError as error:
+        except CoderProviderTimeout as error:
             return self._fail(
                 sink,
                 "model_timeout",
                 f"model request timed out: {error}",
                 steps,
             )
-        except ModelUnavailableError as error:
+        except (
+            CoderProviderUnavailable,
+            CoderProviderAuthenticationError,
+            CoderProviderConfigurationError,
+            CoderProviderRateLimited,
+        ) as error:
             return self._fail(
                 sink,
                 "model_unavailable",
-                f"model endpoint is unreachable: {error}",
+                f"model endpoint is unavailable: {error}",
                 steps,
             )
-        except ModelError as error:
+        except CoderProviderProtocolError as error:
             return self._fail(
                 sink,
                 "model_error",
@@ -528,10 +559,12 @@ class CodingAgent:
                     tools=(),
                     max_output_tokens=self._max_tokens_for("finalizing"),
                     timeout_seconds=budget,
-                    continuation_state=self._continuation_state,
+                    continuation_state={
+                        "reasoning_by_call": self._reasoning_by_call
+                    },
                 )
             )
-        except ModelTimeoutError as error:
+        except CoderProviderTimeout as error:
             self._emit_call(
                 step=steps + 1,
                 phase="finalizing",
@@ -549,7 +582,7 @@ class CodingAgent:
                 steps=steps,
                 reason="action_limit",
             )
-        except (ModelUnavailableError, ModelError) as error:
+        except CoderProviderError as error:
             self._emit_call(
                 step=steps + 1,
                 phase="finalizing",

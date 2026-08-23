@@ -11,9 +11,11 @@ from uuid import UUID, uuid4
 from psycopg.types.json import Jsonb
 
 from .agent import CodingAgent, RunLog
-from .agent_client import (
-    AgentChatClient,
-    RoutingAgentClient,
+from .agent_client import AgentChatClient
+from .provider_adapters import (
+    ChatCompletionsProvider,
+    CoderProvider,
+    RoutingCoderProvider,
 )
 from .db import CoderDatabase
 from .repositories import WorkspaceRecord
@@ -1004,25 +1006,26 @@ class RunRunner:
         self,
         *,
         repository: RunsRepository,
-        client: AgentChatClient,
         toolkit_factory: Callable[[Callable[[int], str]], CoderToolkit],
+        provider_resolver: Callable[[UUID], CoderProvider] | None = None,
         log: Callable[[str], None] | None = None,
         max_steps: int = 12,
         max_loop_seconds: float = 2400.0,
         finalization_enabled: bool = True,
         finalization_timeout_seconds: float = 600.0,
         phase_max_tokens: dict[str, int] | None = None,
-        client_resolver: Callable[[object], AgentChatClient] | None = None,
         proposal_factory: Callable[[object, object], object | None] | None = None,
         authority_resolver: Callable[[UUID], str] | None = None,
+        # Deprecated legacy wiring (internal transport reuse only):
+        client: AgentChatClient | None = None,
+        client_resolver: Callable[[object], AgentChatClient] | None = None,
     ) -> None:
-        if not isinstance(client, AgentChatClient):
-            raise TypeError("client must be an AgentChatClient")
         if not callable(toolkit_factory):
             raise TypeError("toolkit_factory must be callable")
         self._repository = repository
-        self._client = client
-        self._client_resolver = client_resolver
+        self._provider_resolver = provider_resolver
+        self._legacy_client = client
+        self._legacy_client_resolver = client_resolver
         self._proposal_factory = proposal_factory
         self._authority_resolver = authority_resolver
         self._toolkit_factory = toolkit_factory
@@ -1044,9 +1047,6 @@ class RunRunner:
             "max_loop_seconds": self._max_loop_seconds,
             "finalization_enabled": self._finalization_enabled,
             "finalization_timeout_seconds": self._finalization_timeout,
-            "model_timeout_seconds": self._client.timeout_seconds,
-            "connect_timeout_seconds": self._client.connect_timeout_seconds,
-            "max_tokens": self._client.max_tokens,
         }
 
     def cancel(self, run_id: UUID) -> None:
@@ -1110,23 +1110,33 @@ class RunRunner:
         thread.start()
         return run
 
-    def _resolve_client(self, run_id: UUID) -> AgentChatClient:
-        """Per-run provider dispatch: the ACTUAL client comes from the
-        persisted routing, never a process-global model.
+    def _resolve_provider(self, run_id: UUID) -> CoderProvider:
+        """Resolve the ACTUAL CoderProvider for a run, per generation.
 
-        When a ``client_resolver`` is configured, the run executes through a
-        delegating client that re-reads the run's routing before EVERY
-        generation call, so an owner-approved escalation changes the real
-        provider mid-run (DeepSeek -> Next -> Sol) without restarting.
+        Prefers the normalized provider_resolver (production). Legacy
+        client/client_resolver wiring is wrapped for backward compatibility
+        only and is NOT the production authority path.
         """
-        if self._client_resolver is None:
-            return self._client
+        if self._provider_resolver is not None:
+            return RoutingCoderProvider(
+                lambda: self._provider_resolver(run_id)
+            )
+        if self._legacy_client_resolver is not None:
+            def _resolve() -> CoderProvider:
+                routing = self._repository.get_run_routing(run_id)
+                client = self._legacy_client_resolver(routing)
+                return ChatCompletionsProvider(
+                    client.provider, client.model_name, transport=client
+                )
 
-        def resolve() -> AgentChatClient:
-            routing = self._repository.get_run_routing(run_id)
-            return self._client_resolver(routing)
-
-        return RoutingAgentClient(resolve)
+            return RoutingCoderProvider(_resolve)
+        if self._legacy_client is not None:
+            return ChatCompletionsProvider(
+                self._legacy_client.provider,
+                self._legacy_client.model_name,
+                transport=self._legacy_client,
+            )
+        raise RuntimeError("no provider resolver configured")
 
     def _execute(
         self,
@@ -1137,14 +1147,14 @@ class RunRunner:
     ) -> None:
         run_log = RunLog()
         toolkit = self._toolkit_factory(run_log.tail)
-        client = self._resolve_client(run_id)
+        provider = self._resolve_provider(run_id)
         system_authority = (
             self._authority_resolver(run_id)
             if self._authority_resolver is not None
             else None
         )
         agent = CodingAgent(
-            client=client,
+            provider=provider,
             toolkit=toolkit,
             log=run_log.append,
             max_steps=self._max_steps,

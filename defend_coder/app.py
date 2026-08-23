@@ -22,6 +22,7 @@ from .config import CoderSettings
 from .credentials import CredentialStore
 from .db import CoderDatabase
 from .identity import default_identity_profile
+from .provider_adapters import CoderProviderFactory
 from .providers import (
     NEXT_MODEL,
     SOL_MODEL,
@@ -239,6 +240,7 @@ def build_coder_app(
     identity_registry: IdentityRegistry | None = None,
     prompt_registry: PromptBundleRegistry | None = None,
     prompt_authority: PromptAuthorityComposer | None = None,
+    provider_factory: object | None = None,
 ) -> FastAPI:
     idle_timeout_seconds = (
         settings.idle_timeout_seconds
@@ -321,6 +323,7 @@ def build_coder_app(
                 _prompt_authority,
             )
         )
+    _provider_factory = provider_factory or CoderProviderFactory(_credentials)
 
     def _live_targets() -> dict[str, ModelTarget]:
         """Targets keyed by MODEL ID with LIVE credential availability."""
@@ -1080,17 +1083,12 @@ def build_coder_app(
                     "unavailable until DEEPSEEK_API_KEY is set"
                 ),
             )
-        deepseek = next(
-            target
-            for target in _live_targets().values()
-            if target.tier == "DEEPSEEK"
-        )
+        from defend_coder.providers import DEFAULT_DEEPSEEK_MODEL
+
+        deepseek_model = DEFAULT_DEEPSEEK_MODEL
         try:
-            client = build_client(
-                deepseek,
-                api_key=_credentials.resolve("deepseek"),
-            )
-        except ValueError as error:
+            provider = _provider_factory.for_model(deepseek_model)
+        except Exception as error:  # noqa: BLE001
             raise HTTPException(status_code=503, detail=str(error)) from None
         from defend_coder.agent import CodingAgent
         from defend_coder.tools import CoderToolkit as _CoderToolkit
@@ -1103,7 +1101,7 @@ def build_coder_app(
             enabled=False,
         )
         agent = CodingAgent(
-            client=client,
+            provider=provider,
             toolkit=toolkit,
             max_steps=4,
             max_loop_seconds=120.0,
@@ -1130,8 +1128,8 @@ def build_coder_app(
             )
         return {
             "reply": "\n".join(replies),
-            "model": deepseek.model_id,
-            "provider": deepseek.provider,
+            "model": provider.model_id,
+            "provider": provider.provider_id,
             "tier": "DEEPSEEK",
             "requested_mode": "AUTO",
         }

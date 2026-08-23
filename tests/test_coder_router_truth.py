@@ -132,7 +132,7 @@ class TestDynamicCredentialRefresh:
 
 
 class TestRouteBeforeRunnerStart:
-    def _app(self, account=None, *, configure_deepseek=True, role="admin"):
+    def _app(self, account=None, *, configure_deepseek=True, role="admin", provider_factory=None):
         from datetime import datetime, timezone
 
         from fastapi.testclient import TestClient
@@ -177,6 +177,7 @@ class TestRouteBeforeRunnerStart:
                     {"DEEPSEEK_API_KEY": "sk-fake"} if configure_deepseek else {}
                 )
             ),
+            provider_factory=provider_factory,
         )
         client = TestClient(app)
         client.cookies.set("defendcoder_session", "session-token")
@@ -245,40 +246,42 @@ class TestRouteBeforeRunnerStart:
         assert routing["requested_mode"] == "AUTO"
 
     def test_credential_save_enables_chat_without_restart(self, monkeypatch):
+        from defend_coder.provider_adapters import (
+            CoderGenerationRequest,
+            CoderGenerationResult,
+        )
+
+        class FakeChatProvider:
+            provider_id = "deepseek"
+            model_id = DEFAULT_DEEPSEEK_MODEL
+            protocol = "chat_completions"
+
+            def generate(self, request: CoderGenerationRequest):
+                return CoderGenerationResult(
+                    visible_content="I am DEFENDcoder.",
+                    tool_calls=(),
+                    usage={},
+                    finish_reason="stop",
+                    provider="deepseek",
+                    model=DEFAULT_DEEPSEEK_MODEL,
+                )
+
+        class _FakeFactory:
+            def __init__(self, credentials):
+                self._credentials = credentials
+
+            def for_model(self, model):
+                return FakeChatProvider()
+
         client, workspace, runs, runner, account = self._app(
-            configure_deepseek=False, role="admin"
+            configure_deepseek=False,
+            role="admin",
+            provider_factory=_FakeFactory(None),
         )
         # Not configured yet.
         status = client.get("/v1/admin/model-credentials").json()["providers"]
         assert status["deepseek"] == "MISSING"
 
-        from defend_coder.agent_client import AgentChatResponse
-
-        class FakeChatClient(AgentChatClient):
-            def __init__(self):
-                super().__init__(
-                    CoderModelConfig(
-                        alias="deepseek",
-                        model_name=DEFAULT_DEEPSEEK_MODEL,
-                        base_url="https://api.deepseek.com",
-                        api_key="sk-fake",
-                        requires_api_key=True,
-                        managed_api=True,
-                    )
-                )
-
-            def chat(self, messages, tools=None, *, timeout_seconds=None,
-                     max_tokens=None, on_request_started=None):
-                return AgentChatResponse(
-                    content="I am DEFENDcoder.",
-                    tool_calls=(),
-                    usage={},
-                )
-
-        monkeypatch.setattr(
-            "defend_coder.app.build_client",
-            lambda target, api_key: FakeChatClient(),
-        )
         # Save the credential; availability must change without restart.
         saved = client.post(
             "/v1/admin/model-credentials/deepseek",
