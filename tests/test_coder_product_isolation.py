@@ -54,6 +54,41 @@ class TestProductIsolation:
                     offenders.append(f"{module.name}: imports {name}")
         assert offenders == [], offenders
 
+    def test_recursive_isolation_includes_subpackages(self):
+        offenders: list[str] = []
+        for module in sorted(PACKAGE_DIR.rglob("*.py")):
+            top_level = _top_level_imports(module.read_text(encoding="utf-8"))
+            for name in top_level:
+                if any(name == f or name.startswith(f) for f in FORBIDDEN):
+                    offenders.append(
+                        f"{module.relative_to(PACKAGE_DIR)}: imports {name}"
+                    )
+        assert offenders == [], offenders
+
+    def test_transitive_clean_process_has_no_defend_control(self):
+        import subprocess
+        import sys
+
+        probe = (
+            "import sys; "
+            "from tools import defend_coder_server; "
+            "from defend_coder.app import build_coder_app; "
+            "loaded = [m for m in sys.modules "
+            "if m == 'defend_control' or m.startswith('defend_control.')]; "
+            "print('CONTROL_LOADED', loaded); "
+            "sys.exit(1 if loaded else 0)"
+        )
+        completed = subprocess.run(
+            [sys.executable, "-c", probe],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert completed.returncode == 0, (
+            f"canonical startup transitively loaded defend_control: "
+            f"{completed.stdout} {completed.stderr}"
+        )
+
     def test_standalone_server_imports_no_control_center(self):
         server = (
             Path(__file__).parent.parent / "tools" / "defend_coder_server.py"
@@ -73,7 +108,7 @@ class TestProductIsolation:
         status = coder_runtime_status(_Creds())
         assert status["state"] == "ready"
         assert status["provider"] == "deepseek"
-        assert status["next_state"] == "STOPPED_RETAINED"
+        assert status["next_state"] == "ABSENT"
 
     def test_dpapi_primitive_moved_to_shared_platform(self):
         import shared_platform.dpapi as dpapi

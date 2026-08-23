@@ -13,7 +13,11 @@ from typing import Any
 from .providers import DEFAULT_DEEPSEEK_MODEL
 
 
-def coder_runtime_status(credentials: object) -> dict[str, Any]:
+def coder_runtime_status(
+    credentials: object,
+    *,
+    next_runtime: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Consumer-safe DEFENDcoder runtime status (product-owned truth)."""
     deepseek = bool(credentials.configured("deepseek"))
     sol = bool(credentials.configured("sol"))
@@ -31,6 +35,8 @@ def coder_runtime_status(credentials: object) -> dict[str, Any]:
         alias = None
         detail = "DeepSeek is not configured"
 
+    next_state = (next_runtime or {}).get("state", "ABSENT")
+
     return {
         "state": state,
         "provider": provider,
@@ -41,5 +47,5 @@ def coder_runtime_status(credentials: object) -> dict[str, Any]:
         "detail": detail,
         "deepseek_configured": deepseek,
         "sol_configured": sol,
-        "next_state": "STOPPED_RETAINED",
+        "next_state": next_state,
     }

@@ -53,7 +53,7 @@ def test_coder_runtime_status_derives_from_credentials():
     assert status["provider"] == "deepseek"
     assert status["deepseek_configured"] is True
     assert status["sol_configured"] is False
-    assert status["next_state"] == "STOPPED_RETAINED"
+    assert status["next_state"] == "ABSENT"
 
     class _Missing:
         def configured(self, provider):

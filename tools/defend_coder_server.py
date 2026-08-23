@@ -108,8 +108,17 @@ def main() -> None:
 
     credentials = CredentialStore(store_loader=_secret_store_loader)
 
+    # Concrete product-owned runtime manager (production authority; never the
+    # test fake). Fails closed: NEXT is ABSENT/STOPPED until provisioned.
+    from defend_coder.runtime_manager import CoderRuntimeManager
+
+    runtime_manager = CoderRuntimeManager()
+
     def _runtime_status() -> dict[str, object]:
-        return coder_runtime_status(credentials)
+        return coder_runtime_status(
+            credentials,
+            next_runtime=runtime_manager.runtime_status(),
+        )
 
     # Durable authority: hydrate identity/prompt-core/technical profiles from
     # the immutable store. POSTGRES is the default production mode and FAILS
@@ -274,6 +283,7 @@ def main() -> None:
         attempt_store=attempt_store,
         checkpoint_store=checkpoint_store,
         tool_ledger=run_ledger,
+        runtime_manager=runtime_manager,
     )
 
     uvicorn.run(

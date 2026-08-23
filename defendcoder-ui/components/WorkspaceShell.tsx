@@ -247,6 +247,7 @@ export default function WorkspaceShell({
   const [repoBranch, setRepoBranch] = useState("");
 
   const [activeRun, setActiveRun] = useState<RunDetail | null>(null);
+  const [inspectedRun, setInspectedRun] = useState<RunDetail | null>(null);
   const [prompt, setPrompt] = useState("");
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [filesPath, setFilesPath] = useState(".");
@@ -298,7 +299,7 @@ export default function WorkspaceShell({
       return (
         "The model runtime is " +
         (runtimeState === "failed" ? "failed" : "offline") +
-        " — start DEFENDcoder in Control Center, then retry."
+        " — DEFENDcoder model runtime is unavailable; start it from the DEFENDcoder runtime controls, then retry."
       );
     }
     if (!runtimeReady) {
@@ -392,7 +393,9 @@ export default function WorkspaceShell({
         activeWorkspace.workspace_id,
         runId
       );
-      setActiveRun(detail);
+      // Historical inspection is READ-ONLY: it never replaces the
+      // operational activeRun (which drives resume/model-select/escalation).
+      setInspectedRun(detail);
     } catch (cause) {
       setError(
         cause instanceof ApiError ? cause.message : "Unable to load run."
@@ -622,6 +625,7 @@ export default function WorkspaceShell({
     setFilesPath(".");
     setFilesError(null);
     setInspectingRunId(null);
+    setInspectedRun(null);
 
     try {
       const runs = await listRuns(fetch, "/v1", workspaceId);
@@ -678,7 +682,7 @@ export default function WorkspaceShell({
       } else if (cause instanceof ApiError && cause.status === 503) {
         setError(
           "Agent execution is not connected. Start the model runtime " +
-            "in Control Center, then retry."
+            "using the DEFENDcoder runtime controls, then retry."
         );
       } else {
         setError("Unable to start the agent run. Please try again.");
@@ -827,8 +831,10 @@ export default function WorkspaceShell({
     }
   }
 
-  const userPrompt = promptForRun(activeRun?.run);
-  const conversation = activeRun ? activeRun.messages : [];
+  const inspected = inspectedRun ?? activeRun;
+  const isInspecting = inspectedRun !== null;
+  const userPrompt = promptForRun(inspected?.run);
+  const conversation = inspected ? inspected.messages : [];
   const changedFiles = changedFileHints(conversation);
 
   const terminalMessages = conversation.filter(
@@ -872,7 +878,7 @@ export default function WorkspaceShell({
       return "Select or create a workspace to begin.";
     }
     if (runtimeState === "offline" || runtimeState === "failed") {
-      return "The model runtime is " + runtimeState + " — start it in Control Center.";
+      return "The model runtime is " + runtimeState + " — start it from the DEFENDcoder runtime controls.";
     }
     if (!runtimeReady) {
       return "The model runtime is starting — wait for READY.";
@@ -1234,19 +1240,20 @@ export default function WorkspaceShell({
               <>
                 <div className="run-banner">
                   <span className="run-status-chip">
-                    {runStatusLabel(activeRun.run.status)}
+                    {runStatusLabel(inspected!.run.status)}
                   </span>
                   <span className="run-prompt-text">{userPrompt}</span>
                   {!runActive &&
                     ["failed", "partial_success", "cancelled"].includes(
-                      activeRun.run.status
+                      inspected!.run.status
                     ) &&
-                    runReasonLabel(activeRun.run.reason) && (
+                    runReasonLabel(inspected!.run.reason) && (
                       <span className="run-reason">
-                        {runReasonLabel(activeRun.run.reason)}
+                        {runReasonLabel(inspected!.run.reason)}
                       </span>
                     )}
-                  {!runActive &&
+                  {!isInspecting &&
+                    !runActive &&
                     ["succeeded", "partial_success", "failed", "cancelled"].includes(
                       activeRun.run.status
                     ) && (

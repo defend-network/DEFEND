@@ -329,6 +329,7 @@ def build_coder_app(
     # Router integration (additive; defaults preserve legacy behavior).
     credentials: object | None = None,
     runtime_adapter: object | None = None,
+    runtime_manager: object | None = None,
     model_selector: ModelSelector | None = None,
     identity_registry: IdentityRegistry | None = None,
     prompt_registry: PromptBundleRegistry | None = None,
@@ -407,7 +408,18 @@ def build_coder_app(
     _credentials = credentials or CredentialStore(
         store_loader=_default_secret_store
     )
-    _runtime_adapter = runtime_adapter or ProductRuntimeAdapterBoundary()
+    # Runtime authority: the concrete product manager is the production
+    # authority. ProductRuntimeAdapterBoundary is a deterministic TEST fake and
+    # is used only when a test explicitly injects it; the production default
+    # is the fail-closed concrete manager (never manufactures READY).
+    if runtime_manager is not None:
+        _runtime_manager = runtime_manager
+    elif runtime_adapter is not None:
+        _runtime_manager = runtime_adapter
+    else:
+        from .runtime_manager import CoderRuntimeManager
+
+        _runtime_manager = CoderRuntimeManager()
     _selector = model_selector or ModelSelector()
     _identity_registry = identity_registry or IdentityRegistry()
     if _identity_registry.active_key is None:
@@ -435,13 +447,22 @@ def build_coder_app(
     )
 
     def _live_targets() -> dict[str, ModelTarget]:
-        """Targets keyed by MODEL ID with LIVE credential availability."""
+        """Targets keyed by MODEL ID with LIVE availability.
+
+        DeepSeek/Sol availability comes from credentials. NEXT availability
+        comes from the product runtime manager (fail-closed): READY only when
+        the manager reports a concrete healthy intended endpoint, never
+        hardcoded True.
+        """
         deepseek = deepseek_target(
             availability=_credentials.configured("deepseek")
         )
         return {
             deepseek.model_id: deepseek,
-            NEXT_MODEL: next_target(availability=True),
+            NEXT_MODEL: next_target(
+                availability=_runtime_manager.next_availability(),
+                endpoint=_runtime_manager.get_runtime_endpoint(),
+            ),
             SOL_MODEL: sol_target(
                 availability=_credentials.configured("sol")
             ),
@@ -474,6 +495,22 @@ def build_coder_app(
         if detail is None or detail.workspace_id != workspace.workspace_id:
             raise HTTPException(status_code=404, detail="run not found")
         return detail
+
+    def _require_actionable(run: object) -> None:
+        """Reject routing/mutation on a non-actionable (terminal) run.
+
+        A historical/terminal run must not become mutable merely because it
+        was opened in the UI; routing mutation is legal only for actionable
+        run states (queued/running/resumable failed/partial).
+        """
+        if getattr(run, "status", None) in ("succeeded", "cancelled"):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"run is {run.status}; routing mutation is not allowed "
+                    "on a terminal run"
+                ),
+            )
 
     def _resume_same_run(
         detail: RunDetail,
@@ -1067,7 +1104,7 @@ def build_coder_app(
             "identity": PRODUCT_IDENTITY,
             "routing": routing.as_public_dict() if routing is not None else None,
             "targets": _resolve_targets_public(),
-            "runtime": _runtime_adapter.runtime_status("defendcoder"),
+            "runtime": _runtime_manager.runtime_status("defendcoder"),
         }
 
     @app.post("/v1/workspaces/{workspace_id}/runs/{run_id}/model")
@@ -1079,7 +1116,8 @@ def build_coder_app(
     ) -> dict[str, object]:
         account = current_account(request)
         require_csrf(request)
-        _owned_run(account, workspace_id, run_id)
+        detail = _owned_run(account, workspace_id, run_id)
+        _require_actionable(detail)
         mode = (payload.requested_mode or "AUTO").strip().upper()
         if mode not in ("AUTO", "DEEPSEEK", "NEXT", "SOL"):
             raise HTTPException(
@@ -1108,7 +1146,7 @@ def build_coder_app(
                 status_code=400,
                 detail=f"{route.tier.value} is not currently configured",
             )
-        runtime = _runtime_adapter.runtime_status("defendcoder")
+        runtime = _runtime_manager.runtime_status("defendcoder")
         next_step = None
         if route.tier == ModelTier.NEXT and route.target.requires_external_runtime:
             next_step = (
@@ -1156,6 +1194,7 @@ def build_coder_app(
         require_csrf(request)
         _require_owner(account)
         detail = _owned_run(account, workspace_id, run_id)
+        _require_actionable(detail)
         proposals = runs_repository.list_escalation_proposals(UUID(run_id))
         proposal = next(
             (
@@ -1195,7 +1234,7 @@ def build_coder_app(
                 detail=f"{to_model} is not currently configured",
             )
         if to_tier == ModelTier.NEXT:
-            runtime_state = _runtime_adapter.runtime_status("defendcoder")
+            runtime_state = _runtime_manager.runtime_status("defendcoder")
             retained = bool(
                 runtime_state.get("instance_id")
                 or runtime_state.get("provider_instance_state")
@@ -1207,7 +1246,7 @@ def build_coder_app(
             elif runtime_state.get("state") == "stopped" and retained:
                 # Resume the retained instance (owner-authorized escalation).
                 try:
-                    _runtime_adapter.start_runtime(
+                    _runtime_manager.start_runtime(
                         "defendcoder", authorize_resume=True
                     )
                 except RuntimeResumeDenied as error:
@@ -1245,7 +1284,7 @@ def build_coder_app(
         _resume_same_run(detail, workspace_id, run_id, account)
         return {
             "routing": runs_repository.get_run_routing(UUID(run_id)).as_public_dict(),
-            "runtime": _runtime_adapter.runtime_status("defendcoder"),
+            "runtime": _runtime_manager.runtime_status("defendcoder"),
             "state": "resuming",
         }
 
@@ -1263,6 +1302,7 @@ def build_coder_app(
         require_csrf(request)
         _require_owner(account)
         detail = _owned_run(account, workspace_id, run_id)
+        _require_actionable(detail)
         proposals = runs_repository.list_escalation_proposals(UUID(run_id))
         if not any(item["proposal_id"] == proposal_id for item in proposals):
             raise HTTPException(status_code=404, detail="proposal not found")
