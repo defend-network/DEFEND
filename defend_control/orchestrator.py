@@ -344,6 +344,8 @@ class StackOrchestrator:
         remote_bootstrap: Any | None = None,
         model_probe: Any | None = None,
         adopt_shared_surface: bool = False,
+        production_mutation_guard: Any | None = None,
+        production_mutation_authorized: bool = False,
     ) -> None:
         if health_timeout_seconds <= 0 or poll_interval_seconds < 0:
             raise ValueError("health timing values are invalid")
@@ -392,6 +394,21 @@ class StackOrchestrator:
         self._confirmed_replacement: tuple[int, int, Decimal] | None = None
         self._ssh_key_registered = False
         self._adopt_shared_surface = bool(adopt_shared_surface)
+        self._production_mutation_guard = production_mutation_guard
+        self._production_mutation_authorized = bool(production_mutation_authorized)
+
+    def _enforce_production_mutation_guard(self, instance_id: int, operation: str) -> None:
+        """Execution-time check at the real mutation boundary."""
+        if self._production_mutation_guard is None:
+            return
+        ok, reason = self._production_mutation_guard.authorize(
+            instance_id=instance_id,
+            product="defend-ai",
+            operation=operation,
+            authorized=self._production_mutation_authorized,
+        )
+        if not ok:
+            raise StartFailed("production", reason)
 
     def _shared_surface_ports(self) -> frozenset[int]:
         """Ports owned by the healthy shared admin surface.
@@ -596,6 +613,9 @@ class StackOrchestrator:
                 self._vast_offer = None
                 self._confirmed_offer = None
                 self._pending_confirmation = None
+                self._enforce_production_mutation_guard(
+                    self._vast_instance.instance_id, "RESUME"
+                )
             else:
                 self._vast_candidates = ()
         if self._vast_instance is None:
@@ -620,6 +640,9 @@ class StackOrchestrator:
             self._vast_instance = self._vast_client.create_instance(
                 offer,
                 LaunchSpec.default(),
+            )
+            self._enforce_production_mutation_guard(
+                self._vast_instance.instance_id, "PROVISION"
             )
             self._confirmed_offer = None
         self._check_cancelled(cancellation)
@@ -1229,6 +1252,7 @@ class StackOrchestrator:
             return self.snapshot()
 
     def stop_and_destroy_vast(self, confirmed_instance_id: int) -> StackSnapshot:
+        self._enforce_production_mutation_guard(confirmed_instance_id, "DESTROY")
         return self.destroy_vast(confirmed_instance_id)
 
     def restart(self) -> StackSnapshot | AlreadyRunning:

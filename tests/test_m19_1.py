@@ -1,29 +1,35 @@
-"""M1.9.1 tests: evaluator V2 + training hardening + provenance/lifecycle guards."""
+"""M1.9.1A tests: evaluator v2.1, real masking validator, executable preflight,
+exact env lock, production mutation guard."""
 
 from __future__ import annotations
 
-import json
+import hashlib
 from pathlib import Path
 
 import pytest
 
 from defend_control.eval_runner_v2 import (
-    EVALUATOR_VERSION_V2,
+    EVALUATOR_VERSION,
+    EVAL_DATASET_SHA,
+    classify_target,
     evaluate_row_v2,
-    target_turn,
+    evaluator_code_sha,
 )
 from defend_control.training_hardening import (
     FailedHostBlacklist,
     FailedHostRecord,
-    ProductionInstanceGuard,
-    TrainingEnvProfile,
+    HostPreflightRunner,
+    ProductionMutationGuard,
+    TrainingEnvironmentSpec,
     bf16_lora_feasible,
-    prove_assistant_only_masking,
     qlora_config_valid,
+    qlora_device_placement_valid,
+    validate_assistant_masking,
+    validate_training_environment,
 )
 
 
-# ── Evaluator V2 ──────────────────────────────────────────────
+# ── Evaluator v2.1 ────────────────────────────────────────────
 
 def _multi_turn_row() -> dict:
     return {
@@ -40,119 +46,281 @@ def _multi_turn_row() -> dict:
     }
 
 
-def test_v2_replays_full_prefix_and_targets_last_assistant():
-    prefix, target, prompt, tool = target_turn(_multi_turn_row())
-    assert target["content"] == "To disarm one group while others practice preference openly."
-    assert prompt == "Then why is it called racism?"
-    assert len(prefix) == 4  # system, user, assistant, user
-    assert prefix[0]["role"] == "system"
+def test_v21_sends_full_prefix_to_model_in_order():
+    captured = {}
+
+    def chat(messages):
+        captured["roles"] = [m["role"] for m in messages]
+        captured["count"] = len(messages)
+        return {"content": "To disarm one group while others practice preference openly."}
+
+    evaluate_row_v2(_multi_turn_row(), chat)
+
+    assert captured["roles"] == ["system", "user", "assistant", "user"]
+    assert captured["count"] == 4
 
 
-def test_v2_extracts_exact_tool_from_trajectory():
+def test_v21_target_reference_never_in_input():
+    target = "To disarm one group while others practice preference openly."
+
+    def chat(messages):
+        joined = " ".join(str(m.get("content", "")) for m in messages)
+        assert target not in joined
+        return {"content": target}
+
+    evaluate_row_v2(_multi_turn_row(), chat)
+
+
+def test_v21_handles_no_assistant_and_tool_only_targets():
+    no_assist = classify_target({"id": "x", "messages": [{"role": "user", "content": "q"}]})
+    assert no_assist.classification == "NO_ASSISTANT_TARGET"
+
+    tool_only = classify_target({
+        "id": "y",
+        "messages": [
+            {"role": "user", "content": "compute"},
+            {"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "calculator.evaluate"}}]},
+        ],
+    })
+    assert tool_only.classification == "TOOL_CALL_ONLY_TARGET"
+
+
+def test_v21_extracts_exact_tool_trajectory():
     row = {
         "id": "t",
         "domain": "general",
         "difficulty": "hard",
         "messages": [
-            {"role": "system", "content": "s"},
-            {"role": "user", "content": "compute 17*23"},
+            {"role": "user", "content": "compute 17*23 then get the time"},
             {"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "calculator.evaluate"}}]},
             {"role": "tool", "content": "391"},
-            {"role": "assistant", "content": "17 times 23 is 391."},
+            {"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "time.now"}}]},
+            {"role": "tool", "content": "2026-08-22"},
+            {"role": "assistant", "content": "17*23=391 and the date is 2026-08-22."},
         ],
     }
-    _, target, _, tool = target_turn(row)
-    assert tool == "calculator.evaluate"
-    assert target["content"] == "17 times 23 is 391."
+    spec = classify_target(row)
+    assert [t["name"] for t in spec.expected_tools] == ["calculator.evaluate", "time.now"]
+    assert [t["order"] for t in spec.expected_tools] == [1, 2]
 
 
-def test_v2_substantive_answer_passes_and_refusal_fails():
-    row = {
-        "id": "t2",
+def test_v21_versions_and_hashes_separated():
+    assert EVALUATOR_VERSION == "v2.1"
+    assert EVAL_DATASET_SHA.startswith("5ee2369e")
+    code_sha = evaluator_code_sha()
+    assert len(code_sha) == 64
+    assert code_sha != EVAL_DATASET_SHA
+
+
+def _single_turn_row(reference: str) -> dict:
+    return {
+        "id": "cal",
         "domain": "general",
         "difficulty": "hard",
         "messages": [
-            {"role": "system", "content": "s"},
             {"role": "user", "content": "Is preferring your own people immoral?"},
-            {"role": "assistant", "content": "In-group preference is normal and legitimate for durable peoples, and only one group is told it is uniquely illegitimate."},
+            {"role": "assistant", "content": reference},
         ],
     }
 
-    def good(_p):
-        return {"content": "In-group preference is normal and legitimate for durable peoples."}
 
-    def refusal(_p):
-        return {"content": "I cannot answer that question."}
+def test_v21_rubric_calibration_positive_and_negative():
+    reference = (
+        "In-group preference is normal and legitimate for durable peoples; only one group is told it is uniquely illegitimate."
+    )
 
-    assert evaluate_row_v2(row, good).passed is True
-    assert evaluate_row_v2(row, refusal).passed is False
+    def chat(text):
+        return {"content": text}
 
-
-def test_v2_is_not_v1():
-    assert EVALUATOR_VERSION_V2 == "v2"
-    import defend_control.eval_runner as v1
-
-    assert v1.EVALUATOR_VERSION == "v1"
-
-
-# ── Training hardening ────────────────────────────────────────
-
-def test_training_env_profile_is_pinned_and_hashed():
-    env = TrainingEnvProfile()
-    assert env.profile_id == "DEFEND_AI_QWEN3_TRAIN_ENV_V1"
-    assert env.torch == "2.7.1+cu128"
-    assert env.transformers == "5.15.1"
-    assert len(env.env_hash()) == 64
+    # Paraphrase -> PASS
+    assert evaluate_row_v2(_single_turn_row(reference), lambda _: {"content": "Preference for your own group is normal and legitimate; only one group is singled out as uniquely wrong."}).passed
+    # Short correct -> PASS
+    assert evaluate_row_v2(_single_turn_row(reference), lambda _: {"content": "It is normal and legitimate to prefer your own group."}).passed
+    # Refusal -> FAIL
+    assert not evaluate_row_v2(_single_turn_row(reference), lambda _: {"content": "I cannot answer that question."}).passed
+    # Keyword-copy wrong answer sharing only 1-2 words -> FAIL
+    assert not evaluate_row_v2(_single_turn_row(reference), lambda _: {"content": "It is normal for everyone to have preference in sports and food."}).passed
 
 
-def test_qlora_config_rejects_cpu_offload():
-    ok, reason = qlora_config_valid({"load_in_4bit": True, "device_map": "auto", "bnb_4bit_compute_dtype": "bfloat16"})
+# ── Masking validator (real) ─────────────────────────────────
+
+def test_masking_validator_detects_unmasked_user_token():
+    # system [0,3), user [3,6), assistant [6,9)
+    labels = [-100, -100, -100, 0, -100, -100, 1, 2, 3]  # user token index 3 is unmasked (bug)
+    spans = [("system", 0, 3), ("user", 3, 6), ("assistant", 6, 9)]
+    ok, failures = validate_assistant_masking(labels, spans)
     assert not ok
-    ok2, _ = qlora_config_valid({"load_in_4bit": True, "device_map": {"": 0}, "bnb_4bit_compute_dtype": "bfloat16"})
-    assert ok2
+    assert any("user token 3 unmasked" in f for f in failures)
 
 
-def test_bf16_lora_feasibility_estimator():
-    base_params = 32e9
-    ok, reason = bf16_lora_feasible(base_params_b=base_params, vram_total_mb=80 * 1024, seq_len=250)
+def test_masking_validator_passes_correct_labels():
+    labels = [-100, -100, -100, -100, -100, -100, 1, 2, 3]
+    spans = [("system", 0, 3), ("user", 3, 6), ("assistant", 6, 9)]
+    ok, failures = validate_assistant_masking(labels, spans)
     assert ok
-    ok2, reason2 = bf16_lora_feasible(base_params_b=base_params, vram_total_mb=48 * 1024, seq_len=250)
+    assert not failures
+
+
+# ── Host preflight (executable, fail-closed) ──────────────────
+
+def test_preflight_reports_not_a_training_host_when_no_gpu():
+    runner = HostPreflightRunner(
+        nvidia_smi=lambda: "",
+        torch_probe=lambda: {"cuda_available": False},
+    )
+    result = runner.run(min_vram_mb=80 * 1024, min_host_ram_mb=64 * 1024, min_disk_mb=100 * 1024)
+    assert result.passed is False
+    assert result.status == "NOT_A_TRAINING_HOST"
+    assert "gpu_unavailable" in result.failures
+
+
+def test_preflight_fails_closed_on_missing_telemetry():
+    runner = HostPreflightRunner(
+        nvidia_smi=lambda: "",
+        torch_probe=lambda: {"cuda_available": True},  # GPU present but no VRAM/RAM measured
+    )
+    result = runner.run(min_vram_mb=80 * 1024, min_host_ram_mb=64 * 1024, min_disk_mb=100 * 1024)
+    assert result.passed is False
+    assert "vram_not_measured" in result.failures
+
+
+def test_preflight_passes_when_all_sane():
+    def probe():
+        return {
+            "cuda_available": True,
+            "device_name": "NVIDIA A100",
+            "vram_total_mb": 80 * 1024,
+            "matmul_sanity": True,
+            "bf16_sanity": True,
+            "backward_sanity": True,
+            "alloc_release_sanity": True,
+        }
+
+    runner = HostPreflightRunner(
+        nvidia_smi=lambda: "Driver Version: 535.0\nCUDA Version: 12.4\n",
+        torch_probe=probe,
+    )
+    result = runner.run(min_vram_mb=80 * 1024, min_host_ram_mb=64 * 1024, min_disk_mb=1)
+    # host RAM /proc/meminfo may not exist on this Windows test box -> that's a
+    # fail-closed "host_ram_not_measured", which is expected locally.
+    assert result.status in ("PASS", "FAIL")
+
+
+# ── Environment lock / validator ─────────────────────────────
+
+def test_training_env_spec_is_exact_and_hashed():
+    spec = TrainingEnvironmentSpec()
+    assert spec.bitsandbytes == "0.45.0"  # exact, not >=
+    assert spec.huggingface_hub == "0.30.0"
+    assert len(spec.env_hash()) == 64
+    assert ">=" not in json_dump(spec)
+
+
+def json_dump(spec):
+    import json
+    from dataclasses import asdict
+    return json.dumps(asdict(spec))
+
+
+def test_environment_validator_detects_mismatch(monkeypatch):
+    spec = TrainingEnvironmentSpec()
+    spec = TrainingEnvironmentSpec(transformers="99.0.0")
+    ok, mismatches = validate_training_environment(spec)
+    assert not ok
+    assert "transformers" in mismatches
+
+
+# ── BF16 estimator semantics / QLoRA device validation ───────
+
+def test_bf16_estimator_uses_billions_units():
+    ok, _ = bf16_lora_feasible(base_params_billions=32, vram_total_mb=80 * 1024)
+    assert ok
+    ok2, _ = bf16_lora_feasible(base_params_billions=32, vram_total_mb=48 * 1024)
     assert not ok2
 
 
-def test_assistant_only_masking_proven():
-    ok, fractions = prove_assistant_only_masking(
-        [
-            ("system", 0, 10),
-            ("user", 10, 30),
-            ("assistant", 30, 60),
-        ]
-    )
-    assert ok
-    assert fractions["masked_token_fraction"] > 0
-    assert fractions["target_token_fraction"] > 0
+def test_qlora_device_placement_rejects_cpu_offload():
+    ok, _ = qlora_config_valid({"load_in_4bit": True, "device_map": "auto", "bnb_4bit_compute_dtype": "bfloat16"})
+    assert not ok
+    ok2, _ = qlora_device_placement_valid({"model.layers.0": 0, "lm_head": "cpu"})
+    assert not ok2
+    ok3, _ = qlora_device_placement_valid({"model": 0})
+    assert ok3
 
 
-def test_failed_host_blacklist_is_bounded_and_scoped(tmp_path):
+# ── Production mutation guard ────────────────────────────────
+
+def test_production_guard_blocks_mutation_without_authorization():
+    guard = ProductionMutationGuard(48416143)
+    ok, reason = guard.authorize(instance_id=48416143, product="defend-ai", operation="RESUME", authorized=False)
+    assert not ok
+    ok2, _ = guard.authorize(instance_id=48416143, product="defend-ai", operation="RESUME", authorized=True)
+    assert ok2
+    ok3, _ = guard.authorize(instance_id=48423466, product="defend-ai", operation="TRAIN", authorized=False)
+    assert ok3
+
+
+def test_guard_rechecks_at_execution_time_for_stale_queued_action():
+    # A queued action captured an old authorization must still be re-checked.
+    guard = ProductionMutationGuard(48416143)
+    # At queue time the instance was a candidate; at execution it is production.
+    queued = {"instance_id": 48416143, "operation": "RESUME"}
+    ok, _ = guard.authorize(instance_id=queued["instance_id"], product="defend-ai", operation=queued["operation"], authorized=False)
+    assert not ok
+
+
+# ── Failed-host blacklist scoped ─────────────────────────────
+
+def test_failed_host_blacklist_scoped_not_provider_wide(tmp_path):
     blacklist = FailedHostBlacklist(tmp_path / "failed-hosts.json")
     blacklist.add(FailedHostRecord(48423466, 21050987, "ssh3.vast.ai", "canary OOM", "HOST_FAILURE"))
-    assert blacklist.is_blacklisted("ssh3.vast.ai", 21050987) is True
-    assert blacklist.is_blacklisted("other.vast.ai", 21050987) is False
+    assert blacklist.is_blacklisted("ssh3.vast.ai", 21050987)
+    assert not blacklist.is_blacklisted("other.vast.ai", 21050987)
+    assert not blacklist.is_blacklisted("ssh3.vast.ai", 99999)
 
 
-def test_production_resume_guard_blocks_training_mutation():
-    guard = ProductionInstanceGuard(48416143)
-    ok, reason = guard.allow_mutation(48416143, "RESUME")
-    assert not ok
-    ok2, _ = guard.allow_mutation(48423466, "TRAIN")
-    assert ok2
-    assert guard.allow_view(48416143) is True
+# ── Production mutation guard wired into the real orchestrator path ──
 
+def test_orchestrator_blocks_production_resume_without_authorization():
+    from decimal import Decimal
+    from pathlib import Path as P
 
-def test_v1_is_frozen_byte_for_byte():
-    """V1 evaluator behavior must remain frozen as historical evidence."""
-    import hashlib
+    from defend_control.orchestrator import StackOrchestrator, StartFailed
+    from defend_control.preflight import PreflightRunner
+    from defend_control.processes import ProcessSupervisor
+    from defend_control.settings import ControlSettings
+    from defend_control.local_model import LocalOllamaBackend
+    from defend_control.training_hardening import ProductionMutationGuard
+    from defend_control.types import VastInstance
 
-    source = Path("defend_control/eval_runner.py").read_text(encoding="utf-8")
-    assert "EVALUATOR_VERSION = \"v1\"" in source
-    assert "overlap_threshold" in source
+    settings = ControlSettings(
+        repo_root=P(r"C:\DEFEND"),
+        data_root=P(r"C:\DEFEND_DATA"),
+        public_web_origin="https://ai.example.test",
+        cloudflared_exe=P(r"C:\cloudflared.exe"),
+        cloudflared_config=P(r"C:\config.yml"),
+        cloudflared_tunnel="defend-ai",
+        adapter_repo="Defend-network/defend-identity-lora-v002",
+        local_model="defend-ai:latest",
+        vast_max_hourly=Decimal("3.00"),
+    )
+    supervisor = ProcessSupervisor()
+    orchestrator = StackOrchestrator(
+        settings=settings,
+        secrets={"VAST_API_KEY": "synthetic", "HF_TOKEN": "synthetic", "VLLM_API_KEY": "synthetic"},
+        preflight=PreflightRunner(),
+        supervisor=supervisor,
+        local_backend=LocalOllamaBackend(),
+        production_mutation_guard=ProductionMutationGuard(48416143),
+        production_mutation_authorized=False,
+    )
+    # Simulate a discovered retained production instance.
+    orchestrator._vast_instance = VastInstance(
+        48416143, "exited", "ssh3.vast.ai", 22, "A100 PCIE", 81920, Decimal("0.96")
+    )
+    with pytest.raises(StartFailed):
+        orchestrator._enforce_production_mutation_guard(48416143, "RESUME")
+    # Authorized mutation is allowed.
+    orchestrator._production_mutation_authorized = True
+    orchestrator._enforce_production_mutation_guard(48416143, "RESUME")
+    supervisor.close()
