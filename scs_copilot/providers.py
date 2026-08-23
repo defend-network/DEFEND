@@ -19,6 +19,20 @@ _OLLAMA_ENDPOINT = os.environ.get("SCS_OLLAMA_ENDPOINT", "http://127.0.0.1:11434
 _OLLAMA_MODEL = os.environ.get("SCS_COPILOT_MODEL", "qwen2.5:14b-instruct-q4_K_M")
 
 
+def _normalize_arguments(arguments: Any) -> dict[str, Any]:
+    """Safely normalize model/provider tool arguments (P67): accept dict or
+    serialized JSON; never eval arbitrary strings."""
+    if isinstance(arguments, dict):
+        return arguments
+    if isinstance(arguments, str):
+        try:
+            parsed = json.loads(arguments)
+            return parsed if isinstance(parsed, dict) else {}
+        except (json.JSONDecodeError, TypeError):
+            return {}
+    return {}
+
+
 class SCSCopilotModelProvider(ABC):
     provider_name: str
     privacy_class: str = "LOCAL_PRIVATE"  # LOCAL_PRIVATE | EXTERNAL_MANAGED (P48)
@@ -58,14 +72,20 @@ class OllamaCopilotProvider(SCSCopilotModelProvider):
                 return self._failed("provider_http_error")
             data = response.json()
             message = data.get("message", {})
+            tool_calls = []
+            for tc in (message.get("tool_calls") or []):
+                fn = tc.get("function", {}) or {}
+                name = fn.get("name")
+                if not name:
+                    continue
+                tool_calls.append({
+                    "name": name,
+                    "arguments": _normalize_arguments(fn.get("arguments", {})),
+                    "id": tc.get("id"),
+                })
             return {
                 "content": message.get("content") or "",
-                "tool_calls": [
-                    {"name": tc.get("function", {}).get("name"),
-                     "arguments": tc.get("function", {}).get("arguments", {})}
-                    for tc in (message.get("tool_calls") or [])
-                    if tc.get("function", {}).get("name")
-                ],
+                "tool_calls": tool_calls,
                 "finish_reason": data.get("done_reason") or "stop",
                 "usage": {"prompt_tokens": data.get("prompt_eval_count"),
                           "completion_tokens": data.get("eval_count")},

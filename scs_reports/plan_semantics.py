@@ -34,11 +34,18 @@ _KEYNOTE_RE = re.compile(r"^\d{1,2}$")
 
 
 def _page_words(doc: plans.PlanDocument, page: plans.PlanPage,
-                raster_words: dict[int, list[plans.Word]] | None) -> list[plans.Word]:
+                raster_words: dict | None) -> list[plans.Word]:
     if page.words:
         return page.words
-    if raster_words and page.page_number in raster_words:
-        return raster_words[page.page_number]
+    if raster_words:
+        # P56: document-scoped page identity - (document_id, page) never
+        # collides across separate plan PDFs. Integer page key is a legacy
+        # fallback for single-document callers.
+        key = (doc.document_id, page.page_number)
+        if key in raster_words:
+            return raster_words[key]
+        if page.page_number in raster_words:
+            return raster_words[page.page_number]
     return []
 
 
@@ -62,7 +69,7 @@ def build_graph(
     documents: list[plans.PlanDocument],
     *,
     packet: pk.PlanPacket | None = None,
-    raster_words: dict[int, list[plans.Word]] | None = None,
+    raster_words: dict | None = None,
 ) -> MechanicalPlanGraph:
     packet = packet or pk.build_packet(documents)
     graph = MechanicalPlanGraph(packet=packet.to_dict())

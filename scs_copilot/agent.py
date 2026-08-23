@@ -1,13 +1,21 @@
-"""True AI Copilot agent loop - trust-hardened (M1.4.1, P0-P6, P15-P17,
-P49-P56).
+"""True AI Copilot agent loop - trust-hardened (M1.4.2, P0-P8, P15-P17).
 
 Bounded PLAN -> CALL -> OBSERVE -> ANSWER loop over the server-side
 ToolRegistry. The final VISIBLE answer derives from the VERIFIED structured
 claim set - the model cannot smuggle unsupported OEM/STANDARD/NUMERIC claims
 through freeform prose. Deterministic-first routing has an explicit state
 machine; simple queries never burn an AI call. Provider failure degrades to
-the deterministic router. Every substantial answer persists a safe AnswerTrace
-(no chain-of-thought).
+the deterministic router.
+
+M1.4.2 changes:
+  * ZERO raw-prose fallback (P1): _finalize_agent never exposes the model's
+    unverified prose when zero claims survive - render_safe() emits an
+    explicit abstention instead.
+  * One verified answer pipeline (P2): deterministic routes verify their facts
+    through the same claim renderer.
+  * Structured model response first (P3), prose extraction as fallback.
+  * Evidence facts carry entity/unit/calculator identity (P4/P5).
+  * Tool executions get stable evidence IDs (P21).
 """
 from __future__ import annotations
 
@@ -17,25 +25,73 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from .claims import build_evidence, extract_claims_from_prose, render_visible, verify_claims
+from .claims import (
+    build_evidence,
+    extract_claims_from_prose,
+    extract_structured_claims,
+    render_safe,
+    verify_claims,
+)
 from .policy import COPILOT_SYSTEM_POLICY_VERSION, model_system_prompt
 
 MAX_TOOL_ITERATIONS = 6
 COPILOT_MODE_AGENTIC = "AGENTIC"
 COPILOT_MODE_DETERMINISTIC = "DETERMINISTIC_FALLBACK"
 
-# AI-avoidance / routing metrics
+# AI-avoidance / routing metrics (thread-safe guard handled at call site)
 COUNTERS = {"TOTAL_COPILOT_REQUESTS": 0, "DETERMINISTIC_COMPLETE_REQUESTS": 0,
             "AGENTIC_REQUESTS": 0, "AI_CALLS_AVOIDED": 0, "AI_FALLBACKS": 0}
+
+_COMPLETENESS_STATES = ("COMPLETE", "PARTIAL", "NOT_AVAILABLE", "CONFLICT",
+                        "NEEDS_AUTHORITY", "NEEDS_MEASUREMENT")
+
+_CALC_CONCEPT = {
+    "CFM": "CFM", "FPM": "FPM", "%": "PERCENT_DESIGN",
+    "IN.W.C.": "STATIC_PRESSURE", "IN.W.G.": "STATIC_PRESSURE",
+    "RPM": "RPM", "HZ": "HZ", "FT2": "AREA", "IN": "IN",
+}
 
 
 def new_answer_id() -> str:
     return f"ANS-{uuid.uuid4().hex[:12]}"
 
 
+def new_evidence_id() -> str:
+    return f"EVID-{uuid.uuid4().hex[:12]}"
+
+
+def _calculator_concept(data: dict[str, Any]) -> str | None:
+    calc_id = (data.get("calculation_id") or "").lower()
+    units = (data.get("units") or "").upper()
+    if "percent" in calc_id:
+        return "PERCENT_DESIGN"
+    return _CALC_CONCEPT.get(units)
+
+
+def answer_completeness(result: dict[str, Any]) -> str:
+    """Explicit AnswerCompleteness (P10): a nonempty facts list containing
+    None values is NOT COMPLETE."""
+    facts = result.get("facts")
+    if result.get("conflict") or any(f.get("label") == "CONFLICT" for f in (facts or [])):
+        return "CONFLICT"
+    if not facts:
+        return "NOT_AVAILABLE"
+    if any(f.get("value") is None for f in facts):
+        return "PARTIAL"
+    if result.get("needs_measurement"):
+        return "NEEDS_MEASUREMENT"
+    if result.get("needs_authority"):
+        return "NEEDS_AUTHORITY"
+    return "COMPLETE"
+
+
 def classify_pre_route(result: dict[str, Any], question: str | None = None) -> str:
-    """Explicit pre-route state machine (P16):
-    DETERMINISTIC_COMPLETE / DETERMINISTIC_PARTIAL / AGENT_REQUIRED / NO_ROUTE."""
+    """Explicit pre-route state machine (P10/P16):
+    DETERMINISTIC_COMPLETE / DETERMINISTIC_PARTIAL / AGENT_REQUIRED / NO_ROUTE.
+
+    Completeness is computed from the answer's facts - an answer with
+    "RTU-5 supply None CFM" is NOT DETERMINISTIC_COMPLETE.
+    """
     tool = result.get("tool")
     words = set(re.findall(r"[a-z]+", (question or "").lower()))
     diagnostic_intent = bool(question) and (
@@ -44,15 +100,16 @@ def classify_pre_route(result: dict[str, Any], question: str | None = None) -> s
     if tool == "calculator.*":
         return "DETERMINISTIC_COMPLETE"
     if tool == "plan.query":
+        complete = answer_completeness(result) == "COMPLETE"
         if diagnostic_intent:
             return "AGENT_REQUIRED"
-        return "DETERMINISTIC_COMPLETE" if result.get("facts") else "AGENT_REQUIRED"
+        return "DETERMINISTIC_COMPLETE" if complete else "AGENT_REQUIRED"
     if tool == "procedure.start":
         return "DETERMINISTIC_COMPLETE" if result.get("procedure") else "AGENT_REQUIRED"
     if tool == "knowledge.search":
-        return "DETERMINISTIC_COMPLETE" if result.get("facts") else "AGENT_REQUIRED"
+        complete = answer_completeness(result) in ("COMPLETE", "PARTIAL")
+        return "DETERMINISTIC_COMPLETE" if complete and result.get("facts") else "AGENT_REQUIRED"
     if tool == "diagnostic.start":
-        # diagnostics need evidence synthesis across tools (acceptance F)
         return "DETERMINISTIC_PARTIAL"
     if tool is None and not result.get("answer"):
         return "NO_ROUTE"
@@ -71,10 +128,13 @@ def run_agent(question: str, *, provider, registry, context, memory,
     if route_state == "DETERMINISTIC_COMPLETE":
         COUNTERS["DETERMINISTIC_COMPLETE_REQUESTS"] += 1
         COUNTERS["AI_CALLS_AVOIDED"] += 1
-        answer = pre_route
+        answer = dict(pre_route)
         answer["ai_call_avoided"] = True
         answer["pre_route_state"] = route_state
         answer["copilot_mode"] = COPILOT_MODE_DETERMINISTIC
+        answer["completeness"] = answer_completeness(pre_route)
+        # one verified answer pipeline (P2): verify deterministic facts
+        _verify_deterministic_answer(answer, pre_route)
         answer["trace"] = {
             "answer_id": answer_id, "job_id": context.job_id if context else None,
             "copilot_mode": COPILOT_MODE_DETERMINISTIC,
@@ -87,7 +147,8 @@ def run_agent(question: str, *, provider, registry, context, memory,
         answer["answer_id"] = answer_id
         if memory:
             memory.record_turn(question, answer, answer_id=answer_id,
-                               state="DETERMINISTIC_COMPLETE")
+                               state="DETERMINISTIC_COMPLETE",
+                               facts=answer.get("facts"))
         return answer
 
     COUNTERS["AGENTIC_REQUESTS"] += 1
@@ -98,7 +159,6 @@ def run_agent(question: str, *, provider, registry, context, memory,
          "\n\nQUESTION: " + question},
     ]
     tool_calls: list[dict[str, Any]] = []
-    observations: list[dict[str, Any]] = []
     tool_result_ids: list[str] = []
     source_ids: list[str] = []
     calculator_ids: list[str] = []
@@ -120,6 +180,7 @@ def run_agent(question: str, *, provider, registry, context, memory,
                 or response.get("error"):
             COUNTERS["AI_FALLBACKS"] += 1
             answer = deterministic_router.route(question)
+            _verify_deterministic_answer(answer, answer)
             return _finalize(question, answer, context, memory, answer_id,
                              COPILOT_MODE_DETERMINISTIC, tool_calls, tool_result_ids,
                              source_ids, calculator_ids, final_facts,
@@ -144,6 +205,10 @@ def run_agent(question: str, *, provider, registry, context, memory,
                                             "provider_latency_ms": provider_latency_ms,
                                             "model": response.get("model"),
                                             "provider": response.get("provider")})
+        # P20/P66: preserve the assistant tool-call request so the provider's
+        # native tool-turn continuation matches tool results to tool calls.
+        messages.append({"role": "assistant", "content": None,
+                         "tool_calls": calls})
         for call_index, call in enumerate(calls, start=1):
             name = call.get("name")
             arguments = call.get("arguments") or {}
@@ -152,13 +217,13 @@ def run_agent(question: str, *, provider, registry, context, memory,
             result = registry.execute(name, arguments)
             if not result.get("ok"):
                 tools_rejected += 1
-            tool_result_ids.append(f"T{iterations}_{call_index}_{name}")
-            observations.append(result)
+            evidence_id = result.get("evidence_id") or new_evidence_id()
+            tool_result_ids.append(evidence_id)
             if result.get("ok") and result.get("data"):
                 _collect_evidence(result, final_facts, calculator_ids, source_ids)
-            messages.append({"role": "user",
-                             "content": "TOOL RESULT: " +
-                             __import__("json").dumps(
+            messages.append({"role": "tool",
+                             "tool_call_id": evidence_id,
+                             "content": __import__("json").dumps(
                                  registry.compact_observation(result))})
         if iterations >= MAX_TOOL_ITERATIONS:
             break
@@ -166,7 +231,7 @@ def run_agent(question: str, *, provider, registry, context, memory,
     # max iterations: PARTIAL_AGENT_RESULT - never discard gathered evidence
     evidence = build_evidence(final_facts)
     verified = verify_claims(_materialized_claims(final_facts), evidence)["verified"]
-    visible = render_visible(verified, next_actions=[])
+    visible = render_safe({"verified": verified, "results": []})
     return _finalize(question, {
         "tool": "agent",
         "completion_reason": "max_iterations",
@@ -186,18 +251,39 @@ def run_agent(question: str, *, provider, registry, context, memory,
                  "provider_latency_ms": provider_latency_ms})
 
 
+def _verify_deterministic_answer(answer: dict[str, Any], pre_route: dict[str, Any]) -> None:
+    """Run deterministic facts through the SAME claim renderer (P2/P14)."""
+    facts = pre_route.get("facts") or []
+    evidence = build_evidence(facts)
+    claims = _materialized_claims(facts)
+    verification = verify_claims(claims, evidence)
+    answer["verification"] = verification
+    answer["verified_claims"] = verification["verified"]
+    # a blocked technical claim must not remain asserted in the deterministic
+    # answer string (P14): if everything is blocked and the answer holds a
+    # technical assertion, replace with a safe abstention.
+    if verification["CLAIMS_BLOCKED"] > 0 and not verification["verified"]:
+        safe = render_safe(verification)
+        if safe.strip():
+            answer["answer"] = safe
+
+
 def _materialized_claims(facts: list[dict[str, Any]]) -> list[dict[str, Any]]:
     claims = []
     for index, fact in enumerate(facts, start=1):
+        citation = fact.get("citation") or {}
         claims.append({
             "claim_id": f"EVIDENCE-{index:02d}",
             "claim_type": fact.get("label", "CALCULATED"),
             "concept": fact.get("concept"), "value": fact.get("value"),
             "unit": fact.get("unit"), "assertion_text": str(fact.get("value")),
-            "evidence_refs": [], "calculator_ref": (fact.get("citation") or {}).get("formula"),
-            "source_refs": [(fact.get("citation") or {}).get("source_id")] if fact.get("citation") else [],
+            "entity_id": fact.get("entity_id"),
+            "evidence_refs": [fact.get("evidence_id")] if fact.get("evidence_id") else [],
+            "calculator_ref": citation.get("formula"),
+            "source_refs": [citation.get("source_id")] if citation.get("source_id") else [],
             "inference": fact.get("label") == "INFERRED",
-            "applicability": "UNKNOWN", "confidence": "HIGH",
+            "applicability": fact.get("applicability", "UNKNOWN"),
+            "confidence": fact.get("confidence", "HIGH"),
             "label": fact.get("label"),
         })
     return claims
@@ -206,17 +292,16 @@ def _materialized_claims(facts: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def _finalize_agent(question, content, context, memory, answer_id, tool_calls,
                     tool_result_ids, source_ids, calculator_ids, final_facts,
                     finish, *, route_state, quality=None):
-    """Verify claims extracted from the model's visible prose; the visible
-    answer derives from the verified set. Tool-gathered evidence facts are
-    surfaced in the answer.facts alongside verified prose claims."""
+    """Verify claims extracted from the model's visible response. The visible
+    answer derives from the verified set - NEVER from raw model prose (P1)."""
     evidence = build_evidence(final_facts)
-    claims = extract_claims_from_prose(content, evidence)
+    structured = extract_structured_claims(content, evidence)
+    claims = structured if structured is not None else extract_claims_from_prose(content, evidence)
     verification = verify_claims(claims, evidence)
-    visible = render_visible(verification["verified"], next_actions=[],
-                             questions=[])
+    visible = render_safe(verification, next_actions=[], questions=[])
     answer = {
         "tool": "agent", "pre_route_state": route_state,
-        "answer": visible if visible else content,
+        "answer": visible,
         "facts": verification["verified"] + list(final_facts),
         "verification": verification,
         "next_actions": [], "questions": [],
@@ -228,7 +313,7 @@ def _finalize_agent(question, content, context, memory, answer_id, tool_calls,
 
 
 def _structured_context(context, memory) -> str:
-    """Bounded, structured context packet (P49-P50): no raw JSON truncation."""
+    """Bounded, structured context packet (P49-P50/P63-P64): no raw JSON cut."""
     lines = [f"Active job: {context.job_id if context else 'n/a'}"]
     if memory:
         packet = memory.context_packet()
@@ -245,6 +330,8 @@ def _structured_context(context, memory) -> str:
                 if v.get("state") == "OPEN"))
         if packet.get("answered_questions"):
             lines.append("Answered: " + "; ".join(packet["answered_questions"][-4:]))
+        if packet.get("active_entity"):
+            lines.append("Active entity: " + str(packet["active_entity"]))
     if context and context.design_basis:
         equipment = context.design_basis.get("equipment", [])[:2]
         if equipment:
@@ -257,23 +344,80 @@ def _collect_evidence(result, final_facts, calculator_ids, source_ids):
     data = result.get("data")
     if not data:
         return
+    evidence_id = result.get("evidence_id") or new_evidence_id()
     if isinstance(data, dict):
-        if data.get("formula_id"):
-            calculator_ids.append(data["formula_id"])
-            final_facts.append({"label": "CALCULATED", "concept": "CALCULATED",
+        if data.get("formula_id") is not None or data.get("calculation_id") is not None:
+            calculator_ids.append(data.get("formula_id") or data.get("calculation_id"))
+            final_facts.append({"label": "CALCULATED",
+                                "concept": _calculator_concept(data),
                                 "value": data.get("result"), "unit": data.get("units"),
-                                "citation": {"formula": data["formula_id"]}})
+                                "evidence_id": evidence_id,
+                                "citation": {"formula": data.get("formula_id") or data.get("calculation_id")}})
         if data.get("design"):
             for key, value in data["design"].items():
-                final_facts.append({"label": "DESIGN", "concept": f"DESIGN_{key}",
-                                    "value": value,
+                final_facts.append({"label": "DESIGN",
+                                    "concept": f"DESIGN_{key}",
+                                    "value": value, "unit": _design_unit(key),
+                                    "entity_id": data.get("equipment_id"),
+                                    "evidence_id": evidence_id,
                                     "citation": {"source_type": "PROJECT_SCHEDULE"}})
+        if data.get("readings"):
+            for key, entry in (data["readings"] if isinstance(data["readings"], dict) else {}).items():
+                if isinstance(entry, dict):
+                    final_facts.append({"label": "FIELD", "concept": f"FIELD_{key}",
+                                        "value": entry.get("value"),
+                                        "unit": entry.get("unit"),
+                                        "entity_id": entry.get("equipment_id") or entry.get("entity_id"),
+                                        "instrument_id": entry.get("instrument_id"),
+                                        "stage": entry.get("stage"),
+                                        "evidence_id": evidence_id,
+                                        "citation": {"source_type": "FIELD_MEASUREMENT"}})
+                else:
+                    final_facts.append({"label": "FIELD", "concept": f"FIELD_{key}",
+                                        "value": entry, "evidence_id": evidence_id,
+                                        "citation": {"source_type": "FIELD_MEASUREMENT"}})
+        if result.get("tool") == "job.readings" and isinstance(data, dict):
+            for key, entry in data.items():
+                if isinstance(entry, dict):
+                    final_facts.append({"label": "FIELD", "concept": entry.get("concept") or f"FIELD_{key}",
+                                        "value": entry.get("value"), "unit": entry.get("unit"),
+                                        "entity_id": entry.get("equipment_id") or entry.get("entity_id"),
+                                        "instrument_id": entry.get("instrument_id"),
+                                        "stage": entry.get("stage"),
+                                        "evidence_id": evidence_id,
+                                        "citation": {"source_type": "FIELD_MEASUREMENT"}})
+                else:
+                    final_facts.append({"label": "FIELD", "concept": f"FIELD_{key}",
+                                        "value": entry, "evidence_id": evidence_id,
+                                        "citation": {"source_type": "FIELD_MEASUREMENT"}})
         if data.get("source_id"):
             source_ids.append(data["source_id"])
         if data.get("identity"):
-            final_facts.append({"label": "OEM", "concept": "OEM_IDENTITY",
-                                "value": data["identity"].get("resolution"),
-                                "citation": {"source_type": "OEM_IOM"}})
+            identity = data["identity"]
+            resolution = identity.get("resolution")
+            # P14: a decoder result is never presented as verified OEM fact.
+            if resolution == "EXACT_MODEL_REFERENCE":
+                label, concept = "INFERRED_IDENTITY", "INFERRED_IDENTITY"
+            elif resolution == "FAMILY_LEVEL_REFERENCE":
+                label, concept = "DECODED_FAMILY", "DECODED_FAMILY"
+            else:
+                label, concept = "UNKNOWN", "UNKNOWN_MODEL_IDENTITY"
+            final_facts.append({"label": label, "concept": concept,
+                                "value": identity.get("product_family") or identity.get("model_exact"),
+                                "entity_id": identity.get("model_exact"),
+                                "evidence_id": evidence_id,
+                                "citation": None})
+
+
+def _design_unit(key: str) -> str | None:
+    upper = (key or "").upper()
+    if "CFM" in upper:
+        return "CFM"
+    if "ESP" in upper or "STATIC" in upper:
+        return "IN.W.C."
+    if "RPM" in upper:
+        return "RPM"
+    return None
 
 
 def _finalize(question, answer, context, memory, answer_id, mode, tool_calls,

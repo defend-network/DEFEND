@@ -83,6 +83,48 @@ class SourceAuthorityContext:
                 "OEM_IOM", "STANDARD_NEBB", "SCS_APPROVED_PLAYBOOK",
                 "BASE_MODEL_KNOWLEDGE"]
 
+    def demanded_classes(self, question: str) -> set[str]:
+        """Return the set of authority classes the question explicitly demands
+        (P44-P46). Empty means generic (no specific authority)."""
+        upper = question.upper()
+        classes: set[str] = set()
+        if any(k in upper for k in ("DESIGN", "SCHEDULE", "SCHEDULED", "ENGINEER")):
+            classes.add("DESIGN")
+        if any(k in upper for k in ("MEASURE", "READ", "ACTUAL", "FIELD",
+                                    "WE MEASURED", "OUR READING")):
+            classes.add("FIELD")
+        if any(k in upper for k in ("ALLOW", "MANUFACTURER", "OEM", "MOTOR",
+                                    "CONFIGURATION", "MAX", "LIMIT", "DRIVE",
+                                    "RATED", "RATING")):
+            classes.add("OEM")
+        if any(k in upper for k in ("NEBB", "AABC", "ASHRAE", "SMACNA",
+                                    "STANDARD", "REQUIRE", "REQUIRES",
+                                    "TOLERANCE", "CODE")):
+            classes.add("STANDARD")
+        if any(k in upper for k in ("TROUBLE", "WHY", "DIAGNOSE", "LOW",
+                                    "HIGH", "CHECK", "NEXT")):
+            classes.add("DIAGNOSTIC")
+        return classes
+
+    def eligible_types(self, classes: set[str]) -> set[str]:
+        """Union of eligible source types across the demanded authority classes."""
+        eligible: set[str] = set()
+        if "DESIGN" in classes:
+            eligible |= {"PROJECT_PLAN", "PROJECT_SCHEDULE", "PROJECT_SPECIFICATION",
+                         "PROJECT_NOTE", "OEM_ENGINEERING_DATA", "OEM_CATALOG"}
+        if "FIELD" in classes:
+            eligible |= {"FIELD_MEASUREMENT", "PROJECT_NOTE", "PROJECT_PLAN"}
+        if "OEM" in classes:
+            eligible |= {"OEM_IOM", "OEM_SERVICE_MANUAL", "OEM_ENGINEERING_DATA",
+                         "OEM_SUBMITTAL", "OEM_CATALOG", "PROJECT_SPECIFICATION"}
+        if "STANDARD" in classes:
+            eligible |= {"STANDARD_NEBB", "STANDARD_AABC", "STANDARD_ASHRAE",
+                         "STANDARD_SMACNA", "SCS_APPROVED_PLAYBOOK"}
+        if "DIAGNOSTIC" in classes:
+            eligible |= {"FIELD_MEASUREMENT", "PROJECT_PLAN", "PROJECT_SCHEDULE",
+                         "OEM_IOM", "STANDARD_NEBB", "SCS_APPROVED_LESSON"}
+        return eligible
+
     def rank(self, question: str, source_type: str) -> int:
         order = self.authority_order(question)
         return order.index(source_type) if source_type in order else len(order)

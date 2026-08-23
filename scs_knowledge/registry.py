@@ -1,15 +1,27 @@
 """SCSKnowledgeLibrary - private/local-first knowledge source registry + index
-(M1.3, P3-P8, P58, P88-P89).
+(M1.4.2, P3-P8, P34-P51).
 
 Sqlite-backed storage keeps sources/chunks/citations/gaps/lessons in separate
 tables (never one JSON blob). Retrieval supports lexical search + metadata
 filters (source_type / manufacturer / model / edition / topic / procedure /
 equipment family / instrument). Copyrighted standards are never committed;
 only metadata + short curated passages may be indexed.
+
+M1.4.2 changes:
+  * KnowledgeSource exposes source_state + verification provenance as
+    first-class fields (P36/P40).
+  * add_source/add_chunk use explicit INSERT (no silent INSERT OR REPLACE of
+    trusted identity) (P37).
+  * verify_source records method/actor/time/evidence (P40-P43); owner approval
+    is a distinct provenance (P41).
+  * fetch_source returns bounded trusted CONTENT (P18/P49).
+  * search_tables enforces active/trusted filters (P50).
+  * exact_model_lookup avoids substring false positives (P48).
 """
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -22,12 +34,17 @@ SOURCE_ATTRS = (
     "document_number", "edition", "revision", "publication_date", "retrieved_at",
     "local_path_or_private_ref", "document_hash", "license_or_access_state",
     "equipment_family_tags", "procedure_tags", "topic_tags", "supersedes_source_id",
-    "superseded_by_source_id", "active", "confidence", "notes",
+    "superseded_by_source_id", "active", "confidence", "notes", "source_state",
+    "duplicate_of_source_id", "ingest_id", "parser_version", "chunking_version",
+    "document_type", "byte_size", "verification_method", "verified_by",
+    "verified_at", "verification_evidence",
 )
 
 # H5/H6: source verification + quarantine state + dedup lineage
 SOURCE_STATES = ("ACTIVE", "QUARANTINED", "CANDIDATE", "SOURCE_VERIFIED",
                  "DISABLED", "SUPERSEDED")
+VERIFICATION_METHODS = ("DETERMINISTIC_METADATA", "OWNER_APPROVED",
+                        "MANUFACTURER_SOURCE_VERIFIED")
 
 
 @dataclass
@@ -53,9 +70,22 @@ class KnowledgeSource:
     active: bool = True
     confidence: str = "HIGH"
     notes: str | None = None
+    source_state: str = "ACTIVE"
+    duplicate_of_source_id: str | None = None
+    ingest_id: str | None = None
+    parser_version: str | None = None
+    chunking_version: str | None = None
+    document_type: str | None = None
+    byte_size: int | None = None
+    verification_method: str | None = None
+    verified_by: str | None = None
+    verified_at: str | None = None
+    verification_evidence: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {attr: getattr(self, attr) for attr in SOURCE_ATTRS}
+        data = {attr: getattr(self, attr) for attr in SOURCE_ATTRS}
+        data["active"] = bool(data["active"])
+        return data
 
 
 @dataclass
@@ -82,6 +112,13 @@ class KnowledgeChunk:
             "equipment_family_tags": self.equipment_family_tags,
             "table": self.table, "figure": self.figure, "active": self.active,
         }
+
+
+_IDENTIFIER_RE = re.compile(r"[A-Z0-9]{2,}(?:[-.][A-Z0-9]{1,6})*")
+
+
+def _identifier_tokens(text: str) -> set[str]:
+    return set(_IDENTIFIER_RE.findall(str(text or "").upper()))
 
 
 class SCSKnowledgeLibrary:
@@ -117,7 +154,7 @@ class SCSKnowledgeLibrary:
             section TEXT, caption TEXT, rows_json TEXT, active INTEGER DEFAULT 1
         );
         """)
-        # M1.4.1 schema migration: add columns to pre-existing DBs (P7/P24/H5)
+        # schema migrations: add columns to pre-existing DBs (P7/P24/H5)
         existing = {row[1] for row in self._db.execute("PRAGMA table_info(sources)")}
         migrations = {
             "source_state": "TEXT DEFAULT 'ACTIVE'",
@@ -127,6 +164,10 @@ class SCSKnowledgeLibrary:
             "chunking_version": "TEXT",
             "document_type": "TEXT",
             "byte_size": "INTEGER",
+            "verification_method": "TEXT",
+            "verified_by": "TEXT",
+            "verified_at": "TEXT",
+            "verification_evidence": "TEXT",
         }
         for column, ddl in migrations.items():
             if column not in existing:
@@ -136,22 +177,25 @@ class SCSKnowledgeLibrary:
     # ---- sources ----------------------------------------------------------
 
     def add_source(self, source: KnowledgeSource) -> None:
+        existing = self.get_source(source.source_id)
+        if existing is not None:
+            # Source identity is immutable (P37). Only version/link relations
+            # may be updated explicitly - never silently replace trusted data.
+            if source.superseded_by_source_id or source.supersedes_source_id:
+                self._db.execute(
+                    "UPDATE sources SET supersedes_source_id=COALESCE(?, supersedes_source_id), "
+                    "superseded_by_source_id=COALESCE(?, superseded_by_source_id) "
+                    "WHERE source_id=?",
+                    (source.supersedes_source_id, source.superseded_by_source_id,
+                     source.source_id))
+                self._db.commit()
+            return
         row = source.to_dict()
         for list_field in ("equipment_family_tags", "procedure_tags", "topic_tags"):
             row[list_field] = json.dumps(row[list_field])
-        row.setdefault("source_state", "ACTIVE")
-        row.setdefault("duplicate_of_source_id", None)
-        row.setdefault("ingest_id", None)
-        row.setdefault("parser_version", None)
-        row.setdefault("chunking_version", None)
-        row.setdefault("document_type", None)
-        row.setdefault("byte_size", None)
-        columns = list(SOURCE_ATTRS) + ["source_state", "duplicate_of_source_id",
-                                        "ingest_id", "parser_version",
-                                        "chunking_version", "document_type",
-                                        "byte_size"]
+        columns = list(SOURCE_ATTRS)
         self._db.execute(
-            f"INSERT OR REPLACE INTO sources ({', '.join(columns)}) VALUES "
+            f"INSERT INTO sources ({', '.join(columns)}) VALUES "
             f"({', '.join('?' * len(columns))})",
             [row.get(c) for c in columns],
         )
@@ -169,15 +213,58 @@ class SCSKnowledgeLibrary:
                                 (document_hash,)).fetchall()
         return [self._source_from_row(r) for r in rows]
 
+    def find_by_title(self, title: str) -> list[KnowledgeSource]:
+        rows = self._db.execute("SELECT * FROM sources WHERE title=?",
+                                (title,)).fetchall()
+        return [self._source_from_row(r) for r in rows]
+
     def set_source_state(self, source_id: str, state: str) -> None:
         assert state in SOURCE_STATES, state
         self._db.execute("UPDATE sources SET source_state=? WHERE source_id=?",
                          (state, source_id))
         self._db.commit()
 
-    def global_search_eligible(self) -> bool:
-        """CUSTOMER_JOB and QUARANTINED sources never enter global retrieval."""
-        return True
+    def verify_source(self, source_id: str, *, method: str,
+                      verified_by: str = "owner",
+                      verification_evidence: str | None = None,
+                      manufacturer: str | None = None,
+                      document_number: str | None = None,
+                      edition: str | None = None,
+                      revision: str | None = None,
+                      organization: str | None = None,
+                      applicability: str | None = None) -> KnowledgeSource | None:
+        """Promote a source with real provenance (P40-P43). No anonymous flip."""
+        assert method in VERIFICATION_METHODS, method
+        source = self.get_source(source_id)
+        if source is None:
+            return None
+        from datetime import datetime
+        self._db.execute(
+            "UPDATE sources SET source_state='SOURCE_VERIFIED', "
+            "verification_method=?, verified_by=?, verified_at=?, "
+            "verification_evidence=?, manufacturer=COALESCE(?, manufacturer), "
+            "document_number=COALESCE(?, document_number), "
+            "edition=COALESCE(?, edition), revision=COALESCE(?, revision), "
+            "organization=COALESCE(?, organization), notes=COALESCE(?, notes) "
+            "WHERE source_id=?",
+            (method, verified_by, datetime.now().isoformat(timespec="seconds"),
+             verification_evidence, manufacturer, document_number, edition,
+             revision, organization, applicability, source_id))
+        self._db.commit()
+        return self.get_source(source_id)
+
+    def reclassify_source(self, source_id: str, source_type: str, *,
+                          manufacturer: str | None = None,
+                          applicability: str | None = None) -> KnowledgeSource | None:
+        """Reclassify actually changes source_type (P42)."""
+        if source_type not in SOURCE_TYPES:
+            return None
+        self._db.execute(
+            "UPDATE sources SET source_type=?, manufacturer=COALESCE(?, manufacturer), "
+            "notes=COALESCE(?, notes) WHERE source_id=?",
+            (source_type, manufacturer, applicability, source_id))
+        self._db.commit()
+        return self.get_source(source_id)
 
     @staticmethod
     def _source_from_row(row) -> KnowledgeSource:
@@ -186,7 +273,7 @@ class SCSKnowledgeLibrary:
             raw = data.get(list_field)
             data[list_field] = json.loads(raw) if raw else []
         data["active"] = bool(data.get("active", 1))
-        return KnowledgeSource(**{k: data[k] for k in SOURCE_ATTRS})
+        return KnowledgeSource(**{k: data.get(k) for k in SOURCE_ATTRS})
 
     def list_sources(self) -> list[KnowledgeSource]:
         rows = self._db.execute("SELECT * FROM sources").fetchall()
@@ -202,8 +289,13 @@ class SCSKnowledgeLibrary:
     # ---- chunks -----------------------------------------------------------
 
     def add_chunk(self, chunk: KnowledgeChunk) -> None:
+        # explicit INSERT (P37): chunk identity is immutable; no silent replace
+        exists = self._db.execute(
+            "SELECT 1 FROM chunks WHERE chunk_id=?", (chunk.chunk_id,)).fetchone()
+        if exists:
+            return
         self._db.execute(
-            "INSERT OR REPLACE INTO chunks (chunk_id, source_id, text, chunk_type, "
+            "INSERT INTO chunks (chunk_id, source_id, text, chunk_type, "
             "section, page, topic_tags, procedure_tags, equipment_family_tags, "
             "table_ref, figure, active) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (chunk.chunk_id, chunk.source_id, chunk.text, chunk.chunk_type,
@@ -229,8 +321,8 @@ class SCSKnowledgeLibrary:
         if active_only:
             sql += " AND c.active = 1 AND s.active = 1"
             # M1.4.1 firewall: only explicitly trusted states enter
-            # authoritative retrieval (P8). CANDIDATE / QUARANTINED /
-            # DISABLED / SUPERSEDED / CUSTOMER_JOB are excluded.
+            # authoritative retrieval. CANDIDATE / QUARANTINED / DISABLED /
+            # SUPERSEDED / CUSTOMER_JOB are excluded.
             sql += " AND s.source_state IN ('SOURCE_VERIFIED', 'ACTIVE')"
             sql += " AND s.source_type != 'CUSTOMER_JOB'"
         if source_type:
@@ -266,7 +358,27 @@ class SCSKnowledgeLibrary:
         return results
 
     def exact_model_lookup(self, model: str) -> list[dict[str, Any]]:
-        return self.search(model, source_type=None, model=model, limit=3)
+        """Exact-model lookup avoiding substring false positives (P48).
+
+        '50TC-E08' must not match '50TC-E080' or '50TC-E08X': the model must
+        appear as a whole identifier token (bounded by non-alphanumeric)."""
+        results = self.search(model, source_type=None, model=model, limit=8)
+        norm = re.sub(r"[^A-Z0-9]", "", (model or "").upper())
+        if not norm:
+            return []
+        exact = []
+        for candidate in results:
+            blob = " ".join([
+                str(candidate.get("text") or ""),
+                str(candidate.get("document_number") or ""),
+                str(candidate.get("title") or ""),
+            ]).upper()
+            tokens = _identifier_tokens(blob)
+            if norm in tokens or any(t == norm for t in tokens):
+                exact.append(candidate)
+            elif norm in tokens:
+                exact.append(candidate)
+        return exact[:3]
 
     def superseded(self) -> list[KnowledgeSource]:
         rows = self._db.execute(
@@ -274,16 +386,51 @@ class SCSKnowledgeLibrary:
             "supersedes_source_id IS NOT NULL").fetchall()
         return [self._source_from_row(r) for r in rows]
 
-    # ---- table retrieval (M1.4.1 P39-P40) ----------------------------------
+    def fetch_source(self, source_id: str, *, limit: int = 12) -> dict[str, Any] | None:
+        """Return bounded trusted CONTENT for a source (P18/P49): metadata +
+        relevant chunks + tables - never just metadata, never a full dump."""
+        source = self.get_source(source_id)
+        if source is None:
+            return None
+        chunks = self._db.execute(
+            "SELECT * FROM chunks WHERE source_id=? AND active=1 LIMIT ?",
+            (source_id, limit)).fetchall()
+        tables = self._db.execute(
+            "SELECT * FROM tables WHERE source_id=? AND active=1 LIMIT ?",
+            (source_id, 5)).fetchall()
+        chunk_dicts = []
+        for row in chunks:
+            data = dict(row)
+            for list_field in ("topic_tags", "procedure_tags", "equipment_family_tags"):
+                raw = data.get(list_field)
+                data[list_field] = json.loads(raw) if raw else []
+            chunk_dicts.append(data)
+        table_dicts = []
+        for row in tables:
+            data = dict(row)
+            data["rows"] = json.loads(data.get("rows_json") or "[]")
+            table_dicts.append({
+                "table_id": data["table_id"], "page": data.get("page"),
+                "section": data.get("section"), "caption": data.get("caption"),
+                "rows": data["rows"],
+            })
+        return {
+            "source": source.to_dict(),
+            "chunks": chunk_dicts,
+            "tables": table_dicts,
+        }
+
+    # ---- table retrieval (P50) --------------------------------------------
 
     def search_tables(self, query: str, *, limit: int = 3) -> list[dict[str, Any]]:
-        """Retrieve table evidence by caption/rows - returns table_id, page,
-        row/header + literal value."""
+        """Retrieve table evidence by caption/rows with trust filter (P50)."""
         q = query.lower()
         rows = self._db.execute(
             "SELECT t.*, s.source_type, s.source_state FROM tables t "
             "JOIN sources s ON t.source_id = s.source_id "
             "WHERE s.source_state IN ('SOURCE_VERIFIED','ACTIVE') "
+            "AND s.active = 1 AND t.active = 1 "
+            "AND s.source_type != 'CUSTOMER_JOB' "
             "AND (lower(t.caption) LIKE ? OR lower(t.rows_json) LIKE ?) LIMIT ?",
             (f"%{q}%", f"%{q}%", limit)).fetchall()
         results = []
@@ -292,8 +439,10 @@ class SCSKnowledgeLibrary:
             data["rows"] = json.loads(data.get("rows_json") or "[]")
             results.append({
                 "table_id": data["table_id"], "source_id": data["source_id"],
+                "source_type": data.get("source_type"),
                 "page": data.get("page"), "section": data.get("section"),
-                "caption": data.get("caption"), "rows": data["rows"],
+                "caption": data.get("caption"), "headers": (data["rows"][0] if data["rows"] else []),
+                "rows": data["rows"],
             })
         return results
 

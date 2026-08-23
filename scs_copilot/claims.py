@@ -1,4 +1,4 @@
-"""Structured claim contract + visible-answer verification (M1.4.1, P0-P6).
+"""Structured claim contract + visible-answer verification (M1.4.2, P1-P8).
 
 The final user-visible answer must derive from the VERIFIED claim set - the
 model cannot smuggle unsupported OEM / STANDARD / numeric assertions through
@@ -7,32 +7,379 @@ freeform prose. Flow:
     MODEL DRAFTS STRUCTURED CLAIMS (or prose)
     -> SERVER EXTRACTS + VERIFIES
     -> SERVER REMOVES/DOWNGRADES UNSUPPORTED CLAIMS
-    -> render_visible() builds the visible answer from verified claims only.
+    -> render_safe() builds the visible answer from verified claims only,
+       and NEVER falls back to raw model prose.
+
+M1.4.2 changes (root causes, not report language):
+  * ZERO raw-prose fallback (P1): if no technical claim verifies the visible
+    answer is an explicit abstention, never the model's unverified prose.
+  * First-class EvidenceFact identity (P4): evidence carries concept/unit/
+    entity/source/calculator identity. A claim only verifies when semantic
+    identity aligns - an unrelated equal number can no longer cross-verify.
+  * Unit-aware numeric verification (P5): no universal +-1 tolerance; units
+    are canonicalized and converted; values compared at display precision.
+  * Structured model response contract (P3) with evidence-ref binding (P6):
+    the model can reference EVID-* tool results; fabricated refs are rejected.
+  * GENERAL_EXPLANATION is not a bypass class (P7): hidden job/OEM/standard
+    claims are re-classified by an adversarial fallback.
+  * Diagnostic strength model (P8): POSSIBLE / SUPPORTED / STRONGLY_SUPPORTED
+    / CONTRADICTED / RESOLVED; a bare inference is never presented as fact.
 """
 from __future__ import annotations
 
+import json
 import re
-from datetime import datetime
+from dataclasses import dataclass, field
 from typing import Any
 
-CLAIM_SCHEMA_VERSION = "1.0"
+CLAIM_SCHEMA_VERSION = "2.0"
 CLAIM_TYPES = ("NUMERIC", "DESIGN", "FIELD", "OEM", "STANDARD", "CALCULATED",
                "PROCEDURE_REQUIREMENT", "DIAGNOSTIC_INFERENCE",
                "GENERAL_EXPLANATION")
+DIAGNOSTIC_STRENGTHS = ("POSSIBLE", "SUPPORTED", "STRONGLY_SUPPORTED",
+                        "CONTRADICTED", "RESOLVED")
+
 _OEM_NAMES = ("CARRIER", "TRANE", "YORK", "DAIKIN", "LENNOX", "RHEEM", "RUUD",
               "GOODMAN", "AMANA", "AAON", "GREENHECK", "PRICE", "TITUS",
               "NAILOR", "BELIMO", "HONEYWELL", "SIEMENS", "SCHNEIDER",
-              "MITSUBISHI")
+              "MITSUBISHI", "MANUFACTURER")
 _STANDARD_NAMES = ("NEBB", "AABC", "ASHRAE", "SMACNA")
-_UNIT_RE = re.compile(r"\d{1,6}(?:,\d{3})*(?:\.\d+)?\s*(?:CFM|FPM|IN\.?W\.?C\.?|"
-                      r"IN\.?W\.?G\.?|PA|PSI|RPM|HZ|HP|KW|V|A|BTUH|TONS?|F|C|%)")
+_UNIT_RE = re.compile(
+    r"-?\d{1,6}(?:,\d{3})*(?:\.\d+)?\s*(?:CFM|FPM|FT\s?/\s?MIN|IN\.?\s?W\.?\s?C\.?|"
+    r"IN\.?\s?W\.?\s?G\.?|PA|PSI|RPM|HZ|HERTZ|HP|KW|W|V|A|AMPS?|VOLTS?|BTUH|"
+    r"BTU\s?/\s?H|TONS?|°F|°C|F|C|%)")
+
+# ---------------------------------------------------------------------------
+# Unit system (P5): canonicalization + conversion + display precision
+# ---------------------------------------------------------------------------
+
+_UNIT_CANON = {
+    "CFM": "CFM",
+    "FPM": "FPM", "FT/MIN": "FPM", "FT/MIN.": "FPM",
+    "IN.W.C.": "IN.W.C.", "IN.W.C": "IN.W.C.", "INWC": "IN.W.C.", "IN WG": "IN.W.C.",
+    "IN.W.G.": "IN.W.G.", "IN.W.G": "IN.W.G.", "INWG": "IN.W.G.",
+    "PA": "PA", "PSI": "PSI",
+    "RPM": "RPM", "HZ": "HZ", "HERTZ": "HZ",
+    "%": "%", "PERCENT": "%", "PCT": "%",
+    "F": "DEGF", "C": "DEGC", "°F": "DEGF", "°C": "DEGC", "DEGF": "DEGF", "DEGC": "DEGC",
+    "BTUH": "BTUH", "BTU/H": "BTUH", "TONS": "TONS", "TON": "TONS", "TR": "TONS",
+    "KW": "KW", "HP": "HP", "W": "W",
+    "A": "A", "AMP": "A", "AMPS": "A", "V": "V", "VOLT": "V", "VOLTS": "V",
+    "FT2": "FT2", "IN": "IN", "FT": "FT", "LB/FT3": "LB/FT3",
+}
+
+_DIM = {
+    "CFM": "FLOW",
+    "FPM": "VELOCITY",
+    "IN.W.C.": "PRESSURE", "IN.W.G.": "PRESSURE", "PA": "PRESSURE", "PSI": "PRESSURE",
+    "RPM": "SPEED", "HZ": "FREQUENCY",
+    "%": "PERCENT",
+    "DEGF": "TEMPERATURE", "DEGC": "TEMPERATURE",
+    "BTUH": "ENERGY", "TONS": "ENERGY",
+    "KW": "POWER", "HP": "POWER", "W": "POWER",
+    "A": "CURRENT", "V": "VOLTAGE",
+    "FT2": "AREA", "IN": "LENGTH", "FT": "LENGTH",
+    "LB/FT3": "DENSITY",
+}
+
+_DISPLAY_DECIMALS = {
+    "CFM": 0, "FPM": 0, "IN.W.C.": 2, "IN.W.G.": 2, "PA": 0, "PSI": 2,
+    "RPM": 0, "HZ": 1, "%": 1, "DEGF": 1, "DEGC": 1, "BTUH": 0, "TONS": 1,
+    "KW": 2, "HP": 2, "W": 0, "A": 1, "V": 0, "FT2": 2, "IN": 2, "FT": 1,
+    "LB/FT3": 3,
+}
+
+# conversion factors into a shared dimension base
+_CONVERT_TO_BASE = {
+    "PRESSURE": {"IN.W.C.": 249.089, "IN.W.G.": 249.089, "PA": 1.0, "PSI": 6894.76},
+    "ENERGY": {"BTUH": 1.0, "TONS": 12000.0},
+    "POWER": {"W": 1.0, "KW": 1000.0, "HP": 745.7},
+    "LENGTH": {"IN": 1.0, "FT": 12.0},
+}
+
+
+def canonical_unit(unit: str | None) -> str | None:
+    if not unit:
+        return None
+    key = unit.strip().upper().rstrip(".")
+    if key in _UNIT_CANON:
+        return _UNIT_CANON[key]
+    # normalize "in wc" style
+    compact = re.sub(r"[\s.]+", "", key)
+    for alias, canon in _UNIT_CANON.items():
+        if re.sub(r"[\s.]+", "", alias) == compact:
+            return canon
+    return None
+
+
+def units_compatible(a: str | None, b: str | None) -> bool:
+    if a is None and b is None:
+        return True
+    ca, cb = canonical_unit(a), canonical_unit(b)
+    if ca is None or cb is None:
+        return False
+    if ca == cb:
+        return True
+    return _DIM.get(ca) == _DIM.get(cb) and _DIM.get(ca) is not None
+
+
+def _to_base(unit: str | None, value: float) -> float | None:
+    canon = canonical_unit(unit)
+    if canon is None:
+        return None
+    dim = _DIM.get(canon)
+    if dim == "TEMPERATURE":
+        if canon == "DEGF":
+            return (value - 32.0) / 1.8
+        return value
+    factors = _CONVERT_TO_BASE.get(dim)
+    if factors is None:
+        return value
+    return value * factors.get(canon, 1.0)
+
+
+def _display_round(value: float, unit: str | None) -> float:
+    canon = canonical_unit(unit)
+    decimals = _DISPLAY_DECIMALS.get(canon or "", 6)
+    return round(float(value), decimals)
+
+
+def numeric_values_match(claim_value: float, claim_unit: str | None,
+                         evidence_value: float, evidence_unit: str | None) -> bool:
+    """Unit-aware numeric equality at display precision (P5)."""
+    if claim_value is None or evidence_value is None:
+        return False
+    cu, eu = canonical_unit(claim_unit), canonical_unit(evidence_unit)
+    if cu is not None and eu is not None:
+        if not units_compatible(cu, eu):
+            return False
+        base_c = _to_base(cu, claim_value)
+        base_e = _to_base(eu, evidence_value)
+        if base_c is None or base_e is None:
+            return False
+        # round both in the claim's display unit-space for comparison
+        return _display_round(base_c, cu) == _display_round(base_e, cu) or \
+            abs(base_c - base_e) <= _tolerance(cu)
+    # at least one unit unknown: compare at a reasonable relative tolerance
+    return abs(claim_value - evidence_value) <= max(1e-9, abs(evidence_value) * 5e-3)
+
+
+def _tolerance(unit: str) -> float:
+    return {"CFM": 0.5, "FPM": 0.5, "%": 0.05, "RPM": 0.5}.get(unit, 1e-6)
+
+
+# ---------------------------------------------------------------------------
+# Concept identity (P4)
+# ---------------------------------------------------------------------------
+
+_BASE_SYNONYMS = {
+    "CFM": "CFM", "AIRFLOW": "CFM", "SUPPLY_CFM": "CFM", "OA_CFM": "CFM",
+    "TOTAL_CFM": "CFM", "HEAT_CFM": "CFM", "COOL_CFM": "CFM", "VAV_CFM": "CFM",
+    "EXHAUST_CFM": "CFM", "NOMINAL_CFM": "CFM", "DESIGN_CFM": "CFM",
+    "FPM": "FPM", "VELOCITY": "FPM",
+    "ESP": "STATIC_PRESSURE", "TESP": "STATIC_PRESSURE",
+    "STATIC_PRESSURE": "STATIC_PRESSURE", "STATIC": "STATIC_PRESSURE",
+    "SUPPLY_STATIC": "STATIC_PRESSURE", "RETURN_STATIC": "STATIC_PRESSURE",
+    "FILTER_DP": "STATIC_PRESSURE", "COIL_DP": "STATIC_PRESSURE",
+    "RPM": "RPM", "SPEED": "RPM", "MAX_RPM": "RPM", "FAN_RPM": "RPM",
+    "PERCENT_DESIGN": "PERCENT", "PERCENT": "PERCENT", "OA_FRACTION": "PERCENT",
+    "TEMPERATURE": "TEMPERATURE", "DB": "TEMPERATURE", "WB": "TEMPERATURE",
+    "DUCT_AREA": "AREA", "AREA": "AREA",
+    "MAX_ESP": "STATIC_PRESSURE", "MAXIMUM_ESP": "STATIC_PRESSURE",
+    "STANDARD_REQUIREMENT": "STANDARD_REQUIREMENT",
+    "OEM_REQUIREMENT": "OEM_REQUIREMENT",
+    "PROCEDURE": "PROCEDURE",
+}
+
+_CLASS_PREFIXES = ("DESIGN_", "FIELD_", "OEM_", "CALCULATED_")
+
+
+def concept_key(concept: str | None) -> tuple[str, str]:
+    """Return (class, canonical-base) for a semantic concept (P4)."""
+    c = (concept or "").strip().upper()
+    cls = ""
+    for prefix in _CLASS_PREFIXES:
+        if c.startswith(prefix):
+            cls = prefix.rstrip("_")
+            c = c[len(prefix):]
+            break
+    return (cls, _BASE_SYNONYMS.get(c, c))
+
+
+def concepts_match(a: str | None, b: str | None) -> bool:
+    return concept_key(a) == concept_key(b)
+
+
+# ---------------------------------------------------------------------------
+# EvidenceFact (P4)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class EvidenceFact:
+    evidence_id: str
+    concept: str | None
+    value: Any
+    unit: str | None = None
+    label: str | None = None
+    entity_id: str | None = None
+    source_id: str | None = None
+    source_type: str | None = None
+    calculator_id: str | None = None
+    instrument_id: str | None = None
+    stage: str | None = None
+    operating_mode: str | None = None
+    page: str | None = None
+    section: str | None = None
+    chunk_id: str | None = None
+    applicability: str | None = None
+    confidence: str = "HIGH"
+    timestamp: str | None = None
+    extra: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        data = {k: v for k, v in self.__dict__.items() if v is not None}
+        return data
+
+
+def build_evidence(facts: list[dict[str, Any]]) -> dict[str, Any]:
+    """Derive verification evidence from gathered tool facts (P4/P6).
+
+    Produces the sets used by legacy verify_claims callers plus a rich list of
+    EvidenceFact objects (with evidence_id, concept, unit, entity, source,
+    calculator identity)."""
+    evidence: dict[str, Any] = {
+        "calculators": set(), "plan_sources": set(), "oem_sources": set(),
+        "standard_sources": set(), "values": [], "facts": [],
+        "source_map": {},
+    }
+    for index, fact in enumerate(facts or [], start=1):
+        citation = fact.get("citation") or {}
+        label = (fact.get("label") or "").upper()
+        value = fact.get("value")
+        source_id = citation.get("source_id")
+        source_type = citation.get("source_type")
+        calculator_id = citation.get("formula")
+        fact_evidence_id = fact.get("evidence_id") or f"EVID-F{index:03d}"
+        evidence_fact = EvidenceFact(
+            evidence_id=fact_evidence_id,
+            concept=fact.get("concept"),
+            value=value,
+            unit=fact.get("unit"),
+            label=label,
+            entity_id=fact.get("entity_id"),
+            source_id=source_id,
+            source_type=source_type,
+            calculator_id=calculator_id,
+            instrument_id=fact.get("instrument_id"),
+            stage=fact.get("stage"),
+            operating_mode=fact.get("operating_mode"),
+            page=citation.get("page"),
+            section=citation.get("section"),
+            chunk_id=citation.get("chunk_id"),
+            applicability=citation.get("applicability") or fact.get("applicability"),
+            confidence=fact.get("confidence", "HIGH"),
+            extra={"evidence_refs": fact.get("evidence_refs", [])},
+        )
+        evidence["facts"].append(evidence_fact)
+        if calculator_id:
+            evidence["calculators"].add(calculator_id)
+        if label == "CALCULATED" and calculator_id:
+            evidence["calculators"].add(calculator_id)
+        if label == "DESIGN" and (source_type or "").startswith("PROJECT_"):
+            evidence["plan_sources"].add(source_type or source_id)
+            if source_id:
+                evidence["source_map"][source_id] = citation
+        if label == "OEM" and (source_type or "").startswith("OEM_"):
+            evidence["oem_sources"].add(source_id or source_type)
+            if source_id:
+                evidence["source_map"][source_id] = citation
+        if label == "STANDARD" and (source_type or "").startswith("STANDARD_"):
+            evidence["standard_sources"].add(source_id or source_type)
+            if source_id:
+                evidence["source_map"][source_id] = citation
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            evidence["values"].append((fact.get("concept"), value,
+                                       fact.get("unit"), fact.get("entity_id"),
+                                       fact_evidence_id))
+    return evidence
+
+
+# ---------------------------------------------------------------------------
+# Claim extraction (prose fallback + structured contract)
+# ---------------------------------------------------------------------------
 
 
 def _sentence_clauses(text: str) -> list[str]:
-    """Split visible prose into claim-sized clauses (sentences + conjunctions)."""
     parts = re.split(
         r"(?:[.;!?]\s+)|(?:,\s*(?:and|but)\s+)|(?:\s+(?:and|but)\s+)", text)
     return [p.strip() for p in parts if p.strip()]
+
+
+def _classify_clause(clause: str) -> str:
+    upper = clause.upper()
+    if any(s in upper for s in _STANDARD_NAMES) and any(
+            k in upper for k in ("REQUIRE", "REQUIRES", "REQUIREMENT", "MANDAT",
+                                 "PER ", "RECOMMEND", "RECOMMENDS", "CODE",
+                                 "STANDARD", "TOLERANCE", "POINTS")):
+        return "STANDARD"
+    if any(name in upper for name in _OEM_NAMES) and any(
+            k in upper for k in ("SAYS", "ALLOW", "ALLOWS", "MAXIMUM", "MAX ",
+                                 "LIMIT", "LIMITS", "RATED", "RATING", "SPEC",
+                                 "GUIDANCE", "CALLS FOR", "MANUFACTURER")):
+        return "OEM"
+    if _UNIT_RE.search(clause):
+        return "NUMERIC"
+    if any(k in upper for k in ("RESTRICT", "LIKELY", "POSSIBLE", "SUGGEST",
+                                "SUGGESTS", "APPEARS", "MAY BE", "INDICATES",
+                                "PROVES", "THIS IS A", "MEANS", "SUSPECT")):
+        return "DIAGNOSTIC_INFERENCE"
+    return "GENERAL_EXPLANATION"
+
+
+def _concept_for(clause: str, claim_type: str) -> str:
+    upper = clause.upper()
+    if "OA FRACTION" in upper or "OUTSIDE AIR FRACTION" in upper:
+        return "OA_FRACTION"
+    if "ESP" in upper or "STATIC" in upper or "TESP" in upper:
+        return "OEM_MAX_ESP" if claim_type == "OEM" else "STATIC_PRESSURE"
+    if "FILTER" in upper and ("DP" in upper or "PRESSURE" in upper):
+        return "FILTER_DP"
+    if "COIL" in upper and ("DP" in upper or "PRESSURE" in upper):
+        return "COIL_DP"
+    if "RPM" in upper or "SPEED" in upper:
+        return "RPM"
+    if "%" in upper and "DESIGN" in upper:
+        return "PERCENT_DESIGN"
+    if "%" in upper:
+        return "PERCENT"
+    if "CFM" in upper or "AIRFLOW" in upper:
+        return "DESIGN_SUPPLY_CFM" if claim_type == "DESIGN" else "CFM"
+    if "TEMPERATURE" in upper or " DEG" in upper:
+        return "TEMPERATURE"
+    if claim_type == "STANDARD":
+        return "STANDARD_REQUIREMENT"
+    if claim_type == "OEM":
+        return "OEM_REQUIREMENT"
+    if claim_type == "DIAGNOSTIC_INFERENCE":
+        return "DIAGNOSTIC"
+    return claim_type
+
+
+def _numeric_value(clause: str) -> Any:
+    match = re.search(r"-?\d{1,6}(?:,\d{3})*(?:\.\d+)?", clause)
+    if not match:
+        return None
+    return float(match.group(0).replace(",", ""))
+
+
+def _unit_of(clause: str) -> str | None:
+    match = _UNIT_RE.search(clause)
+    if not match:
+        return None
+    token = match.group(0)
+    unit = re.sub(r"^-?\d{1,6}(?:,\d{3})*(?:\.\d+)?\s*", "", token)
+    return unit.strip() or None
 
 
 def extract_claims_from_prose(content: str,
@@ -43,7 +390,7 @@ def extract_claims_from_prose(content: str,
     The visible answer is rendered only from the verified set.
     """
     claims: list[dict[str, Any]] = []
-    for index, clause in enumerate(_sentence_clauses(content), start=1):
+    for index, clause in enumerate(_sentence_clauses(content or ""), start=1):
         claim_type = _classify_clause(clause)
         claim = {
             "claim_id": f"CLAIM-{index:02d}", "claim_type": claim_type,
@@ -59,91 +406,192 @@ def extract_claims_from_prose(content: str,
     return claims
 
 
-def _classify_clause(clause: str) -> str:
-    upper = clause.upper()
-    if any(s in upper for s in _STANDARD_NAMES) and any(
-            k in upper for k in ("REQUIRE", "REQUIRES", "MANDAT", "PER ")):
-        return "STANDARD"
-    if any(name in upper for name in _OEM_NAMES) and any(
-            k in upper for k in ("SAYS", "ALLOW", "MAXIMUM", "LIMIT", "RATED",
-                                 "SPEC")):
-        return "OEM"
-    if _UNIT_RE.search(clause):
-        return "NUMERIC"
-    if any(k in upper for k in ("RESTRICT", "LIKELY", "POSSIBLE", "SUGGEST",
-                                "APPEARS", "MAY BE")):
-        return "DIAGNOSTIC_INFERENCE"
-    return "GENERAL_EXPLANATION"
+def extract_structured_claims(content: str,
+                              evidence: dict[str, Any]) -> list[dict[str, Any]] | None:
+    """Parse a structured model response contract (P3).
 
+    Accepts a JSON object (or a fenced JSON block) shaped:
+        {"summary", "claims": [{claim_type, concept, entity_id, value, unit,
+                                evidence_refs, applicability, confidence}],
+         "next_actions": [...], "questions": [...]}
 
-def _concept_for(clause: str, claim_type: str) -> str:
-    upper = clause.upper()
-    if "ESP" in upper or "STATIC" in upper:
-        return "OEM_MAX_ESP" if claim_type == "OEM" else "STATIC_PRESSURE"
-    if "RPM" in upper or "SPEED" in upper:
-        return "RPM"
-    if "CFM" in upper or "AIRFLOW" in upper:
-        return "DESIGN_SUPPLY_CFM" if claim_type == "DESIGN" else "CFM"
-    if claim_type == "STANDARD":
-        return "STANDARD_REQUIREMENT"
-    if claim_type == "DIAGNOSTIC_INFERENCE":
-        return "DIAGNOSTIC"
-    return claim_type
-
-
-def _numeric_value(clause: str) -> Any:
-    match = re.search(r"\d{1,6}(?:,\d{3})*(?:\.\d+)?", clause)
-    if not match:
+    Evidence references are validated against evidence facts that actually
+    occurred in this run; fabricated refs are rejected (P6).
+    """
+    if not content:
         return None
-    return float(match.group(0).replace(",", ""))
-
-
-def _unit_of(clause: str) -> str | None:
-    match = _UNIT_RE.search(clause)
-    if not match:
+    obj = _extract_json(content)
+    if not isinstance(obj, dict):
         return None
-    token = match.group(0).split()[-1].upper().rstrip(".")
-    mapping = {"IN.W.C": "IN.W.C.", "IN.W.G": "IN.W.G.", "BTUH": "BTUH",
-               "TONS": "TONS"}
-    return mapping.get(token, token)
+    raw_claims = obj.get("claims")
+    if not isinstance(raw_claims, list) or not raw_claims:
+        return None
+    valid_evidence_ids = {f.evidence_id for f in evidence.get("facts", [])}
+    source_map = evidence.get("source_map", {})
+    claims: list[dict[str, Any]] = []
+    for index, rc in enumerate(raw_claims, start=1):
+        if not isinstance(rc, dict):
+            continue
+        claim_type = str(rc.get("claim_type") or "GENERAL_EXPLANATION").upper()
+        evidence_refs = [str(r) for r in rc.get("evidence_refs") or []]
+        source_refs = [str(r) for r in rc.get("source_refs") or []]
+        # validate evidence refs; fabricated refs -> explicit rejection marker
+        invalid_refs = [r for r in evidence_refs if r not in valid_evidence_ids]
+        claims.append({
+            "claim_id": f"CLAIM-S{index:02d}",
+            "claim_type": claim_type,
+            "concept": rc.get("concept") or _concept_for(str(rc.get("summary") or ""), claim_type),
+            "entity_id": rc.get("entity_id"),
+            "value": rc.get("value"),
+            "unit": rc.get("unit"),
+            "assertion_text": str(rc.get("summary") or rc.get("value") or ""),
+            "evidence_refs": evidence_refs,
+            "source_refs": source_refs or evidence_refs,
+            "calculator_ref": rc.get("calculator_ref"),
+            "inference": claim_type == "DIAGNOSTIC_INFERENCE",
+            "applicability": rc.get("applicability") or "UNKNOWN",
+            "confidence": rc.get("confidence") or "HIGH",
+            "_invalid_evidence_refs": invalid_refs,
+        })
+    return claims
 
 
-def _verify_claim(claim: dict[str, Any], evidence: dict[str, Any]) -> bool:
-    claim_type = claim["claim_type"]
+def _extract_json(content: str) -> Any:
+    try:
+        return json.loads(content)
+    except (json.JSONDecodeError, TypeError):
+        pass
+    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", content, re.DOTALL)
+    if fenced:
+        try:
+            return json.loads(fenced.group(1))
+        except (json.JSONDecodeError, TypeError):
+            return None
+    brace = re.search(r"\{.*\}", content, re.DOTALL)
+    if brace:
+        try:
+            return json.loads(brace.group(0))
+        except (json.JSONDecodeError, TypeError):
+            return None
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Verification (P1, P4, P5, P6, P7, P8)
+# ---------------------------------------------------------------------------
+
+
+def _verify_claim(claim: dict[str, Any], evidence: dict[str, Any]) -> tuple[bool, str | None, str]:
+    """Verify a single claim. Returns (ok, blocked_reason, diagnostic_strength)."""
+    claim_type = claim.get("claim_type")
     calculators = set(evidence.get("calculators") or [])
     oem_sources = set(evidence.get("oem_sources") or [])
     standard_sources = set(evidence.get("standard_sources") or [])
     plan_sources = set(evidence.get("plan_sources") or [])
-    values = evidence.get("values") or []
+    facts: list[EvidenceFact] = evidence.get("facts") or []
+    source_map = evidence.get("source_map") or {}
     value = claim.get("value")
+    unit = claim.get("unit")
+    entity_id = claim.get("entity_id")
 
-    def value_matches() -> bool:
-        return any(value is not None and v is not None and abs(value - v) <= 1.0
-                   for _c, v in values)
+    if claim.get("_invalid_evidence_refs"):
+        return False, "FABRICATED_EVIDENCE_REFERENCE", "POSSIBLE"
 
-    if claim_type in ("NUMERIC", "CALCULATED"):
+    def _fact_value_matches() -> bool:
+        for fact in facts:
+            if not isinstance(fact.value, (int, float)) or isinstance(fact.value, bool):
+                continue
+            if not concepts_match(claim.get("concept"), fact.concept):
+                continue
+            if entity_id and fact.entity_id and entity_id != fact.entity_id:
+                continue
+            if not numeric_values_match(value, unit, fact.value, fact.unit):
+                continue
+            return True
+        return False
+
+    def _bound_sources(refs: list[str], pool: set, prefix: str) -> bool:
+        refs = refs or []
+        if any(r in pool for r in refs):
+            return True
+        for r in refs:
+            meta = source_map.get(r)
+            if meta and str(meta.get("source_type") or "").startswith(prefix):
+                return True
+        return False
+
+    if claim_type == "CALCULATED":
         if claim.get("calculator_ref") in calculators:
-            return True
-        if value is not None and value_matches():
-            return True
-        return False
+            return True, None, "RESOLVED"
+        if value is not None and _fact_value_matches():
+            return True, None, "RESOLVED"
+        return False, "CALCULATOR_NOT_RUN", "POSSIBLE"
+    if claim_type == "NUMERIC":
+        if value is not None and _fact_value_matches():
+            return True, None, "RESOLVED"
+        return False, "UNSUPPORTED_NUMERIC", "POSSIBLE"
     if claim_type == "DESIGN":
-        if set(claim.get("source_refs") or []) & plan_sources:
-            return True
-        if value is not None and value_matches():
-            return True
-        return False
+        if _bound_sources(claim.get("source_refs"), plan_sources, "PROJECT_"):
+            return True, None, "RESOLVED"
+        if value is not None and _fact_value_matches():
+            return True, None, "RESOLVED"
+        return False, "DESIGN_EVIDENCE_NOT_INDEXED", "POSSIBLE"
     if claim_type == "FIELD":
-        return value is not None and value_matches()
+        if _bound_sources(claim.get("source_refs"), set(), "FIELD_MEASUREMENT"):
+            return True, None, "RESOLVED"
+        if value is not None and _fact_value_matches():
+            return True, None, "RESOLVED"
+        return False, "FIELD_MEASUREMENT_MISSING", "POSSIBLE"
     if claim_type == "OEM":
-        return bool(set(claim.get("source_refs") or []) & oem_sources)
+        if _bound_sources(claim.get("source_refs"), oem_sources, "OEM_"):
+            return True, None, "RESOLVED"
+        return False, "AUTHORITATIVE_OEM_SOURCE_NOT_INDEXED", "POSSIBLE"
     if claim_type == "STANDARD":
-        return bool(set(claim.get("source_refs") or []) & standard_sources)
-    if claim_type == "DIAGNOSTIC_INFERENCE":
-        return True  # inherently inferred; label enforced by renderer
+        if _bound_sources(claim.get("source_refs"), standard_sources, "STANDARD_"):
+            return True, None, "RESOLVED"
+        return False, "AUTHORITATIVE_STANDARD_SOURCE_NOT_INDEXED", "POSSIBLE"
     if claim_type == "PROCEDURE_REQUIREMENT":
-        return bool(claim.get("source_refs"))
-    return True  # GENERAL_EXPLANATION allowed (no specific technical assertion)
+        if _bound_sources(claim.get("source_refs"), standard_sources | oem_sources, ""):
+            return True, None, "RESOLVED"
+        return False, "PROCEDURE_SOURCE_NOT_INDEXED", "POSSIBLE"
+    if claim_type == "DIAGNOSTIC_INFERENCE":
+        strength = _diagnostic_strength(claim, evidence)
+        return True, None, strength
+    # GENERAL_EXPLANATION is NOT a bypass class (P7): strip hidden technical
+    # assertions. A general explanation only verifies when it contains no
+    # technical number/standard/OEM reference.
+    text = str(claim.get("assertion_text") or "").upper()
+    if _UNIT_RE.search(text) or any(s in text for s in _STANDARD_NAMES) \
+            or any(n in text for n in _OEM_NAMES):
+        return False, "GENERAL_EXPLANATION_HIDES_TECHNICAL_CLAIM", "POSSIBLE"
+    return True, None, "RESOLVED"
+
+
+def _diagnostic_strength(claim: dict[str, Any], evidence: dict[str, Any]) -> str:
+    """Determine diagnostic strength from evidence (P8)."""
+    diagnostics = evidence.get("diagnostics") or {}
+    resolved = evidence.get("diagnostic_resolved")
+    if resolved:
+        return "RESOLVED"
+    supporting = evidence.get("diagnostic_support", 0)
+    contradicting = evidence.get("diagnostic_contradiction", 0)
+    if contradicting:
+        return "CONTRADICTED"
+    if supporting >= 2:
+        return "STRONGLY_SUPPORTED"
+    if supporting >= 1:
+        return "SUPPORTED"
+    # fall back to any diagnostic graph belief in the evidence
+    for graph in diagnostics.values():
+        for cause in graph.get("causes", []):
+            belief = cause.get("belief")
+            if belief == "STRONGLY_SUPPORTED":
+                return "STRONGLY_SUPPORTED"
+            if belief == "SUPPORTED":
+                return "SUPPORTED"
+            if belief == "CONTRADICTED":
+                return "CONTRADICTED"
+    return "POSSIBLE"
 
 
 def verify_claims(claims: list[dict[str, Any]],
@@ -155,35 +603,37 @@ def verify_claims(claims: list[dict[str, Any]],
     downgraded = blocked = 0
     for claim in claims:
         claim_type = claim.get("claim_type")
-        ok = _verify_claim(claim, evidence)
+        ok, reason, strength = _verify_claim(claim, evidence)
         if claim_type == "DIAGNOSTIC_INFERENCE":
+            claim["diagnostic_strength"] = strength
             if not claim.get("inference"):
                 claim["inference"] = True
                 claim["label"] = "INFERRED"
                 downgraded += 1
+            else:
+                claim["label"] = claim.get("label") or "INFERRED"
             verified.append(claim)
             results.append({"claim_id": claim["claim_id"], "claim_type": claim_type,
-                            "verdict": "VERIFIED"})
+                            "verdict": "VERIFIED", "diagnostic_strength": strength})
         elif ok:
-            claim["label"] = claim_type
+            claim["label"] = claim.get("label") or claim_type
+            claim["diagnostic_strength"] = strength
             verified.append(claim)
             results.append({"claim_id": claim["claim_id"], "claim_type": claim_type,
                             "verdict": "VERIFIED"})
-        elif claim_type in ("OEM", "STANDARD", "NUMERIC", "CALCULATED"):
+        elif claim_type in ("OEM", "STANDARD", "NUMERIC", "CALCULATED",
+                            "PROCEDURE_REQUIREMENT"):
             claim["label"] = "UNKNOWN"
-            claim["blocked_reason"] = ("AUTHORITATIVE_OEM_SOURCE_NOT_INDEXED"
-                                       if claim_type == "OEM" else
-                                       "AUTHORITATIVE_STANDARD_SOURCE_NOT_INDEXED"
-                                       if claim_type == "STANDARD" else
-                                       "UNSUPPORTED_NUMERIC")
+            claim["blocked_reason"] = reason or "UNSUPPORTED"
             blocked += 1
             results.append({"claim_id": claim["claim_id"], "claim_type": claim_type,
-                            "verdict": "BLOCKED"})
+                            "verdict": "BLOCKED", "reason": reason})
         else:
             claim["label"] = "UNKNOWN"
+            claim["blocked_reason"] = reason or "DOWNGRADED"
             downgraded += 1
             results.append({"claim_id": claim["claim_id"], "claim_type": claim_type,
-                            "verdict": "DOWNGRADED"})
+                            "verdict": "DOWNGRADED", "reason": reason})
     return {
         "CLAIMS_STRUCTURED_TOTAL": len(claims),
         "CLAIMS_VERIFIED": len(verified),
@@ -193,6 +643,17 @@ def verify_claims(claims: list[dict[str, Any]],
         "results": results,
         "verdict": "PASS" if blocked == 0 else "CLAIM_VERIFICATION_FAILED",
     }
+
+
+# ---------------------------------------------------------------------------
+# Rendering (P1: no raw-prose fallback)
+# ---------------------------------------------------------------------------
+
+_STRENGTH_PREFIX = {
+    "POSSIBLE": "POSSIBLE", "SUPPORTED": "SUPPORTED",
+    "STRONGLY_SUPPORTED": "STRONGLY_SUPPORTED",
+    "CONTRADICTED": "CONTRADICTED", "RESOLVED": "RESOLVED",
+}
 
 
 def render_visible(verified: list[dict[str, Any]], *,
@@ -209,6 +670,10 @@ def render_visible(verified: list[dict[str, Any]], *,
         label = claim.get("label")
         if label in ("UNKNOWN",):
             continue
+        if claim.get("claim_type") == "DIAGNOSTIC_INFERENCE":
+            strength = claim.get("diagnostic_strength") or "POSSIBLE"
+            lines.append(f"[{_STRENGTH_PREFIX.get(strength, 'POSSIBLE')}] {text}")
+            continue
         prefix = f"[{label}] " if label in ("DESIGN", "FIELD", "OEM", "STANDARD",
                                             "CALCULATED", "INFERRED") else ""
         lines.append(prefix + str(text))
@@ -219,26 +684,30 @@ def render_visible(verified: list[dict[str, Any]], *,
     return "\n".join(lines)
 
 
-def build_evidence(facts: list[dict[str, Any]]) -> dict[str, Any]:
-    """Derive verification evidence from gathered tool facts."""
-    evidence: dict[str, Any] = {
-        "calculators": set(), "plan_sources": set(), "oem_sources": set(),
-        "standard_sources": set(), "values": [],
-    }
-    for fact in facts:
-        citation = fact.get("citation") or {}
-        label = fact.get("label")
-        value = fact.get("value")
-        if label == "CALCULATED" and citation.get("formula"):
-            evidence["calculators"].add(citation["formula"])
-        if label == "DESIGN" and citation.get("source_type", "").startswith("PROJECT_"):
-            evidence["plan_sources"].add(citation.get("source_type"))
-        if label == "OEM" and citation.get("source_type", "").startswith("OEM_"):
-            evidence["oem_sources"].add(citation.get("source_id")
-                                        or citation.get("source_type"))
-        if label == "STANDARD" and citation.get("source_type", "").startswith("STANDARD_"):
-            evidence["standard_sources"].add(citation.get("source_id")
-                                             or citation.get("source_type"))
-        if isinstance(value, (int, float)):
-            evidence["values"].append((fact.get("concept"), value))
-    return evidence
+def render_safe(verification: dict[str, Any], *,
+                next_actions: list[str] | None = None,
+                questions: list[str] | None = None,
+                missing_evidence: list[str] | None = None) -> str:
+    """Render a safe visible answer (P1): when no technical claim verifies,
+    return an explicit abstention - NEVER raw model prose."""
+    verified = verification.get("verified") or []
+    visible = render_visible(verified, next_actions=next_actions,
+                             questions=questions)
+    if visible.strip():
+        return visible
+    blocked = [r for r in verification.get("results", [])
+               if r.get("verdict") in ("BLOCKED", "DOWNGRADED")]
+    lines = ["I don't have verified evidence to support that technical assertion yet."]
+    if blocked:
+        reasons = sorted({r.get("reason") or "UNSUPPORTED" for r in blocked})
+        lines.append("Blocked claims: " + "; ".join(reasons))
+    if missing_evidence:
+        lines.append("Missing evidence: " + "; ".join(missing_evidence))
+    if next_actions:
+        lines.append("NEXT BEST ACTION: " + "; ".join(next_actions))
+    elif questions:
+        lines.append("QUESTIONS: " + "; ".join(questions))
+    else:
+        lines.append("Next best action: provide the authoritative source or a "
+                     "field measurement to verify this.")
+    return "\n".join(lines)

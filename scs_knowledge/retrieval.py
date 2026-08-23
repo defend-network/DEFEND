@@ -89,9 +89,17 @@ def hybrid_retrieve(library: SCSKnowledgeLibrary, question: str, *,
     candidates = list(merged.values())
     if not candidates:
         return []
-    # authority eligibility gate: filter to eligible classes when the question
-    # has a clear authority class
-    if eligible_set and any(c.get("source_type") in eligible_set for c in candidates):
+    # Authority gate must FAIL CLOSED (P44-P46): when the question demands a
+    # specific authority class, only sources of that class are eligible. If
+    # none exist, we return [] - a lower-authority source can never substitute
+    # for a missing standard/OEM/design/field authority.
+    demanded = authority.demanded_classes(question)
+    if demanded:
+        allowed = authority.eligible_types(demanded)
+        candidates = [c for c in candidates if c.get("source_type") in allowed]
+        if not candidates:
+            return []
+    elif eligible_set and any(c.get("source_type") in eligible_set for c in candidates):
         candidates = [c for c in candidates if c.get("source_type") in eligible_set]
     if not candidates:
         return []

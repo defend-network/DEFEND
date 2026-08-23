@@ -9,11 +9,11 @@ from __future__ import annotations
 from .models import ProcedureStep, SCSProcedure
 
 
-def _steps(items: list[tuple[str, str, str]]) -> list[ProcedureStep]:
-    return [ProcedureStep(step_id=sid, title=title, instruction=text,
-                          provenance=prov) for sid, title, prov, text in [
-        (sid, title, prov, text) for sid, title, prov, text in items
-    ]]
+def _steps(items: list[tuple[str, str, str, str]]) -> list[ProcedureStep]:
+    """items are (step_id, title, instruction, provenance) tuples."""
+    return [ProcedureStep(step_id=sid, title=title, instruction=instruction,
+                          provenance=prov)
+            for sid, title, instruction, prov in items]
 
 
 def build_library() -> dict[str, SCSProcedure]:
@@ -33,9 +33,9 @@ def build_library() -> dict[str, SCSProcedure]:
         optional_readings=["supply_static", "return_static", "oa_cfm"],
         steps=_steps([
             ("s1", "Confirm operating mode", "Verify unit mode (cooling/heating/fan-only) and record. Provenance: SCS_PRACTICE", "SCS_PRACTICE"),
-            ("s2", "Locate traverse plane", "Choose a straight duct section >= 5 diameters upstream / 2 downstream. Provenance: NEBB balance practice", "STANDARD_REQUIREMENT"),
+            ("s2", "Locate traverse plane", "Choose a straight duct section >= 5 diameters upstream / 2 downstream (SCS field practice; no indexed standard cited).", "SCS_PRACTICE"),
             ("s3", "Measure duct geometry", "Record duct width x height (or diameter).", "SCS_PRACTICE"),
-            ("s4", "Perform traverse", "Take a full velocity traverse (or VelGrid matrix) and record point values.", "STANDARD_REQUIREMENT"),
+            ("s4", "Perform traverse", "Take a full velocity traverse (or VelGrid matrix) and record point values.", "SCS_PRACTICE"),
             ("s5", "Record fan speed", "Tachometer RPM; if VFD, record drive frequency + setpoint.", "SCS_PRACTICE"),
             ("s6", "Record static pressures", "Supply + return static to build TESP.", "SCS_PRACTICE"),
             ("s7", "Calculate airflow", "CFM = mean FPM x area (deterministic calculator).", "SCS_PRACTICE"),
@@ -60,7 +60,7 @@ def build_library() -> dict[str, SCSProcedure]:
         steps=_steps([
             ("s1", "Check duct access", "Confirm enough straight duct and access points.", "SCS_PRACTICE"),
             ("s2", "Zero the micromanometer", "Zero with probe out of the airstream.", "SCS_PRACTICE"),
-            ("s3", "Take points", "Record velocity pressure at each traverse point; orient Pitot into flow.", "STANDARD_REQUIREMENT"),
+            ("s3", "Take points", "Record velocity pressure at each traverse point; orient Pitot into flow.", "SCS_PRACTICE"),
             ("s4", "Validate points", "Flag non-positive / wildly off points (state reason).", "SCS_PRACTICE"),
             ("s5", "Compute", "Mean VP -> velocity (4005 factor) -> CFM.", "SCS_PRACTICE"),
         ]),
@@ -80,7 +80,7 @@ def build_library() -> dict[str, SCSProcedure]:
             ("s2", "Read flow", "Record controller flow and/or measured velocity pressure at the sensor.", "SCS_PRACTICE"),
             ("s3", "Compute CFM", "Use the controller/box K-factor formula (CFM = K sqrt(VP)); no universal constant.", "SCS_PRACTICE"),
             ("s4", "Compare to max", "Percent of design max; flag if not reached.", "SCS_PRACTICE"),
-            ("s5", "Check pickup pressure", "Confirm upstream static sufficient for the box's required pickup.", "OEM_REQUIREMENT"),
+            ("s5", "Check pickup pressure", "Confirm upstream static sufficient for the box's required pickup.", "SCS_PRACTICE"),
         ]),
         oem_citations=["controller/box OEM IOM (when indexed)"],
     )
@@ -111,7 +111,7 @@ def build_library() -> dict[str, SCSProcedure]:
         required_readings=["oa_velocity", "oa_temperature", "ra_temperature", "ma_temperature"],
         steps=_steps([
             ("s1", "Stabilize OA", "Set OA damper to documented minimum position.", "SCS_PRACTICE"),
-            ("s2", "Measure OA velocity", "Traverse or VelGrid across the OA intake.", "STANDARD_REQUIREMENT"),
+            ("s2", "Measure OA velocity", "Traverse or VelGrid across the OA intake.", "SCS_PRACTICE"),
             ("s3", "Compute OA CFM", "Mean velocity x area.", "SCS_PRACTICE"),
             ("s4", "Cross-check by temperature", "OA fraction = (Tra-Tma)/(Tra-Toa) when valid.", "SCS_PRACTICE"),
             ("s5", "Compare to design", "OA design CFM / percent.", "SCS_PRACTICE"),
@@ -129,7 +129,7 @@ def build_library() -> dict[str, SCSProcedure]:
         steps=_steps([
             ("s1", "Choose reference", "Outdoor reference away from wind/leaks; stable door condition.", "SCS_PRACTICE"),
             ("s2", "Zero instrument", "Zero at the reference.", "SCS_PRACTICE"),
-            ("s3", "Measure building pressure", "Record sign (positive/negative) and magnitude.", "STANDARD_REQUIREMENT"),
+            ("s3", "Measure building pressure", "Record sign (positive/negative) and magnitude.", "SCS_PRACTICE"),
             ("s4", "Gather flows if scope", "Supply/return/OA/exhaust totals for balance context.", "SCS_PRACTICE"),
             ("s5", "Assess", "Compare to design intent; do not over-infer from flows alone.", "SCS_PRACTICE"),
         ]),
@@ -159,7 +159,7 @@ def build_library() -> dict[str, SCSProcedure]:
         required_readings=["airflow", "fan_rpm", "tesp"],
         required_inputs=["design_cfm", "oem_allowable_range"],
         steps=_steps([
-            ("s1", "Confirm limits", "Verify the proposed frequency stays within OEM/VFD allowable range.", "OEM_REQUIREMENT"),
+            ("s1", "Confirm limits", "Verify the proposed frequency stays within OEM/VFD allowable range.", "SCS_PRACTICE"),
             ("s2", "Adjust speed", "Change frequency in small steps.", "SCS_PRACTICE"),
             ("s3", "Re-measure", "Traverse again; re-check fan RPM + motor current.", "SCS_PRACTICE"),
             ("s4", "Verify", "Percent design + TESP vs allowable.", "SCS_PRACTICE"),
@@ -180,7 +180,7 @@ def build_library() -> dict[str, SCSProcedure]:
             ("s1", "Build TESP", "Measure supply + return static.", "SCS_PRACTICE"),
             ("s2", "Split location", "Return vs supply side static burden.", "SCS_PRACTICE"),
             ("s3", "Component delta-P", "Filter / coil / damper pressure drops where accessible.", "SCS_PRACTICE"),
-            ("s4", "Compare to allowable", "Percent of OEM allowable static.", "OEM_REQUIREMENT"),
+            ("s4", "Compare to allowable", "Percent of OEM allowable static.", "SCS_PRACTICE"),
         ]),
     )
 
@@ -227,7 +227,7 @@ def build_library() -> dict[str, SCSProcedure]:
         required_readings=["as_found_cfm", "final_cfm"],
         steps=_steps([
             ("s1", "Select correct hood", "Hood sized to the outlet; face area matches.", "SCS_PRACTICE"),
-            ("s2", "Zero/verify hood", "Zero before use; check hood factor.", "INSTRUMENT_MANUAL"),
+            ("s2", "Zero/verify hood", "Zero before use; check hood factor.", "SCS_PRACTICE"),
             ("s3", "Measure as-found", "Sealed, level hood; record.", "SCS_PRACTICE"),
             ("s4", "Adjust + final", "Adjust damper; re-measure to final.", "SCS_PRACTICE"),
         ]),
@@ -271,7 +271,7 @@ def build_library() -> dict[str, SCSProcedure]:
         required_readings=["airflow", "fan_rpm", "motor_rpm"],
         required_inputs=["design_cfm", "motor_oem_limits"],
         steps=_steps([
-            ("s1", "Confirm limits", "Motor nameplate + OEM fan limits.", "OEM_REQUIREMENT"),
+            ("s1", "Confirm limits", "Motor nameplate + OEM fan limits.", "SCS_PRACTICE"),
             ("s2", "Adjust sheave", "Make small pitch change.", "SCS_PRACTICE"),
             ("s3", "Re-measure", "RPM + airflow; verify motor amps.", "SCS_PRACTICE"),
         ]),
@@ -289,7 +289,7 @@ def build_library() -> dict[str, SCSProcedure]:
             ("s1", "Record references", "Return reference and supply reference.", "SCS_PRACTICE"),
             ("s2", "Component delta-P", "Filter, coil, and any damper pressure drops.", "SCS_PRACTICE"),
             ("s3", "Assemble TESP", "TESP = |return| + |supply|.", "SCS_PRACTICE"),
-            ("s4", "Compare to allowable", "Percent of OEM/design allowable static.", "OEM_REQUIREMENT"),
+            ("s4", "Compare to allowable", "Percent of OEM/design allowable static.", "SCS_PRACTICE"),
         ]),
         report_fields=["return_static", "supply_static", "filter_dp", "coil_dp", "tesp", "percent_allowable"],
     )
@@ -347,9 +347,9 @@ def build_library() -> dict[str, SCSProcedure]:
         applicable_instruments=["tachometer", "vfd"],
         required_readings=["vfd_direction", "command_frequency", "fan_rpm"],
         steps=_steps([
-            ("s1", "Confirm direction", "VFD output phase/direction matches fan.", "OEM_REQUIREMENT"),
+            ("s1", "Confirm direction", "VFD output phase/direction matches fan.", "SCS_PRACTICE"),
             ("s2", "Verify speed response", "Command frequency tracks setpoint; RPM follows.", "SCS_PRACTICE"),
-            ("s3", "Check limits", "Speed within OEM/VFD allowable range.", "OEM_REQUIREMENT"),
+            ("s3", "Check limits", "Speed within OEM/VFD allowable range.", "SCS_PRACTICE"),
         ]),
     )
 
@@ -376,10 +376,10 @@ def build_library() -> dict[str, SCSProcedure]:
         required_readings=["controller_flow", "measured_vp", "k_factor"],
         required_inputs=["box_oem_iom"],
         steps=_steps([
-            ("s1", "Confirm controller model", "Exact controller/box model and OEM IOM.", "OEM_REQUIREMENT"),
+            ("s1", "Confirm controller model", "Exact controller/box model and OEM IOM.", "SCS_PRACTICE"),
             ("s2", "Compare flows", "Controller reading vs independent measurement.", "SCS_PRACTICE"),
-            ("s3", "Verify K-factor", "K-factor from controller documentation.", "OEM_REQUIREMENT"),
-            ("s4", "Calibrate if in spec", "Follow OEM calibration workflow.", "OEM_REQUIREMENT"),
+            ("s3", "Verify K-factor", "K-factor from controller documentation.", "SCS_PRACTICE"),
+            ("s4", "Calibrate if in spec", "Follow OEM calibration workflow.", "SCS_PRACTICE"),
         ]),
     )
 

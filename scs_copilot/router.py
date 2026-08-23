@@ -54,7 +54,7 @@ class CopilotRouter:
         if calc is not None:
             return calc
 
-        # 2) knowledge routing
+        # 2) standard/procedure knowledge routing (P12)
         if any(k in upper for k in ("NEBB", "AABC", "ASHRAE", "SMACNA",
                                     "STANDARD", "MANUAL", "PROCEDURE", "ALLOW")):
             return self._route_knowledge(question)
@@ -69,13 +69,24 @@ class CopilotRouter:
         if proc is not None:
             return proc
 
-        # 5) equipment routing
-        if any(k in upper for k in ("MODEL", "EQUIPMENT", "MANUFACTURER", "WHAT IS THIS")):
+        # 5) equipment routing (by keyword OR a recognized model number, P14)
+        if any(k in upper for k in ("MODEL", "EQUIPMENT", "MANUFACTURER", "WHAT IS THIS")) \
+                or re.search(r"\b(?:50TC|48TC|40RM|SQ|ESV|TMS|TSS)[A-Z0-9.-]*\b", upper):
             eq = self._route_equipment(question)
             if eq is not None:
                 return eq
 
-        # 6) plan/design routing
+        # 6) OEM capability routing (fail closed when no indexed OEM source)
+        if any(k in upper for k in ("MAX", "LIMIT", "RATED", "RATING", "OEM",
+                                    "MANUFACTURER", "CARRIER", "TRANE", "YORK",
+                                    "DAIKIN", "LENNOX", "RHEEM", "RUUD",
+                                    "GOODMAN", "AMANA", "AAON", "GREENHECK",
+                                    "PRICE", "TITUS", "NAILOR", "BELIMO",
+                                    "HONEYWELL", "SIEMENS", "SCHNEIDER",
+                                    "MITSUBISHI")):
+            return self._route_knowledge(question)
+
+        # 7) plan/design routing
         design = self._route_design(lower)
         if design is not None:
             return design
@@ -110,10 +121,27 @@ class CopilotRouter:
             m = re.search(r"(\d{1,6}(?:\.\d+)?)", lower)
             if m and self.context:
                 measured = float(m.group(1))
-                design = self.context.design_value(self._equipment_id(lower), "supply_cfm") or measured
+                equipment_id = self._equipment_id(lower)
+                design = self.context.design_value(equipment_id, "supply_cfm")
+                if design is None:
+                    # P9: missing design input must NOT fabricate 100% of design
+                    return {"tool": "calculator.percent_design",
+                            "facts": [],
+                            "answer": ("NOT_COMPUTABLE: missing design supply CFM for "
+                                       f"{equipment_id or 'this equipment'}; provide the "
+                                       "scheduled design airflow."),
+                            "needs_authority": True,
+                            "required_inputs": ["design_supply_cfm", "measured_cfm"],
+                            "trace": {"calculators": []}}
                 pct = calculators.percent_design(measured, design)
+                if not pct.get("computable", False):
+                    return {"tool": "calculator.percent_design",
+                            "facts": [],
+                            "answer": f"NOT_COMPUTABLE: {pct.get('blocked_reason')}",
+                            "required_inputs": ["design_supply_cfm", "measured_cfm"],
+                            "trace": {"calculators": []}}
                 return {"tool": "calculator.percent_design",
-                        "facts": [_fact("CALCULATED", "DESIGN_SUPPLY_CFM",
+                        "facts": [_fact("CALCULATED", "PERCENT_DESIGN",
                                         pct["result"], "%",
                                         citation={"formula": "flow.percent_design"})],
                         "answer": f"CALCULATED: measured is {pct['result']}% of design.",
@@ -136,41 +164,75 @@ class CopilotRouter:
 
     def _route_knowledge(self, question: str) -> dict[str, Any]:
         if self.knowledge is None:
+            upper = question.upper()
+            oem_intent = any(k in upper for k in ("MAX", "LIMIT", "ALLOW",
+                                                  "RATED", "RATING", "OEM",
+                                                  "MANUFACTURER", "CARRIER",
+                                                  "TRANE", "YORK", "DAIKIN",
+                                                  "LENNOX", "AAON", "GREENHECK"))
+            abstain = ("AUTHORITATIVE_OEM_SOURCE_NOT_INDEXED" if oem_intent else
+                       "AUTHORITATIVE_STANDARD_SOURCE_NOT_INDEXED")
             return {"tool": "knowledge.search",
                     "facts": [],
-                    "answer": "AUTHORITATIVE_STANDARD_SOURCE_NOT_INDEXED: no indexed standard answered this.",
-                    "gap": {"gap_type": "STANDARD_EDITION_UNKNOWN",
+                    "answer": f"{abstain}: no indexed source answered this.",
+                    "gap": {"gap_type": "OEM_DOCUMENT_MISSING" if oem_intent
+                            else "STANDARD_EDITION_UNKNOWN",
                             "detail": question},
+                    "needs_authority": True,
                     "trace": {"knowledge": []}}
         upper = question.upper()
         source_type = None
         if "NEBB" in upper:
             source_type = "STANDARD_NEBB"
+        elif "AABC" in upper:
+            source_type = "STANDARD_AABC"
         elif "ASHRAE" in upper:
             source_type = "STANDARD_ASHRAE"
-        results = self.knowledge.search(question, source_type=source_type) \
-            if source_type else self.knowledge.search(question)
+        elif "SMACNA" in upper:
+            source_type = "STANDARD_SMACNA"
+        oem_intent = any(k in upper for k in ("MAX", "LIMIT", "ALLOW", "RATED",
+                                              "RATING", "OEM", "MANUFACTURER",
+                                              "CARRIER", "TRANE", "YORK", "DAIKIN",
+                                              "LENNOX", "AAON", "GREENHECK"))
+        # P11: one authority system - use the canonical authority-aware
+        # hybrid retriever, never library.search() directly.
+        from scs_knowledge.retrieval import hybrid_retrieve
+        results = hybrid_retrieve(self.knowledge, question, source_type=source_type)
         if not results:
-            gap_type = "STANDARD_EDITION_UNKNOWN" if source_type else "PROCEDURE_NOT_AVAILABLE"
+            if source_type:
+                gap_type = "STANDARD_EDITION_UNKNOWN"
+                abstain = "AUTHORITATIVE_STANDARD_SOURCE_NOT_INDEXED"
+            elif oem_intent:
+                gap_type = "OEM_DOCUMENT_MISSING"
+                abstain = "AUTHORITATIVE_OEM_SOURCE_NOT_INDEXED"
+            else:
+                gap_type = "PROCEDURE_NOT_AVAILABLE"
+                abstain = "PROCEDURE_NOT_AVAILABLE: no procedure knowledge indexed for this."
             if self.gaps:
                 self.gaps.detect(gap_type, detail=question, question=question)
             return {"tool": "knowledge.search", "facts": [],
-                    "answer": "AUTHORITATIVE_STANDARD_SOURCE_NOT_INDEXED" if source_type
-                    else "PROCEDURE_NOT_AVAILABLE: no procedure knowledge indexed for this.",
+                    "answer": abstain,
+                    "needs_authority": bool(source_type or oem_intent),
                     "gap": {"gap_type": gap_type, "detail": question},
                     "trace": {"knowledge": []}}
         citation = results[0]
+        source_type_found = citation.get("source_type", "")
+        label = "STANDARD" if source_type_found.startswith("STANDARD_") else \
+            "OEM" if source_type_found.startswith("OEM_") else "SCS_PLAYBOOK"
         return {
             "tool": "knowledge.search", "facts": [
-                {"label": "STANDARD" if source_type else "SCS_PLAYBOOK",
-                 "concept": "REFERENCE", "value": citation["text"][:300],
-                 "citation": {"source_id": citation["source_id"],
-                              "title": citation["title"],
+                {"label": label, "concept": "REFERENCE",
+                 "value": citation.get("text", "")[:300],
+                 "citation": {"source_id": citation.get("source_id"),
+                              "source_type": source_type_found,
+                              "title": citation.get("title"),
                               "edition": citation.get("edition"),
-                              "page": citation.get("page")}}],
-            "answer": f"{citation.get('source_type')}: {citation['text'][:200]} "
+                              "page": citation.get("page"),
+                              "section": citation.get("section"),
+                              "chunk_id": citation.get("chunk_id")}}],
+            "answer": f"{source_type_found}: {citation.get('text', '')[:200]} "
                       f"[{citation.get('source_id')}]",
-            "trace": {"knowledge": [citation["chunk_id"]]},
+            "trace": {"knowledge": [citation.get("chunk_id")]},
         }
 
     # ------------------------------------------------------------- procedure
@@ -219,16 +281,32 @@ class CopilotRouter:
         model = m.group(1)
         from scs_equipment.resolver import resolve_equipment
         identity = resolve_equipment(model=model)
+        resolution = identity["resolution"]
+        # P14: a heuristic family decoder is NOT verified OEM fact. Label it
+        # DECODED_FAMILY / INFERRED_IDENTITY, never OEM, without OEM source.
+        if resolution == "EXACT_MODEL_REFERENCE":
+            label = "INFERRED_IDENTITY"
+            concept = "INFERRED_IDENTITY"
+            citation = None
+        elif resolution == "FAMILY_LEVEL_REFERENCE":
+            label = "DECODED_FAMILY"
+            concept = "DECODED_FAMILY"
+            citation = None
+        else:
+            label = "UNKNOWN"
+            concept = "UNKNOWN_MODEL_IDENTITY"
+            citation = None
         return {
             "tool": "equipment.resolve", "facts": [
-                {"label": "OEM", "concept": "OEM_NOMINAL_CFM",
-                 "value": identity["product_family"],
-                 "citation": {"source_type": "OEM_IOM" if identity["resolution"] != "UNKNOWN_MODEL_IDENTITY" else None}},
+                {"label": label, "concept": concept,
+                 "value": identity["product_family"] or identity.get("model_exact"),
+                 "citation": citation},
                 {"label": "UNKNOWN", "concept": "EXACT_MODEL",
                  "value": identity.get("resolution")}],
             "answer": (f"EQUIPMENT: manufacturer {identity['manufacturer']}, "
                        f"family {identity['product_family'] or 'unresolved'}; "
-                       f"resolution {identity['resolution']}."),
+                       f"resolution {identity['resolution']} "
+                       f"[{label}, not OEM-verified]."),
             "identity": identity,
             "trace": {"equipment": [model]},
         }

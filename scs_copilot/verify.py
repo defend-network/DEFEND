@@ -95,6 +95,7 @@ def verify_answer(facts: list[dict[str, Any]]) -> dict[str, Any]:
             downgraded += 1
             verdict = "DOWNGRADED"
         elif claim_type == "DIAGNOSTIC_INFERENCE":
+            claim.setdefault("diagnostic_strength", "POSSIBLE")
             if claim.get("label") != "INFERRED":
                 claim["label"] = "INFERRED"
                 downgraded += 1

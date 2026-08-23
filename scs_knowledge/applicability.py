@@ -12,6 +12,34 @@ from __future__ import annotations
 import re
 from typing import Any
 
+# P47: applicability states for OEM/technical claims
+APPLICABILITY_STATES = ("EXACT_MODEL", "MODEL_SERIES", "FAMILY",
+                        "GENERAL_MANUFACTURER", "UNKNOWN", "CONFLICT")
+
+
+def applicability_state(model: str | None, source: dict[str, Any]) -> str:
+    """Map a source's applicability to the P47 state model.
+
+    OEM numeric limits should require at least FAMILY (or better); a family-
+    level fan datum is never presented as exact-model truth without disclosure.
+    """
+    source_model = str(source.get("model") or "").upper()
+    source_family = str(source.get("equipment_family_tags") or "").upper()
+    manufacturer = str(source.get("manufacturer") or "").upper()
+    model_upper = (model or "").upper()
+    if not model_upper:
+        return "UNKNOWN"
+    if source_model and source_model == model_upper:
+        return "EXACT_MODEL"
+    if source_model and (model_upper.startswith(source_model) or source_model.startswith(model_upper)):
+        if len(min(model_upper, source_model)) >= 6:
+            return "MODEL_SERIES"
+    if manufacturer and source_family and _manufacturer_in_model(manufacturer, model_upper):
+        return "FAMILY"
+    if manufacturer and _manufacturer_in_model(manufacturer, model_upper):
+        return "GENERAL_MANUFACTURER"
+    return "UNKNOWN"
+
 
 def applicability_of(model: str | None, source: dict[str, Any]) -> str:
     source_model = str(source.get("model") or "").upper()
@@ -39,5 +67,4 @@ def _manufacturer_in_model(manufacturer: str, model: str) -> bool:
 
 
 def applicability_matrix() -> list[str]:
-    return ["EXACT_MODEL", "MODEL_PREFIX", "PRODUCT_FAMILY",
-            "MANUFACTURER_GENERAL", "UNKNOWN"]
+    return list(APPLICABILITY_STATES)

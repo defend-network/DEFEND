@@ -86,6 +86,14 @@ SCOPE_MARKERS = ("scope", "verification", "verifying", "airflow", "balance",
                  "ductwork", "ducts", "outlets", "studios", "traverse",
                  "static")
 
+MAX_REQUEST_BYTES = 5 * 1024 * 1024  # P69: bound JSON request size
+
+
+def resolve_knowledge_root(paths_root: Path) -> Path:
+    """Single knowledge-root resolver (P34-P35) used by every knowledge action."""
+    from scs_knowledge import resolve_knowledge_root as _resolve
+    return _resolve(paths_root / "knowledge")
+
 
 def detect_scope(text: str) -> tuple[str, str]:
     """Return (report_type, scope_notes) from a natural scope description."""
@@ -114,6 +122,26 @@ def _match_room(room: str | None, basis: dict) -> str | None:
         if room.upper() in name.upper() or name.upper() in room.upper():
             return name
     return room
+
+
+def _seed_memory_from_job(memory, record, context) -> None:
+    """Seed durable memory from JobRecord (P24): AS_FOUND / INTERMEDIATE /
+    FINAL readings stay separate; design values remain DESIGN, not readings."""
+    for device in getattr(record, "air_devices", []) or []:
+        device_id = getattr(device, "device_id", None)
+        if not device_id:
+            continue
+        if getattr(device, "design_cfm", None) is not None:
+            context.design_basis.setdefault("equipment", []).append(
+                {"tag": device_id, "supply_cfm": device.design_cfm})
+        if getattr(device, "as_found_cfm", None) is not None:
+            memory.record_reading(f"{device_id}:cfm", device.as_found_cfm,
+                                  stage="AS_FOUND", equipment_id=device_id,
+                                  source="job")
+        if getattr(device, "final_cfm", None) is not None:
+            memory.record_reading(f"{device_id}:cfm", device.final_cfm,
+                                  stage="FINAL", equipment_id=device_id,
+                                  source="job")
 
 
 def answer_plan_question(text: str, basis: dict) -> dict:
@@ -264,6 +292,8 @@ class CopilotServer(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0))
         if length <= 0:
             return {}
+        if length > MAX_REQUEST_BYTES:
+            return {"_request_too_large": True}
         try:
             return json.loads(self.rfile.read(length).decode("utf-8"))
         except Exception:
@@ -365,6 +395,10 @@ class CopilotServer(BaseHTTPRequestHandler):
     def do_POST(self):
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
+        length = int(self.headers.get("Content-Length", 0))
+        if length > MAX_REQUEST_BYTES:
+            self._send_json({"error": "request body too large"}, 413)
+            return
         if path == "/api/jobs":
             self._create_job()
         elif path.startswith("/api/jobs/"):
@@ -669,17 +703,19 @@ class CopilotServer(BaseHTTPRequestHandler):
         from scs_reports.plan_packet import PlanPacket
 
         native_docs = []
-        raster_words: dict[int, list] = {}
+        raster_words: dict = {}
         cache_dir = self.paths.job_dir(job_id) / "plan_cache"
         for doc in docs:
-            native = index_pdf(Path(doc["path"]), tables=False)
+            native = index_pdf(Path(doc["path"]), tables=False,
+                               document_id=doc.get("document_id"))
             native_docs.append(native)
             for page in native.pages:
                 if not page.words:
                     words, _orientation = _ocr_with_orientation(
                         Path(doc["path"]), page.page_number, reader, 200,
                         cache_dir, doc["sha256"])
-                    raster_words[page.page_number] = words
+                    # P56: document-scoped page identity (no cross-PDF collision)
+                    raster_words[(doc["document_id"], page.page_number)] = words
         graph = build_graph(native_docs, raster_words=raster_words)
         return graph
 
@@ -776,6 +812,7 @@ class CopilotServer(BaseHTTPRequestHandler):
         params = {k: v[0] for k, v in parse_qs(query).items()}
         page_no = int(params.get("page", 1))
         bbox = [float(x) for x in params.get("bbox", "0,0,0,0").split(",")]
+        document_id = params.get("document_id")
         docs = self._load_docs(job_id)
         if not docs:
             self._send_json({"error": "no documents"}, 404)
@@ -783,8 +820,16 @@ class CopilotServer(BaseHTTPRequestHandler):
         if fitz is None:
             self._send_json({"error": "renderer unavailable"}, 500)
             return
+        # P57: never display the wrong plan PDF for a citation - resolve the
+        # verified document_id when provided, else fall back to the first doc.
+        target = docs[0]
+        if document_id:
+            target = next((d for d in docs if d.get("document_id") == document_id), None)
+            if target is None:
+                self._send_json({"error": "document_id not found"}, 404)
+                return
         try:
-            renderer = fitz.open(docs[0]["path"])
+            renderer = fitz.open(target["path"])
             page = renderer.load_page(page_no - 1)
             zoom = 3.0
             pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom),
@@ -812,9 +857,9 @@ class CopilotServer(BaseHTTPRequestHandler):
         self._send_json(result)
 
     def _run_copilot(self, job_id: str, record, question: str) -> dict[str, Any]:
-        from scs_copilot.agent import COPILOT_MODE_AGENTIC, run_agent
+        from scs_copilot.agent import run_agent
         from scs_copilot.context import SCSJobContext
-        from scs_copilot.memory import JobConversationMemory
+        from scs_copilot.memory import JobConversationMemory, JobMemoryStore
         from scs_copilot.providers import build_copilot_provider
         from scs_copilot.router import CopilotRouter
         from scs_copilot.tools import ToolRegistry
@@ -827,8 +872,7 @@ class CopilotServer(BaseHTTPRequestHandler):
         from scs_procedures.library import PROCEDURE_LIBRARY
         from scs_reports.plan_graph import MechanicalPlanGraph
 
-        knowledge_dir = self.paths.root / "knowledge"
-        knowledge_dir.mkdir(parents=True, exist_ok=True)
+        knowledge_dir = resolve_knowledge_root(self.paths.root)
         library = SCSKnowledgeLibrary(knowledge_dir / "library.db")
         gaps = KnowledgeGapLog(knowledge_dir / "gaps.json")
         weaknesses = SCSWeaknessRegistry(knowledge_dir / "weaknesses.json")
@@ -853,10 +897,11 @@ class CopilotServer(BaseHTTPRequestHandler):
                                 design_basis=basis,
                                 missing_context=(graph.missing_context
                                                  if graph else []) or [])
-        for device in record.air_devices:
-            if device.final_cfm is not None:
-                context.record_reading(f"{device.device_id}:final_cfm",
-                                       device.final_cfm)
+
+        # P23: load durable memory, run agent, persist atomically
+        memory_store = JobMemoryStore(self.paths.job_subdir(job_id, "memory"))
+        memory = memory_store.load(job_id)
+        _seed_memory_from_job(memory, record, context)
 
         diagnostics = {
             "LOW_AIRFLOW": diag_airflow.low_airflow_graph(),
@@ -878,22 +923,20 @@ class CopilotServer(BaseHTTPRequestHandler):
                                 procedures=PROCEDURE_LIBRARY,
                                 diagnostics=diagnostics,
                                 instruments=instruments.all(),
-                                resolver=None)
-        memory = JobConversationMemory()
-        # seed memory from job readings
-        for key, value in context.readings.items():
-            memory.record_reading(key, value.get("value"), source="job")
+                                resolver=None, memory=memory)
         provider = build_copilot_provider()
         deterministic = CopilotRouter(context=context, knowledge=library, gaps=gaps)
         answer = run_agent(question, provider=provider, registry=registry,
                            context=context, memory=memory,
                            deterministic_router=deterministic)
+        memory_store.save(memory)
         answer["job_id"] = job_id
         answer["knowledge_gaps_open"] = len(gaps.unresolved())
         answer["weakness_registry_open"] = len(weaknesses.list())
         answer["oem_research_tasks"] = len(research.list())
+        answer["knowledge_root"] = str(knowledge_dir)
         library.close()
-        # persist answer trace for reproducibility
+        # P74: persist the safe rendered answer + verified claim refs
         answers_path = self.paths.job_dir(job_id) / "answers.json"
         history = []
         if answers_path.exists():
@@ -903,7 +946,10 @@ class CopilotServer(BaseHTTPRequestHandler):
                 history = []
         history.append({"answer_id": answer.get("answer_id"),
                         "question": question, "trace": answer.get("trace"),
-                        "mode": answer.get("copilot_mode")})
+                        "mode": answer.get("copilot_mode"),
+                        "answer": answer.get("answer"),
+                        "verified_claim_ids": answer.get("trace", {}).get("verified_claim_ids", []),
+                        "blocked_claim_ids": answer.get("trace", {}).get("blocked_claim_ids", [])})
         answers_path.write_text(json.dumps(history[-200:], indent=2), encoding="utf-8")
         return answer
 
@@ -917,7 +963,7 @@ class CopilotServer(BaseHTTPRequestHandler):
             return
         from scs_knowledge.ingestor import ingest_file
         from scs_knowledge.registry import SCSKnowledgeLibrary
-        knowledge_dir = self.paths.root / "knowledge"
+        knowledge_dir = resolve_knowledge_root(self.paths.root)
         library = SCSKnowledgeLibrary(knowledge_dir / "library.db")
         private_root = knowledge_dir / "documents"
         result = ingest_file(library, path, private_root=private_root)
@@ -932,7 +978,7 @@ class CopilotServer(BaseHTTPRequestHandler):
             return
         from scs_knowledge.retrieval import hybrid_retrieve
         from scs_knowledge.registry import SCSKnowledgeLibrary
-        knowledge_dir = self.paths.root / "knowledge"
+        knowledge_dir = resolve_knowledge_root(self.paths.root)
         library = SCSKnowledgeLibrary(knowledge_dir / "library.db")
         results = hybrid_retrieve(library, query, limit=5)
         library.close()
@@ -943,7 +989,7 @@ class CopilotServer(BaseHTTPRequestHandler):
         import os
         from scs_knowledge.registry import SCSKnowledgeLibrary
         from scs_knowledge.ingestor import PARSER_VERSION, CHUNKING_VERSION
-        knowledge_dir = self.paths.root / "knowledge"
+        knowledge_dir = resolve_knowledge_root(self.paths.root)
         library = SCSKnowledgeLibrary(knowledge_dir / "library.db")
         sources = library.list_sources()
         rows = []
@@ -960,38 +1006,54 @@ class CopilotServer(BaseHTTPRequestHandler):
                 "superseded_by": source.superseded_by_source_id,
             })
         self._send_json({
-            "knowledge_root": os.environ.get("SCS_KNOWLEDGE_ROOT") or str(knowledge_dir),
-            "default_root": str(knowledge_dir),
+            "knowledge_root": str(knowledge_dir),
+            "default_root": str(self.paths.root / "knowledge"),
             "parser_version": PARSER_VERSION, "chunking_version": CHUNKING_VERSION,
             "sources": rows, "source_count": len(sources),
             "source_types": sorted({s.source_type for s in sources}),
         })
 
     def _action_knowledge_verify(self, job_id: str):
-        """Promote a CANDIDATE source to SOURCE_VERIFIED (M1.4.1 P9/P10/P30)."""
+        """Promote/reclassify a source with real provenance (P40-P43)."""
         body = self._read_body()
         source_id = body.get("source_id") or ""
         action = body.get("action") or "verify"
         from scs_knowledge.registry import SCSKnowledgeLibrary
-        knowledge_dir = self.paths.root / "knowledge"
+        knowledge_dir = resolve_knowledge_root(self.paths.root)
         library = SCSKnowledgeLibrary(knowledge_dir / "library.db")
-        states = {"verify": "SOURCE_VERIFIED", "disable": "DISABLED",
-                  "reclassify_quarantine": "QUARANTINED",
-                  "supersede": "SUPERSEDED"}
-        if action in states:
-            library.set_source_state(source_id, states[action])
-        elif action == "reclassify":
-            library.set_source_state(source_id, "CANDIDATE")
         source = library.get_source(source_id)
+        if action in ("verify", "owner_approve"):
+            method = "OWNER_APPROVED" if action == "owner_approve" else \
+                (body.get("method") or "OWNER_APPROVED")
+            source = library.verify_source(
+                source_id, method=method,
+                verified_by=body.get("verified_by") or "owner",
+                verification_evidence=body.get("evidence"),
+                manufacturer=body.get("manufacturer"),
+                document_number=body.get("document_number"),
+                edition=body.get("edition"), revision=body.get("revision"),
+                organization=body.get("organization"),
+                applicability=body.get("applicability"))
+        elif action == "disable":
+            library.set_source_state(source_id, "DISABLED")
+        elif action == "supersede":
+            library.set_source_state(source_id, "SUPERSEDED")
+        elif action == "quarantine":
+            library.set_source_state(source_id, "QUARANTINED")
+        elif action == "reclassify":
+            source = library.reclassify_source(
+                source_id, body.get("source_type") or "UNKNOWN",
+                manufacturer=body.get("manufacturer"),
+                applicability=body.get("applicability"))
         self._send_json({"source": source.to_dict() if source else None,
-                         "state": states.get(action)})
+                         "state": source.source_state if source else None})
 
     def _action_knowledge_tables(self, job_id: str):
         """Table retrieval with provenance (M1.4.1 P39-P40)."""
         body = self._read_body()
         query = body.get("query") or ""
         from scs_knowledge.registry import SCSKnowledgeLibrary
-        knowledge_dir = self.paths.root / "knowledge"
+        knowledge_dir = resolve_knowledge_root(self.paths.root)
         library = SCSKnowledgeLibrary(knowledge_dir / "library.db")
         results = library.search_tables(query, limit=3)
         library.close()
@@ -1001,7 +1063,7 @@ class CopilotServer(BaseHTTPRequestHandler):
         body = self._read_body()
         from datetime import date
         from scs_equipment.instruments import InstrumentRegistry
-        knowledge_dir = self.paths.root / "knowledge"
+        knowledge_dir = resolve_knowledge_root(self.paths.root)
         instruments = InstrumentRegistry(knowledge_dir / "instruments.json")
         if body.get("register"):
             profile = instruments.register(
@@ -1249,7 +1311,7 @@ async function refreshState() {
   const sel = document.getElementById("jobSel");
   const prev = sel.value;
   sel.innerHTML = '<option value="">-- select / create job --</option>' + s.jobs.map(j =>
-    `<option value="${j.job_id}">${j.project_name} (${j.site_name}) [${j.report_type}] ${j.device_count} devices, ${j.photo_count} photos</option>`).join("");
+    `<option value="${esc(j.job_id)}">${esc(j.project_name)} (${esc(j.site_name)}) [${esc(j.report_type)}] ${j.device_count} devices, ${j.photo_count} photos</option>`).join("");
   sel.value = prev;
   if (prev && current === null) loadJob(prev);
 }
@@ -1276,7 +1338,7 @@ async function loadJob(id) {
 }
 function renderPayload(p) {
   lastPlan = p.plan.sections || [];
-  document.getElementById("planOut").innerHTML = lastPlan.map(s => `<span class="badge ok">${s.type}</span>`).join("") || "no plan";
+  document.getElementById("planOut").innerHTML = lastPlan.map(s => `<span class="badge ok">${esc(s.type)}</span>`).join("") || "no plan";
   document.getElementById("recordOut").textContent = JSON.stringify(p.job, null, 1);
   renderReady(p.ready_to_leave);
   renderDevices(p.job.air_devices || []);
@@ -1285,18 +1347,18 @@ function renderPayload(p) {
 function renderReady(r) {
   const box = document.getElementById("readyBox");
   const lines = [];
-  lines.push(`<span class="badge ${r.ready ? "ready" : "missing"}">${r.readiness}</span>`);
+  lines.push(`<span class="badge ${r.ready ? "ready" : "missing"}">${esc(r.readiness)}</span>`);
   if (r.MISSING_BEFORE_LEAVING && r.MISSING_BEFORE_LEAVING.length)
-    lines.push("<b>MISSING BEFORE LEAVING</b><pre>" + r.MISSING_BEFORE_LEAVING.join("&#10;") + "</pre>");
+    lines.push("<b>MISSING BEFORE LEAVING</b><pre>" + r.MISSING_BEFORE_LEAVING.map(esc).join("&#10;") + "</pre>");
   if (r.OPTIONAL && r.OPTIONAL.length)
-    lines.push("<b>OPTIONAL</b><pre>" + r.OPTIONAL.join("&#10;") + "</pre>");
+    lines.push("<b>OPTIONAL</b><pre>" + r.OPTIONAL.map(esc).join("&#10;") + "</pre>");
   if (r.questions && r.questions.length)
-    lines.push("<b>QUESTIONS</b><pre>" + r.questions.join("&#10;") + "</pre>");
+    lines.push("<b>QUESTIONS</b><pre>" + r.questions.map(esc).join("&#10;") + "</pre>");
   box.innerHTML = lines.join("");
 }
 function renderDevices(devices) {
   const rows = devices.map(d =>
-    `<div style="padding:3px 0;border-bottom:1px dashed #232936"><b>${d.device_id}</b> ${d.function} ${d.area_served || ""} | design ${d.design_cfm ?? "-"} | as-found ${d.as_found_cfm ?? "-"} | final ${d.final_cfm ?? "-"} CFM | ${d.measurement_method || ""} | ${d.status || ""}</div>`).join("");
+    `<div style="padding:3px 0;border-bottom:1px dashed #232936"><b>${esc(d.device_id)}</b> ${esc(d.function)} ${esc(d.area_served || "")} | design ${d.design_cfm ?? "-"} | as-found ${d.as_found_cfm ?? "-"} | final ${d.final_cfm ?? "-"} CFM | ${esc(d.measurement_method || "")} | ${esc(d.status || "")}</div>`).join("");
   document.getElementById("devicesBox").innerHTML = rows || "no devices yet";
 }
 async function sendChat() {
@@ -1304,7 +1366,7 @@ async function sendChat() {
   if (!text || !current) return msg("load/create a job first", true);
   const j = await api("/api/jobs/" + current + "/chat", "POST", { text });
   if (j.error) return msg(j.error, true);
-  document.getElementById("chatOut").innerHTML = "<pre>" + JSON.stringify(j.captures || [], null, 1) + "</pre>";
+  document.getElementById("chatOut").innerHTML = "<pre>" + esc(JSON.stringify(j.captures || [], null, 1)) + "</pre>";
   msg("Chat processed; merged " + (j.merged || 0) + " measurement(s)");
   renderPayload(j.payload);
 }
@@ -1313,7 +1375,7 @@ async function ingestPhotos() {
   if (!paths.length || !current) return msg("provide paths + job", true);
   const j = await api("/api/jobs/" + current + "/photos", "POST", { photo_paths: paths });
   if (j.error) return msg(j.error, true);
-  document.getElementById("photoOut").innerHTML = "<pre>" + JSON.stringify(j.photos || [], null, 1) + "</pre>";
+  document.getElementById("photoOut").innerHTML = "<pre>" + esc(JSON.stringify(j.photos || [], null, 1)) + "</pre>";
   msg("Ingested " + (j.photos || []).length + " photo(s)");
   renderPayload(j.payload);
 }
@@ -1322,7 +1384,7 @@ async function uploadDocs() {
   if (!paths.length || !current) return msg("provide PDF paths + job", true);
   const j = await api("/api/jobs/" + current + "/docs", "POST", { document_paths: paths });
   if (j.error) return msg(j.error, true);
-  document.getElementById("planOut").innerHTML = "<pre>" + JSON.stringify(j.documents || [], null, 1) + "</pre>";
+  document.getElementById("planOut").innerHTML = "<pre>" + esc(JSON.stringify(j.documents || [], null, 1)) + "</pre>";
   msg("Uploaded " + (j.created || []).length + " plan document(s)");
 }
 async function prepareFromPlans() {
@@ -1332,12 +1394,12 @@ async function prepareFromPlans() {
   if (j.error) return msg(j.error, true);
   const p = j.preview || {};
   const lines = ["<b>SYSTEMS / ROOMS FOUND</b>"];
-  (p.rooms || []).forEach(r => lines.push(`${r.room}: ${r.supply_devices} supply devices, design supply ${r.design_supply_cfm} CFM`));
+  (p.rooms || []).forEach(r => lines.push(`${esc(r.room)}: ${r.supply_devices} supply devices, design supply ${r.design_supply_cfm} CFM`));
   lines.push("<b>RELEVANT SHEETS</b>");
-  (p.relevant_sheets || []).forEach(s => lines.push(`${s.sheet} ${s.type} (conf ${s.confidence})`));
-  if (j.conflicts && j.conflicts.length) { lines.push("<b>DOCUMENT CONFLICTS</b>"); j.conflicts.forEach(c => lines.push(c.detail)); }
+  (p.relevant_sheets || []).forEach(s => lines.push(`${esc(s.sheet)} ${esc(s.type)} (conf ${esc(s.confidence)})`));
+  if (j.conflicts && j.conflicts.length) { lines.push("<b>DOCUMENT CONFLICTS</b>"); j.conflicts.forEach(c => lines.push(esc(c.detail))); }
   lines.push("<b>FIELD PLAN</b>");
-  (j.field_plan || []).slice(0, 6).forEach(d => lines.push(`${d.device} ${d.room || ""} design ${d.design_cfm} ${d.size || ""} [${d.status}]`));
+  (j.field_plan || []).slice(0, 6).forEach(d => lines.push(`${esc(d.device)} ${esc(d.room || "")} design ${d.design_cfm} ${esc(d.size || "")} [${esc(d.status)}]`));
   document.getElementById("planOut").innerHTML = "<pre>" + lines.join("&#10;") + "</pre>";
   msg("Pre-engineered " + j.devices + " devices from plans; job status PRE_ENGINEERED");
   renderPayload(j.payload);
@@ -1348,15 +1410,15 @@ async function askPlan() {
   const j = await api("/api/jobs/" + current + "/plan-chat", "POST", { text });
   if (j.error) return msg(j.error, true);
   document.getElementById("planChatOut").innerHTML =
-    "<pre>" + (j.answer || "") + "</pre>" +
-    (j.source ? `<div class="hint">source: ${JSON.stringify(j.source)}</div>` : "");
+    "<pre>" + esc(j.answer || "") + "</pre>" +
+    (j.source ? `<div class="hint">source: ${esc(JSON.stringify(j.source))}</div>` : "");
 }
 async function sendMeasurements() {
   const text = val("meas");
   if (!text || !current) return msg("load/create a job first", true);
   const j = await api("/api/jobs/" + current + "/measurements", "POST", { text });
   if (j.error) return msg(j.error, true);
-  document.getElementById("measOut").innerHTML = "<pre>" + JSON.stringify(j.captures || [], null, 1) + "</pre>";
+  document.getElementById("measOut").innerHTML = "<pre>" + esc(JSON.stringify(j.captures || [], null, 1)) + "</pre>";
   msg("Merged " + (j.merged || 0) + " measurement(s)");
   renderPayload(j.payload);
 }
@@ -1373,7 +1435,7 @@ async function generate() {
   const j = await api("/api/jobs/" + current + "/generate", "POST", {});
   if (j.error) return msg(j.error, true);
   const v = j.validation || {};
-  document.getElementById("genOut").innerHTML = `<span class="badge ${v.blocked ? "missing" : "ready"}">${v.summary}</span><pre>${JSON.stringify(v.checks || [], null, 1)}</pre>`;
+  document.getElementById("genOut").innerHTML = `<span class="badge ${v.blocked ? "missing" : "ready"}">${esc(v.summary)}</span><pre>${esc(JSON.stringify(v.checks || [], null, 1))}</pre>`;
   document.getElementById("dlBtn").style.display = "inline-block";
   msg("Report generated: " + j.output_name);
 }
@@ -1385,6 +1447,11 @@ function download() {
   document.body.appendChild(a); a.click(); a.remove();
 }
 function val(id) { return document.getElementById(id).value.trim(); }
+function esc(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
 refreshState();
 </script>
 </body></html>
