@@ -39,6 +39,10 @@ CANARY_HARD_SPEND_CAP_USD = Decimal("2.00")
 CANARY_MAX_INSTANCES = 1
 
 CANARY_ADAPTER_DIR = "canary-adapter-temp"
+CANARY_OWNER_AUTHORIZATION = "M1.9.2D"
+EXPECTED_CONVERTED_SHA = "d59b05ee323dc6d8bda8086c2aa3f9589acb8eae883afb173095f53117e1e854"
+EXPECTED_HELDOUT_SHA = "5ee2369ea383a8590dd123fa66db8a885154a2a0bf5abc8e98c174bcdf27835a"
+PRODUCTION_LABEL = "defend-vllm"
 
 
 class CanaryPhase(str, Enum):
@@ -168,7 +172,8 @@ class Qwen3CanaryRunner:
             if n_calls > len(result_ids):
                 unresolved += n_calls - len(result_ids)
         ok = (
-            summary["rows_rejected"] == 0
+            summary["dataset_sha256"] == EXPECTED_CONVERTED_SHA
+            and summary["rows_rejected"] == 0
             and tool_calls == 486
             and tool_results == 486
             and orphans == 0
