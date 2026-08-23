@@ -22,9 +22,15 @@ _IDENTIFIER_RE = re.compile(
 
 
 class LocalTfIdf:
-    """Local TF-IDF cosine similarity - EMBEDDING_MODEL=LOCAL_TFIDF_V1."""
+    """Local TF-IDF cosine similarity - LEXICAL_VECTOR_RETRIEVAL.
+
+    This is lexical vector similarity, NOT a modern semantic embedding model
+    (M1.4.1 P35). SEMANTIC_EMBEDDINGS remains NOT_IMPLEMENTED until a real
+    local embedding provider is added.
+    """
 
     version = "tfidf-v1"
+    label = "LEXICAL_VECTOR_RETRIEVAL=LOCAL_TFIDF_V1"
 
     def __init__(self, documents: list[str]) -> None:
         self._tokens = [self._tokenize(doc) for doc in documents]
@@ -63,16 +69,30 @@ def hybrid_retrieve(library: SCSKnowledgeLibrary, question: str, *,
                     manufacturer: str | None = None,
                     model: str | None = None,
                     limit: int = 5) -> list[dict[str, Any]]:
-    """Authority-aware hybrid retrieval with rerank."""
+    """Authority-gated hybrid retrieval (M1.4.1 P11-P14).
+
+    The authority eligibility list is an ENFORCED gate, not a scoring hint:
+    candidates are sorted by authority rank FIRST, then lexical similarity.
+    A lower-authority source (e.g. OEM manual) can never outrank the correct
+    authority (project schedule) for a design question, regardless of lexical
+    frequency. Composite questions still retrieve across the eligible set.
+    """
     authority = SourceAuthorityContext()
     eligible = authority.authority_order(question)
+    eligible_set = set(eligible)
+    # trusted-source filter is applied by library.search (SOURCE_VERIFIED/ACTIVE)
     exact = library.search(question, source_type=source_type,
                            manufacturer=manufacturer, model=model,
                            limit=max(limit, 10))
-    # lexical candidates (broad)
     lexical = library.search(question, source_type=source_type, limit=max(limit * 4, 12))
     merged = {c["chunk_id"]: c for c in exact + lexical}
     candidates = list(merged.values())
+    if not candidates:
+        return []
+    # authority eligibility gate: filter to eligible classes when the question
+    # has a clear authority class
+    if eligible_set and any(c.get("source_type") in eligible_set for c in candidates):
+        candidates = [c for c in candidates if c.get("source_type") in eligible_set]
     if not candidates:
         return []
     texts = [str(c.get("text") or "") for c in candidates]
@@ -81,12 +101,11 @@ def hybrid_retrieve(library: SCSKnowledgeLibrary, question: str, *,
     for index, candidate in enumerate(candidates):
         lexical_sim = tfidf.similarity(question, index)
         authority_rank = authority.rank(question, candidate.get("source_type", ""))
-        authority_bonus = 1.0 - (0.15 * authority_rank)
         identifier_bonus = 0.5 if _identifier_overlap(question, candidate) else 0.0
-        score = lexical_sim + authority_bonus + identifier_bonus
-        scored.append((score, candidate))
-    scored.sort(key=lambda x: -x[0])
-    return [c for _s, c in scored[:limit]]
+        # authority rank is the PRIMARY sort key (strict gate); lexical is tie-break
+        scored.append((authority_rank, -(lexical_sim + identifier_bonus), candidate))
+    scored.sort(key=lambda x: (x[0], x[1]))
+    return [c for _r, _l, c in scored[:limit]]
 
 
 def _identifier_overlap(question: str, candidate: dict[str, Any]) -> bool:

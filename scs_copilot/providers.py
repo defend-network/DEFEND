@@ -21,6 +21,7 @@ _OLLAMA_MODEL = os.environ.get("SCS_COPILOT_MODEL", "qwen2.5:14b-instruct-q4_K_M
 
 class SCSCopilotModelProvider(ABC):
     provider_name: str
+    privacy_class: str = "LOCAL_PRIVATE"  # LOCAL_PRIVATE | EXTERNAL_MANAGED (P48)
 
     @abstractmethod
     def complete(self, messages: list[dict[str, Any]], *,

@@ -938,8 +938,68 @@ class CopilotServer(BaseHTTPRequestHandler):
         library.close()
         self._send_json({"results": results})
 
+    def _action_knowledge_status(self, job_id: str):
+        """Knowledge root + source dashboard (M1.4.1 P27-P29)."""
+        import os
+        from scs_knowledge.registry import SCSKnowledgeLibrary
+        from scs_knowledge.ingestor import PARSER_VERSION, CHUNKING_VERSION
+        knowledge_dir = self.paths.root / "knowledge"
+        library = SCSKnowledgeLibrary(knowledge_dir / "library.db")
+        sources = library.list_sources()
+        rows = []
+        for source in sources:
+            rows.append({
+                "source_id": source.source_id, "filename": source.title,
+                "classification": source.source_type,
+                "state": source.source_state,
+                "manufacturer": source.manufacturer,
+                "edition": source.edition, "revision": source.revision,
+                "hash_short": (source.document_hash or "")[:10],
+                "active": source.active,
+                "supersedes": source.supersedes_source_id,
+                "superseded_by": source.superseded_by_source_id,
+            })
+        self._send_json({
+            "knowledge_root": os.environ.get("SCS_KNOWLEDGE_ROOT") or str(knowledge_dir),
+            "default_root": str(knowledge_dir),
+            "parser_version": PARSER_VERSION, "chunking_version": CHUNKING_VERSION,
+            "sources": rows, "source_count": len(sources),
+            "source_types": sorted({s.source_type for s in sources}),
+        })
+
+    def _action_knowledge_verify(self, job_id: str):
+        """Promote a CANDIDATE source to SOURCE_VERIFIED (M1.4.1 P9/P10/P30)."""
+        body = self._read_body()
+        source_id = body.get("source_id") or ""
+        action = body.get("action") or "verify"
+        from scs_knowledge.registry import SCSKnowledgeLibrary
+        knowledge_dir = self.paths.root / "knowledge"
+        library = SCSKnowledgeLibrary(knowledge_dir / "library.db")
+        states = {"verify": "SOURCE_VERIFIED", "disable": "DISABLED",
+                  "reclassify_quarantine": "QUARANTINED",
+                  "supersede": "SUPERSEDED"}
+        if action in states:
+            library.set_source_state(source_id, states[action])
+        elif action == "reclassify":
+            library.set_source_state(source_id, "CANDIDATE")
+        source = library.get_source(source_id)
+        self._send_json({"source": source.to_dict() if source else None,
+                         "state": states.get(action)})
+
+    def _action_knowledge_tables(self, job_id: str):
+        """Table retrieval with provenance (M1.4.1 P39-P40)."""
+        body = self._read_body()
+        query = body.get("query") or ""
+        from scs_knowledge.registry import SCSKnowledgeLibrary
+        knowledge_dir = self.paths.root / "knowledge"
+        library = SCSKnowledgeLibrary(knowledge_dir / "library.db")
+        results = library.search_tables(query, limit=3)
+        library.close()
+        self._send_json({"tables": results})
+
     def _action_instruments(self, job_id: str):
         body = self._read_body()
+        from datetime import date
         from scs_equipment.instruments import InstrumentRegistry
         knowledge_dir = self.paths.root / "knowledge"
         instruments = InstrumentRegistry(knowledge_dir / "instruments.json")
@@ -950,7 +1010,9 @@ class CopilotServer(BaseHTTPRequestHandler):
                 capabilities=body.get("capabilities", ""),
                 range_=body.get("range"), resolution=body.get("resolution"),
                 accuracy=body.get("accuracy"), setup=body.get("setup"),
-                manual_source_id=body.get("manual_source_id"))
+                manual_source_id=body.get("manual_source_id"),
+                calibration_date=body.get("calibration_date"),
+                calibration_due=body.get("calibration_due"))
             self._send_json({"registered": profile, "all": instruments.all()})
             return
         results = instruments.lookup(model=body.get("model"),

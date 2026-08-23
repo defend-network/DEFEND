@@ -104,11 +104,7 @@ class SCSKnowledgeLibrary:
             license_or_access_state TEXT,
             equipment_family_tags TEXT, procedure_tags TEXT, topic_tags TEXT,
             supersedes_source_id TEXT, superseded_by_source_id TEXT,
-            active INTEGER DEFAULT 1, confidence TEXT, notes TEXT,
-            source_state TEXT DEFAULT 'ACTIVE',
-            duplicate_of_source_id TEXT, ingest_id TEXT,
-            parser_version TEXT, chunking_version TEXT,
-            document_type TEXT, byte_size INTEGER
+            active INTEGER DEFAULT 1, confidence TEXT, notes TEXT
         );
         CREATE TABLE IF NOT EXISTS chunks (
             chunk_id TEXT PRIMARY KEY, source_id TEXT NOT NULL, text TEXT NOT NULL,
@@ -121,6 +117,20 @@ class SCSKnowledgeLibrary:
             section TEXT, caption TEXT, rows_json TEXT, active INTEGER DEFAULT 1
         );
         """)
+        # M1.4.1 schema migration: add columns to pre-existing DBs (P7/P24/H5)
+        existing = {row[1] for row in self._db.execute("PRAGMA table_info(sources)")}
+        migrations = {
+            "source_state": "TEXT DEFAULT 'ACTIVE'",
+            "duplicate_of_source_id": "TEXT",
+            "ingest_id": "TEXT",
+            "parser_version": "TEXT",
+            "chunking_version": "TEXT",
+            "document_type": "TEXT",
+            "byte_size": "INTEGER",
+        }
+        for column, ddl in migrations.items():
+            if column not in existing:
+                self._db.execute(f"ALTER TABLE sources ADD COLUMN {column} {ddl}")
         self._db.commit()
 
     # ---- sources ----------------------------------------------------------
@@ -218,7 +228,10 @@ class SCSKnowledgeLibrary:
         params: list[Any] = []
         if active_only:
             sql += " AND c.active = 1 AND s.active = 1"
-            sql += " AND s.source_state NOT IN ('QUARANTINED', 'DISABLED')"
+            # M1.4.1 firewall: only explicitly trusted states enter
+            # authoritative retrieval (P8). CANDIDATE / QUARANTINED /
+            # DISABLED / SUPERSEDED / CUSTOMER_JOB are excluded.
+            sql += " AND s.source_state IN ('SOURCE_VERIFIED', 'ACTIVE')"
             sql += " AND s.source_type != 'CUSTOMER_JOB'"
         if source_type:
             sql += " AND s.source_type = ?"
@@ -260,6 +273,29 @@ class SCSKnowledgeLibrary:
             "SELECT * FROM sources WHERE superseded_by_source_id IS NOT NULL OR "
             "supersedes_source_id IS NOT NULL").fetchall()
         return [self._source_from_row(r) for r in rows]
+
+    # ---- table retrieval (M1.4.1 P39-P40) ----------------------------------
+
+    def search_tables(self, query: str, *, limit: int = 3) -> list[dict[str, Any]]:
+        """Retrieve table evidence by caption/rows - returns table_id, page,
+        row/header + literal value."""
+        q = query.lower()
+        rows = self._db.execute(
+            "SELECT t.*, s.source_type, s.source_state FROM tables t "
+            "JOIN sources s ON t.source_id = s.source_id "
+            "WHERE s.source_state IN ('SOURCE_VERIFIED','ACTIVE') "
+            "AND (lower(t.caption) LIKE ? OR lower(t.rows_json) LIKE ?) LIMIT ?",
+            (f"%{q}%", f"%{q}%", limit)).fetchall()
+        results = []
+        for row in rows:
+            data = dict(row)
+            data["rows"] = json.loads(data.get("rows_json") or "[]")
+            results.append({
+                "table_id": data["table_id"], "source_id": data["source_id"],
+                "page": data.get("page"), "section": data.get("section"),
+                "caption": data.get("caption"), "rows": data["rows"],
+            })
+        return results
 
     def close(self) -> None:
         self._db.close()

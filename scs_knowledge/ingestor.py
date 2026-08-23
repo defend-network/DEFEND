@@ -104,6 +104,10 @@ class IngestResult:
     chunks: list[KnowledgeChunk]
     tables: list[dict[str, Any]]
     duplicate_of_source_id: str | None = None
+    ocr_engine: str | None = None
+    ocr_pages: int = 0
+    ocr_used: bool = False
+    text_pages: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -115,35 +119,59 @@ class IngestResult:
             "chunk_count": len(self.chunks), "table_count": len(self.tables),
             "duplicate_of_source_id": self.duplicate_of_source_id,
             "parser_version": PARSER_VERSION, "chunking_version": CHUNKING_VERSION,
+            "ocr_engine": self.ocr_engine, "ocr_pages": self.ocr_pages,
+            "ocr_used": self.ocr_used, "text_pages": self.text_pages,
         }
 
 
 def ingest_file(library: SCSKnowledgeLibrary, path: Path, *,
-                private_root: Path | None = None) -> IngestResult:
-    """Index a document copy under private_root; originals never mutated."""
+                private_root: Path | None = None,
+                ocr_engine: str | None = None,
+                ocr_unavailable_ok: bool = True) -> IngestResult:
+    """Index a document copy under private_root; originals never mutated.
+
+    Image-only PDF pages route through OCR when an engine is supplied
+    (M1.4.1 P37-P38). If a PDF yields no text and no OCR engine is available,
+    the result honestly reports no text (never silent success).
+    """
     path = Path(path)
     digest = sha256_of(path)
     existing = library.find_by_hash(digest)
     duplicate_of = existing[0].source_id if existing else None
+    ingest_id = f"ING-{datetime.now().strftime('%Y%m%d%H%M%S')}"
 
-    # same hash: do not duplicate-index blindly (H5)
     if duplicate_of:
         prior = existing[0]
         prior_state = "QUARANTINED" if prior.source_type in ("UNKNOWN", "CUSTOMER_JOB") \
             else "CANDIDATE"
         return IngestResult(
-            ingest_id=f"ING-{datetime.now().strftime('%Y%m%d%H%M%S')}",
-            source_id=prior.source_id, filename=path.name, sha256=digest,
-            byte_size=path.stat().st_size, document_type=path.suffix.lower(),
+            ingest_id=ingest_id, source_id=prior.source_id, filename=path.name,
+            sha256=digest, byte_size=path.stat().st_size,
+            document_type=path.suffix.lower(),
             source_classification=prior.source_type, source_state=prior_state,
             chunks=[], tables=[], duplicate_of_source_id=duplicate_of)
 
-    text, tables = _extract(path)
+    text, tables, text_pages = _extract(path)
+    ocr_used = False
+    ocr_pages = 0
+    if path.suffix.lower() == ".pdf" and text_pages == 0 and ocr_engine:
+        text, ocr_pages = _ocr_pdf(path, _pdf_page_count(path), engine=ocr_engine)
+        ocr_used = ocr_pages > 0
+        if text_pages == 0 and ocr_pages == 0 and not ocr_unavailable_ok:
+            return IngestResult(
+                ingest_id=ingest_id, source_id=f"SRC-{digest[:10]}",
+                filename=path.name, sha256=digest, byte_size=path.stat().st_size,
+                document_type=path.suffix.lower(),
+                source_classification="UNKNOWN", source_state="QUARANTINED",
+                chunks=[], tables=[], ocr_engine=ocr_engine,
+                ocr_used=False, ocr_pages=0, text_pages=0,
+                notes_hint="OCR_NOT_AVAILABLE")
+
     classification = classify_document(path.name, text[:2000])
-    quarantined = classification in ("UNKNOWN", "CUSTOMER_JOB")
+    quarantined = classification in ("UNKNOWN", "CUSTOMER_JOB") or (
+        path.suffix.lower() == ".pdf" and text_pages == 0 and not ocr_used)
     state = "QUARANTINED" if quarantined else "CANDIDATE"
     source_id = f"SRC-{digest[:10]}"
-    ingest_id = f"ING-{datetime.now().strftime('%Y%m%d%H%M%S')}"
 
     private_copy = None
     if private_root:
@@ -163,7 +191,6 @@ def ingest_file(library: SCSKnowledgeLibrary, path: Path, *,
         active=not quarantined, confidence="HIGH",
         notes="quarantined until classification/verification" if quarantined else "CANDIDATE")
     library.add_source(source)
-    # provenance (H5): state + dedup + parser/chunking versions after insert
     library._db.execute(
         "UPDATE sources SET source_state=?, ingest_id=?, parser_version=?, "
         "chunking_version=?, document_type=?, byte_size=? WHERE source_id=?",
@@ -176,10 +203,12 @@ def ingest_file(library: SCSKnowledgeLibrary, path: Path, *,
         chunk.chunk_type = classify_chunk_type(chunk.text)
         library.add_chunk(chunk)
     for table in tables:
+        # immutable table identity: hash + page + index (P23, audit F)
+        table_id = f"tbl-{digest[:10]}-p{table.get('page')}-{table.get('table_index', 0)}"
         library._db.execute(
             "INSERT OR REPLACE INTO tables (table_id, source_id, page, section, "
             "caption, rows_json, active) VALUES (?,?,?,?,?,?,1)",
-            (table["table_id"], source_id, table.get("page"), table.get("section"),
+            (table_id, source_id, table.get("page"), table.get("section"),
              table.get("caption"), json.dumps(table.get("rows") or [])))
     library._db.commit()
     return IngestResult(ingest_id=ingest_id, source_id=source_id, filename=path.name,
@@ -187,7 +216,56 @@ def ingest_file(library: SCSKnowledgeLibrary, path: Path, *,
                         document_type=path.suffix.lower(),
                         source_classification=classification, source_state=state,
                         chunks=chunks, tables=tables,
-                        duplicate_of_source_id=None)
+                        duplicate_of_source_id=None,
+                        ocr_engine=ocr_engine, ocr_pages=ocr_pages,
+                        ocr_used=ocr_used, text_pages=text_pages)
+
+
+def verify_source(library: SCSKnowledgeLibrary, source_id: str,
+                  *, manufacturer: str | None = None,
+                  title: str | None = None) -> None:
+    """Deterministic verification of a CANDIDATE source -> SOURCE_VERIFIED
+    (M1.4.1 P9/P30). Requires documented identity: manufacturer/title/hash."""
+    source = library.get_source(source_id)
+    if source is None:
+        return
+    verified_identity = bool(source.document_hash) and bool(
+        manufacturer or source.manufacturer or source.title)
+    if verified_identity:
+        library.set_source_state(source_id, "SOURCE_VERIFIED")
+
+
+def _pdf_page_count(path: Path) -> list[int]:
+    import fitz
+    with fitz.open(str(path)) as pdf:
+        return list(range(1, len(pdf) + 1))
+
+
+def _ocr_pdf(path: Path, page_numbers: list[int], engine: str = "rapidocr",
+             dpi: int = 200) -> tuple[str, int]:
+    """OCR image-only PDF pages via RapidOCR (P37). Returns (text, pages_ok)."""
+    import io
+    import fitz
+    import numpy as np
+    from PIL import Image
+    parts = []
+    pages_ok = 0
+    try:
+        from rapidocr_onnxruntime import RapidOCR
+        ocr = RapidOCR()
+        with fitz.open(str(path)) as pdf:
+            for number in page_numbers:
+                page = pdf.load_page(number - 1)
+                pix = page.get_pixmap(matrix=fitz.Matrix(dpi / 72, dpi / 72))
+                image = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
+                result, _elapse = ocr(np.array(image))
+                lines = [str(text) for box, text, score in (result or [])]
+                if lines:
+                    pages_ok += 1
+                parts.append(f"\nPAGE {number} (OCR)\n" + "\n".join(lines))
+    except Exception:
+        parts.append("\nOCR_NOT_AVAILABLE\n")
+    return "\n".join(parts), pages_ok
 
 
 def classify_chunk_type(text: str) -> str:
@@ -205,36 +283,43 @@ def classify_chunk_type(text: str) -> str:
     return "NOTE"
 
 
-def _extract(path: Path) -> tuple[str, list[dict[str, Any]]]:
-    """Extract text + tables preserving structure (PDF via pdfplumber)."""
+def _extract(path: Path) -> tuple[str, list[dict[str, Any]], int]:
+    """Extract text + tables preserving structure (PDF via pdfplumber).
+
+    Returns (text, tables, text_page_count). Image-only pages yield no text;
+    the caller decides whether to OCR (M1.4.1 P37).
+    """
     suffix = path.suffix.lower()
     tables: list[dict[str, Any]] = []
     if suffix == ".pdf":
         import pdfplumber
         parts = []
+        text_pages = 0
         with pdfplumber.open(str(path)) as pdf:
             for number, page in enumerate(pdf.pages, start=1):
+                page_text = page.extract_text() or ""
+                if page_text.strip():
+                    text_pages += 1
                 parts.append(f"\nPAGE {number}\n")
-                parts.append(page.extract_text() or "")
+                parts.append(page_text)
                 try:
                     for table_index, table in enumerate(page.find_tables()):
                         rows = table.extract()
                         if not rows:
                             continue
-                        caption = f"table p{number} t{table_index + 1}"
-                        tables.append({"table_id": f"tbl-{path.stem}-p{number}-{table_index}",
-                                       "page": str(number), "section": None,
-                                       "caption": caption, "rows": rows})
+                        tables.append({"table_id": None, "page": str(number),
+                                       "section": None, "caption": None,
+                                       "rows": rows, "table_index": table_index})
                 except Exception:
                     continue
-        return "\n".join(parts), tables
+        return "\n".join(parts), tables, text_pages
     if suffix in (".txt", ".md", ".markdown"):
-        return path.read_text(encoding="utf-8", errors="replace"), tables
+        return path.read_text(encoding="utf-8", errors="replace"), tables, 1
     if suffix == ".docx":
         try:
             from docx import Document
             doc = Document(str(path))
-            return "\n".join(p.text for p in doc.paragraphs), tables
+            return "\n".join(p.text for p in doc.paragraphs), tables, 1
         except Exception:
-            return f"[unable to parse {suffix}]", tables
-    return f"[unsupported format {suffix}]", tables
+            return f"[unable to parse {suffix}]", tables, 0
+    return f"[unsupported format {suffix}]", tables, 0
