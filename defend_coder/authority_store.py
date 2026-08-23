@@ -154,6 +154,12 @@ class MemoryAuthorityStore:
                 f"cannot activate unknown technical profile "
                 f"{profile_id}@{version}"
             )
+        stored = self._technicals[(profile_id, version)]
+        if stored.provider != provider:
+            raise StartupIntegrityError(
+                f"technical profile {profile_id}@{version} belongs to "
+                f"provider {stored.provider!r}, not {provider!r}"
+            )
         self._technical_active[provider] = (profile_id, version)
 
     def get_identity(self, profile_id, version):
@@ -437,7 +443,8 @@ class PostgresAuthorityStore:
             with connection.cursor(row_factory=dict_row) as cursor:
                 cursor.execute(
                     """
-                    SELECT profile_hash FROM coder_provider_technical_profiles
+                    SELECT profile_hash, provider AS profile_provider
+                    FROM coder_provider_technical_profiles
                     WHERE profile_id = %s AND version = %s
                     """,
                     (profile_id, version),
@@ -447,6 +454,11 @@ class PostgresAuthorityStore:
                     raise StartupIntegrityError(
                         f"cannot activate unknown technical profile "
                         f"{profile_id}@{version}"
+                    )
+                if row["profile_provider"] != provider:
+                    raise StartupIntegrityError(
+                        f"technical profile {profile_id}@{version} belongs to "
+                        f"provider {row['profile_provider']!r}, not {provider!r}"
                     )
                 cursor.execute(
                     """
@@ -581,6 +593,21 @@ def hydrate_authority(
             technicals[(technical.profile_id, technical.version)] = technical
             store.set_technical_active(
                 provider, technical.profile_id, technical.version
+            )
+
+    # Backfill any MISSING per-provider active pointer deterministically
+    # (covers the schema-10 -> 11 upgrade where profiles exist but the new
+    # active-pointer table is empty). Never overwrites an existing explicit
+    # selection.
+    for provider in ("deepseek", "qwen3-vllm", "openai"):
+        if store.active_technical_for(provider) is None:
+            canonical = build_provider_technical_profile(provider)
+            key = (canonical.profile_id, canonical.version)
+            if key not in technicals:
+                store.save_technical(canonical)
+                technicals[key] = canonical
+            store.set_technical_active(
+                provider, canonical.profile_id, canonical.version
             )
 
     return HydratedAuthority(

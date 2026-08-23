@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
+import re
 from typing import Any, Iterator
 
 
@@ -135,9 +136,14 @@ class CoderDatabase:
 
 def _migration_statements(path: Path) -> tuple[str, ...]:
     script = path.read_text(encoding="utf-8")
+    # Strip ``--`` line comments BEFORE splitting on ``;``: comments may
+    # legitimately contain semicolons and must never become statements.
+    cleaned = "\n".join(
+        re.sub(r"--.*$", "", line) for line in script.splitlines()
+    )
     return tuple(
         statement.strip()
-        for statement in script.split(";")
+        for statement in cleaned.split(";")
         if statement.strip()
     )
 
