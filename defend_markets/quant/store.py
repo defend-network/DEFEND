@@ -2243,6 +2243,122 @@ class PostgresQuantStore(QuantStore):
             columns = [column.name for column in cursor.description]
             return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
+    # ------------------------------------------------------------------ #
+    # M4.8 Hard Rock data lane
+    # ------------------------------------------------------------------ #
+
+    def insert_hardrock_ladder_snapshot(self, snapshot):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO hardrock_ladder_snapshot "
+                "(data_provider, sportsbook, state, retrieved_at, raw_response_sha256, canonical_response_sha256, "
+                "entry_count, ladder_identity) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING ladder_snapshot_id",
+                (
+                    snapshot["data_provider"], snapshot["sportsbook"], snapshot["state"],
+                    snapshot["retrieved_at"], snapshot.get("raw_response_sha256"),
+                    snapshot.get("canonical_response_sha256"), snapshot.get("entry_count", 0),
+                    snapshot.get("ladder_identity"),
+                ),
+            )
+            snapshot_id = int(cursor.fetchone()[0])
+            for root_idx, american in (snapshot.get("entries") or {}).items():
+                cursor.execute(
+                    "INSERT INTO hardrock_ladder_entry (ladder_snapshot_id, root_idx, american_odds) "
+                    "VALUES (%s, %s, %s)",
+                    (snapshot_id, int(root_idx), int(american)),
+                )
+            connection.commit()
+            return snapshot_id
+
+    def insert_hardrock_quote(self, quote):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO hardrock_quote_observation "
+                "(canonical_event_id, data_provider, sportsbook, state, provider_event_id, market_family, period, "
+                "line, selection, selection_side, root_idx, ladder_snapshot_id, american_odds, decimal_odds, "
+                "implied_probability, observed_at, raw_payload_hash) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (provider_event_id, market_family, period, line, selection_side, observed_at) DO NOTHING "
+                "RETURNING observation_id",
+                (
+                    quote["canonical_event_id"], quote["data_provider"], quote["sportsbook"], quote["state"],
+                    quote["provider_event_id"], quote["market_family"], quote["period"], quote.get("line"),
+                    quote["selection"], quote["selection_side"], int(quote["root_idx"]),
+                    int(quote["ladder_snapshot_id"]), int(quote["american_odds"]), quote["decimal_odds"],
+                    quote.get("implied_probability"), quote["observed_at"], quote.get("raw_payload_hash"),
+                ),
+            )
+            return cursor.fetchone() is not None
+
+    def list_hardrock_quotes(self, limit=5000):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT observation_id, canonical_event_id, data_provider, sportsbook, state, provider_event_id, "
+                "market_family, period, line, selection, selection_side, root_idx, ladder_snapshot_id, "
+                "american_odds, decimal_odds, implied_probability, observed_at, raw_payload_hash, created_at "
+                "FROM hardrock_quote_observation ORDER BY observation_id DESC LIMIT %s",
+                (limit,),
+            )
+            columns = [column.name for column in cursor.description]
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+    def upsert_provider_event_mapping(self, mapping):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO provider_event_mapping "
+                "(provider, native_event_id, canonical_event_id, identity_mode, confidence, normalized_participants, "
+                "competition, scheduled_time) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (provider, native_event_id) DO UPDATE SET "
+                "canonical_event_id = EXCLUDED.canonical_event_id, identity_mode = EXCLUDED.identity_mode, "
+                "confidence = EXCLUDED.confidence, normalized_participants = EXCLUDED.normalized_participants, "
+                "competition = EXCLUDED.competition, scheduled_time = EXCLUDED.scheduled_time, matched_at = now() "
+                "RETURNING mapping_id",
+                (
+                    mapping["provider"], mapping["native_event_id"], mapping.get("canonical_event_id"),
+                    mapping["identity_mode"], mapping.get("confidence", "UNKNOWN"),
+                    mapping.get("normalized_participants"), mapping.get("competition"),
+                    mapping.get("scheduled_time"),
+                ),
+            )
+            return cursor.fetchone() is not None
+
+    def list_provider_event_mappings(self, limit=5000):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT mapping_id, provider, native_event_id, canonical_event_id, identity_mode, confidence, "
+                "normalized_participants, competition, scheduled_time, matched_at "
+                "FROM provider_event_mapping ORDER BY mapping_id DESC LIMIT %s",
+                (limit,),
+            )
+            columns = [column.name for column in cursor.description]
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+    def get_backfill_checkpoint(self, provider, task):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT checkpoint_id, provider, task, cursor_value, state, updated_at "
+                "FROM historical_backfill_checkpoint WHERE provider = %s AND task = %s",
+                (provider, task),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return None
+            columns = [column.name for column in cursor.description]
+            return dict(zip(columns, row))
+
+    def upsert_backfill_checkpoint(self, provider, task, *, cursor_value, state="RUNNING"):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO historical_backfill_checkpoint (provider, task, cursor_value, state) "
+                "VALUES (%s, %s, %s, %s) "
+                "ON CONFLICT (provider, task) DO UPDATE SET cursor_value = EXCLUDED.cursor_value, "
+                "state = EXCLUDED.state, updated_at = now() RETURNING checkpoint_id",
+                (provider, task, cursor_value, state),
+            )
+            return cursor.fetchone() is not None
+
 
 @dataclass
 class InMemoryQuantStore(QuantStore):
@@ -2290,6 +2406,11 @@ class InMemoryQuantStore(QuantStore):
     arb_series: dict[str, dict[str, Any]] = field(default_factory=dict)
     arb_episodes: list[dict[str, Any]] = field(default_factory=list)
     odds_snapshots: dict[tuple[str, str], dict[str, Any]] = field(default_factory=dict)
+    hardrock_ladder_snapshots: list[dict[str, Any]] = field(default_factory=list)
+    hardrock_quotes: list[dict[str, Any]] = field(default_factory=list)
+    provider_event_mappings: dict[tuple[str, str], dict[str, Any]] = field(default_factory=dict)
+    backfill_checkpoints: dict[tuple[str, str], dict[str, Any]] = field(default_factory=dict)
+    _next_ladder_snapshot: int = 1
     _next_result_request: int = 1
     _next_governance: int = 1
     _next_episode: int = 1
@@ -3071,6 +3192,41 @@ class InMemoryQuantStore(QuantStore):
             "ingestion_batch_id": ingestion_batch_id, "request_id": request_id, "observed_at": observed_at,
         }
         return snapshot_id
+
+    def insert_hardrock_ladder_snapshot(self, snapshot):
+        snapshot_id = self._next_ladder_snapshot
+        self._next_ladder_snapshot += 1
+        self.hardrock_ladder_snapshots.append(dict(snapshot, ladder_snapshot_id=snapshot_id))
+        return snapshot_id
+
+    def insert_hardrock_quote(self, quote):
+        key = (quote["provider_event_id"], quote["market_family"], quote["period"], quote.get("line"), quote["selection_side"], quote["observed_at"])
+        for existing in self.hardrock_quotes:
+            if (existing["provider_event_id"], existing["market_family"], existing["period"], existing.get("line"), existing["selection_side"], existing["observed_at"]) == key:
+                return False
+        self.hardrock_quotes.append(dict(quote))
+        return True
+
+    def list_hardrock_quotes(self, limit=5000):
+        return list(reversed(self.hardrock_quotes))[:limit]
+
+    def upsert_provider_event_mapping(self, mapping):
+        key = (mapping["provider"], mapping["native_event_id"])
+        self.provider_event_mappings[key] = dict(mapping, matched_at=_utcnow().isoformat())
+        return True
+
+    def list_provider_event_mappings(self, limit=5000):
+        return list(reversed(list(self.provider_event_mappings.values())))[:limit]
+
+    def get_backfill_checkpoint(self, provider, task):
+        return self.backfill_checkpoints.get((provider, task))
+
+    def upsert_backfill_checkpoint(self, provider, task, *, cursor_value, state="RUNNING"):
+        self.backfill_checkpoints[(provider, task)] = {
+            "provider": provider, "task": task, "cursor_value": cursor_value, "state": state,
+            "updated_at": _utcnow().isoformat(),
+        }
+        return True
 
     def insert_arb_opportunity(self, opp):
         if opp["fingerprint"] in self.arb_opportunities:

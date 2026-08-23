@@ -180,6 +180,8 @@ class ProviderRequestExecutor:
             first = result[0]
             if hasattr(first, "status_code"):
                 return int(first.status_code)
+        if result is not None and hasattr(result, "status_code") and result.status_code is not None:
+            return int(result.status_code)
         return None
 
     def _extract_schema(self, result: Any, metadata: dict[str, Any]) -> bool:

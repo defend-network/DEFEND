@@ -528,6 +528,34 @@ def test_owls_ladder_failure_reported_in_detail(monkeypatch):
     assert "ladder_entries=0" in probe.coverage_detail
 
 
+def test_owls_available_requires_healthy_ladder(monkeypatch):
+    """M4.8 P2: a rootIdx-only payload is DEGRADED (not AVAILABLE) when the
+    ladder is unreachable."""
+    probe, _ = _adapter_probe(
+        tt_body=TT_BODY_AVAILABLE,
+        ladder_status=503,
+        ladder_body={"error": "unavailable"},
+        monkeypatch=monkeypatch,
+    )
+    assert probe.coverage_state == "DEGRADED"
+    assert probe.coverage_state != "AVAILABLE"
+
+
+def test_owls_available_requires_ladder_entries(monkeypatch):
+    """M4.8 P2: an empty ladder (0 entries) yields DEGRADED, not AVAILABLE."""
+    def _fake(url, **kwargs):
+        if url.endswith("/ladder"):
+            return FetchResult(ok=True, status_code=200, latency_ms=10, error_type=None,
+                               body='{"success":true,"data":{"even":0,"ladder":[]}}')
+        return _Result(200, TT_BODY_AVAILABLE)
+
+    monkeypatch.setattr(adapters_module, "fetch", _fake)
+    definition = find_provider("owls_insight")
+    probe = REAL_ADAPTERS["owls_insight"].probe(definition, {SECRET_NAME: SECRET_VALUE}, {})
+    assert probe.coverage_state == "DEGRADED"
+    assert "ladder_entries=0" in probe.coverage_detail
+
+
 def test_owls_ladder_schema_error_reported(monkeypatch):
     def _fake(url, **kwargs):
         if url.endswith("/ladder"):
@@ -537,7 +565,9 @@ def test_owls_ladder_schema_error_reported(monkeypatch):
     monkeypatch.setattr(adapters_module, "fetch", _fake)
     definition = find_provider("owls_insight")
     probe = REAL_ADAPTERS["owls_insight"].probe(definition, {SECRET_NAME: SECRET_VALUE}, {})
-    assert probe.coverage_state == "AVAILABLE"
+    # M4.8 P2: a rootIdx-only payload is NOT AVAILABLE unless the ladder decodes
+    # it; a schema-invalid ladder yields DEGRADED, not AVAILABLE.
+    assert probe.coverage_state == "DEGRADED"
     assert "ladder=schema_error" in probe.coverage_detail
 
 

@@ -556,6 +556,8 @@ class MarketsIntelligenceOrchestrator:
         self._scheduler.register(SchedulerJob("SETTLEMENT", 300))
         self._scheduler.register(SchedulerJob("FORWARD_SCORING", 300))
         self._scheduler.register(SchedulerJob("RESULT_RECONCILIATION", 3600))
+        self._scheduler.register(SchedulerJob("HARDROCK_CAPTURE", 300))
+        self._scheduler.register(SchedulerJob("HISTORICAL_BACKFILL", 1800))
         self._scheduler.register(SchedulerJob("ARB_SCAN", 60))
         self._scheduler.register(SchedulerJob("ARB_EXPIRATION", 300))
         self._scheduler.register(SchedulerJob("PAPER_ARB_SETTLEMENT", 600))
@@ -650,6 +652,40 @@ class MarketsIntelligenceOrchestrator:
             return {"summary": f"reconciliation: {len(due)} due, {outcome.get('revised', 0)} revised", "result": {"due": len(due), **outcome}}
 
         return self._scheduler.run_due("RESULT_RECONCILIATION", handler=handler)
+
+    def run_hardrock_capture(self) -> dict[str, Any]:
+        """P19: durable HARDROCK_CAPTURE job (Owls Hard Rock FL ingestion).
+
+        Read-only: fetches board + ladder, normalizes rootIdx through the ladder
+        snapshot, persists canonical quote observations. Never settles, never
+        scores. All HTTP goes through the governed ProviderRequestExecutor.
+        """
+        from defend_markets.quant.governance import ProviderRequestExecutor
+        from defend_markets.quant.hardrock import OwlsHardRockAdapter
+
+        def handler() -> dict[str, Any]:
+            key = _load_owls_insight_key()
+            if not key:
+                return {"summary": "hardrock capture: no Owls key", "result": {"ok": False, "reason": "no owls key"}}
+            executor = ProviderRequestExecutor(self._store)
+            adapter = OwlsHardRockAdapter(key, self._store, executor=executor)
+            outcome = adapter.ingest()
+            if outcome.get("ok"):
+                self.record_event_trigger("HARDROCK_CAPTURE_COMPLETED", {"quotes": outcome.get("quotes", 0)}, invoke=False)
+            return {"summary": f"hardrock capture: {outcome.get('quotes', 0)} quotes, {outcome.get('events', 0)} events", "result": outcome}
+
+        return self._scheduler.run_due("HARDROCK_CAPTURE", handler=handler)
+
+    def run_historical_backfill(self) -> dict[str, Any]:
+        """P16: durable low-priority HISTORICAL_BACKFILL job (OddsPapi)."""
+        from defend_markets.quant.backfill import HistoricalBackfillJob
+
+        def handler() -> dict[str, Any]:
+            job = HistoricalBackfillJob(self._store)
+            outcome = job.run()
+            return {"summary": f"historical backfill ran: {outcome}", "result": outcome}
+
+        return self._scheduler.run_due("HISTORICAL_BACKFILL", handler=handler)
 
     def run_arb_scan(self) -> dict[str, Any]:
         """P30: durable ARB_SCAN job."""
@@ -914,6 +950,8 @@ class MarketsIntelligenceOrchestrator:
             ("SETTLEMENT", self.run_settlement),
             ("FORWARD_SCORING", self.run_forward_scoring),
             ("RESULT_RECONCILIATION", self.run_result_reconciliation),
+            ("HARDROCK_CAPTURE", self.run_hardrock_capture),
+            ("HISTORICAL_BACKFILL", self.run_historical_backfill),
             ("ARB_SCAN", self.run_arb_scan),
             ("ARB_EXPIRATION", self.run_arb_expiration),
             ("PAPER_ARB_SETTLEMENT", self.run_paper_arb_settlement),
@@ -1020,6 +1058,20 @@ def _load_odds_api_io_key() -> str:
         return ""
     try:
         key = SecretRegistry(DpapiSecretStore(default_secret_path())).get("ODDS_API_IO_API_KEY")
+    except Exception:
+        return ""
+    return str(key or "")
+
+
+def _load_owls_insight_key() -> str:
+    """Load the Owls Insight key from DPAPI without ever logging it (P1)."""
+    try:
+        from defend_integrations.stores import SecretRegistry, default_secret_path
+        from defend_control.secrets import DpapiSecretStore
+    except Exception:
+        return ""
+    try:
+        key = SecretRegistry(DpapiSecretStore(default_secret_path())).get("OWLS_INSIGHT_API_KEY")
     except Exception:
         return ""
     return str(key or "")

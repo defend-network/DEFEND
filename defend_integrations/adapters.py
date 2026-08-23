@@ -695,6 +695,12 @@ def _classify_tt_coverage(
         return "UNKNOWN", coverage_detail
     if counts["rootidx_values"] == 0:
         return "UNKNOWN", coverage_detail
+    # M4.8 P2: a rootIdx-only payload is NOT actionable unless the corresponding
+    # Hard Rock ladder can decode it. AVAILABLE requires a healthy ladder.
+    if ladder_status != "reachable":
+        return "DEGRADED", coverage_detail
+    if ladder_entries == 0:
+        return "DEGRADED", coverage_detail
     return "AVAILABLE", coverage_detail
 
 
@@ -722,7 +728,12 @@ class OwlsInsightAdapter(_BaseAdapter):
     _TT_ENDPOINT = f"{_BASE}/fl/TABLE_TENNIS"
     _LADDER_ENDPOINT = f"{_BASE}/ladder"
     _PLAN_MARKERS = ("plan", "upgrade", "subscription", "tier", "permission", "access")
-    _HEADERS = {"Accept": "application/json"}
+    # Cloudflare (Error 1010 browser_signature_banned) rejects the default
+    # Python-urllib UA; a browser UA is required for the Owls API.
+    _HEADERS = {
+        "Accept": "application/json",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+    }
 
     def probe(self, definition, secrets, config) -> AdapterProbe:
         key = secrets.get("OWLS_INSIGHT_API_KEY", "")
@@ -768,7 +779,7 @@ class OwlsInsightAdapter(_BaseAdapter):
         coverage_state, coverage_detail = _classify_tt_coverage(
             events, inplay_events, counts, ladder_status, ladder_entries
         )
-        ok = coverage_state in ("AVAILABLE", "EMPTY")
+        ok = coverage_state in ("AVAILABLE", "EMPTY", "DEGRADED")
         return AdapterProbe(
             ok=ok,
             status_code=tt_result.status_code,
