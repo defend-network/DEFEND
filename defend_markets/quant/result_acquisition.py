@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from defend_markets.quant.forward_evidence import (
     LOGLOSS_EPSILON,
@@ -29,6 +29,7 @@ from defend_markets.quant.forward_evidence import (
     SCORING_POLICY_VERSION,
     score_prediction,
 )
+from defend_markets.quant.normalize import canonical_result_fingerprint
 
 RESULT_ACQUISITION_POLICY_VERSION = "RESULT_ACQUISITION_POLICY_V1"
 RESULT_POLL_POLICY_VERSION = "RESULT_POLL_POLICY_V1"
@@ -121,6 +122,8 @@ class ResultRequestEvidence:
     events_returned: int = 0
     events_matched: int = 0
     raw_payload_hash: str | None = None
+    raw_response_sha256: str | None = None
+    canonical_response_sha256: str | None = None
     error_class: str | None = None
     successful_search_scope: str | None = None
 
@@ -139,6 +142,8 @@ class ResultRequestEvidence:
             "events_returned": self.events_returned,
             "events_matched": self.events_matched,
             "raw_payload_hash": self.raw_payload_hash,
+            "raw_response_sha256": self.raw_response_sha256,
+            "canonical_response_sha256": self.canonical_response_sha256,
             "error_class": self.error_class,
             "successful_search_scope": self.successful_search_scope,
         }
@@ -281,11 +286,12 @@ class OddsApiIOResultAdapter:
     BASE = "https://api.odds-api.io/v3"
 
     def __init__(self, key: str, *, store: Any, probe_get: Any | None = None,
-                 parse_recovered_json: Any | None = None) -> None:
+                 parse_recovered_json: Any | None = None, executor: Any | None = None) -> None:
         self._key = key
         self._store = store
         self._probe_get = probe_get
         self._parse_recovered_json = parse_recovered_json
+        self._executor = executor
         self.last_request_count = 0
 
     def _load_helpers(self) -> tuple[Any, Any]:
@@ -294,6 +300,52 @@ class OddsApiIOResultAdapter:
         from defend_integrations.probing import probe_get
         from defend_markets.shadow import parse_recovered_json
         return probe_get, parse_recovered_json
+
+    def _governed_http(self, *, request_class: str, operation: str, request_id: str,
+                       callable: Callable[[], Any], schema_understood: bool = True):
+        """Route one HTTP attempt through the shared governance boundary (P5).
+
+        Returns the raw probe_get result tuple, or None when blocked.
+        """
+        if self._executor is None:
+            return callable()
+        governed = self._executor.execute(
+            provider="odds_api_io",
+            request_class=request_class,
+            operation=operation,
+            request_metadata={"request_id": request_id, "schema_understood": schema_understood},
+            callable=callable,
+        )
+        if not governed.allowed:
+            return None
+        return governed.payload
+
+    @staticmethod
+    def _response_hashes(evidence: Any, parsed: Any) -> tuple[str | None, str | None]:
+        """P35/P36: compute raw-response SHA256 and canonical JSON SHA256.
+
+        RAW_RESPONSE_SHA256 hashes the exact response bytes as received;
+        CANONICAL_RESPONSE_SHA256 hashes a semantic canonicalization (sort-keys)
+        for dedupe. They are distinct and clearly labeled.
+        """
+        import hashlib
+        import json
+
+        raw_sha: str | None = None
+        canon_sha: str | None = None
+        body = getattr(evidence, "body", None) if evidence is not None else None
+        if isinstance(body, str) and body:
+            raw_sha = hashlib.sha256(body.encode("utf-8")).hexdigest()
+        elif isinstance(body, (bytes, bytearray)):
+            raw_sha = hashlib.sha256(bytes(body)).hexdigest()
+        if parsed is not None:
+            try:
+                canon_sha = hashlib.sha256(
+                    json.dumps(parsed, sort_keys=True, default=str).encode("utf-8")
+                ).hexdigest()
+            except (TypeError, ValueError):
+                canon_sha = None
+        return raw_sha, canon_sha
 
     def fetch_recent_results(self, *, from_iso: str, to_iso: str) -> ProviderResultBatch:
         probe_get, parse_recovered_json = self._load_helpers()
@@ -304,16 +356,22 @@ class OddsApiIOResultAdapter:
         import uuid
 
         request_id = f"oaio-result-{uuid.uuid4().hex}"
-        result, evidence, parsed = probe_get(
-            "odds_api_io", "result-acquisition", url,
-            known_secrets=(self._key,), max_response_bytes=8 * 1024 * 1024,
+        result, evidence, parsed = self._governed_http(
+            request_class="RESULT",
+            operation="result-acquisition",
+            request_id=request_id,
+            callable=lambda: probe_get(
+                "odds_api_io", "result-acquisition", url,
+                known_secrets=(self._key,), max_response_bytes=8 * 1024 * 1024,
+            ),
         )
         self.last_request_count = 1
+        raw_sha, canon_sha = self._response_hashes(evidence, parsed)
         if result is None or getattr(result, "status_code", None) is None:
             req_evidence = ResultRequestEvidence(
                 request_id=request_id, provider="odds_api_io", request_kind="RESULT",
                 requested_at=requested_at, window_start=from_iso, window_end=to_iso,
-                error_class="NO_RESPONSE",
+                error_class="NO_RESPONSE", raw_response_sha256=raw_sha,
             )
             batch = ProviderResultBatch(
                 request_kind="RESULT", events_requested=1, events_returned=0,
@@ -330,7 +388,7 @@ class OddsApiIOResultAdapter:
                 request_id=request_id, provider="odds_api_io", request_kind="RESULT",
                 requested_at=requested_at, window_start=from_iso, window_end=to_iso,
                 http_status=status_code, response_schema_status="INVALID",
-                error_class="SCHEMA_INVALID",
+                error_class="SCHEMA_INVALID", raw_response_sha256=raw_sha, canonical_response_sha256=canon_sha,
             )
             batch = ProviderResultBatch(
                 request_kind="RESULT", events_requested=1, events_returned=0,
@@ -347,6 +405,7 @@ class OddsApiIOResultAdapter:
             http_status=status_code, response_schema_status="UNDERSTOOD",
             events_returned=len(events),
             successful_search_scope=f"window {from_iso}..{to_iso}",
+            raw_response_sha256=raw_sha, canonical_response_sha256=canon_sha,
         )
         batch = ProviderResultBatch(
             request_kind="RESULT",
@@ -369,15 +428,22 @@ class OddsApiIOResultAdapter:
         import uuid
 
         request_id = f"oaio-result-byid-{uuid.uuid4().hex}"
-        result, evidence, parsed = probe_get(
-            "odds_api_io", "result-acquisition-by-id", url,
-            known_secrets=(self._key,), max_response_bytes=8 * 1024 * 1024,
+        result, evidence, parsed = self._governed_http(
+            request_class="RESULT",
+            operation="result-acquisition-by-id",
+            request_id=request_id,
+            callable=lambda: probe_get(
+                "odds_api_io", "result-acquisition-by-id", url,
+                known_secrets=(self._key,), max_response_bytes=8 * 1024 * 1024,
+            ),
         )
         self.last_request_count = 1
+        raw_sha, canon_sha = self._response_hashes(evidence, parsed)
         if result is None or getattr(result, "status_code", None) is None:
             req_evidence = ResultRequestEvidence(
                 request_id=request_id, provider="odds_api_io", request_kind="RESULT_BY_ID",
                 requested_at=requested_at, target_event_count=1, error_class="NO_RESPONSE",
+                raw_response_sha256=raw_sha,
             )
             batch = ProviderResultBatch(
                 request_kind="RESULT_BY_ID", events_requested=1, events_returned=0,
@@ -394,6 +460,7 @@ class OddsApiIOResultAdapter:
                 request_id=request_id, provider="odds_api_io", request_kind="RESULT_BY_ID",
                 requested_at=requested_at, target_event_count=1, http_status=status_code,
                 response_schema_status="UNDERSTOOD", error_class="EVENT_NOT_FOUND",
+                raw_response_sha256=raw_sha, canonical_response_sha256=canon_sha,
             )
             batch = ProviderResultBatch(
                 request_kind="RESULT_BY_ID", events_requested=1, events_returned=0,
@@ -407,6 +474,7 @@ class OddsApiIOResultAdapter:
             request_id=request_id, provider="odds_api_io", request_kind="RESULT_BY_ID",
             requested_at=requested_at, target_event_count=1, http_status=status_code,
             response_schema_status="UNDERSTOOD", events_returned=len(events),
+            raw_response_sha256=raw_sha, canonical_response_sha256=canon_sha,
         )
         batch = ProviderResultBatch(
             request_kind="RESULT_BY_ID",
@@ -630,21 +698,20 @@ class TableTennisResultAcquisitionService:
     # Orchestration
     # ------------------------------------------------------------------ #
 
-    def acquire_and_settle(
+    def acquire_results(
         self,
         *,
         recent_window_hours: int = 96,
         max_events: int | None = None,
         fallback_limit: int | None = None,
     ) -> dict[str, Any]:
-        """Acquire provider results for unsettled past events, persist local
-        results, settle FINAL events and score official predictions.
+        """P0: acquire results ONLY.
 
-        Strategy (P3/P4): one bounded feed sweep first (efficient batch), then
-        bounded per-event fallback only for eligible unresolved events. A failed
-        sweep NEVER turns recent absent events into PROVIDER_RESULT_REQUESTED_EMPTY
-        (Finding B): only a successful, schema-understood, scope-covering request
-        may establish requested-empty.
+        Selects eligible canonical events, performs governed provider requests,
+        persists request evidence, normalizes provider/local result identity,
+        verifies participant orientation, and persists immutable acquired-result
+        evidence/state. It NEVER inserts quant_settlements or
+        quant_forward_scores — settlement and scoring are separate authorities.
         """
         events = self.past_unsettled_events()
         if max_events is not None:
@@ -669,15 +736,12 @@ class TableTennisResultAcquisitionService:
 
         classified: dict[str, int] = {}
         acquired = 0
-        settled = 0
-        scores = 0
-        errors: list[str] = []
         fallback_used = 0
         for event in events:
             canonical_event_id = event["canonical_event_id"]
             provider_event_id = event.get("provider_event_id")
 
-            # -------- local result path (P7) --------
+            # -------- local result path (P7/P12) --------
             local = local_results.get(canonical_event_id)
             if local is not None:
                 local_state = self._classify_local_result(event, local)
@@ -685,7 +749,7 @@ class TableTennisResultAcquisitionService:
                     self._store.upsert_result_acquisition(
                         {
                             "canonical_event_id": canonical_event_id,
-                            "provider": event.get("provider") or "odds_api_io",
+                            "provider": local.get("source_provider") or event.get("provider") or "odds_api_io",
                             "provider_event_id": provider_event_id,
                             "commence_at": event["commence_at"],
                             "acquisition_state": RESULT_RECONCILIATION_REQUIRED,
@@ -699,23 +763,21 @@ class TableTennisResultAcquisitionService:
                     )
                     classified[RESULT_RECONCILIATION_REQUIRED] = classified.get(RESULT_RECONCILIATION_REQUIRED, 0) + 1
                     continue
-                if not self._has_final_settlement(canonical_event_id):
-                    normalized = {
-                        "home_score": local["home_score"],
-                        "away_score": local["away_score"],
-                        "winner_side": local["winner_side"],
-                        "orientation": local["orientation"],
-                        "state": RESULT_STATE_FINAL,
-                        "provider_event_id": provider_event_id,
-                        "provider_result_id": local.get("source_result_id"),
-                        "raw_payload_hash": local.get("raw_payload_hash"),
-                    }
-                    settled += self._settle_event(event, normalized)
-                    scores += self._score_event(event, normalized)
+                # persist acquired-result evidence (NO settlement/score write).
+                fingerprint = canonical_result_fingerprint(
+                    provider=str(local.get("source_provider") or "odds_api_io"),
+                    provider_event_id=str(provider_event_id or ""),
+                    canonical_event_id=canonical_event_id,
+                    status=RESULT_STATE_FINAL,
+                    actual_a=local["home_score"],
+                    actual_b=local["away_score"],
+                    orientation=local["orientation"],
+                    source_result_id=local.get("source_result_id", ""),
+                )
                 self._store.upsert_result_acquisition(
                     {
                         "canonical_event_id": canonical_event_id,
-                        "provider": event.get("provider") or "odds_api_io",
+                        "provider": local.get("source_provider") or event.get("provider") or "odds_api_io",
                         "provider_event_id": provider_event_id,
                         "commence_at": event["commence_at"],
                         "acquisition_state": LOCAL_RESULT_PRESENT,
@@ -724,8 +786,11 @@ class TableTennisResultAcquisitionService:
                         "actual_b": local["away_score"],
                         "winner_side": local["winner_side"],
                         "orientation": local["orientation"],
+                        "provider_result_id": local.get("source_result_id"),
+                        "raw_provenance_hash": local.get("raw_payload_hash"),
+                        "normalized_result_fingerprint": fingerprint,
                         "next_poll_at": next_poll_at(state=LOCAL_RESULT_PRESENT, request_count=0).isoformat().replace("+00:00", "Z"),
-                        "settled": True,
+                        "settled": False,
                     }
                 )
                 classified[LOCAL_RESULT_PRESENT] = classified.get(LOCAL_RESULT_PRESENT, 0) + 1
@@ -777,27 +842,27 @@ class TableTennisResultAcquisitionService:
                     self._store.upsert_result_acquisition(dict(row, acquisition_state=PROVIDER_RESULT_SCHEMA_UNKNOWN))
                     continue
                 acquired += 1
-                if normalized["state"] == RESULT_STATE_FINAL and normalized["winner_side"] is not None:
-                    settled += self._settle_event(event, normalized)
-                    scores += self._score_event(event, normalized)
-                    row.update(
-                        acquisition_state=LOCAL_RESULT_PRESENT,
-                        result_status="settled",
-                        actual_a=normalized["home_score"],
-                        actual_b=normalized["away_score"],
-                        winner_side=normalized["winner_side"],
-                        orientation=normalized["orientation"],
-                        settled=True,
-                    )
-                else:
-                    row.update(
-                        acquisition_state=PROVIDER_RESULT_AVAILABLE,
-                        result_status=normalized["state"],
-                        actual_a=normalized.get("home_score"),
-                        actual_b=normalized.get("away_score"),
-                        winner_side=normalized.get("winner_side"),
-                        orientation=normalized.get("orientation"),
-                    )
+                fingerprint = canonical_result_fingerprint(
+                    provider=event.get("provider") or "odds_api_io",
+                    provider_event_id=str(provider_event_id or ""),
+                    canonical_event_id=canonical_event_id,
+                    status=normalized["state"],
+                    actual_a=normalized.get("home_score"),
+                    actual_b=normalized.get("away_score"),
+                    orientation=normalized.get("orientation") or "",
+                    source_result_id=normalized.get("provider_result_id") or "",
+                )
+                row.update(
+                    acquisition_state=LOCAL_RESULT_PRESENT if (normalized["state"] == RESULT_STATE_FINAL and normalized["winner_side"] is not None) else PROVIDER_RESULT_AVAILABLE,
+                    result_status=normalized["state"],
+                    actual_a=normalized.get("home_score"),
+                    actual_b=normalized.get("away_score"),
+                    winner_side=normalized.get("winner_side"),
+                    orientation=normalized.get("orientation"),
+                    provider_result_id=normalized.get("provider_result_id"),
+                    raw_provenance_hash=normalized.get("raw_payload_hash"),
+                    normalized_result_fingerprint=fingerprint,
+                )
                 self._store.upsert_result_acquisition(row)
                 continue
 
@@ -826,14 +891,18 @@ class TableTennisResultAcquisitionService:
                             self._store.upsert_result_acquisition(dict(row, acquisition_state=PROVIDER_RESULT_SCHEMA_UNKNOWN, request_count=2))
                         else:
                             acquired += 1
-                            if normalized["state"] == RESULT_STATE_FINAL and normalized["winner_side"] is not None:
-                                settled += self._settle_event(event, normalized)
-                                scores += self._score_event(event, normalized)
-                                classified[LOCAL_RESULT_PRESENT] = classified.get(LOCAL_RESULT_PRESENT, 0) + 1
-                                self._store.upsert_result_acquisition(dict(row, acquisition_state=LOCAL_RESULT_PRESENT, result_status="settled", actual_a=normalized["home_score"], actual_b=normalized["away_score"], winner_side=normalized["winner_side"], orientation=normalized["orientation"], settled=True, request_count=2))
-                            else:
-                                classified[PROVIDER_RESULT_AVAILABLE] = classified.get(PROVIDER_RESULT_AVAILABLE, 0) + 1
-                                self._store.upsert_result_acquisition(dict(row, acquisition_state=PROVIDER_RESULT_AVAILABLE, result_status=normalized["state"], actual_a=normalized.get("home_score"), actual_b=normalized.get("away_score"), winner_side=normalized.get("winner_side"), orientation=normalized.get("orientation"), request_count=2))
+                            fingerprint = canonical_result_fingerprint(
+                                provider=event.get("provider") or "odds_api_io",
+                                provider_event_id=str(provider_event_id or ""),
+                                canonical_event_id=canonical_event_id,
+                                status=normalized["state"],
+                                actual_a=normalized.get("home_score"),
+                                actual_b=normalized.get("away_score"),
+                                orientation=normalized.get("orientation") or "",
+                                source_result_id=normalized.get("provider_result_id") or "",
+                            )
+                            classified[PROVIDER_RESULT_AVAILABLE] = classified.get(PROVIDER_RESULT_AVAILABLE, 0) + 1
+                            self._store.upsert_result_acquisition(dict(row, acquisition_state=PROVIDER_RESULT_AVAILABLE, result_status=normalized["state"], actual_a=normalized.get("home_score"), actual_b=normalized.get("away_score"), winner_side=normalized.get("winner_side"), orientation=normalized.get("orientation"), provider_result_id=normalized.get("provider_result_id"), raw_provenance_hash=normalized.get("raw_payload_hash"), normalized_result_fingerprint=fingerprint, request_count=2))
                 elif fb.ok and fb.status_code == 404:
                     classified[PROVIDER_RESULT_OUTSIDE_RETENTION] = classified.get(PROVIDER_RESULT_OUTSIDE_RETENTION, 0) + 1
                     self._store.upsert_result_acquisition(dict(row, acquisition_state=PROVIDER_RESULT_OUTSIDE_RETENTION, request_count=2, next_poll_at=next_poll_at(state=PROVIDER_RESULT_OUTSIDE_RETENTION, request_count=1).isoformat().replace("+00:00", "Z")))
@@ -845,11 +914,36 @@ class TableTennisResultAcquisitionService:
             "classified": classified,
             "events": len(events),
             "acquired": acquired,
-            "settled": settled,
-            "scores": scores,
             "fallback_used": fallback_used,
-            "errors": errors[:20],
-            "summary": f"result acquisition: {acquired} acquired, {settled} settled, {scores} scored",
+            "summary": f"result acquisition: {acquired} acquired",
+        }
+
+    def acquire_and_settle(
+        self,
+        *,
+        recent_window_hours: int = 96,
+        max_events: int | None = None,
+        fallback_limit: int | None = None,
+    ) -> dict[str, Any]:
+        """DEPRECATED (M4.7.2 P0): compatibility wrapper.
+
+        Runs acquisition then delegates to the single settlement + scoring
+        authorities. Production scheduler/API MUST call acquire_results(),
+        SettlementService.settle() and ForwardScoringService.score() separately.
+        """
+        result = self.acquire_results(
+            recent_window_hours=recent_window_hours,
+            max_events=max_events,
+            fallback_limit=fallback_limit,
+        )
+        from defend_markets.quant.settlement import ForwardScoringService, SettlementService
+
+        settle = SettlementService(self._store).settle()
+        score = ForwardScoringService(self._store).score()
+        return {
+            **result,
+            "settled": settle["settled"],
+            "scores": score["scores"],
         }
 
     def _classify_local_result(self, event: dict[str, Any], local: dict[str, Any]) -> str:
@@ -888,37 +982,40 @@ class TableTennisResultAcquisitionService:
                 [e["canonical_event_id"] for e in events],
             )
             rows = list(cursor.fetchall())
-            # participant display names per canonical event
+            # participant names AND keys per canonical event
             cursor.execute(
-                f"SELECT canonical_event_id, player_a_name, player_b_name FROM tt_forward_events "
-                f"WHERE canonical_event_id IN ({placeholders})",
+                f"SELECT canonical_event_id, player_a_name, player_b_name, player_a_key, player_b_key "
+                f"FROM tt_forward_events WHERE canonical_event_id IN ({placeholders})",
                 [e["canonical_event_id"] for e in events],
             )
-            names = {str(row[0]): (str(row[1] or ""), str(row[2] or "")) for row in cursor.fetchall()}
-        from defend_markets.quant.market import participant_orientation
+            names = {str(row[0]): (str(row[1] or ""), str(row[2] or ""), str(row[3] or ""), str(row[4] or "")) for row in cursor.fetchall()}
+        from defend_markets.quant.normalize import normalize_participant_orientation, normalize_result_scores
 
         out: dict[str, dict[str, Any]] = {}
         for event_key, league, hk, ak, hs, aws, completed, source_provider, raw_ref in rows:
             hs, aws = int(hs), int(aws)
-            canonical_names = names.get(str(event_key), ("", ""))
-            canonical_a, canonical_b = canonical_names
-            # Use participant keys as fallback for canonical identity when names absent.
-            orientation = "UNKNOWN"
-            if canonical_a and canonical_b:
-                orientation, _, _ = participant_orientation(
-                    provider_home=str(hk or ""),
-                    provider_away=str(ak or ""),
-                    canonical_a=canonical_a,
-                    canonical_b=canonical_b,
-                )
-            else:
-                # no display names: orientation UNKNOWN (never assumed canonical)
-                orientation = "UNKNOWN"
+            entry = names.get(str(event_key), ("", "", "", ""))
+            canonical_a_name, canonical_b_name, canonical_a_key, canonical_b_key = entry
+            # P12/P14: one normalizer for local results — keys first, then names.
+            orientation, match_mode = normalize_participant_orientation(
+                source_home=str(hk or ""),
+                source_away=str(ak or ""),
+                canonical_a=canonical_a_name,
+                canonical_b=canonical_b_name,
+                canonical_a_key=canonical_a_key or None,
+                canonical_b_key=canonical_b_key or None,
+            )
+            canon_hs, canon_aws, winner = normalize_result_scores(
+                source_home_score=hs,
+                source_away_score=aws,
+                orientation=orientation,
+            )
             out[str(event_key)] = {
-                "home_score": hs,
-                "away_score": aws,
-                "winner_side": result_winner(home_score=hs, away_score=aws),
+                "home_score": canon_hs if canon_hs is not None else hs,
+                "away_score": canon_aws if canon_aws is not None else aws,
+                "winner_side": winner if winner is not None else result_winner(home_score=hs, away_score=aws),
                 "orientation": orientation,
+                "identity_match_mode": match_mode,
                 "source_provider": str(source_provider or ""),
                 "source_result_id": str(raw_ref or "") or str(event_key),
                 "completed_at": completed,
@@ -1021,22 +1118,24 @@ def _parse_dt(value: Any) -> datetime | None:
 
 
 def forward_evidence_summary(store: Any) -> dict[str, Any]:
-    """P14: unique canonical-event metrics for official forward predictions.
+    """P14/P33/P34: unique canonical-event metrics for official forward predictions.
 
     The scoring unit is ONE official score per (canonical event, model identity).
-    Multiple score rows for the same event/model are deduplicated so the
-    denominator cannot be inflated, and M5-vs-shadow pairing is by exact event
-    with a uniqueness assertion (never an arbitrary bucket[0]).
+    Champion vs shadow is classified by persisted model ROLE (registry identity),
+    never by a "M5" substring in model_id. M5-vs-shadow pairing is by exact
+    event with a uniqueness assertion, computing paired Brier AND paired logloss.
     """
+    from defend_markets.quant.settlement import model_role
+
     scores = store.list_forward_scores(limit=100000)
     m5: dict[str, dict[str, dict[str, Any]]] = {}
     shadow: dict[str, dict[str, dict[str, Any]]] = {}
     for s in scores:
         event = str(s["canonical_event_id"])
         model = str(s["model_id"])
-        key = str(s.get("model_id"))
-        target = m5 if "M5" in model.upper() else shadow
-        target.setdefault(event, {}).setdefault(key, s)
+        role = model_role(store, model)
+        target = m5 if role == "CHAMPION" else shadow
+        target.setdefault(event, {}).setdefault(model, s)
 
     def _summarize(bucket: dict[str, dict[str, dict[str, Any]]]) -> dict[str, Any]:
         # one scoring unit per event per model identity
@@ -1054,24 +1153,35 @@ def forward_evidence_summary(store: Any) -> dict[str, Any]:
     paired_events = set(m5) & set(shadow)
     paired = None
     if paired_events:
-        m5_vals: list[float] = []
-        shadow_vals: list[float] = []
+        m5_briers: list[float] = []
+        shadow_briers: list[float] = []
+        m5_loglosses: list[float] = []
+        shadow_loglosses: list[float] = []
         for event in paired_events:
             m5_models = m5[event]
             shadow_models = shadow[event]
-            # uniqueness assertion: one M5 and one shadow identity per event
+            # uniqueness assertion: one champion and one shadow identity per event
             if len(m5_models) != 1 or len(shadow_models) != 1:
                 continue
-            m5_vals.append(float(next(iter(m5_models.values()))["brier"]))
-            shadow_vals.append(float(next(iter(shadow_models.values()))["brier"]))
-        if m5_vals:
-            m5_brier = sum(m5_vals) / len(m5_vals)
-            shadow_brier = sum(shadow_vals) / len(shadow_vals)
+            m5_s = next(iter(m5_models.values()))
+            sh_s = next(iter(shadow_models.values()))
+            m5_briers.append(float(m5_s["brier"]))
+            shadow_briers.append(float(sh_s["brier"]))
+            m5_loglosses.append(float(m5_s["logloss"]))
+            shadow_loglosses.append(float(sh_s["logloss"]))
+        if m5_briers:
+            m5_brier = sum(m5_briers) / len(m5_briers)
+            shadow_brier = sum(shadow_briers) / len(shadow_briers)
+            m5_logloss = sum(m5_loglosses) / len(m5_loglosses)
+            shadow_logloss = sum(shadow_loglosses) / len(shadow_loglosses)
             paired = {
-                "events": len(m5_vals),
+                "events": len(m5_briers),
                 "m5_brier": round(m5_brier, 8),
                 "shadow_brier": round(shadow_brier, 8),
                 "brier_delta": round(m5_brier - shadow_brier, 8),
+                "m5_logloss": round(m5_logloss, 8),
+                "shadow_logloss": round(shadow_logloss, 8),
+                "logloss_delta": round(m5_logloss - shadow_logloss, 8),
             }
     return {
         "m5": m5_summary,

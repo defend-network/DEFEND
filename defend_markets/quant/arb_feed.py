@@ -33,6 +33,34 @@ ARB_SCAN_POLICY_VERSION = "SPORTS_ARB_SCAN_V1"
 ARB_ALLOWED_FAMILIES = (MarketFamily.MATCH_WINNER_2WAY,)
 
 
+def arb_series_key(
+    *,
+    canonical_event_id: str,
+    market_family: str,
+    period: str,
+    line: str | None = None,
+    bookmakers: tuple[str, ...] = (),
+) -> str:
+    """P25: stable arb-series identity for the SAME cross-book market condition.
+
+    Excludes changing odds, quote IDs, detection timestamp and margin so a later
+    scan with moved prices still maps to the same conceptual series. Bookmaker
+    set is part of leg assignment and is included as policy determines.
+    """
+    import hashlib
+
+    payload = "|".join(
+        (
+            canonical_event_id,
+            market_family,
+            period,
+            "" if line is None else str(line),
+            ",".join(sorted(bookmakers)),
+        )
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def _market_family(market: str) -> MarketFamily | None:
     normalized = str(market or "").strip().casefold()
     if normalized in ("match_winner", "ml", "moneyline", "money line", "h2h", "1x2"):
@@ -246,6 +274,7 @@ class SportsArbScanner:
             "expired": 0,
         }
         stored = 0
+        series_keys_seen: set[str] = set()
         if result.error:
             return {"funnel": funnel, "stored": 0, "error": result.error}
 
@@ -319,10 +348,15 @@ class SportsArbScanner:
             stored_row = self._store.insert_arb_opportunity(self._opportunity_row(opportunity))
             if stored_row:
                 stored += 1
-                # P31: paper-arb creation path — record a PAPER_ARB ticket for
-                # a validated mathematical/executable opportunity.
+                # P25/P26/P27: stable series identity + episode + verification
                 if opportunity.classification.value in ("MATHEMATICAL_ARB", "EXECUTABLE_ARB"):
+                    key = self._record_series_and_verification(opportunity)
+                    if key:
+                        series_keys_seen.add(key)
                     self._record_paper_ticket(opportunity)
+
+        # P27: invalidate previously-active series no longer observed this scan
+        self._invalidate_absent_series(current_keys=series_keys_seen)
 
         # expire ACTIVE opportunities that are past expires_at
         for opp in self._store.list_arb_opportunities(limit=5000, status="ACTIVE"):
@@ -343,6 +377,66 @@ class SportsArbScanner:
         from defend_markets.quant.paper_arb import PaperArbStore
 
         PaperArbStore(self._store).record_ticket(opportunity)
+
+    def _record_series_and_verification(self, opportunity: Any) -> str | None:
+        """P25/P26: upsert stable arb series + open episode + verification obs."""
+        now = datetime.now(timezone.utc)
+        now_iso = now.isoformat().replace("+00:00", "Z")
+        market_family = opportunity.canonical_market_key.split("::")[1] if "::" in opportunity.canonical_market_key else "MATCH_WINNER_2WAY"
+        period = opportunity.canonical_market_key.split("::")[2] if opportunity.canonical_market_key.count("::") >= 2 else "FULL_MATCH"
+        key = arb_series_key(
+            canonical_event_id=opportunity.canonical_event_id,
+            market_family=market_family,
+            period=period,
+            bookmakers=tuple(opportunity.bookmakers),
+        )
+        series_id = self._store.upsert_arb_series(
+            {
+                "arb_series_key": key,
+                "canonical_event_id": opportunity.canonical_event_id,
+                "market_family": market_family,
+                "period": period,
+                "status": "ACTIVE",
+                "first_seen_at": now_iso,
+                "last_seen_at": now_iso,
+            }
+        )
+        episode_id = self._store.open_arb_episode(series_id, now_iso=now_iso)
+        if episode_id is None:
+            episode_id = self._store.upsert_arb_episode(
+                {"series_id": series_id, "first_seen_at": now_iso, "last_seen_at": now_iso, "status": "OPEN"}
+            )
+        self._store.insert_arb_verification(
+            {
+                "opportunity_id": opportunity.opportunity_id,
+                "verified_at": now_iso,
+                "still_valid": True,
+                "quote_age_seconds": opportunity.quote_age_by_leg,
+                "cross_book_delta_seconds": opportunity.cross_book_time_delta,
+                "classification": opportunity.classification.value,
+                "arb_series_key": key,
+                "episode_id": episode_id,
+                "current_quote_ids": [q.quote_id for q in opportunity.quotes],
+                "current_odds": [str(q.decimal_odds) for q in opportunity.quotes],
+                "margin": str(opportunity.raw_margin),
+            }
+        )
+        return key
+
+    def _invalidate_absent_series(self, *, current_keys: set[str]) -> None:
+        """P27: mark previously-ACTIVE series not observed this scan as invalid."""
+        from defend_markets.quant.store import InMemoryQuantStore
+
+        # Only InMemory store exposes a full series list; for Postgres this is a
+        # no-op safety guard (series invalidation uses episodes on next scan).
+        if isinstance(self._store, InMemoryQuantStore):
+            for key, series in list(self._store.arb_series.items()):
+                if series.get("status") == "ACTIVE" and key not in current_keys:
+                    series["status"] = "EXPIRED"
+                    episode_id = self._store.open_arb_episode(series["series_id"], now_iso="")
+                    if episode_id is not None:
+                        now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                        self._store.invalidate_arb_episode(episode_id, invalidated_at=now_iso)
 
     def _record_verification(self, opportunity: Any, *, still_valid: bool) -> None:
         """P30: append a survival verification observation (never mutate snapshot)."""

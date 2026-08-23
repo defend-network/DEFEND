@@ -555,6 +555,7 @@ class MarketsIntelligenceOrchestrator:
         self._scheduler.register(SchedulerJob("RESULT_DISCOVERY", 900))
         self._scheduler.register(SchedulerJob("SETTLEMENT", 300))
         self._scheduler.register(SchedulerJob("FORWARD_SCORING", 300))
+        self._scheduler.register(SchedulerJob("RESULT_RECONCILIATION", 3600))
         self._scheduler.register(SchedulerJob("ARB_SCAN", 60))
         self._scheduler.register(SchedulerJob("ARB_EXPIRATION", 300))
         self._scheduler.register(SchedulerJob("PAPER_ARB_SETTLEMENT", 600))
@@ -588,7 +589,11 @@ class MarketsIntelligenceOrchestrator:
         return None
 
     def run_result_discovery(self) -> dict[str, Any]:
-        """P9/P19: durable RESULT_DISCOVERY job (quota + circuit governed)."""
+        """P0-P4: durable RESULT_DISCOVERY job (acquisition ONLY).
+
+        Quota/circuit governed via the per-HTTP ProviderRequestExecutor. This
+        job writes NO settlements and NO forward scores.
+        """
         database = self._runtime_database()
         if database is None:
             return {"ran": False, "reason": "no markets database"}
@@ -598,55 +603,53 @@ class MarketsIntelligenceOrchestrator:
             key = _load_odds_api_io_key()
             if not key:
                 return {"summary": "result discovery: no provider key", "result": {"ok": False, "reason": "no provider key"}}
-            from defend_markets.quant.circuit_breaker import ProviderCircuitBreaker
-            from defend_markets.quant.quota import CLASS_RESULT, RequestQuotaGovernor
+            from defend_markets.quant.governance import ProviderRequestExecutor
 
-            breaker = ProviderCircuitBreaker(self._store)
-            if not breaker.allow_request("odds_api_io", "result"):
-                return {"summary": "result discovery: breaker OPEN", "result": {"ok": False, "reason": "circuit open"}}
-            governor = RequestQuotaGovernor(self._store)
-            if not governor.consume(CLASS_RESULT):
-                return {"summary": "result discovery: result quota exhausted", "result": {"ok": False, "reason": "quota exhausted"}}
-            feed = OddsApiIOResultAdapter(key, store=self._store)
+            executor = ProviderRequestExecutor(self._store)
+            feed = OddsApiIOResultAdapter(key, store=self._store, executor=executor)
             service = TableTennisResultAcquisitionService(database, self._store, feed)
             try:
-                outcome = service.acquire_and_settle()
+                outcome = service.acquire_results()
             except Exception as error:  # noqa: BLE001
-                breaker.record_failure("odds_api_io", "result", error=f"{type(error).__name__}: {error}")
                 return {"summary": "result discovery failed", "result": {"ok": False, "error": str(error)}}
-            breaker.record_success("odds_api_io", "result")
-            if outcome.get("settled", 0) > 0:
-                self.record_event_trigger("SETTLEMENT_BATCH_COMPLETED", {"settled": outcome.get("settled", 0)}, invoke=False)
             return {"summary": outcome.get("summary", "result discovery ran"), "result": outcome}
 
         return self._scheduler.run_due("RESULT_DISCOVERY", handler=handler)
 
     def run_settlement(self) -> dict[str, Any]:
-        """P0: durable SETTLEMENT job (consumes already-acquired canonical results).
+        """P1: durable SETTLEMENT job — the ONLY settlement authority.
 
-        This is the ONLY production settlement authority. The legacy
-        settlement_catchup is NOT invoked here (it violates result truth).
+        The legacy settlement_catchup is NOT invoked here (it violates result truth).
         """
-        from defend_markets.quant.result_acquisition import settle_acquired_results
+        from defend_markets.quant.settlement import SettlementService
 
         def handler() -> dict[str, Any]:
-            outcome = settle_acquired_results(self._store)
+            outcome = SettlementService(self._store).settle()
             return {"summary": outcome.get("summary", "settlement ran"), "result": outcome}
 
         return self._scheduler.run_due("SETTLEMENT", handler=handler)
 
     def run_forward_scoring(self) -> dict[str, Any]:
-        """P9: durable FORWARD_SCORING job (scores once settlements exist)."""
-        database = self._runtime_database()
-        if database is None:
-            return {"ran": False, "reason": "no markets database"}
-        from defend_markets.quant.result_acquisition import forward_evidence_summary
+        """P2: durable FORWARD_SCORING job — the ONLY scoring authority."""
+        from defend_markets.quant.settlement import ForwardScoringService
 
         def handler() -> dict[str, Any]:
-            summary = forward_evidence_summary(self._store)
-            return {"summary": f"forward scoring: {summary.get('m5', {}).get('events', 0)} M5 events scored", "result": summary}
+            outcome = ForwardScoringService(self._store).score()
+            return {"summary": outcome.get("summary", "forward scoring ran"), "result": outcome}
 
         return self._scheduler.run_due("FORWARD_SCORING", handler=handler)
+
+    def run_result_reconciliation(self) -> dict[str, Any]:
+        """P16: durable RESULT_RECONCILIATION job (bounded correction recheck)."""
+        from defend_markets.quant.reconciliation import ReconciliationService
+        from defend_markets.quant.settlement import SettlementService
+
+        def handler() -> dict[str, Any]:
+            due = ReconciliationService(self._store).due_events()
+            outcome = SettlementService(self._store).settle()
+            return {"summary": f"reconciliation: {len(due)} due, {outcome.get('revised', 0)} revised", "result": {"due": len(due), **outcome}}
+
+        return self._scheduler.run_due("RESULT_RECONCILIATION", handler=handler)
 
     def run_arb_scan(self) -> dict[str, Any]:
         """P30: durable ARB_SCAN job."""
@@ -786,14 +789,28 @@ class MarketsIntelligenceOrchestrator:
         from defend_markets.quant.result_acquisition import forward_evidence_summary
 
         scores = forward_evidence_summary(self._store)
-        unsettled_states = ("LOCAL_RESULT_MISSING_NOT_REQUESTED", "PROVIDER_RESULT_REQUESTED_EMPTY", "PROVIDER_EVENT_NOT_FOUND", "PROVIDER_RESULT_OUTSIDE_RETENTION", "PROVIDER_RESULT_ERROR", "PROVIDER_RESULT_SCHEMA_UNKNOWN")
-        unsettled_count = sum(by_state.get(s, 0) for s in unsettled_states)
+        pending = by_state.get("LOCAL_RESULT_MISSING_NOT_REQUESTED", 0) + by_state.get("PROVIDER_RESULT_ERROR", 0) + by_state.get("PROVIDER_RESULT_SCHEMA_UNKNOWN", 0) + by_state.get("PROVIDER_EVENT_IDENTITY_MISMATCH", 0)
+        requested_empty = by_state.get("PROVIDER_RESULT_REQUESTED_EMPTY", 0)
+        outside_retention = by_state.get("PROVIDER_RESULT_OUTSIDE_RETENTION", 0) + by_state.get("PROVIDER_EVENT_NOT_FOUND", 0)
         settlements = self._store.list_settlements(limit=100000)
+        current_settlements = [s for s in settlements if s.get("status") == "FINAL"]
+        revisions = [s for s in settlements if int(s.get("revision", 1)) > 1]
         last_settlement = max((s.get("created_at") for s in settlements), default=None)
         fwd_scores = self._store.list_forward_scores(limit=100000)
         last_forward_score = max((s.get("created_at") for s in fwd_scores), default=None)
+        from defend_markets.quant.reconciliation import ReconciliationService
+
+        reconciliation_due = len(ReconciliationService(self._store).due_events())
         return {
-            "unsettled_past_events": unsettled_count,
+            "RESULT_PENDING_EVENTS": pending,
+            "RESULT_REQUESTED_EMPTY_EVENTS": requested_empty,
+            "RESULT_OUTSIDE_RETENTION_EVENTS": outside_retention,
+            "RESULT_RECONCILIATION_DUE": reconciliation_due,
+            "CURRENT_SETTLEMENTS": len(current_settlements),
+            "HISTORICAL_SETTLEMENT_REVISIONS": len(revisions),
+            "FORWARD_SCORES_CURRENT": len(fwd_scores),
+            "PAIRED_SHADOW_EVENTS": (scores.get("paired") or {}).get("events", 0),
+            "unsettled_past_events": pending + requested_empty + outside_retention,
             "acquisition_states": by_state,
             "result_requests_used": len(requests),
             "result_requests_ok": ok_requests,
@@ -896,6 +913,7 @@ class MarketsIntelligenceOrchestrator:
             ("RESULT_DISCOVERY", self.run_result_discovery),
             ("SETTLEMENT", self.run_settlement),
             ("FORWARD_SCORING", self.run_forward_scoring),
+            ("RESULT_RECONCILIATION", self.run_result_reconciliation),
             ("ARB_SCAN", self.run_arb_scan),
             ("ARB_EXPIRATION", self.run_arb_expiration),
             ("PAPER_ARB_SETTLEMENT", self.run_paper_arb_settlement),

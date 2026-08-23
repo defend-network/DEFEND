@@ -98,6 +98,13 @@ class _FakeCursor:
         return self
 
     def fetchall(self):
+        if "tt_forward_events" in self._sql and "player_a_key" in self._sql and "player_a_name" in self._sql:
+            out = []
+            for cid in self._params:
+                e = self._db.forward_events.get(cid)
+                if e:
+                    out.append((cid, e.get("player_a_name", ""), e.get("player_b_name", ""), e.get("player_a_key", ""), e.get("player_b_key", "")))
+            return out
         if "tt_forward_events" in self._sql and "player_a_name" in self._sql and "player_a_key" not in self._sql:
             out = []
             for cid in self._params:
@@ -117,7 +124,7 @@ class _FakeCursor:
             for ev in self._params:
                 if ev in self._db.local:
                     lr = self._db.local[ev]
-                    rows.append((ev, "league", lr.get("hk", ""), lr.get("ak", ""), lr["hs"], lr["aws"], None, "odds_api_io", None))
+                    rows.append((ev, "league", lr.get("hk", ""), lr.get("ak", ""), lr["hs"], lr["aws"], None, lr.get("source_provider", "odds_api_io"), lr.get("raw_ref")))
             return rows
         return []
 
@@ -199,12 +206,12 @@ def _ev(pid="1001", status="settled", home="Alice", away="Bob", hs=3, aws=1, sch
 
 class TestLegacyRetirement:
     def test_legacy_not_referenced_by_settlement_job(self):
-        """item 1: production SETTLEMENT uses settle_acquired_results, not legacy."""
+        """item 1: production SETTLEMENT uses SettlementService, not legacy."""
         import inspect
         from defend_markets.quant.orchestrator import MarketsIntelligenceOrchestrator
 
         source = inspect.getsource(MarketsIntelligenceOrchestrator.run_settlement)
-        assert "settle_acquired_results" in source
+        assert "SettlementService" in source
         # the legacy function is never imported or called in the production path
         assert "from defend_markets.quant.forward_evidence import settlement_catchup" not in source
         assert "settlement_catchup(" not in source
@@ -332,7 +339,7 @@ class TestLocalResultOrientation:
         store = InMemoryQuantStore()
         _seed(store)
         _db_with(db, names=("Alice", "Bob"))
-        db.local["e1"] = {"hs": 3, "aws": 1, "hk": "Alice", "ak": "Bob"}
+        db.local["e1"] = {"hs": 3, "aws": 1, "hk": "k-e1", "ak": "k2-e1", "source_provider": "odds_api_io", "raw_ref": "r1"}
         feed = _Feed(results={})
         service = TableTennisResultAcquisitionService(db, store, feed)
         outcome = service.acquire_and_settle()
@@ -345,11 +352,14 @@ class TestLocalResultOrientation:
         store = InMemoryQuantStore()
         _seed(store)
         _db_with(db, names=("Alice", "Bob"))
-        db.local["e1"] = {"hs": 3, "aws": 1, "hk": "Bob", "ak": "Alice"}
+        db.local["e1"] = {"hs": 3, "aws": 1, "hk": "k2-e1", "ak": "k-e1", "source_provider": "odds_api_io", "raw_ref": "r1"}
         feed = _Feed(results={})
         service = TableTennisResultAcquisitionService(db, store, feed)
         outcome = service.acquire_and_settle()
         assert outcome["settled"] == 1
+        s = store.list_settlements()[0]
+        # source home(k2-e1=Bob) 3, away(k-e1=Alice) 1 -> REVERSED -> A=1, B=3, winner B
+        assert s["actual_a"] == 1 and s["actual_b"] == 3 and s["winner_side"] == "B"
 
     def test_local_conflict_review_required(self):
         """item 12: conflict -> REVIEW_REQUIRED, not settled."""
@@ -357,7 +367,7 @@ class TestLocalResultOrientation:
         store = InMemoryQuantStore()
         _seed(store)
         _db_with(db, names=("Alice", "Bob"))
-        db.local["e1"] = {"hs": 3, "aws": 1, "hk": "Eve", "ak": "Mallory"}
+        db.local["e1"] = {"hs": 3, "aws": 1, "hk": "k-eve", "ak": "k-mallory", "source_provider": "odds_api_io", "raw_ref": "r1"}
         feed = _Feed(results={})
         service = TableTennisResultAcquisitionService(db, store, feed)
         outcome = service.acquire_and_settle()
@@ -365,12 +375,13 @@ class TestLocalResultOrientation:
         assert outcome["classified"].get(RESULT_RECONCILIATION_REQUIRED) == 1
 
     def test_unknown_orientation_no_names_not_settled(self):
-        """item 13: no participant names -> UNKNOWN -> REVIEW_REQUIRED."""
+        """item 13: no participant keys/names -> UNKNOWN -> REVIEW_REQUIRED."""
         db = _FakeResultsDB()
         store = InMemoryQuantStore()
         _seed(store)
-        _db_with(db, names=("", ""))
-        db.local["e1"] = {"hs": 3, "aws": 1, "hk": "X", "ak": "Y"}
+        # no forward-event identity (keys/names unavailable)
+        db.forward_events["e1"] = {"provider": "odds_api_io", "provider_event_id": "1001"}
+        db.local["e1"] = {"hs": 3, "aws": 1, "hk": "X", "ak": "Y", "source_provider": "odds_api_io", "raw_ref": "r1"}
         feed = _Feed(results={})
         service = TableTennisResultAcquisitionService(db, store, feed)
         outcome = service.acquire_and_settle()
@@ -426,20 +437,24 @@ class TestRevision:
             "actual_a": 3, "actual_b": 1, "winner_side": "A", "source_result_id": "1001",
             "source_provider": "odds_api_io", "orientation_verified": True,
         })
+        old_row = store.latest_final_settlement("e1")
         new_id = store.insert_settlement_revision({
             "canonical_event_id": "e1", "provider_event_id": "1001", "status": "FINAL",
             "actual_a": 2, "actual_b": 3, "winner_side": "B", "source_result_id": "1001#rev2",
             "source_provider": "odds_api_io", "orientation_verified": True,
         })
         settlements = store.list_settlements()
-        statuses = {s.get("status") for s in settlements}
-        assert "SUPERSEDED" in statuses
-        assert "FINAL" in statuses
-        # old FINAL superseded, new revision linked
-        old = [s for s in settlements if s["status"] == "SUPERSEDED"][0]
-        new = [s for s in settlements if s["status"] == "FINAL"][0]
-        assert new["revision"] == 2
-        assert new["supersedes_revision_id"] == old["settlement_id"]
+        # P19: old row is NOT mutated (content immutable); new revision appended
+        # with supersedes_revision_id linking v2 -> v1.
+        assert old_row["actual_a"] == 3 and old_row["actual_b"] == 1  # unchanged
+        revisions = [s for s in settlements if s.get("revision") == 2]
+        assert len(revisions) == 1
+        new = revisions[0]
+        assert new["actual_a"] == 2 and new["actual_b"] == 3
+        assert new["supersedes_revision_id"] == old_row["settlement_id"]
+        # current revision = latest FINAL by revision DESC
+        current = store.latest_final_settlement("e1")
+        assert current["settlement_id"] == new["settlement_id"]
 
     def test_state_transitions(self):
         """item 13/14: allowed transitions."""
@@ -455,6 +470,8 @@ class TestForwardMetrics:
         from defend_markets.quant.result_acquisition import forward_evidence_summary
 
         store = InMemoryQuantStore()
+        store.register_model(model_id="M5_REGULARIZED_LOGISTIC", model_version="v1", role="CHAMPION", stage="CHAMPION")
+        store.register_model(model_id="challenger-recent-form20", model_version="v1", role="SHADOW", stage="SHADOW")
         # two score rows for the same event+model -> one scoring unit
         store.insert_settlement({
             "canonical_event_id": "e1", "provider_event_id": "1", "status": "FINAL",
@@ -476,6 +493,8 @@ class TestForwardMetrics:
         from defend_markets.quant.result_acquisition import forward_evidence_summary
 
         store = InMemoryQuantStore()
+        store.register_model(model_id="M5_REGULARIZED_LOGISTIC", model_version="v1", role="CHAMPION", stage="CHAMPION")
+        store.register_model(model_id="challenger-recent-form20", model_version="v1", role="SHADOW", stage="SHADOW")
         store.insert_settlement({
             "canonical_event_id": "e1", "provider_event_id": "1", "status": "FINAL",
             "actual_a": 3, "actual_b": 1, "winner_side": "A", "source_result_id": "1",

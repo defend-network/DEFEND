@@ -18,6 +18,22 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _norm_period(period_start: Any) -> str:
+    """Normalize a period_start (datetime or string) to a stable minute-truncated string."""
+    if isinstance(period_start, datetime):
+        value = period_start
+    elif isinstance(period_start, str):
+        try:
+            value = datetime.fromisoformat(period_start.replace("Z", "+00:00"))
+        except ValueError:
+            return period_start
+    else:
+        return str(period_start)
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.replace(minute=0, second=0, microsecond=0).isoformat().replace("+00:00", "Z")
+
+
 def _today_utc() -> str:
     return _utcnow().date().isoformat()
 
@@ -1397,9 +1413,9 @@ class PostgresQuantStore(QuantStore):
                 "INSERT INTO quant_settlements "
                 "(canonical_event_id, provider_event_id, competition, participant_a, participant_b, status, "
                 "actual_a, actual_b, winner_side, source_result_id, source_provider, observed_at, raw_payload_hash, "
-                "orientation_verified, revision, provider_result_id) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
-                "ON CONFLICT (canonical_event_id, source_result_id) DO NOTHING RETURNING settlement_id",
+                "orientation_verified, revision, provider_result_id, normalized_result_fingerprint) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (canonical_event_id, source_result_id, revision) DO NOTHING RETURNING settlement_id",
                 (
                     spec["canonical_event_id"],
                     spec.get("provider_event_id"),
@@ -1417,6 +1433,7 @@ class PostgresQuantStore(QuantStore):
                     spec.get("orientation_verified", False),
                     spec.get("revision", 1),
                     spec.get("provider_result_id"),
+                    spec.get("normalized_result_fingerprint"),
                 ),
             )
             return cursor.fetchone() is not None
@@ -1427,7 +1444,7 @@ class PostgresQuantStore(QuantStore):
                 "SELECT settlement_id, canonical_event_id, provider_event_id, competition, participant_a, "
                 "participant_b, status, actual_a, actual_b, winner_side, source_result_id, source_provider, "
                 "observed_at, raw_payload_hash, orientation_verified, revision, supersedes_revision_id, "
-                "provider_result_id, created_at "
+                "provider_result_id, normalized_result_fingerprint, created_at "
                 "FROM quant_settlements ORDER BY settlement_id DESC LIMIT %s",
                 (limit,),
             )
@@ -1440,7 +1457,7 @@ class PostgresQuantStore(QuantStore):
                 "SELECT settlement_id, canonical_event_id, provider_event_id, competition, participant_a, "
                 "participant_b, status, actual_a, actual_b, winner_side, source_result_id, source_provider, "
                 "observed_at, raw_payload_hash, orientation_verified, revision, supersedes_revision_id, "
-                "provider_result_id, created_at "
+                "provider_result_id, normalized_result_fingerprint, created_at "
                 "FROM quant_settlements WHERE canonical_event_id = %s AND status = 'FINAL' "
                 "ORDER BY revision DESC LIMIT 1",
                 (canonical_event_id,),
@@ -1452,10 +1469,13 @@ class PostgresQuantStore(QuantStore):
             return dict(zip(columns, row))
 
     def insert_settlement_revision(self, spec):
-        """Insert a NEW settlement revision, superseding the prior FINAL.
+        """Append a NEW immutable settlement revision (P19).
 
-        The old FINAL is marked SUPERSEDED with supersedes_revision_id linked;
-        history is never mutated (P12/P13)."""
+        The prior FINAL row is NEVER mutated. v2 is inserted with
+        ``supersedes_revision_id = prior_id`` and the current revision is
+        derived from the revision chain (latest FINAL by revision DESC), not by
+        destructively relabeling the old row.
+        """
         with self._database.connect() as connection, connection.cursor() as cursor:
             connection.autocommit = False
             cursor.execute(
@@ -1472,18 +1492,13 @@ class PostgresQuantStore(QuantStore):
                     (prior_id,),
                 )
                 prior_revision = int(cursor.fetchone()[0])
-                cursor.execute(
-                    "UPDATE quant_settlements SET status = 'SUPERSEDED', supersedes_revision_id = NULL "
-                    "WHERE settlement_id = %s",
-                    (prior_id,),
-                )
             new_revision = prior_revision + 1
             cursor.execute(
                 "INSERT INTO quant_settlements "
                 "(canonical_event_id, provider_event_id, competition, participant_a, participant_b, status, "
                 "actual_a, actual_b, winner_side, source_result_id, source_provider, observed_at, raw_payload_hash, "
-                "orientation_verified, revision, supersedes_revision_id, provider_result_id) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                "orientation_verified, revision, supersedes_revision_id, provider_result_id, normalized_result_fingerprint) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
                 "RETURNING settlement_id",
                 (
                     spec["canonical_event_id"],
@@ -1503,6 +1518,7 @@ class PostgresQuantStore(QuantStore):
                     new_revision,
                     prior_id,
                     spec.get("provider_result_id"),
+                    spec.get("normalized_result_fingerprint"),
                 ),
             )
             new_id = int(cursor.fetchone()[0])
@@ -1516,8 +1532,8 @@ class PostgresQuantStore(QuantStore):
                 "INSERT INTO quant_result_request_evidence "
                 "(request_id, provider, request_kind, requested_at, window_start, window_end, target_event_count, "
                 "http_status, provider_request_status, response_schema_status, events_returned, events_matched, "
-                "raw_payload_hash, error_class, successful_search_scope) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                "raw_payload_hash, raw_response_sha256, canonical_response_sha256, error_class, successful_search_scope) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
                 "ON CONFLICT (request_id) DO NOTHING RETURNING request_evidence_id",
                 (
                     row["request_id"],
@@ -1533,6 +1549,8 @@ class PostgresQuantStore(QuantStore):
                     row.get("events_returned", 0),
                     row.get("events_matched", 0),
                     row.get("raw_payload_hash"),
+                    row.get("raw_response_sha256"),
+                    row.get("canonical_response_sha256"),
                     row.get("error_class"),
                     row.get("successful_search_scope"),
                 ),
@@ -1555,8 +1573,9 @@ class PostgresQuantStore(QuantStore):
         with self._database.connect() as connection, connection.cursor() as cursor:
             cursor.execute(
                 "INSERT INTO quant_arb_opportunity_verification "
-                "(opportunity_id, verified_at, still_valid, quote_age_seconds, cross_book_delta_seconds, classification) "
-                "VALUES (%s, %s, %s, %s, %s, %s)",
+                "(opportunity_id, verified_at, still_valid, quote_age_seconds, cross_book_delta_seconds, classification, "
+                "arb_series_key, episode_id, current_quote_ids, current_odds, margin) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (
                     row["opportunity_id"],
                     row["verified_at"],
@@ -1564,6 +1583,11 @@ class PostgresQuantStore(QuantStore):
                     Jsonb(row.get("quote_age_seconds", {})),
                     row.get("cross_book_delta_seconds"),
                     row["classification"],
+                    row.get("arb_series_key"),
+                    row.get("episode_id"),
+                    Jsonb(row.get("current_quote_ids", [])),
+                    Jsonb(row.get("current_odds", [])),
+                    row.get("margin"),
                 ),
             )
 
@@ -1875,6 +1899,184 @@ class PostgresQuantStore(QuantStore):
             )
             return cursor.fetchone() is not None
 
+    def upsert_provider_capacity(self, provider, period_start, *, total_budget, reserved_result, reserved_odds):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO quant_provider_capacity "
+                "(provider, period_start, total_budget, used, reserved_result, reserved_odds, policy_version) "
+                "VALUES (%s, %s, %s, 0, %s, %s, %s) "
+                "ON CONFLICT (provider, period_start) DO UPDATE SET "
+                "total_budget = GREATEST(quant_provider_capacity.total_budget, EXCLUDED.total_budget), "
+                "reserved_result = GREATEST(quant_provider_capacity.reserved_result, EXCLUDED.reserved_result), "
+                "reserved_odds = GREATEST(quant_provider_capacity.reserved_odds, EXCLUDED.reserved_odds), "
+                "updated_at = now() RETURNING capacity_id",
+                (provider, period_start, total_budget, reserved_result, reserved_odds, "PROVIDER_CAPACITY_V1"),
+            )
+            return cursor.fetchone() is not None
+
+    def get_provider_capacity(self, provider, period_start):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT capacity_id, provider, period_start, total_budget, used, reserved_result, reserved_odds, "
+                "policy_version FROM quant_provider_capacity WHERE provider = %s AND period_start = %s",
+                (provider, period_start),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return {"total_budget": 0, "used": 0, "reserved_result": 0, "reserved_odds": 0}
+            columns = [column.name for column in cursor.description]
+            return dict(zip(columns, row))
+
+    def reserve_provider_capacity(self, provider, period_start, request_class, *, amount=1):
+        """P10: atomically reserve provider-wide capacity.
+
+        Low-priority classes may only consume capacity OUTSIDE the protected
+        RESULT/ODDS reserve; RESULT/ODDS may consume the protected reserve too.
+        Returns True only when the atomic increment within-budget succeeded.
+        """
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            if request_class in ("RESULT", "ODDS"):
+                # protected classes may consume any remaining capacity
+                cursor.execute(
+                    "UPDATE quant_provider_capacity SET used = used + %s, updated_at = now() "
+                    "WHERE provider = %s AND period_start = %s AND used + %s <= total_budget "
+                    "RETURNING capacity_id",
+                    (amount, provider, period_start, amount),
+                )
+            else:
+                # low-priority classes may NOT touch the protected reserve
+                protected = 0
+                cursor.execute(
+                    "SELECT reserved_result + reserved_odds FROM quant_provider_capacity "
+                    "WHERE provider = %s AND period_start = %s",
+                    (provider, period_start),
+                )
+                row = cursor.fetchone()
+                if row is not None:
+                    protected = int(row[0] or 0)
+                cursor.execute(
+                    "UPDATE quant_provider_capacity SET used = used + %s, updated_at = now() "
+                    "WHERE provider = %s AND period_start = %s "
+                    "AND used + %s + %s <= total_budget "
+                    "RETURNING capacity_id",
+                    (amount, provider, period_start, amount, protected),
+                )
+            return cursor.fetchone() is not None
+
+    def release_provider_capacity(self, provider, period_start, *, amount=1):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "UPDATE quant_provider_capacity SET used = GREATEST(used - %s, 0), updated_at = now() "
+                "WHERE provider = %s AND period_start = %s RETURNING capacity_id",
+                (amount, provider, period_start),
+            )
+            return cursor.fetchone() is not None
+
+    def record_http_governance(self, row):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO quant_http_governance "
+                "(provider, request_class, operation, reserved_at, attempted_at, completed_at, blocked_before_send, "
+                "http_status, outcome_class, consumed, request_evidence_id) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING governance_id",
+                (
+                    row["provider"], row["request_class"], row["operation"],
+                    row.get("reserved_at"), row.get("attempted_at"), row.get("completed_at"),
+                    row.get("blocked_before_send", False), row.get("http_status"), row.get("outcome_class"),
+                    row.get("consumed", False), row.get("request_evidence_id"),
+                ),
+            )
+            return int(cursor.fetchone()[0])
+
+    def complete_http_governance(self, governance_id, row):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "UPDATE quant_http_governance SET completed_at = %s, http_status = %s, outcome_class = %s, consumed = %s "
+                "WHERE governance_id = %s RETURNING governance_id",
+                (row.get("completed_at"), row.get("http_status"), row.get("outcome_class"), row.get("consumed", True), governance_id),
+            )
+            return cursor.fetchone() is not None
+
+    def list_http_governance(self, limit=500):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT governance_id, provider, request_class, operation, reserved_at, attempted_at, completed_at, "
+                "blocked_before_send, http_status, outcome_class, consumed, request_evidence_id, created_at "
+                "FROM quant_http_governance ORDER BY governance_id DESC LIMIT %s",
+                (limit,),
+            )
+            columns = [column.name for column in cursor.description]
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+    def upsert_arb_series(self, row):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO quant_arb_series "
+                "(arb_series_key, canonical_event_id, market_family, period, line, status, first_seen_at, last_seen_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (arb_series_key) DO UPDATE SET last_seen_at = EXCLUDED.last_seen_at "
+                "RETURNING series_id",
+                (
+                    row["arb_series_key"], row["canonical_event_id"], row["market_family"], row["period"],
+                    row.get("line"), row.get("status", "ACTIVE"), row["first_seen_at"], row["last_seen_at"],
+                ),
+            )
+            return int(cursor.fetchone()[0])
+
+    def get_arb_series(self, arb_series_key):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT series_id, arb_series_key, canonical_event_id, market_family, period, line, status, "
+                "first_seen_at, last_seen_at FROM quant_arb_series WHERE arb_series_key = %s",
+                (arb_series_key,),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return None
+            columns = [column.name for column in cursor.description]
+            return dict(zip(columns, row))
+
+    def upsert_arb_episode(self, row):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO quant_arb_series_episode "
+                "(series_id, first_seen_at, last_seen_at, invalidated_at, reopened_at, status) "
+                "VALUES (%s, %s, %s, %s, %s, %s) RETURNING episode_id",
+                (row["series_id"], row["first_seen_at"], row["last_seen_at"], row.get("invalidated_at"), row.get("reopened_at"), row.get("status", "OPEN")),
+            )
+            return int(cursor.fetchone()[0])
+
+    def open_arb_episode(self, series_id, *, now_iso):
+        """Return the currently OPEN episode for a series, else None."""
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT episode_id FROM quant_arb_series_episode "
+                "WHERE series_id = %s AND status = 'OPEN' ORDER BY episode_id DESC LIMIT 1",
+                (series_id,),
+            )
+            row = cursor.fetchone()
+            return int(row[0]) if row else None
+
+    def invalidate_arb_episode(self, episode_id, *, invalidated_at):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "UPDATE quant_arb_series_episode SET status = 'INVALIDATED', invalidated_at = %s, last_seen_at = %s "
+                "WHERE episode_id = %s RETURNING episode_id",
+                (invalidated_at, invalidated_at, episode_id),
+            )
+            return cursor.fetchone() is not None
+
+    def upsert_odds_snapshot(self, provider, poll_id, *, ingestion_batch_id=None, request_id=None, observed_at=None):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO quant_odds_snapshot (provider, poll_id, ingestion_batch_id, request_id, observed_at) "
+                "VALUES (%s, %s, %s, %s, %s) "
+                "ON CONFLICT (provider, poll_id) DO NOTHING RETURNING snapshot_id",
+                (provider, poll_id, ingestion_batch_id, request_id, observed_at),
+            )
+            row = cursor.fetchone()
+            return int(row[0]) if row else None
+
     def insert_arb_opportunity(self, opp):
         with self._database.connect() as connection, connection.cursor() as cursor:
             cursor.execute(
@@ -2083,7 +2285,15 @@ class InMemoryQuantStore(QuantStore):
     book_access_profiles: dict[str, dict[str, Any]] = field(default_factory=dict)
     result_request_evidence: dict[str, dict[str, Any]] = field(default_factory=dict)
     arb_verifications: list[dict[str, Any]] = field(default_factory=list)
+    provider_capacity: dict[tuple[str, str], dict[str, Any]] = field(default_factory=dict)
+    http_governance: list[dict[str, Any]] = field(default_factory=list)
+    arb_series: dict[str, dict[str, Any]] = field(default_factory=dict)
+    arb_episodes: list[dict[str, Any]] = field(default_factory=list)
+    odds_snapshots: dict[tuple[str, str], dict[str, Any]] = field(default_factory=dict)
     _next_result_request: int = 1
+    _next_governance: int = 1
+    _next_episode: int = 1
+    _next_snapshot: int = 1
     _next_research: int = 1
     _next_thread: int = 1
     _next_message: int = 1
@@ -2616,9 +2826,6 @@ class InMemoryQuantStore(QuantStore):
         prior = self.latest_final_settlement(spec["canonical_event_id"])
         prior_id = prior["settlement_id"] if prior else None
         prior_revision = prior.get("revision", 0) if prior else 0
-        if prior_id is not None:
-            prior["status"] = "SUPERSEDED"
-            prior["supersedes_revision_id"] = None
         new_revision = prior_revision + 1
         settlement_id = self._next_settlement
         self._next_settlement += 1
@@ -2762,6 +2969,108 @@ class InMemoryQuantStore(QuantStore):
             return False
         row["used"] += amount
         return True
+
+    def upsert_provider_capacity(self, provider, period_start, *, total_budget, reserved_result, reserved_odds):
+        period_start = _norm_period(period_start)
+        key = (provider, period_start)
+        existing = self.provider_capacity.get(key, {"used": 0, "total_budget": 0, "reserved_result": 0, "reserved_odds": 0})
+        self.provider_capacity[key] = {
+            "provider": provider, "period_start": period_start,
+            "total_budget": max(int(existing["total_budget"]), total_budget),
+            "used": int(existing["used"]),
+            "reserved_result": max(int(existing["reserved_result"]), reserved_result),
+            "reserved_odds": max(int(existing["reserved_odds"]), reserved_odds),
+            "policy_version": "PROVIDER_CAPACITY_V1",
+        }
+        return True
+
+    def get_provider_capacity(self, provider, period_start):
+        period_start = _norm_period(period_start)
+        return self.provider_capacity.get((provider, period_start), {"total_budget": 0, "used": 0, "reserved_result": 0, "reserved_odds": 0})
+
+    def reserve_provider_capacity(self, provider, period_start, request_class, *, amount=1):
+        period_start = _norm_period(period_start)
+        key = (provider, period_start)
+        row = self.provider_capacity.get(key)
+        if row is None:
+            return False
+        protected = int(row["reserved_result"]) + int(row["reserved_odds"])
+        limit = int(row["total_budget"])
+        if request_class not in ("RESULT", "ODDS"):
+            limit = max(0, int(row["total_budget"]) - protected)
+        if int(row["used"]) + amount > limit:
+            return False
+        row["used"] += amount
+        return True
+
+    def release_provider_capacity(self, provider, period_start, *, amount=1):
+        period_start = _norm_period(period_start)
+        row = self.provider_capacity.get((provider, period_start))
+        if row is None:
+            return False
+        row["used"] = max(0, int(row["used"]) - amount)
+        return True
+
+    def record_http_governance(self, row):
+        gid = self._next_governance
+        self._next_governance += 1
+        self.http_governance.append(dict(row, governance_id=gid, created_at=_utcnow().isoformat()))
+        return gid
+
+    def complete_http_governance(self, governance_id, row):
+        for entry in self.http_governance:
+            if entry["governance_id"] == governance_id:
+                entry.update(row)
+                return True
+        return False
+
+    def list_http_governance(self, limit=500):
+        return list(reversed(self.http_governance))[:limit]
+
+    def upsert_arb_series(self, row):
+        key = row["arb_series_key"]
+        if key in self.arb_series:
+            self.arb_series[key]["last_seen_at"] = row["last_seen_at"]
+            return self.arb_series[key]["series_id"]
+        series_id = len(self.arb_series) + 1
+        self.arb_series[key] = dict(row, series_id=series_id, created_at=_utcnow().isoformat())
+        return series_id
+
+    def get_arb_series(self, arb_series_key):
+        return self.arb_series.get(arb_series_key)
+
+    def upsert_arb_episode(self, row):
+        episode_id = self._next_episode
+        self._next_episode += 1
+        self.arb_episodes.append(dict(row, episode_id=episode_id, created_at=_utcnow().isoformat()))
+        return episode_id
+
+    def open_arb_episode(self, series_id, *, now_iso):
+        for ep in reversed(self.arb_episodes):
+            if ep["series_id"] == series_id and ep.get("status") == "OPEN":
+                return ep["episode_id"]
+        return None
+
+    def invalidate_arb_episode(self, episode_id, *, invalidated_at):
+        for ep in self.arb_episodes:
+            if ep["episode_id"] == episode_id:
+                ep["status"] = "INVALIDATED"
+                ep["invalidated_at"] = invalidated_at
+                ep["last_seen_at"] = invalidated_at
+                return True
+        return False
+
+    def upsert_odds_snapshot(self, provider, poll_id, *, ingestion_batch_id=None, request_id=None, observed_at=None):
+        key = (provider, poll_id)
+        if key in self.odds_snapshots:
+            return self.odds_snapshots[key]["snapshot_id"]
+        snapshot_id = self._next_snapshot
+        self._next_snapshot += 1
+        self.odds_snapshots[key] = {
+            "snapshot_id": snapshot_id, "provider": provider, "poll_id": poll_id,
+            "ingestion_batch_id": ingestion_batch_id, "request_id": request_id, "observed_at": observed_at,
+        }
+        return snapshot_id
 
     def insert_arb_opportunity(self, opp):
         if opp["fingerprint"] in self.arb_opportunities:
