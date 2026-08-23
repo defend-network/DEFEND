@@ -110,6 +110,20 @@ class FakeRunsRepository:
         }
         return None
 
+    def set_run_prompt_bundle(self, run_id, *, bundle_id, version, bundle_hash):
+        self.bundle = {
+            "bundle_id": bundle_id,
+            "version": version,
+            "bundle_hash": bundle_hash,
+        }
+        return None
+
+    def get_run_identity(self, run_id):
+        return None
+
+    def get_run_prompt_bundle(self, run_id):
+        return None
+
     @staticmethod
     def _run(workspace):
         from defend_coder.runs import RunRecord

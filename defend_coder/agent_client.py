@@ -323,9 +323,17 @@ class AgentChatClient:
         }
         # Provider-specific protocol params (e.g. DeepSeek thinking effort)
         # are injected ONLY when explicitly configured — never blindly, so
-        # an unsupported parameter cannot break a live provider.
+        # an unsupported parameter cannot break a live provider. Core request
+        # fields are immutable: provider config can never override model,
+        # messages, tools, authorization, or the token budget.
+        _PROTECTED = frozenset(
+            {"model", "messages", "tools", "tool_choice", "max_tokens"}
+        )
         if self._default_extra_body:
-            payload.update(self._default_extra_body)
+            for key, value in self._default_extra_body.items():
+                if key in _PROTECTED:
+                    continue
+                payload[key] = value
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"

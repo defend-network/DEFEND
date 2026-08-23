@@ -31,6 +31,11 @@ _MIGRATIONS = (
         Path(__file__).with_name("migrations")
         / "0008_run_identity.sql",
     ),
+    (
+        9,
+        Path(__file__).with_name("migrations")
+        / "0009_run_prompt_bundle.sql",
+    ),
 )
 
 

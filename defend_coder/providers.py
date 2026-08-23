@@ -31,6 +31,79 @@ DEEPSEEK_BASE_URL_ENV = "DEEPSEEK_BASE_URL"
 #: sent — never blindly inject unsupported provider parameters.
 DEEPSEEK_THINKING_PARAMS_ENV = "DEEPSEEK_THINKING_PARAMS"
 
+_ALLOWED_EFFORT = frozenset({"low", "medium", "high", "max"})
+
+
+class ConfigurationError(ValueError):
+    pass
+
+
+@dataclass(frozen=True)
+class DeepSeekThinkingPolicy:
+    """Typed DeepSeek thinking policy — provider-supported fields ONLY.
+
+    No arbitrary request-body passthrough. Unknown or unsupported fields are
+    a CONFIGURATION_ERROR.
+    """
+
+    enabled: bool = False
+    effort: str = "high"
+
+    def __post_init__(self) -> None:
+        if self.effort not in _ALLOWED_EFFORT:
+            raise ConfigurationError(
+                f"unsupported reasoning effort {self.effort!r}; "
+                f"expected one of {sorted(_ALLOWED_EFFORT)}"
+            )
+
+    def to_request_body(self) -> dict[str, object] | None:
+        if not self.enabled:
+            return None
+        return {"thinking": {"enabled": True, "effort": self.effort}}
+
+
+def parse_deepseek_thinking_policy(
+    env: dict[str, str] | None = None,
+) -> DeepSeekThinkingPolicy:
+    """Parse the typed DeepSeek thinking policy; fail closed on unknowns."""
+    import json
+
+    env = env if env is not None else os.environ
+    raw = (env.get(DEEPSEEK_THINKING_PARAMS_ENV) or "").strip()
+    if not raw:
+        return DeepSeekThinkingPolicy()
+    try:
+        parsed = json.loads(raw)
+    except ValueError as error:
+        raise ConfigurationError(
+            f"{DEEPSEEK_THINKING_PARAMS_ENV} is not valid JSON"
+        ) from error
+    if not isinstance(parsed, dict):
+        raise ConfigurationError(
+            f"{DEEPSEEK_THINKING_PARAMS_ENV} must be a JSON object"
+        )
+    thinking = parsed.get("thinking")
+    if thinking is None:
+        # Only the bare legacy shapes are supported.
+        return DeepSeekThinkingPolicy()
+    if not isinstance(thinking, dict):
+        raise ConfigurationError("'thinking' must be an object")
+    unknown = set(thinking) - {"enabled", "effort"}
+    if unknown:
+        raise ConfigurationError(
+            f"unsupported DeepSeek thinking fields: {sorted(unknown)}"
+        )
+    enabled = bool(thinking.get("enabled", False))
+    effort = str(thinking.get("effort", "high"))
+    return DeepSeekThinkingPolicy(enabled=enabled, effort=effort)
+
+
+def deepseek_thinking_params(
+    env: dict[str, str] | None = None,
+) -> dict[str, object] | None:
+    """Backward-compatible view of the typed thinking policy."""
+    return parse_deepseek_thinking_policy(env).to_request_body()
+
 #: Sol frontier provider environment names.
 SOL_API_KEY_ENV = "OPENAI_API_KEY"
 SOL_API_KEY_FILE_ENV = "OPENAI_API_KEY_FILE"
@@ -177,27 +250,6 @@ def next_target(*, availability: bool = True, endpoint: str | None = None) -> Mo
         availability=availability,
         cost_class="gpu_hourly",
     )
-
-
-def deepseek_thinking_params(
-    env: dict[str, str] | None = None,
-) -> dict[str, object] | None:
-    """Parse optional DeepSeek thinking/reasoning-effort policy JSON.
-
-    Returns None when not configured (nothing extra is sent to the
-    provider). Malformed config is ignored rather than breaking startup.
-    """
-    import json
-
-    env = env if env is not None else os.environ
-    raw = (env.get(DEEPSEEK_THINKING_PARAMS_ENV) or "").strip()
-    if not raw:
-        return None
-    try:
-        parsed = json.loads(raw)
-    except ValueError:
-        return None
-    return parsed if isinstance(parsed, dict) else None
 
 
 def build_client(

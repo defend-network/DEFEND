@@ -172,7 +172,9 @@ class TestIdentityAppliedByAgent:
             client=client,
             toolkit=toolkit,
             max_steps=2,
-            identity_profile=default_identity_profile(),
+            system_authority=compose_system_instructions(
+                default_identity_profile()
+            ),
         )
         outcome = agent.run(
             prompt="Who are you?",
@@ -325,15 +327,46 @@ class TestDeepSeekThinkingPolicy:
         )
         assert params == {"thinking": {"enabled": True, "effort": "max"}}
 
-    def test_malformed_thinking_params_ignored(self):
-        from defend_coder.providers import deepseek_thinking_params
+    def test_malformed_thinking_params_rejected(self):
+        from defend_coder.providers import (
+            ConfigurationError,
+            deepseek_thinking_params,
+        )
 
-        assert (
+        with pytest.raises(ConfigurationError):
             deepseek_thinking_params(
                 env={"DEEPSEEK_THINKING_PARAMS": "{not json"}
             )
-            is None
+
+    def test_unknown_thinking_field_rejected(self):
+        from defend_coder.providers import (
+            ConfigurationError,
+            deepseek_thinking_params,
         )
+
+        with pytest.raises(ConfigurationError, match="unsupported"):
+            deepseek_thinking_params(
+                env={
+                    "DEEPSEEK_THINKING_PARAMS": (
+                        '{"thinking": {"enabled": true, "bogus": 1}}'
+                    )
+                }
+            )
+
+    def test_invalid_effort_rejected(self):
+        from defend_coder.providers import (
+            ConfigurationError,
+            deepseek_thinking_params,
+        )
+
+        with pytest.raises(ConfigurationError, match="effort"):
+            deepseek_thinking_params(
+                env={
+                    "DEEPSEEK_THINKING_PARAMS": (
+                        '{"thinking": {"enabled": true, "effort": "insane"}}'
+                    )
+                }
+            )
 
     def test_client_merges_configured_extra_body(self):
         import json as _json

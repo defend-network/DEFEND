@@ -31,6 +31,12 @@ from .providers import (
     next_target,
     sol_target,
 )
+from .registry import (
+    IdentityRegistry,
+    PromptAuthorityComposer,
+    PromptBundleRegistry,
+    build_prompt_bundle,
+)
 from .repositories import CoderRepository, WorkspaceRecord
 from .router import (
     PRODUCT_IDENTITY,
@@ -230,6 +236,9 @@ def build_coder_app(
     credentials: object | None = None,
     runtime_adapter: object | None = None,
     model_selector: ModelSelector | None = None,
+    identity_registry: IdentityRegistry | None = None,
+    prompt_registry: PromptBundleRegistry | None = None,
+    prompt_authority: PromptAuthorityComposer | None = None,
 ) -> FastAPI:
     idle_timeout_seconds = (
         settings.idle_timeout_seconds
@@ -300,6 +309,18 @@ def build_coder_app(
     )
     _runtime_adapter = runtime_adapter or ProductRuntimeAdapterBoundary()
     _selector = model_selector or ModelSelector()
+    _identity_registry = identity_registry or IdentityRegistry()
+    if _identity_registry.active_key is None:
+        _identity_registry.activate(default_identity_profile())
+    _prompt_authority = prompt_authority or PromptAuthorityComposer()
+    _prompt_registry = prompt_registry or PromptBundleRegistry()
+    if _prompt_registry.active_key is None:
+        _prompt_registry.activate(
+            build_prompt_bundle(
+                _identity_registry.active(),
+                _prompt_authority,
+            )
+        )
 
     def _live_targets() -> dict[str, ModelTarget]:
         """Targets keyed by MODEL ID with LIVE credential availability."""
@@ -738,12 +759,19 @@ def build_coder_app(
                 else "AUTO_DEFAULT"
             ),
         )
-        identity = default_identity_profile()
+        identity = _identity_registry.active()
         runs_repository.set_run_identity(
             run.run_id,
             profile_id=identity.profile_id,
             version=identity.version,
             identity_hash=identity.hash,
+        )
+        bundle = _prompt_registry.active()
+        runs_repository.set_run_prompt_bundle(
+            run.run_id,
+            bundle_id=bundle.bundle_id,
+            version=bundle.version,
+            bundle_hash=bundle.hash,
         )
 
         # ONLY NOW start execution on the persisted route.
@@ -1079,7 +1107,9 @@ def build_coder_app(
             toolkit=toolkit,
             max_steps=4,
             max_loop_seconds=120.0,
-            identity_profile=default_identity_profile(),
+            system_authority=_prompt_authority.compose(
+                _identity_registry.active(), provider="deepseek"
+            ),
         )
         replies: list[str] = []
 

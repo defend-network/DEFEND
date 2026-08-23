@@ -160,6 +160,12 @@ def main() -> None:
         next_target,
         sol_target,
     )
+    from defend_coder.registry import (
+        IdentityRegistry,
+        PromptAuthorityComposer,
+        PromptBundleRegistry,
+        build_prompt_bundle,
+    )
 
     def _secret_store_loader() -> object:
         from pathlib import Path
@@ -170,6 +176,30 @@ def main() -> None:
         return DpapiSecretStore(Path(local) / "DEFEND" / "secrets.dpapi")
 
     credentials = CredentialStore(store_loader=_secret_store_loader)
+
+    identity_registry = IdentityRegistry()
+    identity_registry.activate(default_identity_profile())
+    prompt_authority = PromptAuthorityComposer()
+    prompt_registry = PromptBundleRegistry()
+    prompt_registry.activate(
+        build_prompt_bundle(identity_registry.active(), prompt_authority)
+    )
+
+    def _authority_for(run_id):
+        """Resolve the EXACT pinned identity + prompt bundle for a run."""
+        identity_pin = runs_repository.get_run_identity(run_id)
+        bundle_pin = runs_repository.get_run_prompt_bundle(run_id)
+        profile = identity_registry.active()
+        if identity_pin is not None:
+            profile = identity_registry.resolve(
+                identity_pin[0], identity_pin[1], identity_pin[2]
+            )
+        bundle = prompt_registry.active()
+        if bundle_pin is not None:
+            bundle = prompt_registry.resolve(
+                bundle_pin[0], bundle_pin[1], bundle_pin[2]
+            )
+        return bundle.system_authority
 
     def _client_for(routing) -> object:
         model = (
@@ -256,7 +286,7 @@ def main() -> None:
         ),
         client_resolver=_client_for,
         proposal_factory=_proposal_for,
-        identity_profile=default_identity_profile(),
+        authority_resolver=_authority_for,
         toolkit_factory=lambda log_reader: CoderToolkit(
             repository=repository,
             configured_root=settings.workspace_root,
@@ -284,8 +314,10 @@ def main() -> None:
         runs_repository=runs_repository,
         runner=runner,
         configured_root=settings.workspace_root,
-        targets=targets,
-        secret_resolver=_secret_resolver,
+        credentials=credentials,
+        identity_registry=identity_registry,
+        prompt_registry=prompt_registry,
+        prompt_authority=prompt_authority,
     )
 
     uvicorn.run(

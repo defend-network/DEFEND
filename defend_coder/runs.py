@@ -775,6 +775,77 @@ class RunsRepository:
                     (profile_id, version, identity_hash, run_id),
                 )
 
+    def get_run_identity(
+        self,
+        run_id: UUID,
+    ) -> tuple[str, str, str] | None:
+        """(profile_id, version, hash) pinned on a run, or None."""
+        with self._db.connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT identity_profile_id, identity_version, identity_hash
+                    FROM coder_runs
+                    WHERE run_id = %s
+                    """,
+                    (run_id,),
+                )
+                row = cursor.fetchone()
+        if row is None or row["identity_profile_id"] is None:
+            return None
+        return (
+            row["identity_profile_id"],
+            row["identity_version"],
+            row["identity_hash"],
+        )
+
+    def set_run_prompt_bundle(
+        self,
+        run_id: UUID,
+        *,
+        bundle_id: str,
+        version: str,
+        bundle_hash: str,
+    ) -> None:
+        """Pin the exact prompt bundle onto a run."""
+        with self._db.connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE coder_runs
+                    SET prompt_bundle_id = %s,
+                        prompt_bundle_version = %s,
+                        prompt_bundle_hash = %s
+                    WHERE run_id = %s
+                    """,
+                    (bundle_id, version, bundle_hash, run_id),
+                )
+
+    def get_run_prompt_bundle(
+        self,
+        run_id: UUID,
+    ) -> tuple[str, str, str] | None:
+        """(bundle_id, version, hash) pinned on a run, or None."""
+        with self._db.connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT prompt_bundle_id, prompt_bundle_version,
+                           prompt_bundle_hash
+                    FROM coder_runs
+                    WHERE run_id = %s
+                    """,
+                    (run_id,),
+                )
+                row = cursor.fetchone()
+        if row is None or row["prompt_bundle_id"] is None:
+            return None
+        return (
+            row["prompt_bundle_id"],
+            row["prompt_bundle_version"],
+            row["prompt_bundle_hash"],
+        )
+
     def create_escalation_proposal(
         self,
         run_id: UUID,
@@ -943,7 +1014,7 @@ class RunRunner:
         phase_max_tokens: dict[str, int] | None = None,
         client_resolver: Callable[[object], AgentChatClient] | None = None,
         proposal_factory: Callable[[object, object], object | None] | None = None,
-        identity_profile: object | None = None,
+        authority_resolver: Callable[[UUID], str] | None = None,
     ) -> None:
         if not isinstance(client, AgentChatClient):
             raise TypeError("client must be an AgentChatClient")
@@ -953,7 +1024,7 @@ class RunRunner:
         self._client = client
         self._client_resolver = client_resolver
         self._proposal_factory = proposal_factory
-        self._identity_profile = identity_profile
+        self._authority_resolver = authority_resolver
         self._toolkit_factory = toolkit_factory
         self._log = log or (lambda _line: None)
         self._max_steps = max(1, min(100, int(max_steps)))
@@ -1067,6 +1138,11 @@ class RunRunner:
         run_log = RunLog()
         toolkit = self._toolkit_factory(run_log.tail)
         client = self._resolve_client(run_id)
+        system_authority = (
+            self._authority_resolver(run_id)
+            if self._authority_resolver is not None
+            else None
+        )
         agent = CodingAgent(
             client=client,
             toolkit=toolkit,
@@ -1083,7 +1159,7 @@ class RunRunner:
                 run_id, record
             ),
             phase_max_tokens=self._phase_max_tokens,
-            identity_profile=self._identity_profile,
+            system_authority=system_authority,
         )
         seq_lock = threading.Lock()
         seq_counter = self._repository.max_message_seq(run_id)
