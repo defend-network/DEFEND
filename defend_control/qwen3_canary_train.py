@@ -127,12 +127,14 @@ def main(argv: list[str] | None = None) -> int:
     actual_steps = trainer.state.global_step
     print(f"OPTIMIZER_STEPS_COMPLETED={actual_steps}", flush=True)
     if actual_steps != CANARY_MAX_STEPS:
+        print('DEFEND_CANARY_RESULT={"status": "FAIL", "steps_completed": ' + str(actual_steps) + '}', flush=True)
         return 1
 
     # Save the trained PEFT-wrapped model (adapter), never the original base.
     trainer.model.save_pretrained(args.adapter_dir)
     tokenizer.save_pretrained(args.adapter_dir)
     print("ADAPTER_SAVED=" + str(Path(args.adapter_dir).resolve()), flush=True)
+    print('DEFEND_CANARY_RESULT={"status": "PASS", "steps_completed": 5}', flush=True)
     return 0
 
 

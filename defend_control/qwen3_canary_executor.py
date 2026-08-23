@@ -387,16 +387,41 @@ class RemoteStageResult:
     detail: str = ""
 
 
-def parse_remote_result(raw: dict, stage: str) -> RemoteStageResult:
-    status = raw.get("status", "FAIL")
-    steps = raw.get("steps") if stage == "TRAIN_5_STEPS" else None
-    if steps is None and stage == "TRAIN_5_STEPS":
-        steps = raw.get("steps_completed")
-    return RemoteStageResult(status=status, steps_completed=steps, detail=str(raw.get("detail", "")))
+RESULT_MARKER = "DEFEND_CANARY_RESULT="
+
+
+def parse_canary_result(stdout: str, returncode: int, stage: str) -> RemoteStageResult:
+    """Production semantic parser: machine-readable result record only.
+
+    Only an explicit PASS with all stage-required fields may advance. Unknown
+    status, malformed record, missing record, or nonzero return code all FAIL.
+    """
+    if returncode != 0:
+        return RemoteStageResult(status="FAIL", detail="nonzero return code")
+    record = None
+    for line in stdout.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(RESULT_MARKER):
+            payload = stripped[len(RESULT_MARKER):]
+            try:
+                record = json.loads(payload)
+            except json.JSONDecodeError:
+                return RemoteStageResult(status="FAIL", detail="malformed result record")
+            break
+    if record is None:
+        return RemoteStageResult(status="FAIL", detail="no structured result record")
+    if not isinstance(record, dict):
+        return RemoteStageResult(status="FAIL", detail="result record not an object")
+    status = record.get("status")
+    if status not in ("PASS", "FAIL"):
+        return RemoteStageResult(status="FAIL", detail=f"unknown status {status!r}")
+    steps = record.get("steps_completed") if stage == "TRAIN_5_STEPS" else None
+    return RemoteStageResult(status=status, steps_completed=steps, detail=str(record.get("detail", "")))
 
 
 class RemoteHost(Protocol):
     def run_stage(self, stage: str, instance_id: int, adapter_dir: str, timeout_seconds: float) -> dict: ...
+    # returns raw process result: {"returncode": int, "stdout": str, "stderr": str}
 
 
 @dataclass
@@ -442,6 +467,7 @@ class Qwen3CanaryExecutor:
         vast: VastGateway,
         remote: RemoteHost,
         clock=time.monotonic,
+        sleep=time.sleep,
         run_id: str | None = None,
         git_head: str = "",
     ) -> None:
@@ -449,6 +475,7 @@ class Qwen3CanaryExecutor:
         self.vast = vast
         self.remote = remote
         self.clock = clock
+        self.sleep = sleep
         self.run_id = run_id or uuid.uuid4().hex[:12]
         self.git_head = git_head
 
@@ -456,6 +483,30 @@ class Qwen3CanaryExecutor:
         budget = created_at + (float(CANARY_HARD_SPEND_CAP_USD / hourly_rate) * 3600.0)
         teardown = budget - self.policy.teardown_reserve_seconds
         return budget, teardown
+
+    def _teardown(self, canary_id: int) -> tuple[bool, int]:
+        """Exact-ID destroy + bounded absence reconciliation. Only terminal
+        ABSENT verifies billing termination; PRESENT/UNKNOWN poll until the
+        teardown reserve is exhausted."""
+        mutations = 0
+        try:
+            destroyed = self.vast.destroy(canary_id)
+            mutations += 1
+        except Exception:
+            return False, mutations
+        if not destroyed:
+            return False, mutations
+        deadline = self.clock() + self.policy.teardown_reserve_seconds
+        polls = 0
+        while polls < 20:
+            state = self.vast.instance_state(canary_id)
+            if state == INSTANCE_ABSENT:
+                return True, mutations
+            if self.clock() > deadline:
+                return False, mutations
+            self.sleep(0.5)
+            polls += 1
+        return False, mutations
 
     def run(self) -> CanaryRunResult:
         mutations = 0
@@ -519,7 +570,7 @@ class Qwen3CanaryExecutor:
                 remaining = budget_deadline - now
                 timeout = max(1.0, remaining - self.policy.teardown_reserve_seconds)
                 raw = self.remote.run_stage(stage, canary_id, adapter_dir, timeout)
-                result = parse_remote_result(raw, stage)
+                result = parse_canary_result(raw.get("stdout", ""), int(raw.get("returncode", 1)), stage)
                 evidence.append(PhaseEvidence(stage, result.status, False, True, result.detail))
                 if stage == "TRAIN_5_STEPS":
                     if result.steps_completed is None:
@@ -532,14 +583,9 @@ class Qwen3CanaryExecutor:
             evidence.append(PhaseEvidence("FAILED", "FAIL", False, True, f"{type(exc).__name__}"))
         finally:
             if canary_id is not None:
-                try:
-                    destroyed = self.vast.destroy(canary_id)
-                    mutations += 1
-                    state = self.vast.instance_state(canary_id)
-                    billing_verified = bool(destroyed and state == INSTANCE_ABSENT)
-                    if not billing_verified:
-                        billing_risk = "HIGH"
-                except Exception:
+                billing_verified, teardown_mutations = self._teardown(canary_id)
+                mutations += teardown_mutations
+                if not billing_verified:
                     billing_risk = "HIGH"
             evidence.append(PhaseEvidence("DESTROY", "PASS" if billing_verified else "FAIL", True, canary_id is not None,
                                            f"verified={billing_verified}"))

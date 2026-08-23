@@ -1,4 +1,4 @@
-"""M1.9.2C1 tests: label-based production inventory, authoritative
+﻿"""M1.9.2C1 tests: label-based production inventory, authoritative
 certification with real SHA gates, and the dependency-injected paid executor
 lifecycle (success + failure injection) with zero real provider mutations."""
 
@@ -39,9 +39,9 @@ TRAIN_FILE = Path(r"C:\Users\thoma\Downloads\DEFEND32B\TRAINING\defend_sft_train
 HELDOUT_FILE = Path(r"C:\Users\thoma\Downloads\DEFEND32B\DEFEND_EVAL_HELD_OUT_200.jsonl")
 
 
-# ─────────────────────────────────────────────────────────────
-# P3 — production inventory (label identity + completeness)
-# ─────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# P3 â€” production inventory (label identity + completeness)
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _inst(*items):
     return [dict(i) for i in items]
@@ -103,9 +103,9 @@ def test_inventory_incomplete_unknown():
     assert inv.complete is False
 
 
-# ─────────────────────────────────────────────────────────────
-# P20-P21 — candidate resource profile (A100 80GB only)
-# ─────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# P20-P21 â€” candidate resource profile (A100 80GB only)
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def test_candidate_resource_profile_is_a100_80gb():
     p = candidate_canary_resource_profile()
@@ -114,9 +114,9 @@ def test_candidate_resource_profile_is_a100_80gb():
     assert p.num_gpus == 1
 
 
-# ─────────────────────────────────────────────────────────────
-# P4-P7 — authoritative certification (real gates)
-# ─────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# P4-P7 â€” authoritative certification (real gates)
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _load_rows():
     return [json.loads(line) for line in TRAIN_FILE.read_text(encoding="utf-8").splitlines() if line.strip()]
@@ -190,9 +190,9 @@ def test_certification_full_ready():
     assert cert.final_paid_readiness is True
 
 
-# ─────────────────────────────────────────────────────────────
-# P16-P17, P27-P31 — executor lifecycle (fake provider/host)
-# ─────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# P16-P17, P27-P31 â€” executor lifecycle (fake provider/host)
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class FakeVast:
     def __init__(self, destroy_ok=True, absent_ok=True):
@@ -233,10 +233,10 @@ class FakeRemote:
     def run_stage(self, stage, instance_id, adapter_dir, timeout_seconds=None):
         self.calls.append(stage)
         if stage == self.fail_stage:
-            return {"status": "FAIL", "detail": f"injected {stage}"}
+            return {"returncode": 1, "stdout": "", "stderr": f"injected {stage}"}
         if stage == "TRAIN_5_STEPS":
-            return {"status": "PASS", "steps": 5}
-        return {"status": "PASS"}
+            return {"returncode": 0, "stdout": 'DEFEND_CANARY_RESULT={"status": "PASS", "steps_completed": 5}', "stderr": ""}
+        return {"returncode": 0, "stdout": 'DEFEND_CANARY_RESULT={"status": "PASS"}', "stderr": ""}
 
 
 EXPECTED_STAGES = [
@@ -247,7 +247,7 @@ EXPECTED_STAGES = [
 def _run(fail_stage=None, destroy_ok=True, absent_ok=True):
     vast = FakeVast(destroy_ok=destroy_ok, absent_ok=absent_ok)
     remote = FakeRemote(fail_stage=fail_stage)
-    ex = Qwen3CanaryExecutor(policy=CanaryPolicy(), vast=vast, remote=remote, clock=lambda: 0.0)
+    ex = Qwen3CanaryExecutor(policy=CanaryPolicy(), vast=vast, remote=remote, clock=lambda: 0.0, sleep=lambda s: None)
     result = ex.run()
     return result, vast, remote
 
@@ -309,7 +309,7 @@ def test_executor_no_offer_does_not_create():
         def select_offer(self, policy):
             return None
     vast = NoOfferVast()
-    ex = Qwen3CanaryExecutor(policy=CanaryPolicy(), vast=vast, remote=FakeRemote(), clock=lambda: 0.0)
+    ex = Qwen3CanaryExecutor(policy=CanaryPolicy(), vast=vast, remote=FakeRemote(), clock=lambda: 0.0, sleep=lambda s: None)
     result = ex.run()
     assert result.status == "CANARY_NOT_STARTED"
     assert vast.mutations == []
@@ -319,15 +319,15 @@ def test_executor_no_offer_does_not_create():
 def test_executor_binds_git_head_and_run_scoped_adapter():
     vast = FakeVast()
     ex = Qwen3CanaryExecutor(policy=CanaryPolicy(), vast=vast, remote=FakeRemote(), clock=lambda: 0.0,
-                             run_id="abc123", git_head="42433eda3cf0ac0ca3fb07f9d9dce275b8259ebf")
+                             sleep=lambda s: None, run_id="abc123", git_head="42433eda3cf0ac0ca3fb07f9d9dce275b8259ebf")
     result = ex.run()
     assert result.git_head == "42433eda3cf0ac0ca3fb07f9d9dce275b8259ebf"
     assert result.adapter_dir == "canary-artifacts/abc123/adapter"
 
 
-# ─────────────────────────────────────────────────────────────
-# P18-P19 — paid CLI authorization gate
-# ─────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# P18-P19 â€” paid CLI authorization gate
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def test_cli_paid_requires_authorization():
     import tools.defend_ai_qwen3_canary as cli
@@ -396,9 +396,9 @@ def test_reload_parser_and_peft_validation(tmp_path):
     assert ok2
 
 
-# ─────────────────────────────────────────────────────────────
-# C2 — executor fail-closed + offer/price validation
-# ─────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# C2 â€” executor fail-closed + offer/price validation
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _cert_full():
     rows = _load_rows() if TRAIN_FILE.exists() else []
@@ -421,7 +421,7 @@ def _executor_with(inventory, offer=None, created_rate=Decimal("0.96")):
                 return SimpleNamespace(instance_id=999, dph_total=None)
             return SimpleNamespace(instance_id=999, dph_total=created_rate)
     vast = V()
-    ex = Qwen3CanaryExecutor(policy=CanaryPolicy(), vast=vast, remote=FakeRemote(), clock=lambda: 0.0)
+    ex = Qwen3CanaryExecutor(policy=CanaryPolicy(), vast=vast, remote=FakeRemote(), clock=lambda: 0.0, sleep=lambda s: None)
     return ex.run(), vast
 
 

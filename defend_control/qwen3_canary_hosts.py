@@ -176,7 +176,7 @@ class ConcreteRemoteHost:
     @staticmethod
     def _default_ssh_runner(argv: list[str], timeout: float) -> dict:
         proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
-        return {"status": "PASS" if proc.returncode == 0 else "FAIL", "detail": proc.stdout.strip()[-300:]}
+        return {"returncode": proc.returncode, "stdout": proc.stdout or "", "stderr": proc.stderr or ""}
 
     @staticmethod
     def _build_ssh_command(target: CanaryRemoteTarget, remote_command: str) -> list[str]:
@@ -200,14 +200,14 @@ class ConcreteRemoteHost:
 
     def run_stage(self, stage: str, instance_id: int, adapter_dir: str, timeout_seconds: float) -> dict:
         if self._target is None:
-            return {"status": "FAIL", "detail": "no remote target bound"}
+            return {"returncode": 1, "stdout": "", "stderr": "no remote target bound"}
         if instance_id != self._target.instance_id:
-            return {"status": "FAIL", "detail": "instance ID mismatch vs bound target"}
+            return {"returncode": 1, "stdout": "", "stderr": "instance ID mismatch vs bound target"}
         if self._target.host in BLOCKED_HOSTS:
-            return {"status": "FAIL", "detail": "blocked host"}
+            return {"returncode": 1, "stdout": "", "stderr": "blocked host"}
         remote_command = self._stage_command(stage, adapter_dir, "")
         argv = self._build_ssh_command(self._target, remote_command)
         try:
             return self._ssh_runner(argv, timeout_seconds)
         except subprocess.TimeoutExpired:
-            return {"status": "FAIL", "detail": "remote stage timeout"}
+            return {"returncode": 1, "stdout": "", "stderr": "remote stage timeout"}

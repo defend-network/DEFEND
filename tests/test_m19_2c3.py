@@ -8,6 +8,7 @@ from decimal import Decimal
 import pytest
 
 from defend_control.qwen3_canary_executor import build_execution_contract
+from defend_control.qwen3_canary_runner import CanaryPolicy
 from defend_control.qwen3_canary_hosts import (
     BLOCKED_HOSTS,
     CanaryRemoteTarget,
@@ -98,24 +99,24 @@ def test_ssh_command_builder():
 def test_run_stage_requires_bound_target():
     host = ConcreteRemoteHost(target=None, ssh_runner=lambda a, t: {"status": "PASS"})
     r = host.run_stage("HOST_PREFLIGHT", 999, "/a", 60)
-    assert r["status"] == "FAIL"
-    assert "no remote target" in r["detail"]
+    assert r["returncode"] == 1
+    assert "no remote target" in r["stderr"]
 
 
 def test_run_stage_instance_mismatch():
     target = CanaryRemoteTarget(instance_id=999, host="x", port=22, user="root", offer_id=1, hourly_rate=Decimal("0.96"))
     host = ConcreteRemoteHost(target=target, ssh_runner=lambda a, t: {"status": "PASS"})
     r = host.run_stage("HOST_PREFLIGHT", 777, "/a", 60)
-    assert r["status"] == "FAIL"
-    assert "mismatch" in r["detail"]
+    assert r["returncode"] == 1
+    assert "mismatch" in r["stderr"]
 
 
 def test_run_stage_blocked_host():
     target = CanaryRemoteTarget(instance_id=999, host="ssh3.vast.ai", port=22, user="root", offer_id=1, hourly_rate=Decimal("0.96"))
     host = ConcreteRemoteHost(target=target, ssh_runner=lambda a, t: {"status": "PASS"})
     r = host.run_stage("HOST_PREFLIGHT", 999, "/a", 60)
-    assert r["status"] == "FAIL"
-    assert "blocked host" in r["detail"]
+    assert r["returncode"] == 1
+    assert "blocked host" in r["stderr"]
 
 
 def test_no_placeholder_stages():
@@ -165,12 +166,47 @@ def test_target_binds_once():
 
 
 def test_parse_remote_result_steps():
-    from defend_control.qwen3_canary_executor import parse_remote_result
-    r = parse_remote_result({"status": "PASS", "steps": 5}, "TRAIN_5_STEPS")
+    from defend_control.qwen3_canary_executor import parse_canary_result
+    r = parse_canary_result('DEFEND_CANARY_RESULT={"status": "PASS", "steps_completed": 5}', 0, "TRAIN_5_STEPS")
     assert r.status == "PASS"
     assert r.steps_completed == 5
-    missing = parse_remote_result({"status": "PASS"}, "TRAIN_5_STEPS")
+    missing = parse_canary_result('DEFEND_CANARY_RESULT={"status": "PASS"}', 0, "TRAIN_5_STEPS")
     assert missing.steps_completed is None
+    # steps=4 fails (status FAIL only via missing? no — 4 must be a hard FAIL at executor level)
+    four = parse_canary_result('DEFEND_CANARY_RESULT={"status": "PASS", "steps_completed": 4}', 0, "TRAIN_5_STEPS")
+    assert four.steps_completed == 4
+
+
+def test_parse_unknown_status_fails():
+    from defend_control.qwen3_canary_executor import parse_canary_result
+    r = parse_canary_result('DEFEND_CANARY_RESULT={"status": "SUCCESSISH"}', 0, "HOST_PREFLIGHT")
+    assert r.status == "FAIL"
+
+
+def test_parse_malformed_record_fails():
+    from defend_control.qwen3_canary_executor import parse_canary_result
+    r = parse_canary_result('DEFEND_CANARY_RESULT=not-json', 0, "HOST_PREFLIGHT")
+    assert r.status == "FAIL"
+
+
+def test_parse_missing_record_fails():
+    from defend_control.qwen3_canary_executor import parse_canary_result
+    r = parse_canary_result('some random stdout', 0, "HOST_PREFLIGHT")
+    assert r.status == "FAIL"
+
+
+def test_parse_nonzero_returncode_fails():
+    from defend_control.qwen3_canary_executor import parse_canary_result
+    r = parse_canary_result('DEFEND_CANARY_RESULT={"status": "PASS"}', 1, "HOST_PREFLIGHT")
+    assert r.status == "FAIL"
+
+
+def test_production_parser_derives_five_steps_from_stdout():
+    from defend_control.qwen3_canary_executor import parse_canary_result
+    simulated = "OPTIMIZER_STEPS_COMPLETED=5\nADAPTER_SAVED=/x\nDEFEND_CANARY_RESULT={\"status\": \"PASS\", \"steps_completed\": 5}"
+    r = parse_canary_result(simulated, 0, "TRAIN_5_STEPS")
+    assert r.status == "PASS"
+    assert r.steps_completed == 5
 
 
 def test_preflight_real_entrypoint_wrong_revision():
@@ -187,3 +223,58 @@ def test_preflight_real_entrypoint_missing_train():
     ok, evidence = run_preflight("abc", Path("no-such-file.jsonl"), "9216db5781bf21249d130ec9da846c4624c16137")
     assert ok is False
     assert evidence["converted_sha_ok"] is False
+
+
+def test_preflight_paid_host_torch_unavailable_fails():
+    from defend_control.qwen3_canary_preflight import run_preflight
+    from pathlib import Path
+    try:
+        import torch  # noqa: F401
+        pytest.skip("torch installed in this environment")
+    except Exception:
+        pass
+    ok, evidence = run_preflight("abc", Path("no-such.jsonl"), "9216db5781bf21249d130ec9da846c4624c16137", paid_host=True)
+    assert ok is False
+    assert any("torch import failed" in f for f in evidence["failures"])
+
+
+def test_teardown_eventual_absent():
+    from defend_control.qwen3_canary_executor import (
+        INSTANCE_ABSENT, INSTANCE_PRESENT, ProductionInventory, Qwen3CanaryExecutor,
+    )
+    from defend_control.training_hardening import INVENTORY_NONE_FOUND
+    from types import SimpleNamespace
+
+    class StatefulVast:
+        def __init__(self):
+            self.mutations = []
+            self.states = [INSTANCE_PRESENT, INSTANCE_ABSENT]
+        def inventory(self):
+            return ProductionInventory(INVENTORY_NONE_FOUND, True, ())
+        def select_offer(self, policy):
+            from defend_control.types import VastOffer
+            return VastOffer(123, "A100 PCIE", 81920, Decimal("0.96"), Decimal("0.99"))
+        def create(self, offer):
+            self.mutations.append("create")
+            return SimpleNamespace(instance_id=999, dph_total=Decimal("0.96"))
+        def resolve_target(self, instance_id):
+            return {"host": "x", "port": 22, "user": "root"}
+        def destroy(self, instance_id):
+            self.mutations.append("destroy")
+            return True
+        def instance_state(self, instance_id):
+            return self.states.pop(0) if self.states else INSTANCE_ABSENT
+
+    class Remote:
+        def bind_target(self, t):
+            self._t = t
+        def run_stage(self, stage, iid, ad, to):
+            if stage == "TRAIN_5_STEPS":
+                return {"returncode": 0, "stdout": 'DEFEND_CANARY_RESULT={"status": "PASS", "steps_completed": 5}', "stderr": ""}
+            return {"returncode": 0, "stdout": 'DEFEND_CANARY_RESULT={"status": "PASS"}', "stderr": ""}
+
+    vast = StatefulVast()
+    ex = Qwen3CanaryExecutor(policy=CanaryPolicy(), vast=vast, remote=Remote(), clock=lambda: 0.0, sleep=lambda s: None)
+    result = ex.run()
+    assert result.billing_termination_verified is True
+    assert result.status == "SUCCESS"

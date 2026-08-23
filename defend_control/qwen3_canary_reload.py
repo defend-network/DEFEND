@@ -95,6 +95,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"SANITY_COMPLETION_NONEMPTY={'YES' if generated_nonempty else 'NO'}", flush=True)
     print(f"CUDA_DEVICE={model.device}", flush=True)
     print(f"RELOAD_SANITY={'PASS' if generated_nonempty else 'FAIL'}", flush=True)
+    print('DEFEND_CANARY_RESULT={"status": "' + ("PASS" if generated_nonempty else "FAIL") + '"}', flush=True)
     return 0 if generated_nonempty else 4
 
 
