@@ -61,23 +61,41 @@ class DeploymentProfile:
         return {k: v for k, v in asdict(self).items()}
 
 
+class CorruptDeploymentProfileError(RuntimeError):
+    """Raised when the persisted deployment profile authority is corrupt."""
+
+
 class DeploymentProfileRegistry:
     def __init__(self, path: Path | None = None) -> None:
         local_app_data = os.environ.get("LOCALAPPDATA")
         base = Path(local_app_data) / "DEFEND" if local_app_data else Path.cwd()
         self._path = path or (base / "deployment-profiles.json")
 
-    def load(self) -> dict[str, DeploymentProfile]:
+    def load_checked(self) -> tuple[dict[str, DeploymentProfile], str]:
+        """Return (profiles, state). state in {BOOTSTRAP_DEFAULTS, VALID, CORRUPT}.
+
+        Absent file -> defaults (bootstrap). Valid file -> persisted. Corrupt
+        file -> CORRUPT (never silently replaced with defaults), which blocks
+        paid canary authorization and production promotion.
+        """
         if not self._path.exists():
-            return default_profiles()
+            return default_profiles(), "BOOTSTRAP_DEFAULTS"
         try:
             raw = json.loads(self._path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            return default_profiles()
+            return default_profiles(), "CORRUPT"
+        if not isinstance(raw, dict):
+            return default_profiles(), "CORRUPT"
         profiles = default_profiles()
-        for profile_id, entry in (raw.items() if isinstance(raw, dict) else {}):
+        for profile_id, entry in raw.items():
             if isinstance(entry, dict):
                 profiles[profile_id] = _from_mapping(profile_id, entry)
+        return profiles, "VALID"
+
+    def load(self) -> dict[str, DeploymentProfile]:
+        profiles, state = self.load_checked()
+        if state == "CORRUPT":
+            raise CorruptDeploymentProfileError("deployment profile file is corrupt")
         return profiles
 
     def save(self, profiles: dict[str, DeploymentProfile]) -> None:

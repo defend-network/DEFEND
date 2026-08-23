@@ -29,7 +29,7 @@ from api_identity_routes import SensitivePathRedactionMiddleware, router as iden
 from api_identity_admin_routes import router as identity_admin_router
 from api_admin_rag_routes import build_admin_rag_router
 from api_setup_integrations_routes import build_setup_integrations_router
-from defend_control.secrets import DpapiSecretStore
+from shared_platform.secure_store import DpapiSecretStore
 from defend_data import DataCore
 from defend_data.admin_rag import PermanentRagService
 from defend_data.ingest_policy import AIIngestExcluded, assert_ai_ingest_allowed
@@ -471,29 +471,15 @@ app.include_router(build_admin_rag_router(admin_rag_service))
 def _detected_runtime():
     """Detected Core values (ports, origin, tunnel, databases) for the UI.
 
-    Prefers the shared Control Center settings file (the runtime source of
-    truth); falls back to environment values. Everything is observation-only
-    and contains no secrets.
+    DEFEND AI owns its runtime settings: environment variables are the
+    authority; Control Center settings are never read by the product. Everything
+    is observation-only and contains no secrets.
     """
     api_port = os.getenv("DEFEND_API_PORT", "8000")
     web_port = "3000"
     model_port = "8001"
     public_origin = os.getenv("DEFEND_PUBLIC_WEB_ORIGIN", "").strip()
     tunnel = ""
-    try:
-        from defend_control.settings import JsonSettingsStore
-        from defend_integrations.stores import default_secret_root
-
-        settings = JsonSettingsStore(
-            default_secret_root() / "control-center.json"
-        ).load()
-        api_port = str(settings.api_port)
-        web_port = str(settings.web_port)
-        model_port = str(settings.model_port)
-        public_origin = settings.public_web_origin
-        tunnel = settings.cloudflared_tunnel
-    except Exception:
-        pass
     from defend_integrations.runtime import detect_runtime
 
     return detect_runtime(

@@ -16,7 +16,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-from defend_control.redaction import redact_text
+from shared_platform.redaction import redact_text
 
 _MAX_RESPONSE_BYTES = 64 * 1024
 _MAX_TIMEOUT_SECONDS = 60.0

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from defend_control.processes import ProcessSpec
+from shared_platform.processes import ProcessSpec
 
 from .application import ApplicationContext, validate_application_pair
 from .services import DeploymentProfile, RouteProfile, ServiceProfile, validate_deployment

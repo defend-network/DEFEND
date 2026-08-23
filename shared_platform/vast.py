@@ -454,7 +454,7 @@ class VastClient:
     def search_offers(
         self,
         max_hourly: Decimal,
-        profile: ResourceProfile | None = None,
+        profile: ResourceProfile,
         *,
         require_direct_ports: bool = False,
     ) -> tuple[VastOffer, ...]:
@@ -463,7 +463,9 @@ class VastClient:
             raise ValueError("maximum hourly price must be positive")
         if type(require_direct_ports) is not bool:
             raise ValueError("require_direct_ports must be a bool")
-        policy = profile if profile is not None else _DEFAULT_PROFILE
+        if not isinstance(profile, ResourceProfile):
+            raise ValueError("a product resource profile is required for offer search")
+        policy = profile
         document = {
             "type": "on-demand",
             "verified": {"eq": True},
