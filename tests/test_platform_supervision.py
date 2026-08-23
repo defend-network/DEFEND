@@ -88,14 +88,42 @@ def test_compatibility_manifests_source_product_owned_config():
     coder = by_id["coder"]
     assert coder.api_port == 8301
     assert coder.web_port == 3301
-    assert coder.open_url == "https://defendcoder.defend-network.org"
-    assert coder.manifest_source.startswith("compatibility:")
+    assert coder.open_url.startswith("http://127.0.0.1")
     scs = by_id["scs"]
     assert set(scs.ports) == {8100, 8300, 3100}
     assert scs.api_port == 8300
     assert scs.web_port == 3100
-    for manifest in manifests:
-        assert manifest.manifest_source.startswith("compatibility:")
+
+
+def test_coder_manifest_consumes_product_owned_launch_contract():
+    settings = _SettingsStub()
+    manifests = build_compatibility_manifests(
+        settings, Path(r"C:\DEFEND"), "python.exe"
+    )
+    coder = next(m for m in manifests if m.product_id == "coder")
+    assert (
+        coder.manifest_source
+        == "product:defend_coder.launch.build_launch_manifest"
+    )
+    from defend_coder.launch import build_launch_manifest
+
+    product = build_launch_manifest()
+    assert coder.api_port == product.api_port == 8301
+    assert coder.web_port == product.ui_port == 3301
+    assert coder.health_url == product.health_url
+    assert coder.api_launch == tuple(product.api_command)
+
+
+def test_ai_and_scs_manifest_sources_are_compatibility_legacy():
+    settings = _SettingsStub()
+    manifests = build_compatibility_manifests(
+        settings, Path(r"C:\DEFEND"), "python.exe"
+    )
+    by_id = {m.product_id: m for m in manifests}
+    assert by_id["defend"].manifest_source.startswith("COMPATIBILITY_LEGACY")
+    assert by_id["scs"].manifest_source.startswith("COMPATIBILITY_LEGACY")
+    # Markets: latest lane not integrated -> legacy/pending.
+    assert "PENDING_LATEST_MARKETS_LANE" in by_id["sports"].manifest_source
 
 
 def test_compatibility_manifests_are_collision_free_by_default():
@@ -253,11 +281,12 @@ def test_health_failure_is_degraded_not_running():
 # ---------------------------------------------------------- provider boundary
 
 
-def test_control_center_supervision_makes_zero_provider_calls():
-    """The neutral platform/supervision layer imports no provider clients.
+def test_neutral_platform_modules_import_no_provider_clients():
+    """Section 8A: NEUTRAL_PLATFORM_MODULES_IMPORT_PROVIDER_CLIENTS=NO.
 
-    Control Center must not call Vast, model providers, or product APIs on a
-    product's behalf. These modules are import-surface-clean by construction.
+    The neutral platform/supervision layer imports no provider clients. This
+    does NOT claim the whole Control Center application is clean (the coder
+    provider path remains LEGACY_ACTIVE — see the separate honest test).
     """
     import defend_control.platform as platform_module
     import defend_control.platform_audit as audit_module
@@ -288,6 +317,53 @@ def test_control_center_supervision_makes_zero_provider_calls():
             "defend_control.vast",
         ):
             assert forbidden not in import_lines, (module.__name__, forbidden)
+
+
+def test_actual_control_center_coder_provider_path_is_legacy_active():
+    """Honest Section 8B: the real Control Center app still wires provider
+    clients through _build_coder_plane().
+
+    The neutral Platform modules are clean, but the Control Center application
+    itself retains a LEGACY_ACTIVE coder provider path until Coder R3 migrates
+    it. This test documents that truth instead of hiding it.
+    """
+    import tools.defend_control_center as tools_module
+
+    source = open(tools_module.__file__, encoding="utf-8").read()
+    assert "_build_coder_plane" in source
+    for client in (
+        "CoderControlPlane",
+        "CoderRemoteVllmBootstrap",
+        "VastCoderBackend",
+        "SshTunnel",
+        "VastClient",
+    ):
+        assert client in source, client
+    assert "LEGACY_ACTIVE" not in source  # the report marks this, not the code
+
+
+def test_shared_dpapi_is_single_implementation_identity():
+    """Section 4: shared_platform.dpapi is the SAME body as secure_store.
+
+    The canonical physical DPAPI implementation is shared_platform.secure_store;
+    shared_platform.dpapi and defend_control.secrets are compatibility shims.
+    """
+    from shared_platform.dpapi import DpapiSecretStore as Shimmable
+    from shared_platform.secure_store import (
+        DpapiSecretStore,
+        SecretBackend,
+        UnsupportedPlatformError,
+        WindowsDpapiBackend,
+        restrict_to_current_user,
+    )
+    from defend_control.secrets import DpapiSecretStore as Legacy
+
+    assert Shimmable is DpapiSecretStore
+    assert Legacy is DpapiSecretStore
+    assert SecretBackend is not None
+    assert UnsupportedPlatformError is not None
+    assert WindowsDpapiBackend is not None
+    assert callable(restrict_to_current_user)
 
 
 def test_control_center_cannot_destroy_train_or_mutate_product_policy():

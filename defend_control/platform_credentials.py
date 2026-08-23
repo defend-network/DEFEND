@@ -1,17 +1,19 @@
-"""Platform credential entitlements (Section 15, 16).
+"""Platform credential metadata (Section 15, 16).
 
-Platform owns the secret storage MECHANISM; products own HOW they use an
-authorized secret. This module is a neutral, read-only view over the existing
-Setup / Integrations credential control plane:
+Platform owns the secret storage MECHANISM; products own HOW they use a
+credential. This module is a neutral, read-only view over the existing Setup /
+Integrations credential control plane:
 
 - configured/masked state come from the shared encrypted secret store via
   :class:`defend_integrations.stores.SecretRegistry` (never raw values).
-- provider -> authorized products come from the neutral provider registry
-  (:mod:`defend_integrations.registry`), not from Control Center policy.
+- provider -> ``intended_products`` comes from the neutral provider registry
+  (:mod:`defend_integrations.registry`) as provider product METADATA. It
+  expresses intended/relevant products, NOT runtime enforcement.
 - verification state is derived from the last sanitized probe badge.
 
-A successful credential test only verifies the credential; it never authorizes
-product provider use (that is the product's decision).
+``PRODUCT_USE_ENFORCEMENT`` is NOT_IMPLEMENTED: nothing here restricts a
+product at secret-resolution time. A successful credential test only verifies
+the credential; it never authorizes product provider use.
 """
 
 from __future__ import annotations
@@ -89,7 +91,7 @@ class PlatformCredentialRegistry:
                                 if credential.get("masked") is not None
                                 else None
                             ),
-                            "authorized_products": sorted(
+                            "intended_products": sorted(
                                 str(product)
                                 for product in provider.get("products", [])
                                 if isinstance(product, str)
@@ -112,6 +114,15 @@ class PlatformCredentialRegistry:
             sorted(rows, key=lambda row: (row["category"], row["credential_key"]))
         )
 
+    def product_use_enforcement(self) -> str:
+        """Secret-resolution-time enforcement status.
+
+        The provider registry carries intended/eligible product metadata only;
+        Control Center does not gate secret resolution per product. This is
+        metadata, not a security entitlement.
+        """
+        return "NOT_IMPLEMENTED"
+
     def configured_count(self) -> int:
         return sum(1 for row in self.entitlement_rows() if row["configured"])
 
@@ -131,4 +142,5 @@ class PlatformCredentialRegistry:
             "verified": sum(
                 1 for row in rows if row["verification_state"] == "VERIFIED"
             ),
+            "product_use_enforcement": self.product_use_enforcement(),
         }

@@ -286,15 +286,28 @@ class PlatformService:
     def membership(self) -> dict[str, Any]:
         return {
             "status": "NOT_CONFIGURED",
-            "identity_authority": "defend_data.identity_store (canonical local owner identity)",
-            "note": "Consumer account/org/membership/entitlement system is a future neutral-platform milestone.",
+            "identity_authority": "LEGACY_OWNER_IDENTITY=defend_data.identity_store",
+            "neutral_platform_identity_authority": "NOT_ESTABLISHED",
+            "membership": "NOT_IMPLEMENTED",
+            "note": (
+                "defend_data is historically DEFEND-AI-owned/mixed and is NOT "
+                "a neutral-platform identity authority. Consumer "
+                "account/org/membership/entitlement is a future neutral-platform "
+                "milestone; no identity migration here."
+            ),
         }
 
     def billing(self) -> dict[str, Any]:
         return {
             "status": "NOT_IMPLEMENTED",
-            "neutral_primitives": "defend_control.coder_billing (account, credit balance, usage ledger, spending limits)",
-            "note": "No consumer charging, no Stripe, no customer money in this milestone. Numbers are owner-configurable policy later.",
+            "legacy_coder_billing": "EXISTS (defend_control.coder_billing: account, credit balance, usage ledger, spending limits)",
+            "neutral_platform_billing_authority": "NOT_ESTABLISHED",
+            "consumer_billing": "NOT_IMPLEMENTED",
+            "note": (
+                "defend_control.coder_billing is Coder-associated/legacy mixed "
+                "code, NOT accepted as neutral authority. No consumer charging, "
+                "no Stripe, no customer money in this milestone."
+            ),
         }
 
     def networking(self) -> dict[str, Any]:

@@ -73,17 +73,24 @@ def test_verification_state_vocabulary():
     )
 
 
-def test_entitlement_rows_include_authorized_products(tmp_path):
+def test_entitlement_rows_include_intended_products(tmp_path):
     service, _, _ = _service(tmp_path)
     registry = PlatformCredentialRegistry(service)
     rows = {row["credential_key"]: row for row in registry.entitlement_rows()}
     assert "FRED_API_KEY" in rows
     fred = rows["FRED_API_KEY"]
     assert fred["provider"] == "fred"
-    assert set(fred["authorized_products"]) == {"defendmarkets", "scs"}
+    assert set(fred["intended_products"]) == {"defendmarkets", "scs"}
     assert fred["configured"] is False
     assert fred["verification_state"] == "NOT_CONFIGURED"
     assert fred["masked"] is None
+
+
+def test_product_metadata_is_not_enforced_authorization(tmp_path):
+    service, _, _ = _service(tmp_path)
+    registry = PlatformCredentialRegistry(service)
+    assert registry.product_use_enforcement() == "NOT_IMPLEMENTED"
+    assert registry.to_dict()["product_use_enforcement"] == "NOT_IMPLEMENTED"
 
 
 def test_configured_secret_masked_only_never_raw(tmp_path):

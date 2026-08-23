@@ -126,14 +126,17 @@ def build_compatibility_manifests(
 ) -> tuple[ProductSupervisionManifest, ...]:
     """Bounded compatibility adapter around each product's OWNED config.
 
-    The products do not yet publish canonical manifest files. Until they do,
-    manifest values are sourced from the product-owned environment
-    configuration (``ProductsSettings.from_env`` reads ``*_API_PORT`` /
-    ``*_WEB_PORT`` / ``*_PUBLIC_ORIGIN`` env vars). ``manifest_source`` is
-    stamped ``compatibility:...`` so Control Center never mistakes this for a
-    canonical product manifest. No new product policy is introduced here.
+    Manifest provenance is stamped explicitly on every manifest:
+
+    - CODER: consumed from the product-owned launch contract
+      ``defend_coder.launch.build_launch_manifest()`` (Section 13). Control
+      Center does NOT redefine 8301/3301/8403, commands or health URL.
+    - DEFEND AI / SCS: no canonical application supervision manifest exists
+      yet (DEFEND AI's ``defend_ai.launch`` holds GPU LaunchSpecs, not an
+      application process manifest), so ``manifest_source=COMPATIBILITY_LEGACY``.
+    - DEFENDMarkets: the latest Markets lane is not part of this integration;
+      current representation is legacy.
     """
-    source = "compatibility:ProductsSettings.from_env"
     repository = Path(repository).resolve()
     py = str(python_executable)
 
@@ -152,9 +155,23 @@ def build_compatibility_manifests(
     sports_web = port_attr("sports_web_port") or 3200
     sports_origin = text_attr("sports_public_origin") or "https://defendsports.defend-network.org"
 
-    coder_api = port_attr("coder_api_port") or 8301
-    coder_web = port_attr("coder_web_port") or 3301
-    coder_origin = text_attr("coder_public_origin") or "https://defendcoder.defend-network.org"
+    coder_manifest = _load_coder_launch_manifest()
+    if coder_manifest is not None:
+        coder_api = int(coder_manifest.api_port)
+        coder_web = int(coder_manifest.ui_port)
+        coder_launch = tuple(coder_manifest.api_command)
+        coder_ui_launch = tuple(coder_manifest.ui_command)
+        coder_health = str(coder_manifest.health_url)
+        coder_origin = str(coder_manifest.open_url)
+        coder_source = "product:defend_coder.launch.build_launch_manifest"
+    else:
+        coder_api = port_attr("coder_api_port") or 8301
+        coder_web = port_attr("coder_web_port") or 3301
+        coder_launch = (py, "-m", "tools.defend_coder_server")
+        coder_ui_launch = ("node", ".next/standalone/server.js")
+        coder_health = f"http://127.0.0.1:{coder_api}/health"
+        coder_origin = text_attr("coder_public_origin") or "https://defendcoder.defend-network.org"
+        coder_source = "COMPATIBILITY_LEGACY"
     coder_workspace = getattr(settings, "coder_workspace_root", None)
     coder_workspace = (
         Path(coder_workspace).resolve()
@@ -178,7 +195,7 @@ def build_compatibility_manifests(
             health_url=defend_health,
             open_url=text_attr("public_web_origin") or "https://ai.defend-network.org",
             graceful_stop="request_shutdown",
-            manifest_source="compatibility:controller (orchestrated launch)",
+            manifest_source="COMPATIBILITY_LEGACY (no canonical app supervision manifest; defend_ai.launch is GPU LaunchSpec)",
         ),
         ProductSupervisionManifest(
             product_id="coder",
@@ -186,13 +203,13 @@ def build_compatibility_manifests(
             ports=(coder_api, coder_web),
             api_port=coder_api,
             web_port=coder_web,
-            api_launch=(py, "-m", "tools.defend_coder_server"),
-            ui_launch=("node", ".next/standalone/server.js"),
+            api_launch=coder_launch,
+            ui_launch=coder_ui_launch,
             working_dir=repository / "defendcoder-ui",
-            health_url=f"http://127.0.0.1:{coder_api}/health",
+            health_url=coder_health,
             open_url=coder_origin,
             graceful_stop="request_shutdown",
-            manifest_source=source,
+            manifest_source=coder_source,
         ),
         ProductSupervisionManifest(
             product_id="sports",
@@ -205,7 +222,7 @@ def build_compatibility_manifests(
             health_url=f"http://127.0.0.1:{sports_api}/health",
             open_url=sports_origin,
             graceful_stop="request_shutdown",
-            manifest_source=source,
+            manifest_source="COMPATIBILITY_LEGACY (latest Markets lane NOT integrated; MARKETS_MANIFEST_STATE=LEGACY/PENDING_LATEST_MARKETS_LANE)",
         ),
         ProductSupervisionManifest(
             product_id="scs",
@@ -218,9 +235,23 @@ def build_compatibility_manifests(
             health_url=f"http://127.0.0.1:{scs_core_api}/health",
             open_url=scs_origin,
             graceful_stop="request_shutdown",
-            manifest_source=source,
+            manifest_source="COMPATIBILITY_LEGACY (no clean product launch manifest loadable without side effects)",
         ),
     )
+
+
+def _load_coder_launch_manifest() -> object | None:
+    """Best-effort load of the product-owned Coder launch contract.
+
+    Returns the ``defend_coder.launch.LaunchManifest`` when it can be imported
+    without side effects, else None so callers fall back to COMPATIBILITY_LEGACY.
+    """
+    try:
+        from defend_coder.launch import build_launch_manifest
+
+        return build_launch_manifest()
+    except Exception:
+        return None
 
 
 def _component_for(manifest: ProductSupervisionManifest, port: int) -> str:

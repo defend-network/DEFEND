@@ -60,8 +60,9 @@ def test_platform_overview_renders_supervision_data():
 def test_platform_credentials_renders_masked_only():
     source = _source("_platform_credentials_text")
     assert "masked=" in source
-    assert "authorized_products" in source
-    assert "NOT_CONFIGURED" in source
+    assert "intended_products" in source
+    assert "NOT_IMPLEMENTED" in source
+    assert "metadata" in source
 
 
 def test_platform_infrastructure_renders_observable_facts():

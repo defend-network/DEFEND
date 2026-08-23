@@ -1410,18 +1410,27 @@ class ControlCenterUI:
         if not rows:
             return "No neutral credentials registered."
         lines = [
-            f"Credential entitlements (configured={data.get('configured', 0)}, "
+            f"Credential metadata (configured={data.get('configured', 0)}, "
             f"verified={data.get('verified', 0)})"
         ]
+        lines.append(
+            "Product use enforcement: "
+            f"{data.get('product_use_enforcement', 'NOT_IMPLEMENTED')} "
+            "(intended/eligible products are metadata, not access control)"
+        )
         for row in rows:
-            products = ", ".join(row.get("authorized_products") or [])
+            products = ", ".join(
+                row.get("intended_products")
+                or row.get("authorized_products")
+                or []
+            )
             masked = row.get("masked")
             masked_text = masked if masked else "not set"
             lines.append(
                 f"  {row.get('credential_key', '?')} "
                 f"[{row.get('provider_name', row.get('provider', '?'))}] "
                 f"state={row.get('verification_state', 'UNKNOWN')} "
-                f"products={products or '-'} masked={masked_text}"
+                f"intended_products={products or '-'} masked={masked_text}"
             )
         return "\n".join(lines)
 

@@ -234,10 +234,14 @@ def test_membership_billing_networking_are_honest(tmp_path):
     service, _ = _platform(tmp_path)
     membership = service.membership()
     assert membership["status"] == "NOT_CONFIGURED"
-    assert membership["identity_authority"]
+    assert "LEGACY_OWNER_IDENTITY" in membership["identity_authority"]
+    assert membership["neutral_platform_identity_authority"] == "NOT_ESTABLISHED"
+    assert membership["membership"] == "NOT_IMPLEMENTED"
     billing = service.billing()
     assert billing["status"] == "NOT_IMPLEMENTED"
-    assert billing["neutral_primitives"]
+    assert billing["legacy_coder_billing"].startswith("EXISTS")
+    assert billing["neutral_platform_billing_authority"] == "NOT_ESTABLISHED"
+    assert billing["consumer_billing"] == "NOT_IMPLEMENTED"
     networking = service.networking()
     assert networking["cloudflare"] == "NOT_CONFIGURED"
     assert networking["product_origins"]
