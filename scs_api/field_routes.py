@@ -18,6 +18,9 @@ from scs_data.identity import ScsIdentityStore
 from scs_data.jobs import ScsJobStore
 from shared_platform.application import ApplicationContext
 
+from scs_copilot.concepts import normalize_concept, scope_of, validate_unit, contract
+from scs_knowledge.discovery import DiscoveryLedgerError
+
 
 def _field_workspace() -> Path:
     return Path(os.environ.get("SCS_FIELD_WORKSPACE", r"C:\SCS_DATA\copilot"))
@@ -51,6 +54,35 @@ class ApproveInput(BaseModel):
 
 
 STAGES = ("AS_FOUND", "INTERMEDIATE", "FINAL")
+
+
+def _known_equipment_ids(record, graph) -> set[str]:
+    ids: set[str] = set()
+    for device in getattr(record, "air_devices", []) or []:
+        if getattr(device, "device_id", None):
+            ids.add(device.device_id)
+    for equipment in getattr(record, "equipment", []) or []:
+        if getattr(equipment, "equipment_id", None):
+            ids.add(equipment.equipment_id)
+    if graph is not None:
+        for item in getattr(graph, "equipment", []) or []:
+            if isinstance(item, dict) and item.get("id"):
+                ids.add(item["id"])
+    return ids
+
+
+def _validated_timestamp(value: str | None) -> str | None:
+    if not value:
+        return None
+    from datetime import datetime
+    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%SZ",
+                "%Y-%m-%d %H:%M:%S"):
+        try:
+            datetime.strptime(value, fmt)
+            return value
+        except ValueError:
+            continue
+    raise HTTPException(status_code=400, detail="INVALID_TIMESTAMP")
 
 
 def build_field_router(context: ApplicationContext,
@@ -186,26 +218,47 @@ def build_field_router(context: ApplicationContext,
             for h in history[-50:]
         ]}
 
+    @router.get("/api/scs/field/concepts")
+    def field_concepts(request: Request):
+        principal(request)  # authenticated surface only
+        return contract()
+
     @router.post("/api/scs/field/jobs/{job_id}/readings", status_code=201)
     def record_reading(job_id: str, body: ReadingInput, request: Request):
         actor = principal(request)
         authorize_field_job(actor, job_id)
         if body.stage not in STAGES:
             raise HTTPException(status_code=400, detail="invalid stage")
+        concept = normalize_concept(body.concept)
+        if concept is None:
+            raise HTTPException(status_code=400, detail="INVALID_MEASUREMENT_CONCEPT")
+        unit = validate_unit(concept, body.unit)
+        if unit is None:
+            raise HTTPException(status_code=400, detail="INVALID_MEASUREMENT_UNIT")
         from scs_copilot.job_service import FieldJobRuntime
-        from scs_copilot.memory import canonical_measurement
         runtime = FieldJobRuntime.from_workspace(_field_workspace())
         try:
-            runtime.load_job(job_id)
+            record = runtime.load_job(job_id)
         except FileNotFoundError:
             raise HTTPException(status_code=404, detail="Job not found") from None
+        graph = runtime.load_graph(job_id)
+        # equipment identity validation (M1.5B 6.3)
+        scope = scope_of(concept)
+        known = _known_equipment_ids(record, graph)
+        if scope == "EQUIPMENT":
+            if not body.equipment_id:
+                raise HTTPException(status_code=400, detail="equipment_id required")
+            if body.equipment_id not in known:
+                raise HTTPException(status_code=400, detail="UNKNOWN_EQUIPMENT")
+        elif scope == "JOB":
+            body.equipment_id = None  # explicit job-level scope
+        observed_at = _validated_timestamp(body.observed_at)
         memory_store = runtime.memory_store(job_id)
-        concept = canonical_measurement(body.concept) or body.concept.upper()
         entry = memory_store.update(job_id, lambda m: m.record_reading(
             body.concept, body.value, stage=body.stage,
             equipment_id=body.equipment_id, instrument_id=body.instrument_id,
             operating_mode=body.operating_mode, concept=concept,
-            recorded_at=body.observed_at))
+            recorded_at=observed_at, unit=unit, entered_by=actor.employee_id))
         return {"reading": entry}
 
     # ---- knowledge ----------------------------------------------------------
@@ -234,11 +287,15 @@ def build_field_router(context: ApplicationContext,
         finally:
             library.close()
         store = _discovery_store()
+        configured = "SCS_KNOWLEDGE_ROOT" in os.environ
         return {
             "knowledge_root": str(root),
-            "configured": "SCS_KNOWLEDGE_ROOT" in os.environ,
-            "state": "CONFIGURED" if "SCS_KNOWLEDGE_ROOT" in os.environ else "NOT_CONFIGURED",
+            "configured": configured,
+            "state": "CONFIGURED" if configured else "NOT_CONFIGURED",
             "discovery": store.list(),
+            "discovery_ledger_state": store.ledger_state,
+            "knowledge_authority_blocked": (
+                None if configured else "KNOWLEDGE_AUTHORITY_BLOCKED_ROOT_NOT_CONFIGURED"),
             **inv,
         }
 
@@ -254,12 +311,15 @@ def build_field_router(context: ApplicationContext,
         actor = principal(request)
         require(actor, Permission.MANAGE_KNOWLEDGE)
         store = _discovery_store()
-        result = store.classify(body.discovery_id or body.source_id or "",
-                                source_type=body.source_type,
-                                manufacturer=body.manufacturer, model=body.model,
-                                model_series=body.model_series,
-                                family_tags=body.equipment_family_tags,
-                                applicability=body.applicability, edition=body.edition)
+        try:
+            result = store.classify(body.discovery_id or body.source_id or "",
+                                    source_type=body.source_type,
+                                    manufacturer=body.manufacturer, model=body.model,
+                                    model_series=body.model_series,
+                                    family_tags=body.equipment_family_tags,
+                                    applicability=body.applicability, edition=body.edition)
+        except DiscoveryLedgerError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from None
         if result is None:
             raise HTTPException(status_code=404, detail="Candidate not found")
         return {"document": result}
@@ -268,6 +328,8 @@ def build_field_router(context: ApplicationContext,
     def knowledge_approve(body: ApproveInput, request: Request):
         actor = principal(request)
         require(actor, Permission.MANAGE_KNOWLEDGE)
+        from scs_knowledge.discovery import (
+            DiscoveryLedgerError, KnowledgeRootNotConfigured)
         store = _discovery_store()
         from scs_copilot.job_service import FieldJobRuntime
         from scs_knowledge import resolve_knowledge_root
@@ -276,23 +338,28 @@ def build_field_router(context: ApplicationContext,
         root = resolve_knowledge_root(runtime.paths.root)
         library = SCSKnowledgeLibrary(root / "library.db")
         try:
-            if body.discovery_id:
-                result = store.approve_and_index(
-                    body.discovery_id, library, verified_by=actor.employee_id,
-                    private_root=root / "documents",
-                    source_type=body.source_type, manufacturer=body.manufacturer,
-                    model=body.model, model_series=body.model_series,
-                    family_tags=body.equipment_family_tags,
-                    applicability=body.applicability, edition=body.edition)
-            else:
-                from scs_knowledge.discovery import approve_source
-                result = approve_source(
-                    library, body.source_id or "", source_type=body.source_type,
-                    manufacturer=body.manufacturer, model=body.model,
-                    model_series=body.model_series,
-                    equipment_family_tags=body.equipment_family_tags,
-                    applicability=body.applicability, edition=body.edition,
-                    verified_by=actor.employee_id)
+            try:
+                if body.discovery_id:
+                    result = store.approve_and_index(
+                        body.discovery_id, library, verified_by=actor.employee_id,
+                        private_root=root / "documents",
+                        source_type=body.source_type, manufacturer=body.manufacturer,
+                        model=body.model, model_series=body.model_series,
+                        family_tags=body.equipment_family_tags,
+                        applicability=body.applicability, edition=body.edition)
+                else:
+                    from scs_knowledge.discovery import approve_source
+                    result = approve_source(
+                        library, body.source_id or "", source_type=body.source_type,
+                        manufacturer=body.manufacturer, model=body.model,
+                        model_series=body.model_series,
+                        equipment_family_tags=body.equipment_family_tags,
+                        applicability=body.applicability, edition=body.edition,
+                        verified_by=actor.employee_id)
+            except KnowledgeRootNotConfigured as error:
+                raise HTTPException(status_code=409, detail=str(error)) from None
+            except DiscoveryLedgerError as error:
+                raise HTTPException(status_code=409, detail=str(error)) from None
         finally:
             library.close()
         if result is None:

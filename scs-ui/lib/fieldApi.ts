@@ -46,6 +46,8 @@ export type KnowledgeStatus = {
   knowledge_root: string;
   configured: boolean;
   state: "CONFIGURED" | "NOT_CONFIGURED";
+  discovery_ledger_state: string;
+  knowledge_authority_blocked: string | null;
   discovery: Array<Record<string, unknown>>;
   documents: Array<Record<string, unknown>>;
   counts: Record<string, number>;
@@ -117,4 +119,12 @@ export async function knowledgeApprove(payload: Record<string, unknown>): Promis
 
 export async function knowledgeBlock(discoveryId: string): Promise<{document: Record<string, unknown>}> {
   return api("/api/scs/knowledge/block", {method: "POST", body: JSON.stringify({discovery_id: discoveryId})});
+}
+
+export async function knowledgeClassify(discoveryId: string, metadata: Record<string, unknown>): Promise<{document: Record<string, unknown>}> {
+  return api("/api/scs/knowledge/classify", {method: "POST", body: JSON.stringify({discovery_id: discoveryId, ...metadata})});
+}
+
+export async function knowledgeApproveIndex(discoveryId: string, metadata: Record<string, unknown>): Promise<{source: Record<string, unknown>}> {
+  return api("/api/scs/knowledge/approve", {method: "POST", body: JSON.stringify({discovery_id: discoveryId, ...metadata})});
 }

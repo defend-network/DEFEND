@@ -102,13 +102,16 @@ class JobConversationMemory:
                        operating_mode: str | None = None,
                        concept: str | None = None,
                        source_key: str | None = None,
-                       recorded_at: str | None = None) -> dict[str, Any]:
+                       recorded_at: str | None = None,
+                       unit: str | None = None,
+                       entered_by: str | None = None) -> dict[str, Any]:
         """Store a timestamped reading with explicit stage; never overwrite.
 
         P15: a ``source_key`` gives the reading stable source identity so the
         same persistent reading is not duplicated on re-seed; a changed value
         produces a new revision. P16: ``recorded_at`` preserves the original
-        measurement time instead of pretending it was taken now.
+        measurement time. M1.5B: ``unit`` and ``entered_by`` are persisted as
+        evidence provenance.
         """
         if equipment_id:
             self.active_entity = equipment_id
@@ -123,10 +126,12 @@ class JobConversationMemory:
             "job_id": self.job_id,
             "equipment_id": equipment_id,
             "concept": canon,
-            "value": value, "unit": None,
+            "value": value,
+            "unit": unit or "UNKNOWN_LEGACY",
             "stage": stage if stage in STAGES else "FIELD",
             "operating_mode": operating_mode, "instrument_id": instrument_id,
             "source": source,
+            "entered_by": entered_by,
             "source_key": source_key,
             "recorded_at": recorded_at or datetime.now().isoformat(timespec="seconds"),
         }

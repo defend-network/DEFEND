@@ -62,12 +62,14 @@ def test_rediscovery_same_hash_idempotent(tmp_path):
     assert records[0]["discovery_id"] == first_id
 
 
-def test_changed_hash_invalidates_prior_approval(tmp_path):
+def test_changed_hash_invalidates_prior_approval(tmp_path, monkeypatch):
+    monkeypatch.setenv("SCS_KNOWLEDGE_ROOT", str(tmp_path / "kroot"))
     store = _store(tmp_path)
     path = store._root / "manual.txt"
     path.write_text("version one", encoding="utf-8")
     store.discover()
     record = store.list()[0]
+    store.classify(record["discovery_id"], manufacturer="CARRIER", model="50TC")
     store.approve(record["discovery_id"], manufacturer="CARRIER", model="50TC")
     assert store.get(record["discovery_id"])["state"] == "OWNER_APPROVED"
     path.write_text("version two changed", encoding="utf-8")
@@ -78,11 +80,13 @@ def test_changed_hash_invalidates_prior_approval(tmp_path):
                for r in store.list())
 
 
-def test_approve_and_index_runs_ingestor(tmp_path):
+def test_approve_and_index_runs_ingestor(tmp_path, monkeypatch):
+    monkeypatch.setenv("SCS_KNOWLEDGE_ROOT", str(tmp_path / "kroot"))
     store = _store(tmp_path)
     (store._root / "manual.txt").write_text("Carrier 50TC installation manual max ESP 2.5", encoding="utf-8")
     store.discover()
     record = store.list()[0]
+    store.classify(record["discovery_id"])
     library = SCSKnowledgeLibrary(tmp_path / "lib.db")
     result = store.approve_and_index(record["discovery_id"], library,
                                      manufacturer="CARRIER", model="50TC-E08",
