@@ -18,7 +18,10 @@ def test_setup_groups_credentials_by_product():
     assert "Platform / Operations" in source
     assert "DEFEND AI" in source
     assert "DEFENDcoder" in source
-    assert "DEFENDmarkets" in source
+    # M4.8.2C: the legacy Sports integration owner no longer masquerades as
+    # "DEFENDmarkets"; it is labeled "DEFEND Sports". Markets shares the DEFEND
+    # AI owner identity and has no separate secret-catalog group.
+    assert "DEFEND Sports" in source
     assert "SCS AI" in source
 
 

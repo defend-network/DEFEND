@@ -93,6 +93,34 @@ def _is_private(hostname: str) -> bool:
     )
 
 
+def _decompress_gzip_bounded(data: bytes, *, max_output_bytes: int) -> tuple[bytes | None, bool]:
+    """Streaming/bounded gzip decompression (M4.8.1 P3).
+
+    Decompresses in bounded chunks so the decompressed output never exceeds
+    ``max_output_bytes``. Returns (bytes, ok): on overflow or malformed input,
+    ok=False (fail closed). Never decompresses the entire inflated body before
+    checking length.
+    """
+    import gzip
+    import io
+
+    if data[:2] != b"\x1f\x8b":
+        return data, True  # not gzip
+    try:
+        out = bytearray()
+        with gzip.GzipFile(fileobj=io.BytesIO(data), mode="rb") as gz:
+            while True:
+                chunk = gz.read(65536)
+                if not chunk:
+                    break
+                if len(out) + len(chunk) > max_output_bytes:
+                    return None, False
+                out.extend(chunk)
+        return bytes(out), True
+    except Exception:
+        return None, False
+
+
 def _request_once(
     url: str,
     headers: dict[str, str] | None,
@@ -103,7 +131,8 @@ def _request_once(
 
     Handles gzip Content-Encoding (Cloudflare fronted providers such as Owls
     Insight return gzip-compressed chunked bodies) so the sanitized body is the
-    decoded JSON, never a corrupt byte stream.
+    decoded JSON, never a corrupt byte stream. Decompressed output is bounded
+    and malformed/overflowing gzip fails closed (no partial parse).
     """
     request = Request(url, method="GET", headers=headers or {})
     opener = build_opener(_NoRedirectHandler())
@@ -130,15 +159,18 @@ def _request_once(
             if key.isascii()
         }
         encoding = (response_headers.get("Content-Encoding") or "").casefold()
+        gzip_failed = False
         if "gzip" in encoding and raw[:2] == b"\x1f\x8b":
-            import gzip
-
-            try:
-                raw = gzip.decompress(raw)
-            except Exception:
-                raw = raw
+            decoded, ok = _decompress_gzip_bounded(raw, max_output_bytes=max_response_bytes)
+            if not ok:
+                # malformed or over-cap gzip -> fail closed (empty body, not a
+                # partial parse); caller sees a body that won't decode as JSON.
+                raw = b""
+                gzip_failed = True
+            else:
+                raw = decoded
         body = raw.decode("utf-8", errors="replace")
-    return status_code, None, body, response_headers, truncated
+    return status_code, None, body, response_headers, truncated or gzip_failed
 
 
 def fetch(

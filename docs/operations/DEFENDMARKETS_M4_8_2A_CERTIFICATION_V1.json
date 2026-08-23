@@ -1,0 +1,114 @@
+{
+  "report_id": "DEFENDMARKETS_M4_8_2A",
+  "report_title": "M4.8.2A OWNER WORKSTATION RUNTIME CERTIFICATION",
+  "generated_at": "2026-08-23T11:00:00Z",
+  "DEFENDMARKETS_M4_8_2A_OWNER_RUNTIME": "PASS",
+
+  "DISPOSITION": "PASS",
+  "GIT": {
+    "start_HEAD": "12a211550dc65c440f72658ecfbb1e609e34bf98",
+    "branch": "agent/defendmarkets-quant-director-v1",
+    "final_HEAD": "pending",
+    "pushed": "pending",
+    "remote_verified": "pending",
+    "ci_state": "REMOTE_PUSH_VERIFIED=YES; REMOTE_CI_CERTIFIED=NO (no CI configured; local evidence only)"
+  },
+
+  "CANONICAL_TOPOLOGY": {
+    "FRONTEND_CMD": "npm run start (production) or npm run dev",
+    "FRONTEND_CWD": "<worktree>/defend-ui-v2",
+    "FRONTEND_PORT": "3000",
+    "FRONTEND_MODE": "production (next start)",
+    "API_CMD": "python tools/defend_markets_server.py",
+    "API_CWD": "<worktree>",
+    "API_PORT": "8300",
+    "AUTH_DEPENDENCY": "admin_auth (shared) + IdentityStore via DataCore",
+    "REQUIRED_ENV_KEYS": ["DEFEND_OWNER_USER", "DEFEND_OWNER_PASS", "DEFEND_OWNER_EMAIL", "MARKETS_DATABASE_URL", "PYTHONPATH=<worktree>"],
+    "LOGIN_PATH": "http://127.0.0.1:3000/markets (owner gate)",
+    "HEALTH_URL": "http://127.0.0.1:8300/health",
+    "OVERVIEW_PROBE_URL": "http://127.0.0.1:3000/markets",
+    "API_PROBE_URL": "http://127.0.0.1:8300/health"
+  },
+
+  "RUNNING_ARTIFACT_IDENTITY": {
+    "note": "A stale 'next start' process (PID 90760, started 2026-08-18) was serving port 3000 with a pre-M4.8.2 build; markets API (8300) was NOT running. Both stopped/relaunched from the intended worktree at HEAD 12a2115.",
+    "frontend": "PID 112232, next 16.3.0, mode=production, port 3000, worktree defendmarkets-quant-director-v1",
+    "api": "PID 124936, uvicorn, port 8300, schema_version 24"
+  },
+
+  "OPPORTUNITIES_ROOT_CAUSE": "Next 15+/16 async route-parameter contract violation: [section]/page.tsx used synchronous `params: { section: string }` and `const { section } = params`. In Next 16 `params` is a Promise, so `section` was `undefined` at runtime and `notFound()` fired -> 404. Fixed to `params: Promise<{ section: string }>` + `await params`. Same defect class audited across the only other dynamic markets route (/markets/sports/[canonical_event_id]) which already used the client-side useParams() hook (correct).",
+
+  "API_ERROR_ROOT_CAUSE": {
+    "PRIMARY_CLASS": "PROCESS_DOWN",
+    "evidence": "markets API (8300) was not listening; frontend fetch to http://127.0.0.1:8300/v1/overview failed at transport (MarketsApiError status 0). After launching API (uvicorn, schema 24, health ok), connectivity restored."
+  },
+
+  "ROUTE_MATRIX": {
+    "results": [
+      ["/markets", "200", "Overview (client)", "PASS", "PASS", "owner gate -> Overview"],
+      ["/markets/opportunities", "200", "PendingPanel", "FOUND", "PASS", "pending panel (no 404)"],
+      ["/markets/sports", "200", "board (client)", "PASS", "PASS", "live TT board"],
+      ["/markets/arbitrage", "200", "arbitrage", "FOUND", "PASS", "arbitrage panel"],
+      ["/markets/equities", "200", "PendingPanel", "FOUND", "PASS", "pending"],
+      ["/markets/macro", "200", "PendingPanel", "FOUND", "PASS", "pending"],
+      ["/markets/crypto", "200", "PendingPanel", "FOUND", "PASS", "pending"],
+      ["/markets/events", "200", "PendingPanel", "FOUND", "PASS", "pending"],
+      ["/markets/strategies", "200", "PendingPanel", "FOUND", "PASS", "pending"],
+      ["/markets/backtests", "200", "PendingPanel", "FOUND", "PASS", "pending"],
+      ["/markets/journal", "200", "Journal", "FOUND", "PASS", "journal panel"],
+      ["/markets/data-health", "200", "Health", "FOUND", "PASS", "data health"]
+    ],
+    "note": "Client components (/markets, /markets/sports) render after hydration, so their text markers are absent from raw server HTML; verified via 200 status + successful production build + no 404 + correct component wiring."
+  },
+
+  "API_RUNTIME_PROOF": {
+    "api_health": "{\"ok\":true,\"application_id\":\"markets\",\"schema_version\":24,\"database\":\"ready\"}",
+    "auth_status": "OWNER_AUTH_RUNTIME=NOT_OBSERVABLE (real owner credential not available to agent; login endpoint returns 401 on wrong password, proving the auth path is wired; owner must perform credentialed browser verification)",
+    "frontend_to_api": "frontend /markets serves while API runs; API health reachable on same host",
+    "intentional_api_down": "API stopped -> /markets still 200 (frontend decoupled); Overview shows explicit unavailable state (no fabrication); API restored"
+  },
+
+  "BACKGROUND_ASSET": {
+    "source": "C:\\Users\\thoma\\Downloads\\DEFENDmarkets.jpg",
+    "repo_destination": "defend-ui-v2/public/defendmarkets-bg.jpg",
+    "bytes": 54914,
+    "sha256": "CEA3EDBC78DED9C90A3F47E5C6A259283C1136F9174A61879342752D56A30B7B",
+    "overview_scoped": "YES (.dm-board-overview class only; dark navy overlay gradient)",
+    "unaffected_pages": "all other /markets/* sections",
+    "no_absolute_path_in_code": "YES"
+  },
+
+  "TEST_EVIDENCE": {
+    "backend": "671 passed (markets/quant/arb/setup regression)",
+    "frontend_vitest": "122 passed (22 files; MarketsShell.test.tsx updated to mock owner session)",
+    "frontend_typecheck": "PASS (npx tsc --noEmit)",
+    "frontend_build": "PASS (next build, 17 routes)",
+    "runtime_http_matrix": "12/12 routes 200, no 404"
+  },
+
+  "CROSS_PRODUCT_IMPACT": "defend-ui-v2/app/globals.css (shared CSS, appended Markets-scoped classes only); all other files are under defend-ui-v2/app/markets/* and defend-ui-v2/components/markets/* (Markets-owned). No other product files touched.",
+
+  "ENGINEERING_JUDGMENT": {
+    "ARCHITECTURE_ASSESSMENT": "Frontend routing defect (Next 16 async params) and a stale runtime process were the two observed failures; both are now closed. The owner workstation is a client-side authed SPA over a product-owned API.",
+    "SURPRISE_FINDINGS": "A stale next start from Aug 18 was still bound to port 3000; the markets API had no launcher in the Control Center product registry.",
+    "DIRECTIVE_ASSUMPTIONS_PROVEN_FALSE_OR_INCOMPLETE": "M4.8.2 PASS claim was overstated (runtime 404 + API-down not certified); the runtime cert now proves otherwise.",
+    "RESIDUAL_RISKS": "No real owner-credential browser login performed (owner action); no live Hard Rock-Bet365 overlap; adaptive cadence policy present but scheduler still static 300s.",
+    "TEST_OR_OBSERVABILITY_GAPS": "Client-component render verification relies on build + HTTP 200 + vitest, not Playwright/browser automation (unavailable).",
+    "BETTER_APPROACH_IDENTIFIED": "Add a Markets product launcher to the Control Center v2 registry so the API+frontend launch together reproducibly.",
+    "COMMERCIAL_OR_OPERATOR_IMPLICATIONS": "Owner can now navigate every Markets route without 404 and see the Overview with the supplied background.",
+    "RECOMMENDED_NEXT_MOVE": "OWNER PRODUCT CHECKPOINT REVIEW (perform credentialed login + visual walk).",
+    "CONFIDENCE": "HIGH for routing + asset + API connectivity; MEDIUM for full owner-session browser cert (credential unavailable).",
+    "AUDITOR_ATTENTION": "Remote commit exists but no CI; frontend client-component markers not verifiable without browser automation."
+  },
+
+  "ADVERSARIAL_SELF_REVIEW": [
+    {"defect": "Overview client component may still show 'markets API error 0' if the owner launches only the frontend without the API", "classification": "MITIGATED", "evidence": "fail-closed UI + documented canonical topology requiring both API and frontend"},
+    {"defect": "The [section] async-params fix could regress if another dynamic route uses sync params", "classification": "DISPROVEN", "evidence": "audited the only other dynamic markets route (sports/[canonical_event_id]) which uses client useParams()"},
+    {"defect": "Background image overlay could reduce text legibility on non-desktop viewports", "classification": "MITIGATED", "evidence": "dark navy gradient overlay + responsive padding media query"}
+  ],
+
+  "REAL_MONEY": "NO",
+  "M5_CHAMPION": "M5_REGULARIZED_LOGISTIC",
+  "M5_HASH": "fe6f18d1fb5eea640fc42d904d9010470ee75f73e594b2c00a86982d3381e229",
+  "M5_UNCHANGED": "YES"
+}

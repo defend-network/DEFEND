@@ -23,8 +23,8 @@ const PRODUCTS: ProductEntry[] = [
   {
     id: "markets",
     label: "DEFENDmarkets",
-    href: "/markets",
-    probeUrl: null,
+    href: "https://defendmarkets.defend-network.org",
+    probeUrl: "https://defendmarkets.defend-network.org",
   },
   {
     id: "coder",
@@ -53,7 +53,7 @@ function probeOrigin(url: string): Promise<boolean> {
 export function ProductSwitcher() {
   const [statuses, setStatuses] = useState<Record<ProductId, ProductStatus>>({
     "defend-ai": "online",
-    markets: "online",
+    markets: "checking",
     coder: "checking",
   });
 

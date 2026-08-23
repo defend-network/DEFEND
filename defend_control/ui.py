@@ -105,8 +105,8 @@ class SetupDialog(tk.Toplevel):
         ),
         (
             IntegrationOwner.SPORTS,
-            "DEFENDmarkets",
-            "Odds, statistics, exchanges, and table-tennis data providers.",
+            "DEFEND Sports",
+            "Legacy odds, statistics, exchanges, and table-tennis data providers.",
         ),
         (
             IntegrationOwner.SCS,
@@ -1207,7 +1207,7 @@ class ControlCenterUI:
     def _product_tab_title(application_id: str, display_name: str) -> str:
         names = {
             "defend": "DEFEND AI",
-            "sports": "DEFENDmarkets",
+            "sports": "DEFEND Sports",
             "scs": "SCS AI",
             "coder": "DEFENDcoder",
         }

@@ -48,6 +48,30 @@ def _parse_time(value: Any) -> datetime | None:
     return None
 
 
+def resolve_provider_orientation(
+    *,
+    provider_participant_a: str,
+    provider_participant_b: str,
+    canonical_participant_1: str,
+    canonical_participant_2: str,
+) -> tuple[str, str, str]:
+    """P4B/P5: map provider selection sides onto canonical participants.
+
+    Returns (selection_a_maps_to, selection_b_maps_to, state) where state is
+    one of CANONICAL / REVERSED / CONFLICT. Fails closed on CONFLICT (cannot
+    prove orientation -> no cross-book comparison).
+    """
+    a1 = _compact(provider_participant_a) == _compact(canonical_participant_1)
+    a2 = _compact(provider_participant_a) == _compact(canonical_participant_2)
+    b1 = _compact(provider_participant_b) == _compact(canonical_participant_1)
+    b2 = _compact(provider_participant_b) == _compact(canonical_participant_2)
+    if a1 and b2:
+        return "1", "2", "CANONICAL"
+    if a2 and b1:
+        return "2", "1", "REVERSED"
+    return "", "", "CONFLICT"
+
+
 def match_event(
     *,
     provider: str,

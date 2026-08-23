@@ -722,7 +722,9 @@ class DefendService:
 
 class SportsService:
     application_id = "sports"
-    display_name = "DEFENDmarkets"
+    # M4.8.2C: legacy Sports no longer masquerades as "DEFENDmarkets". The
+    # canonical DEFENDMarkets product is MarketsService (application_id=markets).
+    display_name = "DEFEND Sports"
 
     def __init__(
         self,
@@ -859,7 +861,6 @@ class SportsService:
         return tuple(
             entry for entry in snapshot if entry.service.startswith("sports:")
         )
-
 
 class ScsService:
     application_id = "scs"

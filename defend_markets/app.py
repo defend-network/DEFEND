@@ -639,11 +639,43 @@ def build_markets_app(dependencies: MarketsDependencies) -> FastAPI:
         description="Cross-market research, ranking, and decision engine. Real data only.",
     )
 
+    # M4.8.2C-R: owner-auth bootstrap is explicit and observable. It reuses the
+    # shared legacy owner identity store, resolves credentials from env -> shared
+    # DPAPI store -> NOT_CONFIGURED, and NEVER swallows failure silently. Owner
+    # login stays mounted regardless; a non-READY state yields a truthful 503.
+    from defend_markets.auth_bootstrap import OwnerAuthBootstrap, bootstrap_owner_auth
+
+    owner_auth: OwnerAuthBootstrap = bootstrap_owner_auth()
+
+    # M4.8.2C: owner AUTH mounts unconditionally so login/logout remain available
+    # even if quant/model initialization fails. Data routes mount only when the
+    # orchestrator is available (and return truthful 503 otherwise).
+    from defend_markets.quant.owner_routes import build_owner_auth_router
+
+    app.include_router(build_owner_auth_router())
+
     @app.get("/health")
     def health() -> dict[str, object]:
         if deps.database is None:
-            return {"ok": False, "application_id": "markets", "database": "unavailable"}
-        return deps.database.health()
+            return {
+                "ok": False,
+                "application_id": "markets",
+                "database": "unavailable",
+                "owner_auth": _owner_auth_status(),
+            }
+        result = dict(deps.database.health())
+        result["owner_auth"] = _owner_auth_status()
+        return result
+
+    def _owner_auth_status() -> dict[str, object]:
+        # Sanitized: no password, no token, no secret value.
+        return {
+            "state": owner_auth.state,
+            "identity_store": owner_auth.identity_store,
+            "credentials_configured": owner_auth.credentials_configured,
+            "detail": owner_auth.detail,
+            "error_class": owner_auth.error_class,
+        }
 
     @app.get("/v1/desks")
     def desks() -> dict[str, object]:
@@ -999,6 +1031,9 @@ def build_markets_app(dependencies: MarketsDependencies) -> FastAPI:
                 artifact_dir=quant_artifact_dir,
             )
             app.include_router(build_quant_router(quant_orchestrator))
+            from defend_markets.quant.owner_routes import build_owner_data_router
+
+            app.include_router(build_owner_data_router(quant_orchestrator))
             quant_state = quant_orchestrator.health_state()
 
             import asyncio
@@ -1029,6 +1064,12 @@ def build_markets_app(dependencies: MarketsDependencies) -> FastAPI:
                 "runtime_model": "",
                 "initialized": False,
             }
+            # M4.8.2C: keep the owner DATA router mounted with a null orchestrator
+            # so dependent endpoints return truthful 503 "quant unavailable"
+            # instead of disappearing alongside login.
+            from defend_markets.quant.owner_routes import build_owner_data_router
+
+            app.include_router(build_owner_data_router(None))
 
         @app.get("/v1/quant/state")
         def quant_state_endpoint() -> dict[str, object]:

@@ -361,7 +361,9 @@ def badge_from_probe(probe: AdapterProbe) -> HealthBadge:
 
     ``error_class`` from the adapter takes precedence so explicit plan /
     quota / auth findings classify exactly; otherwise the status code and
-    authentication flag decide.
+    authentication flag decide. A ``coverage_state=DEGRADED`` result is NOT
+    HEALTHY (M4.8.1): a rootIdx-only board without a decodable ladder is
+    contradictory runtime truth if labeled healthy.
     """
 
     if probe.error_class == "plan_required":
@@ -378,6 +380,9 @@ def badge_from_probe(probe: AdapterProbe) -> HealthBadge:
         return HealthBadge.UNAVAILABLE
     if probe.authenticated is False:
         return HealthBadge.AUTH_FAILED
+    # M4.8.1: DEGRADED coverage is a degraded (not healthy) badge.
+    if probe.coverage_state == "DEGRADED":
+        return HealthBadge.DEGRADED
     return HealthBadge.HEALTHY
 
 
