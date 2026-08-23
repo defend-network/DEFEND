@@ -268,8 +268,16 @@ def run_agent(question: str, *, provider, registry, context, memory,
 def _materialize_deterministic_session(pre_route: dict[str, Any],
                                        registry, answer: dict[str, Any]) -> None:
     """Create durable job-scoped sessions for deterministic procedure/
-    diagnostic routes (P25) so they survive restart like agentic sessions."""
+    diagnostic routes (P25) so they survive restart like agentic sessions.
+
+    P11: session durability is only ever claimed when registry execution
+    actually returned ``ok`` - a silent failure must not be represented as a
+    durable session.
+    """
     tool = pre_route.get("tool")
+    answer["session_durable"] = False
+    if tool not in ("procedure.start", "diagnostic.start"):
+        return
     try:
         if tool == "procedure.start":
             procedure_id = (pre_route.get("procedure") or {}).get("procedure_id")
@@ -277,14 +285,16 @@ def _materialize_deterministic_session(pre_route: dict[str, Any],
                 result = registry.execute("procedure.start", {"procedure_id": procedure_id})
                 if result.get("ok"):
                     answer["procedure"] = result.get("data")
+                    answer["session_durable"] = True
         elif tool == "diagnostic.start":
             graph_id = (pre_route.get("graph") or {}).get("graph_id")
             if graph_id:
                 result = registry.execute("diagnostic.start", {"graph_id": graph_id})
                 if result.get("ok"):
                     answer["graph"] = result.get("data")
+                    answer["session_durable"] = True
     except Exception:
-        pass
+        answer["session_durable"] = False
 
 
 def _verify_deterministic_answer(answer: dict[str, Any], pre_route: dict[str, Any]) -> None:

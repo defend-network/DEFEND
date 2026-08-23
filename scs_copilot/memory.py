@@ -154,9 +154,15 @@ class JobConversationMemory:
     def _has_reading(self, component: str, entity_id: str | None) -> bool:
         for entries in self.readings.values():
             for e in entries:
-                if e.get("concept") == component and (
-                        not entity_id or not e.get("equipment_id")
-                        or e.get("equipment_id") == entity_id):
+                if e.get("concept") != component:
+                    continue
+                # P0/P2: entity-scoped lookup requires EXACT equipment identity.
+                # An unscoped reading (equipment_id=None) must not satisfy an
+                # entity-scoped component requirement.
+                if entity_id:
+                    if e.get("equipment_id") == entity_id:
+                        return True
+                else:
                     return True
         return False
 
@@ -168,9 +174,10 @@ class JobConversationMemory:
             if entry.get("state") != "OPEN":
                 continue
             req_entity = entry.get("entity_id")
-            # P19/P30: an entity-scoped request is not resolved by a different
-            # entity's reading.
-            if req_entity and equipment_id and req_entity != equipment_id:
+            # P0/P1: fail-closed entity resolution. If the request is entity-
+            # scoped, ONLY an exact-match reading may resolve it - a missing
+            # entity (None) is NOT a wildcard.
+            if req_entity and equipment_id != req_entity:
                 continue
             components = COMPOSITE_COMPONENTS.get(oc)
             if components:

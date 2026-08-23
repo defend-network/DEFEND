@@ -39,6 +39,7 @@ from scs_copilot.sessions import DiagnosticSession
 from scs_copilot.tools import ToolRegistry
 from scs_diagnostics.airflow import low_airflow_graph
 from scs_knowledge.registry import KnowledgeSource, SCSKnowledgeLibrary
+from scs_procedures.library import PROCEDURE_LIBRARY
 from scs_reports.schema import AirDevice, JobMetadata, JobRecord
 
 
@@ -508,3 +509,192 @@ def test_shared_knowledge_root_resolver(tmp_path, monkeypatch):
 def test_source_state_first_class():
     source = KnowledgeSource(source_id="S", source_type="OEM_IOM")
     assert source.source_state == "ACTIVE"
+
+
+# ---------------------------------------------------------------------------
+# M1.4.3A - entity-scoped open measurement fail-closed (P0-P3)
+# ---------------------------------------------------------------------------
+
+
+def test_entity_scoped_open_not_resolved_by_unscoped_reading():
+    memory = JobConversationMemory()
+    memory.record_open_measurement("fan rpm", "need fan RPM", entity_id="RTU-5")
+    memory.record_reading("fan_rpm", 1130, concept="FAN_RPM", equipment_id=None)
+    assert memory.open_measurements["FAN_RPM"]["state"] == "OPEN"
+
+
+def test_entity_scoped_open_not_resolved_by_wrong_entity():
+    memory = JobConversationMemory()
+    memory.record_open_measurement("fan rpm", "need fan RPM", entity_id="RTU-5")
+    memory.record_reading("fan_rpm", 1130, concept="FAN_RPM", equipment_id="RTU-7")
+    assert memory.open_measurements["FAN_RPM"]["state"] == "OPEN"
+
+
+def test_entity_scoped_open_resolved_by_exact_entity():
+    memory = JobConversationMemory()
+    memory.record_open_measurement("fan rpm", "need fan RPM", entity_id="RTU-5")
+    memory.record_reading("fan_rpm", 1130, concept="FAN_RPM", equipment_id="RTU-5")
+    assert memory.open_measurements["FAN_RPM"]["state"] == "ANSWERED"
+
+
+def test_static_split_unscoped_component_does_not_resolve():
+    memory = JobConversationMemory()
+    memory.record_open_measurement("static split", "need static split", entity_id="RTU-5")
+    memory.record_reading("supply_static", 0.31, concept="FIELD_SUPPLY_STATIC",
+                          equipment_id=None)
+    memory.record_reading("return_static", -0.48, concept="FIELD_RETURN_STATIC",
+                          equipment_id="RTU-5")
+    assert memory.open_measurements["STATIC_SPLIT"]["state"] == "OPEN"
+
+
+def test_static_split_wrong_entity_component_does_not_resolve():
+    memory = JobConversationMemory()
+    memory.record_open_measurement("static split", "need static split", entity_id="RTU-5")
+    memory.record_reading("supply_static", 0.31, concept="FIELD_SUPPLY_STATIC",
+                          equipment_id="RTU-7")
+    memory.record_reading("return_static", -0.48, concept="FIELD_RETURN_STATIC",
+                          equipment_id="RTU-5")
+    assert memory.open_measurements["STATIC_SPLIT"]["state"] == "OPEN"
+
+
+def test_static_split_exact_entity_components_resolve():
+    memory = JobConversationMemory()
+    memory.record_open_measurement("static split", "need static split", entity_id="RTU-5")
+    memory.record_reading("supply_static", 0.31, concept="FIELD_SUPPLY_STATIC",
+                          equipment_id="RTU-5")
+    memory.record_reading("return_static", -0.48, concept="FIELD_RETURN_STATIC",
+                          equipment_id="RTU-5")
+    assert memory.open_measurements["STATIC_SPLIT"]["state"] == "ANSWERED"
+
+
+# ---------------------------------------------------------------------------
+# M1.4.3A - standard edition fail-closed (P4-P5)
+# ---------------------------------------------------------------------------
+
+
+def _standard_claim(edition):
+    return _claim(claim_type="STANDARD", concept="STANDARD_REQUIREMENT",
+                  value=10, edition=edition, source_refs=["SRC-NEBB1"])
+
+
+def _standard_evidence(source_edition):
+    meta = {"source_type": "STANDARD_NEBB"}
+    if source_edition is not None:
+        meta["edition"] = source_edition
+    return {"standard_sources": {"SRC-NEBB1"},
+            "source_map": {"SRC-NEBB1": meta}}
+
+
+def test_standard_edition_match_verifies():
+    report = verify_claims([_standard_claim("2026")], _standard_evidence("2026"))
+    assert report["CLAIMS_VERIFIED"] == 1
+
+
+def test_standard_edition_mismatch_blocked():
+    report = verify_claims([_standard_claim("2026")], _standard_evidence("2015"))
+    assert report["CLAIMS_BLOCKED"] == 1
+    assert any(r.get("reason") == "STANDARD_EDITION_MISMATCH"
+               for r in report["results"])
+
+
+def test_standard_edition_missing_blocked():
+    report = verify_claims([_standard_claim("2026")], _standard_evidence(None))
+    assert report["CLAIMS_BLOCKED"] == 1
+    assert any(r.get("reason") == "STANDARD_EDITION_UNPROVEN"
+               for r in report["results"])
+
+
+def test_standard_edition_blank_blocked():
+    report = verify_claims([_standard_claim("2026")], _standard_evidence(""))
+    assert report["CLAIMS_BLOCKED"] == 1
+    assert any(r.get("reason") == "STANDARD_EDITION_UNPROVEN"
+               for r in report["results"])
+
+
+def test_standard_no_edition_claim_governed_by_authority_only():
+    claim = _claim(claim_type="STANDARD", concept="STANDARD_REQUIREMENT",
+                   value=10, edition=None, source_refs=["SRC-NEBB1"])
+    report = verify_claims([claim], _standard_evidence("2015"))
+    assert report["CLAIMS_VERIFIED"] == 1  # no edition asserted, no edition gate
+
+
+# ---------------------------------------------------------------------------
+# M1.4.3A - OEM applicability fail-closed (P6-P8)
+# ---------------------------------------------------------------------------
+
+
+def _oem_claim(applicability="UNKNOWN", entity_id="50TC-E08"):
+    return _claim(claim_type="OEM", concept="OEM_MAX_ESP", value=2.5, unit="IN.W.C.",
+                  entity_id=entity_id, source_refs=["SRC-OEM1"],
+                  applicability=applicability)
+
+
+def _oem_evidence(source_applicability):
+    return {"oem_sources": {"SRC-OEM1"},
+            "source_map": {"SRC-OEM1": {"source_type": "OEM_IOM",
+                                        "source_id": "SRC-OEM1",
+                                        "applicability": source_applicability}}}
+
+
+def test_oem_model_specific_unknown_general_manufacturer_blocked():
+    report = verify_claims([_oem_claim("UNKNOWN", "50TC-E08")],
+                           _oem_evidence("GENERAL_MANUFACTURER"))
+    assert report["CLAIMS_BLOCKED"] == 1
+
+
+def test_oem_model_specific_unknown_family_passes():
+    report = verify_claims([_oem_claim("UNKNOWN", "50TC-E08")],
+                           _oem_evidence("FAMILY"))
+    assert report["CLAIMS_VERIFIED"] == 1
+
+
+def test_oem_model_series_general_manufacturer_blocked():
+    report = verify_claims([_oem_claim("MODEL_SERIES", "50TC-E08")],
+                           _oem_evidence("GENERAL_MANUFACTURER"))
+    assert report["CLAIMS_BLOCKED"] == 1
+
+
+def test_oem_model_series_model_series_passes():
+    report = verify_claims([_oem_claim("MODEL_SERIES", "50TC-E08")],
+                           _oem_evidence("MODEL_SERIES"))
+    assert report["CLAIMS_VERIFIED"] == 1
+
+
+def test_oem_exact_model_family_blocked():
+    report = verify_claims([_oem_claim("EXACT_MODEL", "50TC-E08")],
+                           _oem_evidence("FAMILY"))
+    assert report["CLAIMS_BLOCKED"] == 1
+
+
+def test_oem_exact_model_exact_model_passes():
+    report = verify_claims([_oem_claim("EXACT_MODEL", "50TC-E08")],
+                           _oem_evidence("EXACT_MODEL"))
+    assert report["CLAIMS_VERIFIED"] == 1
+
+
+def test_oem_generic_no_entity_general_manufacturer_passes():
+    claim = _claim(claim_type="OEM", concept="OEM_REQUIREMENT", value=None,
+                   entity_id=None, source_refs=["SRC-OEM1"], applicability="UNKNOWN")
+    report = verify_claims([claim], _oem_evidence("GENERAL_MANUFACTURER"))
+    assert report["CLAIMS_VERIFIED"] == 1
+
+
+# ---------------------------------------------------------------------------
+# M1.4.3A - deterministic session durability truthfulness (P11)
+# ---------------------------------------------------------------------------
+
+
+def test_deterministic_session_durability_flag_truthful():
+    from scs_copilot.agent import _materialize_deterministic_session
+    from scs_copilot.tools import ToolRegistry
+    registry = ToolRegistry(context=_context(), procedures=PROCEDURE_LIBRARY)
+    pre_route = {"tool": "procedure.start",
+                 "procedure": {"procedure_id": "vav_max_verification"}}
+    answer = {}
+    _materialize_deterministic_session(pre_route, registry, answer)
+    assert answer.get("session_durable") is True
+    # a failing registry (no procedures) must not claim durability
+    empty_registry = ToolRegistry(context=_context())
+    answer2 = {}
+    _materialize_deterministic_session(pre_route, empty_registry, answer2)
+    assert answer2.get("session_durable") is False

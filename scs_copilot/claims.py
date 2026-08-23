@@ -560,39 +560,58 @@ _APPLICABILITY_RANK = {
     "GENERAL_MANUFACTURER": 2, "UNKNOWN": 1,
 }
 
+_APPLICABILITY_ALIASES = {
+    "EXACT_APPLICABILITY": "EXACT_MODEL",
+    "FAMILY_APPLICABILITY": "FAMILY",
+    "GENERAL_MANUFACTURER_REFERENCE": "GENERAL_MANUFACTURER",
+    "MODEL_PREFIX": "MODEL_SERIES",
+    "PRODUCT_FAMILY": "FAMILY",
+    "MANUFACTURER_GENERAL": "GENERAL_MANUFACTURER",
+}
+
+
+def _normalize_applicability(value: str | None) -> str:
+    normalized = (value or "UNKNOWN").strip().upper()
+    return _APPLICABILITY_ALIASES.get(normalized, normalized)
+
 
 def _oem_applicability_ok(claim: dict[str, Any], source_id: str | None,
                           source_map: dict[str, Any]) -> bool:
     """P6: the cited OEM source must prove sufficient applicability for the
-    claim. An exact-model limit cannot render from GENERAL_MANUFACTURER."""
+    claim. Broad manufacturer evidence cannot satisfy an equipment/model-
+    specific technical limit (P6-P8)."""
     required = (claim.get("applicability") or "UNKNOWN").upper()
     claim_entity = claim.get("entity_id")
-    if required == "UNKNOWN" and not claim_entity:
-        return True  # claim makes no exact-model applicability assertion
     meta = source_map.get(source_id) or {}
-    source_applicability = (meta.get("applicability") or "UNKNOWN").upper()
-    if source_applicability in ("EXACT_APPLICABILITY",):
-        source_applicability = "EXACT_MODEL"
-    if source_applicability in ("FAMILY_APPLICABILITY",):
-        source_applicability = "FAMILY"
-    if source_applicability in ("GENERAL_MANUFACTURER_REFERENCE",):
-        source_applicability = "GENERAL_MANUFACTURER"
+    source_applicability = _normalize_applicability(meta.get("applicability"))
+    if required == "UNKNOWN" and not claim_entity:
+        # generic, non-model-specific manufacturer guidance: existing behavior
+        return True
+    if required == "UNKNOWN" and claim_entity:
+        # P6(F): an entity/model-specific claim must require at least FAMILY;
+        # GENERAL_MANUFACTURER (rank 2) must NOT pass merely because UNKNOWN
+        # ranks lower.
+        required = "FAMILY"
     req_rank = _APPLICABILITY_RANK.get(required, 1)
     src_rank = _APPLICABILITY_RANK.get(source_applicability, 1)
     return src_rank >= req_rank
 
 
 def _standard_edition_ok(claim: dict[str, Any], source_id: str | None,
-                         source_map: dict[str, Any]) -> bool:
-    """P7: a standard edition-specific claim requires edition identity."""
+                         source_map: dict[str, Any]) -> str | None:
+    """P4/P7: an edition-specific STANDARD claim requires the source to prove
+    the SAME edition. Missing edition metadata is NOT proof. Returns a blocked
+    reason, or None when the claim verifies."""
     claim_edition = (claim.get("edition") or "").strip()
     if not claim_edition:
-        return True
+        return None  # claim asserts no edition; do not fabricate one
     meta = source_map.get(source_id) or {}
     source_edition = (meta.get("edition") or "").strip()
-    if source_edition and claim_edition and source_edition != claim_edition:
-        return False
-    return True
+    if not source_edition:
+        return "STANDARD_EDITION_UNPROVEN"
+    if source_edition != claim_edition:
+        return "STANDARD_EDITION_MISMATCH"
+    return None
 
 
 def _verify_claim(claim: dict[str, Any], evidence: dict[str, Any]) -> tuple[bool, str | None, str]:
@@ -669,8 +688,9 @@ def _verify_claim(claim: dict[str, Any], evidence: dict[str, Any]) -> tuple[bool
         bound = _bound_source(claim.get("source_refs"), standard_sources, "STANDARD_")
         if not bound:
             return False, "AUTHORITATIVE_STANDARD_SOURCE_NOT_INDEXED", "POSSIBLE"
-        if not _standard_edition_ok(claim, bound, source_map):
-            return False, "STANDARD_EDITION_MISMATCH", "POSSIBLE"
+        edition_reason = _standard_edition_ok(claim, bound, source_map)
+        if edition_reason:
+            return False, edition_reason, "POSSIBLE"
         return True, None, "RESOLVED"
     if claim_type == "PROCEDURE_REQUIREMENT":
         if _bound_source(claim.get("source_refs"), standard_sources | oem_sources, ""):
