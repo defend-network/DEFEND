@@ -167,7 +167,7 @@ def test_certification_overlap_zero():
 def test_certification_wrong_converted_sha_fails(monkeypatch):
     if not TRAIN_FILE.exists():
         pytest.skip("train file missing")
-    monkeypatch.setattr("defend_control.qwen3_canary_executor.EXPECTED_CONVERTED_SHA", "0" * 64)
+    monkeypatch.setattr("defend_ai.qwen3_canary_executor.EXPECTED_CONVERTED_SHA", "0" * 64)
     cert = _cert(_load_rows())
     assert cert.training_data_sha_valid is False
     assert cert.final_paid_readiness is False

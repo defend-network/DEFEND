@@ -125,7 +125,7 @@ def _profile(**overrides):
 
 
 def _patch_profiles(monkeypatch, profiles):
-    monkeypatch.setattr("defend_control.deployment_profiles.default_profiles", lambda: profiles)
+    monkeypatch.setattr("defend_ai.deployment_profiles.default_profiles", lambda: profiles)
 
 
 def test_resolve_production_identity_canonical_passes():

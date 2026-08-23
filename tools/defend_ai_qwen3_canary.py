@@ -18,13 +18,13 @@ _REPO = Path(__file__).resolve().parent.parent
 if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
-from defend_control.qwen3_canary_executor import (  # noqa: E402
+from defend_ai.qwen3_canary_executor import (  # noqa: E402
     CanaryRunResult,
     PaidCanaryCertification,
     Qwen3CanaryExecutor,
     build_certification,
 )
-from defend_control.qwen3_canary_runner import (  # noqa: E402
+from defend_ai.qwen3_canary_runner import (  # noqa: E402
     CANARY_HARD_SPEND_CAP_USD,
     CANARY_MAX_HOURLY_USD,
     CANARY_MAX_INSTANCES,
@@ -33,7 +33,7 @@ from defend_control.qwen3_canary_runner import (  # noqa: E402
     Qwen3CanaryRunner,
     run_real_tokenizer_proof,
 )
-from defend_control.training_hardening import INVENTORY_UNKNOWN  # noqa: E402
+from defend_ai.training_hardening import INVENTORY_UNKNOWN  # noqa: E402
 
 DEFAULT_TRAIN_FILE = r"C:\Users\thoma\Downloads\DEFEND32B\TRAINING\defend_sft_train_v1_merged.jsonl"
 DEFAULT_HELDOUT_FILE = r"C:\Users\thoma\Downloads\DEFEND32B\DEFEND_EVAL_HELD_OUT_200.jsonl"
@@ -41,7 +41,7 @@ DEFAULT_HELDOUT_FILE = r"C:\Users\thoma\Downloads\DEFEND32B\DEFEND_EVAL_HELD_OUT
 
 def _load_secret_key() -> str | None:
     try:
-        from defend_control.secrets import DpapiSecretStore
+        from shared_platform.secure_store import DpapiSecretStore
         store = DpapiSecretStore(Path(os.environ["LOCALAPPDATA"]) / "DEFEND" / "secrets.dpapi")
         return store.load().get("VAST_API_KEY")
     except Exception:
@@ -49,7 +49,7 @@ def _load_secret_key() -> str | None:
 
 
 def _read_only_inventory(vast_api_key: str | None):
-    from defend_control.qwen3_canary_executor import ProductionInventory, classify_production_inventory
+    from defend_ai.qwen3_canary_executor import ProductionInventory, classify_production_inventory
     import urllib.request
     from urllib.parse import urlencode
 
@@ -125,7 +125,7 @@ def main(argv: list[str] | None = None) -> int:
             return 3
         import subprocess
 
-        from defend_control.qwen3_canary_hosts import ConcreteRemoteHost, ConcreteVastGateway
+        from defend_ai.qwen3_canary_hosts import ConcreteRemoteHost, ConcreteVastGateway
 
         git_head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
         result = run_paid_canary(cert=cert, policy=policy, vast_gateway=ConcreteVastGateway(), remote_host=ConcreteRemoteHost(), git_head=git_head)
