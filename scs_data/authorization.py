@@ -19,6 +19,8 @@ class Permission(StrEnum):
     VIEW_ALL_JOBS = "view_all_jobs"
     MANAGE_JOBS = "manage_jobs"
     WORK_ASSIGNED_JOBS = "work_assigned_jobs"
+    VIEW_KNOWLEDGE = "view_knowledge"
+    MANAGE_KNOWLEDGE = "manage_knowledge"
 
 
 @dataclass(frozen=True)
@@ -35,6 +37,7 @@ _ROLE_PERMISSIONS = {
         Permission.VIEW_TECHNICIAN_LEVEL, Permission.MANAGE_TECHNICIAN_LEVEL,
         Permission.VIEW_AUDIT, Permission.VIEW_ALL_JOBS,
         Permission.MANAGE_JOBS, Permission.WORK_ASSIGNED_JOBS,
+        Permission.VIEW_KNOWLEDGE, Permission.MANAGE_KNOWLEDGE,
     },
     "billing": {Permission.VIEW_CUSTOMERS, Permission.VIEW_FINANCIALS},
     "estimator": {Permission.VIEW_CUSTOMERS, Permission.EDIT_ESTIMATES},

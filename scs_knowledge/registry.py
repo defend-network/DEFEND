@@ -37,7 +37,8 @@ SOURCE_ATTRS = (
     "superseded_by_source_id", "active", "confidence", "notes", "source_state",
     "duplicate_of_source_id", "ingest_id", "parser_version", "chunking_version",
     "document_type", "byte_size", "verification_method", "verified_by",
-    "verified_at", "verification_evidence",
+    "verified_at", "verification_evidence", "filename", "ingestion_state",
+    "owner_approval_state", "model", "model_series", "page_count",
 )
 
 # H5/H6: source verification + quarantine state + dedup lineage
@@ -81,6 +82,12 @@ class KnowledgeSource:
     verified_by: str | None = None
     verified_at: str | None = None
     verification_evidence: str | None = None
+    filename: str | None = None
+    ingestion_state: str = "INDEXED"
+    owner_approval_state: str = "PENDING"
+    model: str | None = None
+    model_series: str | None = None
+    page_count: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data = {attr: getattr(self, attr) for attr in SOURCE_ATTRS}
@@ -168,6 +175,12 @@ class SCSKnowledgeLibrary:
             "verified_by": "TEXT",
             "verified_at": "TEXT",
             "verification_evidence": "TEXT",
+            "filename": "TEXT",
+            "ingestion_state": "TEXT DEFAULT 'INDEXED'",
+            "owner_approval_state": "TEXT DEFAULT 'PENDING'",
+            "model": "TEXT",
+            "model_series": "TEXT",
+            "page_count": "INTEGER",
         }
         for column, ddl in migrations.items():
             if column not in existing:
