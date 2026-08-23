@@ -397,6 +397,35 @@ class ContextBudgetManager:
         )
 
 
+def _tool_summary(name: str, arguments: Mapping[str, Any]) -> str:
+    """Deterministic short summary of a tool call (no hidden reasoning)."""
+    if not isinstance(arguments, Mapping):
+        return name
+    path = arguments.get("path")
+    if path:
+        return f"{name}: {path}"
+    command = arguments.get("command")
+    if command:
+        return f"{name}: {str(command)[:120]}"
+    return name
+
+
+def _file_path(name: str, arguments: Mapping[str, Any]) -> str | None:
+    """Workspace-relative path touched by a file-mutating/reading tool."""
+    if not isinstance(arguments, Mapping):
+        return None
+    if name in (
+        "write_file",
+        "edit_file",
+        "delete_file",
+        "read_file",
+        "apply_patch",
+    ):
+        path = arguments.get("path")
+        return str(path) if path else None
+    return None
+
+
 @dataclass(frozen=True)
 class StructuredEvent:
     kind: str
@@ -428,6 +457,13 @@ class RunContextCoordinator:
         self._conversation: deque[dict[str, Any]] = deque()
         self._events: list[StructuredEvent] = []
         self._pending_tool_results = 0
+        # Server-observed structured facts (never hidden reasoning, never
+        # secrets). Folded into the checkpoint before compaction so the work
+        # dropped from the conversation remains durably represented.
+        self._completed_work: list[str] = []
+        self._relevant_files: list[str] = []
+        self._latest_tests: list[str] = []
+        self._current_failure: str | None = None
 
     @property
     def checkpoint(self) -> TaskCheckpoint:
@@ -447,6 +483,92 @@ class RunContextCoordinator:
     def emit(self, kind: str, **detail: Any) -> None:
         self._events.append(StructuredEvent(kind=kind, detail=dict(detail)))
 
+    def note_tool_execution(
+        self,
+        name: str,
+        arguments: Mapping[str, Any],
+        *,
+        ok: bool,
+        content: str | None,
+        kind: str | None = None,
+    ) -> None:
+        """Record a server-observed tool outcome as structured progress."""
+        self._completed_work.append(_tool_summary(name, arguments))
+        path = _file_path(name, arguments)
+        if path:
+            self._relevant_files.append(path)
+        if not ok:
+            self._current_failure = (content or "tool failed")[:500]
+        if name == "run_tests" or kind == "tests":
+            self._latest_tests.append((content or "")[:500])
+        self._completed_work = self._completed_work[-200:]
+        self._relevant_files = self._relevant_files[-200:]
+        self._latest_tests = self._latest_tests[-20:]
+
+    def fold_progress(self) -> None:
+        """Fold server-observed structured facts into the checkpoint.
+
+        This is what makes compaction durable: the work that is about to be
+        dropped from the conversation is represented in the checkpoint FIRST.
+        Idempotent (deduplicated), deterministic, no hidden reasoning.
+        """
+        cp = self._checkpoint
+        completed = tuple(
+            dict.fromkeys([*cp.completed, *self._completed_work])
+        )[-200:]
+        files = tuple(dict.fromkeys([*cp.relevant_files, *self._relevant_files]))[
+            -200:
+        ]
+        tests = tuple(dict.fromkeys([*cp.latest_tests, *self._latest_tests]))[
+            -20:
+        ]
+        self._checkpoint = TaskCheckpoint(
+            objective=cp.objective,
+            workspace=cp.workspace,
+            current_task=cp.current_task,
+            completed=completed,
+            current_failure=self._current_failure or cp.current_failure,
+            relevant_files=files,
+            latest_tests=tests,
+            attempts=cp.attempts,
+            constraints=cp.constraints,
+            next_action=cp.next_action,
+            branch=cp.branch,
+            head=cp.head,
+            dirty_files=cp.dirty_files,
+            identity_version=cp.identity_version,
+            model_route=cp.model_route,
+            pending_approvals=cp.pending_approvals,
+        )
+
+    def has_progress(self) -> bool:
+        cp = self._checkpoint
+        return bool(
+            cp.completed
+            or cp.relevant_files
+            or cp.latest_tests
+            or cp.current_failure
+            or cp.current_task
+            or cp.next_action
+        )
+
+    def checkpoint_context_message(self) -> dict[str, Any] | None:
+        """Bounded server-generated dynamic checkpoint context.
+
+        Returned as a clearly-marked message (never masquerading as an owner
+        request, never part of the stable authority). Only emitted when there
+        is meaningful durable progress.
+        """
+        if not self.has_progress():
+            return None
+        return {
+            "role": "user",
+            "content": (
+                "[SERVER DURABLE CHECKPOINT — DYNAMIC CONTEXT]\n"
+                + checkpoint_to_prompt(self._checkpoint)
+            ),
+        }
+
     def add(self, message: Mapping[str, Any]) -> None:
         role = message.get("role")
         if role == "assistant":
@@ -457,7 +579,12 @@ class RunContextCoordinator:
         self._conversation.append(dict(message))
 
     def conversation(self) -> list[dict[str, Any]]:
-        return list(self._conversation)
+        messages: list[dict[str, Any]] = []
+        context = self.checkpoint_context_message()
+        if context is not None:
+            messages.append(context)
+        messages.extend(self._conversation)
+        return messages
 
     def update_checkpoint(self, checkpoint: TaskCheckpoint) -> None:
         self._checkpoint = checkpoint

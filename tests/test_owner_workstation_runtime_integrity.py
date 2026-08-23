@@ -594,7 +594,6 @@ class TestAttemptCheckpointAndContext:
         checkpoint = build_checkpoint(
             objective="objective",
             workspace="C:/fake",
-            completed=("a", "b"),
         )
         coordinator = RunContextCoordinator(
             checkpoint=checkpoint, budget=budget, max_conversation_messages=4
@@ -675,6 +674,173 @@ class _GrowingProvider:
             provider=self.provider_id,
             model=self.model_id,
         )
+
+
+class TestCheckpointContinuity:
+    def test_dropped_work_captured_and_reaches_model_after_restart(
+        self, db: CoderDatabase, tmp_path
+    ):
+        from defend_coder.agent import CodingAgent
+        from defend_coder.agent_client import ToolCall
+
+        services = _services(db)
+        root = tmp_path / "wsroot"
+        root.mkdir()
+        account_id, workspace_id = _make_workspace_with_root(db, root)
+        identity, prompt = _pins(services)
+        technical = services.technical_registry.active_for_provider("deepseek")
+        prepared = services.preparation.prepare_run(
+            workspace_id=workspace_id,
+            owner_account_id=account_id,
+            prompt="Build it.",
+            requested_mode="AUTO",
+            selected_tier="DEEPSEEK",
+            provider="deepseek",
+            model="deepseek-v4-flash",
+            identity=identity,
+            prompt_core=prompt,
+            technical=(technical.profile_id, technical.version, technical.hash),
+        )
+        run_id = prepared.run_id
+        envelope = services.preparation.load_envelope(run_id)
+        assert envelope is not None
+
+        received: list[str] = []
+
+        def make_provider():
+            class P:
+                provider_id = "deepseek"
+                model_id = "deepseek-v4-flash"
+                protocol = "chat_completions"
+                _step = 0
+
+                def generate(self, request):
+                    received.append(" ".join(
+                        m.get("content", "") for m in request.conversation
+                    ))
+                    P._step += 1
+                    if P._step == 1:
+                        return CoderGenerationResult(
+                            visible_content="",
+                            tool_calls=(ToolCall(id="m1", name="write_file", arguments={"path": "notes.txt", "content": "hi"}),),
+                            usage=None, finish_reason="tool_calls",
+                            provider="deepseek", model="deepseek-v4-flash",
+                        )
+                    if P._step == 2:
+                        return CoderGenerationResult(
+                            visible_content="",
+                            tool_calls=(ToolCall(id="m2", name="list_files", arguments={"path": "."}),),
+                            usage=None, finish_reason="tool_calls",
+                            provider="deepseek", model="deepseek-v4-flash",
+                        )
+                    return CoderGenerationResult(
+                        visible_content="done", tool_calls=(),
+                        usage=None, finish_reason="stop",
+                        provider="deepseek", model="deepseek-v4-flash",
+                    )
+
+            return P()
+
+        toolkit = CoderToolkit(
+            repository=CoderRepository(db), configured_root=str(root)
+        )
+        schema_tokens = estimate_tool_schemas(toolkit.schema())
+        budget = ContextBudgetManager(
+            limit_tokens=schema_tokens + 4096 + 300, compaction_ratio=0.4
+        )
+
+        def build_agent(coordinator, persist, ledger):
+            return CodingAgent(
+                provider=make_provider(),
+                toolkit=toolkit,
+                log=lambda _m: None,
+                run_id=run_id,
+                tool_ledger=ledger,
+                context_coordinator=coordinator,
+                checkpoint_persist=persist,
+            )
+
+        def make_persist(store, env, revision):
+            def persist(ckpt):
+                nonlocal revision
+                revision += 1
+                store.write(
+                    run_id=run_id,
+                    revision=revision,
+                    objective=ckpt.objective,
+                    identity=(env.identity_profile_id, env.identity_version, env.identity_hash),
+                    prompt_core=(env.prompt_core_id, env.prompt_core_version, env.prompt_core_hash),
+                    provider=env.provider,
+                    model=env.model,
+                    technical=(env.technical_profile_id, env.technical_profile_version, env.technical_profile_hash),
+                    completed_work=ckpt.completed,
+                    relevant_files=ckpt.relevant_files,
+                    latest_tests=ckpt.latest_tests,
+                    current_failure=ckpt.current_failure,
+                )
+                return ckpt
+            return persist
+
+        revision = 1
+        coordinator = RunContextCoordinator(
+            checkpoint=build_checkpoint(objective="Build it.", workspace=str(root)),
+            budget=budget,
+            max_conversation_messages=12,
+        )
+        agent = build_agent(coordinator, make_persist(services.checkpoints, envelope, revision), services.ledger)
+        outcome = agent.run(
+            prompt="Build it.",
+            account_id=account_id,
+            workspace_id=workspace_id,
+            sink=lambda **kw: None,
+        )
+        assert outcome.state == "succeeded"
+
+        # Checkpoint persisted a revision with the dropped work captured.
+        latest = services.checkpoints.latest(run_id)
+        assert latest.revision >= 2
+        assert any("write_file" in c for c in latest.completed_work)
+
+        # A post-compaction request carried the durable checkpoint context.
+        assert any("SERVER DURABLE CHECKPOINT" in r for r in received)
+
+        # Restart: reconstruct the coordinator from the durable checkpoint and
+        # prove the resumed model's FIRST request carries the same truth.
+        received.clear()
+        restarted = _services(db)
+        latest2 = restarted.checkpoints.latest(run_id)
+        from defend_coder.run_store import RunCheckpointStore  # noqa: F401
+        checkpoint2 = build_checkpoint(
+            objective=latest2.objective,
+            workspace="",
+            completed=latest2.completed_work,
+            relevant_files=latest2.relevant_files,
+            latest_tests=latest2.latest_tests,
+            current_failure=latest2.current_failure,
+        )
+        coordinator2 = RunContextCoordinator(
+            checkpoint=checkpoint2, budget=budget, max_conversation_messages=12
+        )
+        agent2 = CodingAgent(
+            provider=make_provider(),
+            toolkit=toolkit,
+            log=lambda _m: None,
+            run_id=run_id,
+            tool_ledger=restarted.ledger,
+            context_coordinator=coordinator2,
+        )
+        outcome2 = agent2.run(
+            prompt="Continue.",
+            account_id=account_id,
+            workspace_id=workspace_id,
+            sink=lambda **kw: None,
+        )
+        assert outcome2.state == "succeeded"
+        first_request = received[0]
+        assert "SERVER DURABLE CHECKPOINT" in first_request
+        assert "write_file: notes.txt" in first_request
+        # Completed mutation is not repeated on resume.
+        assert restarted.ledger.for_call(run_id, "m1").state == TOOL_STATE_SUCCEEDED
 
 
 class TestEndToEndRunAndEscalation:

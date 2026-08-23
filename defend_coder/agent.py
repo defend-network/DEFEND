@@ -385,7 +385,9 @@ class CodingAgent:
                 limit_tokens=decision.limit_tokens,
             )
             coordinator.emit("context_compaction_started")
-            # P14: persist the next checkpoint revision BEFORE dropping.
+            # P0: fold the server-observed work that is about to be dropped
+            # into the checkpoint, THEN persist the next revision, THEN drop.
+            coordinator.fold_progress()
             self._persist_checkpoint(coordinator)
             coordinator.compact()
             coordinator.emit(
@@ -686,6 +688,14 @@ class CodingAgent:
                         f"{'ok' if result.ok else 'error'}"
                     )
                     previous_tool_failed = not result.ok
+                    if coordinator is not None:
+                        coordinator.note_tool_execution(
+                            call.name,
+                            call.arguments,
+                            ok=result.ok,
+                            content=result.content,
+                            kind=result.kind,
+                        )
                     record(
                         {
                             "role": "tool",
