@@ -5,9 +5,9 @@ from decimal import Decimal
 
 import pytest
 
-from defend_control.coder_deployment import resolve_deployment
-from defend_control.coder_m0 import CoderModelRef
-from defend_control.coder_provisioning import (
+from defend_coder.runtime.deployment import resolve_deployment
+from defend_coder.runtime.models import CoderModelRef
+from defend_coder.runtime.provisioning import (
     CLEANUP_STATES,
     CODER_PROVISION_PHASES,
     CoderProvisionFailure,
@@ -17,7 +17,7 @@ from defend_control.coder_provisioning import (
     sanitize_remote_tail,
     wall_clock,
 )
-from defend_control.coder_remote_vllm import (
+from defend_coder.runtime.remote_vllm import (
     CoderRemoteVllmBootstrap,
     _MODEL_READY_WAIT_SECONDS,
 )

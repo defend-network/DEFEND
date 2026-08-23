@@ -23,13 +23,13 @@ from defend_control.local_model import LocalOllamaBackend
 from defend_control.model_registry import ADAPTER_REPO
 from defend_control.orchestrator import StackOrchestrator
 from defend_control.preflight import CheckResult, PreflightRunner
-from defend_control.processes import ProcessSupervisor
+from shared_platform.processes import ProcessSupervisor
 from defend_control.platform import PlatformService
 from defend_control.platform_audit import PlatformAuditLog
 from defend_control.platform_credentials import PlatformCredentialRegistry
 from defend_control.products import ProductsSettings, build_products
 from defend_control.product_runtime import ProductRuntimeRegistry
-from defend_control.secrets import DpapiSecretStore
+from shared_platform.secure_store import DpapiSecretStore
 from defend_control.settings import ControlSettings, JsonSettingsStore
 from defend_control.supervision import (
     ProductSupervisionManifestStore,

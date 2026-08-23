@@ -30,7 +30,7 @@ from defend_integrations.stores import (  # noqa: E402
     SecretRegistry,
     default_secret_path,
 )
-from defend_control.secrets import DpapiSecretStore  # noqa: E402
+from shared_platform.secure_store import DpapiSecretStore  # noqa: E402
 from defend_markets.db import MarketsDatabase  # noqa: E402
 from defend_markets.m5_live import FrozenM5, M5Match, M5StateBuilder, ShadowPredictor  # noqa: E402
 from defend_markets.quant.store import PostgresQuantStore  # noqa: E402

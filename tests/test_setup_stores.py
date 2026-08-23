@@ -176,7 +176,7 @@ def test_every_legacy_secret_is_known_somewhere():
 
 def test_dpapi_store_compat_shapes(tmp_path):
     """The store surface we consume matches DpapiSecretStore's public API."""
-    from defend_control.secrets import DpapiSecretStore
+    from shared_platform.secure_store import DpapiSecretStore
 
     store = DpapiSecretStore(
         tmp_path / "secrets.dpapi",

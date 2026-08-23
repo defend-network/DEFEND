@@ -25,7 +25,7 @@ sys.path.insert(0, str(REPO))
 from defend_markets.shadow import evaluation_report  # noqa: E402
 from defend_markets.shadow_store import PostgresShadowStore  # noqa: E402
 from defend_markets.db import MarketsDatabase  # noqa: E402
-from tools.defend_tt_forward_collector import (  # noqa: E402
+from legacy_stack.tools.defend_tt_forward_collector import (  # noqa: E402
     build_engine,
     canonical_events_map,
 )

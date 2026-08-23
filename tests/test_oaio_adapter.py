@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 from defend_integrations.matching import match_event
 from defend_markets.shadow import forward_fixtures_from_oddspapi
-from tools.defend_tt_forward_collector import (
+from legacy_stack.tools.defend_tt_forward_collector import (
     OddsApiIOLiveClient,
     _oaio_event_to_fixture,
     _oaio_odds_to_oddspapi_shape,
@@ -175,7 +175,7 @@ class TestOddsApiIoClient:
             return result, evidence, payload
 
         monkeypatch.setattr(
-            "tools.defend_tt_forward_collector.probe_get", fake_probe
+            "legacy_stack.tools.defend_tt_forward_collector.probe_get", fake_probe
         )
         client = OddsApiIOLiveClient("synthetic-key")
         client._events["73870732"] = {

@@ -15,7 +15,7 @@ import subprocess
 import sys
 from typing import Protocol
 
-from .secrets import DpapiSecretStore
+from shared_platform.secure_store import DpapiSecretStore
 from .settings import ControlSettings
 from .types import ModelMode
 

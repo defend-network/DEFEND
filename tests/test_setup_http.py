@@ -177,7 +177,7 @@ def test_fetch_never_retries_more_than_cap(monkeypatch):
 
 
 def test_http_module_redaction_is_utf8_bounded():
-    from defend_control.redaction import redact_text
+    from shared_platform.redaction import redact_text
 
     cleaned = redact_text("secret a+b? " + "é" * 70_000, ["a+b?"])
     assert "a+b?" not in cleaned

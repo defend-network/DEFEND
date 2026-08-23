@@ -11,24 +11,24 @@ import webbrowser
 
 from .health import JsonResult, fetch_http_json
 from .model_registry import ADAPTER_REPO, ADAPTER_REVISION, LOCAL_ALIAS, SERVING_ALIAS
-from .processes import LogBuffer, LogEntry, ProcessSpec
+from shared_platform.processes import LogBuffer, LogEntry, ProcessSpec
 from .product_runtime import ProductRuntimeRegistry, PRODUCT_API_PORTS, PRODUCT_FORWARD_PORTS
-from .coder_control_plane import (
+from defend_coder.runtime.control_plane import (
     CoderNoQualifyingOffer,
     CoderProvisionBlocked,
 )
-from .coder_m0 import (
+from defend_coder.runtime.models import (
     CODER_MAX_HOURLY_UPPER_USD,
     parse_max_hourly_budget,
     resolve_alias,
 )
-from .coder_provisioning import (
+from defend_coder.runtime.provisioning import (
     CoderProvisionFailure,
     format_elapsed,
     wall_clock,
 )
-from .coder_vast_backend import CoderVastBackendError
-from .vast import vast_gpu_ram_floor
+from defend_coder.runtime.vast_backend import CoderVastBackendError
+from shared_platform.vast import vast_gpu_ram_floor
 
 
 @dataclass(frozen=True)
@@ -250,7 +250,7 @@ def build_sports_process_spec(
         raise ValueError("SPORTS_DATABASE_URL is not configured")
     return ProcessSpec(
         name="sports:api",
-        argv=(python_executable, "-m", "tools.legacy_defend_sports_server"),
+        argv=(python_executable, "-m", "legacy_stack.tools.legacy_defend_sports_server"),
         cwd=Path(repository),
         env={
             "SPORTS_DATA_ROOT": str(settings.sports_data_root),
@@ -565,45 +565,21 @@ class DefendService:
         return self.status()
 
     def destroy(self, confirmed_instance_id: int | None) -> ProductStatus:
-        """Permanently destroy the retained provider instance.
+        """Provider compute destruction is NOT a Control Center authority.
 
-        Never part of normal Stop. Requires the exact retained instance ID and
-        provider-confirmed absence before the registry is cleared.
+        Control Center is an optional supervisor; it must never rent, destroy,
+        or otherwise mutate DEFEND AI provider compute. Destroy is a
+        product-owned action. Until DEFEND AI supplies its product-owned
+        application supervision manifest, this returns PRODUCT_CONTRACT_REQUIRED.
         """
-        record = (
-            self._runtime_registry.load().get("defend-ai")
-            if self._runtime_registry is not None
-            else None
+        return self._row(
+            state="failed",
+            status_text="Provider compute destruction is product-owned",
+            last_error=(
+                "PRODUCT_CONTRACT_REQUIRED: Control Center has no provider "
+                "mutation authority (Vast destroy is not available here)"
+            ),
         )
-        retained = record.instance_id if record is not None else None
-        if retained is None or isinstance(confirmed_instance_id, bool):
-            return self._row(
-                state="failed",
-                status_text="No retained instance to destroy",
-                last_error="no retained provider instance",
-            )
-        if type(confirmed_instance_id) is not int or confirmed_instance_id != retained:
-            return self._row(
-                state="failed",
-                status_text="Enter the exact retained instance ID to destroy",
-                last_error="exact instance ID confirmation required",
-            )
-        try:
-            destroy = getattr(self._controller, "stop_and_destroy_vast", None)
-            if not callable(destroy):
-                raise RuntimeError("Vast.ai destruction is not available")
-            self._controller.stop_and_destroy_vast(confirmed_instance_id)
-        except Exception as error:
-            return self._row(
-                state="failed",
-                status_text=f"Destroy failed ({type(error).__name__})",
-                last_error=f"destroy failed ({type(error).__name__})",
-            )
-        if self._runtime_registry is not None:
-            self._runtime_registry.record_destroyed(
-                "defend-ai", confirmed_instance_id
-            )
-        return self.status()
 
     def status(self) -> ProductStatus:
         state = self._controller.poll_state()

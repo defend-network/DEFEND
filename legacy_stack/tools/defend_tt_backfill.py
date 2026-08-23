@@ -55,7 +55,7 @@ def odds_api_io_key() -> str:
     if value:
         return value
     try:
-        from defend_control.secrets import DpapiSecretStore
+        from shared_platform.secure_store import DpapiSecretStore
 
         registry = SecretRegistry(DpapiSecretStore(default_secret_path()))
         return registry.get("ODDS_API_IO_API_KEY") or ""

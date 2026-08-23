@@ -6,7 +6,7 @@ import json
 import sys
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-from .processes import ProcessSpec
+from shared_platform.processes import ProcessSpec
 from .settings import ControlSettings
 from .types import ModelReady
 

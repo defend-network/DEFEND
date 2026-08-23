@@ -10,7 +10,7 @@ from defend_control.controller import (
     UIState,
 )
 from defend_control.orchestrator import ComponentSnapshot, StackSnapshot
-from defend_control.processes import LogEntry
+from shared_platform.processes import LogEntry
 from defend_control.types import VastInstance, VastOffer
 from defend_control.ui import ControlCenterUI
 import defend_control.ui as ui_module

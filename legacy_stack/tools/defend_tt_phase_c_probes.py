@@ -23,7 +23,7 @@ sys.path.insert(0, str(REPO))
 from defend_integrations.phase_c_adapters import PHASE_C_ADAPTERS, phase_c_adapter_for
 from defend_integrations.probing import ProbeBudget, utc_now_iso
 from defend_integrations.stores import SecretRegistry, default_secret_path
-from defend_control.secrets import DpapiSecretStore
+from shared_platform.secure_store import DpapiSecretStore
 
 # provider_id -> credential names it needs
 CREDENTIALS: dict[str, tuple[str, ...]] = {

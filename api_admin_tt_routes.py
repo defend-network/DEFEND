@@ -26,7 +26,7 @@ from admin_auth import (
 )
 from api_identity_routes import _admin_login_rate_keys, _limiter
 
-_TT_ROOT = Path(__file__).resolve().parent / "TableTennis"
+_TT_ROOT = Path(__file__).resolve().parent / "legacy_stack" / "table_tennis"
 if str(_TT_ROOT) not in sys.path:
     sys.path.insert(0, str(_TT_ROOT))
 

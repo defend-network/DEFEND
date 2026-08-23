@@ -21,10 +21,10 @@ from .local_model import (
     build_local_process_specs,
 )
 from .preflight import PreflightRunner
-from .processes import LogEntry, ProcessSupervisor
+from shared_platform.processes import LogEntry, ProcessSupervisor
 from .remote_vllm import RemoteVllmError, build_remote_process_specs
 from .settings import ControlSettings
-from .ssh_tunnel import HostFingerprintConfirmation, SshTunnelError
+from shared_platform.ssh_tunnel import HostFingerprintConfirmation, SshTunnelError
 from .types import (
     AdapterSpec,
     LaunchSpec,
@@ -33,7 +33,7 @@ from .types import (
     VastInstance,
     VastOffer,
 )
-from .vast import VastError, VastSchedulingTimeout
+from shared_platform.vast import VastError, VastSchedulingTimeout
 
 
 _MAX_PROCESS_QUERY_BYTES = 64 * 1024
@@ -529,12 +529,12 @@ class StackOrchestrator:
             self._huggingface_client = HuggingFaceClient()
         if self._vast_client is None:
             if self._vast_client_factory is None:
-                from .vast import VastClient
+                from shared_platform.vast import VastClient
 
                 self._vast_client_factory = VastClient
             self._vast_client = self._vast_client_factory(secrets["VAST_API_KEY"])
         if self._ssh_tunnel is None:
-            from .ssh_tunnel import SshTunnel
+            from shared_platform.ssh_tunnel import SshTunnel
 
             local_app_data = os.environ.get("LOCALAPPDATA")
             if not local_app_data:

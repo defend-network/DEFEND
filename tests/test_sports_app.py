@@ -204,7 +204,7 @@ class TestServiceBoundary:
 
     def test_sports_app_has_no_platform_runtime_dependencies(self):
         import legacy_stack.defend_sports.app as app_module
-        import tools.legacy_defend_sports_server as server_module
+        import legacy_stack.tools.legacy_defend_sports_server as server_module
 
         for module in (app_module, server_module):
             source = inspect.getsource(module)

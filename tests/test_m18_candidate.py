@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from defend_control.deployment_profiles import (
+from defend_ai.deployment_profiles import (
     DeploymentProfileRegistry,
     ProfileStatus,
     default_profiles,

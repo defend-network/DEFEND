@@ -12,7 +12,7 @@ import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
 from tkinter.scrolledtext import ScrolledText
 
-from .coder_m0 import (
+from defend_coder.runtime.models import (
     CoderM0Service,
     LocalFakeCoderBackend,
     resolve_alias,
@@ -25,7 +25,7 @@ from .products import (
     coder_plan_rows,
 )
 from .settings import ControlSettings
-from .vast import vast_gpu_ram_floor
+from shared_platform.vast import vast_gpu_ram_floor
 from .integration_catalog import (
     SECRET_CATALOG,
     IntegrationOwner,

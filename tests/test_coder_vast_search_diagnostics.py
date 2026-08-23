@@ -16,7 +16,7 @@ from urllib.parse import urlsplit
 import pytest
 
 from defend_control.types import ResourceProfile
-from defend_control.vast import (
+from shared_platform.vast import (
     OFFER_REJECTION_CATEGORIES,
     VastClient,
     VastOffer,
@@ -599,7 +599,7 @@ class TestApprovedGpuUniverse:
         assert dict(rejections)["wrong_gpu_family"] == 1
 
     def test_approved_mapping_covers_default_and_coder_profiles(self):
-        from defend_control.vast import approved_vast_gpu_names
+        from shared_platform.vast import approved_vast_gpu_names
 
         names = approved_vast_gpu_names(("A100", "H100", "H200", "B200"))
         assert "A100 SXM4" in names
@@ -608,13 +608,13 @@ class TestApprovedGpuUniverse:
             assert name in names
 
     def test_unknown_family_fails_closed(self):
-        from defend_control.vast import approved_vast_gpu_names
+        from shared_platform.vast import approved_vast_gpu_names
 
         with pytest.raises(ValueError):
             approved_vast_gpu_names(("H100", "GH200"))
 
     def test_variants_belong_to_their_family(self):
-        from defend_control.vast import VAST_GPU_NAME_VARIANTS
+        from shared_platform.vast import VAST_GPU_NAME_VARIANTS
 
         for family, variants in VAST_GPU_NAME_VARIANTS.items():
             for variant in variants:
@@ -1017,7 +1017,7 @@ class TestCapturedLiveShapes:
         assert dict(rejections).get("insufficient_vram", 0) == 0
 
     def test_vast_gpu_ram_floor_encodes_only_the_80gb_class_band(self):
-        from defend_control.vast import vast_gpu_ram_floor
+        from shared_platform.vast import vast_gpu_ram_floor
 
         assert vast_gpu_ram_floor(64_000) == 64_000
         assert vast_gpu_ram_floor(80_000) == 80_000
@@ -1044,7 +1044,7 @@ class TestCliDiagnostic:
     def test_cli_authenticated_output_redacts_key_and_reports_ladder(
         self, monkeypatch, capsys
     ):
-        import tools.defend_coder_vast_diagnose as diagnose
+        import legacy_stack.tools.defend_coder_vast_diagnose as diagnose
 
         fake_client = _FakeDiagnosticClient()
         monkeypatch.setattr(diagnose, "_load_api_key", lambda: _KEY)
@@ -1084,7 +1084,7 @@ class TestCliDiagnostic:
     def test_cli_direct_lane_reports_direct_ports_required(
         self, monkeypatch, capsys
     ):
-        import tools.defend_coder_vast_diagnose as diagnose
+        import legacy_stack.tools.defend_coder_vast_diagnose as diagnose
 
         fake_client = _FakeDiagnosticClient()
         monkeypatch.setattr(diagnose, "_load_api_key", lambda: _KEY)
@@ -1096,14 +1096,14 @@ class TestCliDiagnostic:
         assert "Direct ports: required (>= 1)" in out
 
     def test_cli_rejects_invalid_runtype(self, capsys):
-        import tools.defend_coder_vast_diagnose as diagnose
+        import legacy_stack.tools.defend_coder_vast_diagnose as diagnose
 
         code = diagnose.run_diagnostic(runtype="ssh_sidecar")
         assert code == 2
         assert "runtype must be ssh_proxy or ssh_direct" in capsys.readouterr().out
 
     def test_cli_unauthenticated_skips_network(self, monkeypatch, capsys):
-        import tools.defend_coder_vast_diagnose as diagnose
+        import legacy_stack.tools.defend_coder_vast_diagnose as diagnose
 
         monkeypatch.setattr(diagnose, "_load_api_key", lambda: None)
         code = diagnose.run_diagnostic()
@@ -1114,7 +1114,7 @@ class TestCliDiagnostic:
         assert "Configured max $/hr: $4.50" in out
 
     def test_cli_surfaces_ladder_failure(self, monkeypatch, capsys):
-        import tools.defend_coder_vast_diagnose as diagnose
+        import legacy_stack.tools.defend_coder_vast_diagnose as diagnose
 
         def fail_ladder(ceiling, profile, *, require_direct_ports=True):
             del require_direct_ports

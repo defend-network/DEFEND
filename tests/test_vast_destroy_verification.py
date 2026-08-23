@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 
-from defend_control.vast import (
+from shared_platform.vast import (
     VastClient,
     VastDestructionPendingError,
     VastDestructionRequestFailedError,

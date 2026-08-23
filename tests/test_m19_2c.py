@@ -46,7 +46,7 @@ from defend_control.training_hardening import (
     validate_candidate_canary_identity,
 )
 from defend_control.types import LaunchSpec, VastOffer
-from defend_control.vast import VastClient
+from shared_platform.vast import VastClient
 
 TRAIN_FILE = Path(r"C:\Users\thoma\Downloads\DEFEND32B\TRAINING\defend_sft_train_v1_merged.jsonl")
 

@@ -4,7 +4,7 @@ from decimal import Decimal
 
 import pytest
 
-from defend_control.coder_m0 import (
+from defend_coder.runtime.models import (
     CODER_MODEL_REGISTRY,
     CoderM0Service,
     LocalFakeCoderBackend,

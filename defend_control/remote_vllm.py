@@ -10,9 +10,9 @@ import sys
 from typing import Protocol
 
 from .model_registry import ADAPTER_REPO
-from .processes import ProcessSpec
+from shared_platform.processes import ProcessSpec
 from .settings import ControlSettings
-from .ssh_tunnel import CommandResult, run_command
+from shared_platform.ssh_tunnel import CommandResult, run_command
 from .types import AdapterSpec, ModelReady, VastInstance
 
 

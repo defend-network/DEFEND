@@ -11,17 +11,17 @@ import tempfile
 
 import pytest
 
-from defend_control.coder_control_plane import (
+from defend_coder.runtime.control_plane import (
     ActiveCoderEndpoint,
     CoderControlPlane,
     CoderNoQualifyingOffer,
     CoderProvisionBlocked,
 )
-from defend_control.coder_provisioning import (
+from defend_coder.runtime.provisioning import (
     CoderProvisionFailure,
     format_elapsed,
 )
-from defend_control.coder_vast_backend import (
+from defend_coder.runtime.vast_backend import (
     CoderVastBackendError,
     PROVIDER_ERROR_CATEGORIES,
 )

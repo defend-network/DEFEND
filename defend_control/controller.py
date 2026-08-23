@@ -11,8 +11,8 @@ from .orchestrator import (
     StackOrchestrator,
     StartCancellation,
 )
-from .processes import LogEntry
-from .redaction import redact_text
+from shared_platform.processes import LogEntry
+from shared_platform.redaction import redact_text
 from .types import ModelMode, ServiceState, VastInstance, VastOffer
 
 

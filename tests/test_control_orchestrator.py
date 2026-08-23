@@ -18,11 +18,11 @@ from defend_control.orchestrator import (
     StartCancelled,
     StartFailed,
 )
-from defend_control.processes import ProcessSnapshot, ProcessSpec
+from shared_platform.processes import ProcessSnapshot, ProcessSpec
 from defend_control.settings import ControlSettings
-from defend_control.ssh_tunnel import HostFingerprintConfirmation, SshTunnelError
+from shared_platform.ssh_tunnel import HostFingerprintConfirmation, SshTunnelError
 from defend_control.types import AdapterSpec, ModelReady, VastInstance, VastOffer
-from defend_control.vast import VastError, VastOfferUnavailable, VastSchedulingTimeout
+from shared_platform.vast import VastError, VastOfferUnavailable, VastSchedulingTimeout
 
 
 class FakePreflight:

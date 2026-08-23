@@ -11,7 +11,7 @@ from defend_control.huggingface import HuggingFaceClient
 from defend_control.huggingface import HuggingFaceError
 from defend_control.model_registry import ADAPTER_REPO
 from defend_control.types import LaunchSpec, ResourceProfile, VastInstance, VastOffer
-from defend_control.vast import (
+from shared_platform.vast import (
     VastClient,
     VastError,
     VastOfferUnavailable,

@@ -112,7 +112,7 @@ class TestProductIsolation:
 
     def test_dpapi_primitive_moved_to_shared_platform(self):
         import shared_platform.dpapi as dpapi
-        from defend_control.secrets import DpapiSecretStore as Shim
+        from shared_platform.secure_store import DpapiSecretStore as Shim
 
         assert dpapi.DpapiSecretStore is Shim
         assert hasattr(dpapi, "restrict_to_current_user")

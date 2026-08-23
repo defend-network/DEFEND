@@ -7,7 +7,7 @@ from decimal import Decimal
 import pytest
 
 from legacy_stack.control_center.coder_billing import BillingPolicy as BillingPolicySettings
-from defend_control.coder_control_plane import (
+from defend_coder.runtime.control_plane import (
     ActiveCoderEndpoint,
     CoderControlPlane,
     CoderPolicy,
@@ -18,8 +18,8 @@ from defend_control.coder_control_plane import (
     derive_estimated_cost,
     resource_profile,
 )
-from defend_control.coder_deployment import resolve_deployment
-from defend_control.coder_m0 import CoderModelRef, resolve_alias
+from defend_coder.runtime.deployment import resolve_deployment
+from defend_coder.runtime.models import CoderModelRef, resolve_alias
 from defend_control.types import ResourceProfile, VastInstance, VastOffer
 
 _QUALIFYING_OFFERS = (

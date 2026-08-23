@@ -20,7 +20,7 @@ from defend_control.products import (
     build_sports_process_spec,
     product_rows,
 )
-from defend_control.processes import LogBuffer, ProcessSnapshot
+from shared_platform.processes import LogBuffer, ProcessSnapshot
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -168,7 +168,7 @@ def test_sports_start_spec_targets_sports_api_with_module_server(tmp_path):
     assert len(supervisor.started) == 1
     spec = supervisor.started[0]
     assert spec.name == "sports:api"
-    assert spec.argv == (sys.executable, "-m", "tools.legacy_defend_sports_server")
+    assert spec.argv == (sys.executable, "-m", "legacy_stack.tools.legacy_defend_sports_server")
     assert spec.cwd == ROOT
     assert spec.env["SPORTS_DATABASE_URL"] == "postgresql://u:s@localhost/db"
     assert spec.health_url == "http://127.0.0.1:8200/health"

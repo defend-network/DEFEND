@@ -9,11 +9,11 @@ from pathlib import Path
 
 import pytest
 
-from defend_control.coder_control_plane import (
+from defend_coder.runtime.control_plane import (
     CoderControlPlane,
     CoderPolicy,
 )
-from defend_control.coder_m0 import (
+from defend_coder.runtime.models import (
     CODER_MAX_HOURLY_UPPER_USD,
     parse_max_hourly_budget,
 )

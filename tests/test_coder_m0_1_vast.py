@@ -5,18 +5,18 @@ from pathlib import Path
 
 import pytest
 
-from defend_control.coder_m0 import CoderM0Service, CoderModelRef, resolve_alias
-from defend_control.coder_deployment import resolve_deployment
-from defend_control.coder_remote_vllm import (
+from defend_coder.runtime.models import CoderM0Service, CoderModelRef, resolve_alias
+from defend_coder.runtime.deployment import resolve_deployment
+from defend_coder.runtime.remote_vllm import (
     CoderRemoteVllmBootstrap,
     CoderRemoteVllmError,
 )
-from defend_control.coder_vast_backend import (
+from defend_coder.runtime.vast_backend import (
     VastCoderBackend,
     CoderVastBackendError,
 )
 from defend_control.types import LaunchSpec, ResourceProfile, VastInstance, VastOffer
-from defend_control.vast import VastError
+from shared_platform.vast import VastError
 
 
 def test_coder_launch_spec_is_distinct_from_chat():
@@ -833,10 +833,10 @@ def _smoke_response(body):
 
 
 def test_default_smoke_accepts_matching_served_model_id(monkeypatch):
-    from defend_control.coder_vast_backend import _default_smoke
+    from defend_coder.runtime.vast_backend import _default_smoke
 
     monkeypatch.setattr(
-        "defend_control.coder_vast_backend.urllib.request.urlopen",
+        "defend_coder.runtime.vast_backend.urllib.request.urlopen",
         lambda request, timeout=30: _smoke_response(
             {"data": [{"id": "Qwen/Qwen3-Coder-Next"}]}
         ),
@@ -851,10 +851,10 @@ def test_default_smoke_accepts_matching_served_model_id(monkeypatch):
 
 
 def test_default_smoke_rejects_mismatched_served_model_id(monkeypatch):
-    from defend_control.coder_vast_backend import _default_smoke
+    from defend_coder.runtime.vast_backend import _default_smoke
 
     monkeypatch.setattr(
-        "defend_control.coder_vast_backend.urllib.request.urlopen",
+        "defend_coder.runtime.vast_backend.urllib.request.urlopen",
         lambda request, timeout=30: _smoke_response(
             {"data": [{"id": "/workspace/defendcoder/model"}]}
         ),
@@ -870,7 +870,7 @@ def test_default_smoke_rejects_mismatched_served_model_id(monkeypatch):
 
 
 def test_default_smoke_rejects_non_json_body(monkeypatch):
-    from defend_control.coder_vast_backend import _default_smoke
+    from defend_coder.runtime.vast_backend import _default_smoke
 
     class TextResponse:
         status = 200
@@ -885,7 +885,7 @@ def test_default_smoke_rejects_non_json_body(monkeypatch):
             return b"not json"
 
     monkeypatch.setattr(
-        "defend_control.coder_vast_backend.urllib.request.urlopen",
+        "defend_coder.runtime.vast_backend.urllib.request.urlopen",
         lambda request, timeout=30: TextResponse(),
     )
 
@@ -1383,7 +1383,7 @@ def _probe_boot(runner):
 
 
 def test_probe_remote_alive_when_served_model_matches():
-    from defend_control.ssh_tunnel import CommandResult
+    from shared_platform.ssh_tunnel import CommandResult
 
     class Runner(ProbeRunner):
         def _result(self, returncode, stdout, stderr):
@@ -1403,7 +1403,7 @@ def test_probe_remote_alive_when_served_model_matches():
 
 
 def test_probe_remote_not_alive_when_served_model_mismatches():
-    from defend_control.ssh_tunnel import CommandResult
+    from shared_platform.ssh_tunnel import CommandResult
 
     class Runner(ProbeRunner):
         def _result(self, returncode, stdout, stderr):
@@ -1421,7 +1421,7 @@ def test_probe_remote_not_alive_when_served_model_mismatches():
 
 
 def test_probe_remote_not_alive_when_no_key_on_box():
-    from defend_control.ssh_tunnel import CommandResult
+    from shared_platform.ssh_tunnel import CommandResult
 
     class Runner(ProbeRunner):
         def _result(self, returncode, stdout, stderr):
@@ -1439,7 +1439,7 @@ def test_probe_remote_not_alive_when_no_key_on_box():
 
 
 def test_probe_remote_ssh_failure_raises_ssh_connect_phase():
-    from defend_control.ssh_tunnel import CommandResult
+    from shared_platform.ssh_tunnel import CommandResult
 
     class Runner(ProbeRunner):
         def __init__(self):
@@ -1453,7 +1453,7 @@ def test_probe_remote_ssh_failure_raises_ssh_connect_phase():
 
 
 def test_probe_remote_timeout_raises_remote_probe_phase():
-    from defend_control.ssh_tunnel import CommandResult
+    from shared_platform.ssh_tunnel import CommandResult
 
     class Runner(ProbeRunner):
         def __init__(self):

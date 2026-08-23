@@ -16,7 +16,7 @@ import pytest
 
 from defend_markets.domain import TTMatchResult
 from legacy_stack.defend_sports.providers.odds_api_io import parse_tt_final_result
-from tools.defend_tt_repair_results import build_plan, collect_repair_results
+from legacy_stack.tools.defend_tt_repair_results import build_plan, collect_repair_results
 
 CANONICAL_KEY = "oaio:123"
 RAW_KEY = "oaio:123@hist:20260213"

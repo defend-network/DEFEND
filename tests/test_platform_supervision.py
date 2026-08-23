@@ -383,7 +383,7 @@ def test_shared_dpapi_is_single_implementation_identity():
         WindowsDpapiBackend,
         restrict_to_current_user,
     )
-    from defend_control.secrets import DpapiSecretStore as Legacy
+    from shared_platform.secure_store import DpapiSecretStore as Legacy
 
     assert Shimmable is DpapiSecretStore
     assert Legacy is DpapiSecretStore

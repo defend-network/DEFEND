@@ -452,7 +452,7 @@ def _make_stack(fake, production_id, authorized):
     from defend_control.local_model import LocalOllamaBackend
     from defend_control.orchestrator import StackOrchestrator
     from defend_control.preflight import PreflightRunner
-    from defend_control.processes import ProcessSupervisor
+    from shared_platform.processes import ProcessSupervisor
     from defend_control.settings import ControlSettings
 
     settings = ControlSettings(
@@ -543,7 +543,7 @@ def test_queued_action_runtime_recheck_zero_mutation():
 
 
 def test_status_invalid_response_zero_mutation():
-    from defend_control.vast import VastError
+    from shared_platform.vast import VastError
 
     class FakeVast:
         def __init__(self):

@@ -23,7 +23,7 @@ import tempfile
 import threading
 from typing import Any
 
-from .redaction import redact_text
+from shared_platform.redaction import redact_text
 
 _DEFAULT_MAX_ENTRIES = 2000
 _MAX_LINE_CHARS = 512

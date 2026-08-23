@@ -24,7 +24,7 @@ from defend_integrations.stores import (
     SecretRegistry,
     apply_rotation_invalidation,
 )
-from defend_control.secrets import DpapiSecretStore
+from shared_platform.secure_store import DpapiSecretStore
 
 RAPIDAPI_PROVIDER_IDS = (
     "rapidapi_tabletennis",

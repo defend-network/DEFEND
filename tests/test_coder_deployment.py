@@ -12,25 +12,25 @@ from pathlib import Path
 import pytest
 
 from legacy_stack.control_center.coder_billing import BillingPolicy
-from defend_control.coder_control_plane import (
+from defend_coder.runtime.control_plane import (
     CoderControlPlane,
     CoderLiveSmokePlan,
     CoderPolicy,
     CoderProvisionBlocked,
     resource_profile,
 )
-from defend_control.coder_deployment import (
+from defend_coder.runtime.deployment import (
     CODER_DEPLOYMENT_REGISTRY,
     is_exact_revision,
     meets_minimum_vllm_version,
     resolve_deployment,
 )
-from defend_control.coder_m0 import resolve_alias
-from defend_control.coder_remote_vllm import (
+from defend_coder.runtime.models import resolve_alias
+from defend_coder.runtime.remote_vllm import (
     CoderRemoteVllmBootstrap,
     CoderRemoteVllmError,
 )
-from defend_control.ssh_tunnel import CommandResult
+from shared_platform.ssh_tunnel import CommandResult
 from defend_control.types import (
     LaunchSpec,
     ResourceProfile,

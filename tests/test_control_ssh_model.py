@@ -9,7 +9,7 @@ import time
 
 import pytest
 
-from defend_control.ssh_tunnel import (
+from shared_platform.ssh_tunnel import (
     CommandResult,
     CommandCancelled,
     HostFingerprintConfirmation,
@@ -21,7 +21,7 @@ from defend_control.model_probe import ModelProbe, ModelProbeError, ProbeRespons
 from defend_control.model_registry import ADAPTER_REPO
 from defend_control.remote_vllm import RemoteVllmBootstrap, RemoteVllmError
 from defend_control.types import AdapterSpec, ModelReady, VastInstance
-from defend_control.vast import VastClient
+from shared_platform.vast import VastClient
 
 
 @dataclass
@@ -251,7 +251,7 @@ def test_default_connection_keeps_proxy_behavior_even_when_direct_exists(
 
 
 def test_proxy_endpoint_requires_ssh_host_and_port():
-    from defend_control.ssh_tunnel import resolve_endpoint
+    from shared_platform.ssh_tunnel import resolve_endpoint
 
     instance = VastInstance(
         4816,
@@ -1014,7 +1014,7 @@ def test_model_probe_rejects_generation_that_crosses_absolute_deadline():
 
 def test_run_command_accepts_heavy_coder_bootstrap_timeout(monkeypatch):
     """Heavy NEXT bootstrap may legitimately run longer than 15 minutes."""
-    from defend_control import ssh_tunnel
+    from shared_platform import ssh_tunnel
 
     class FakeProcess:
         returncode = 0
@@ -1052,7 +1052,7 @@ def test_run_command_accepts_heavy_coder_bootstrap_timeout(monkeypatch):
 
 
 def test_run_command_still_rejects_unreasonably_large_timeout():
-    from defend_control.ssh_tunnel import run_command
+    from shared_platform.ssh_tunnel import run_command
     import pytest
 
     with pytest.raises(ValueError, match="command timeout is invalid"):

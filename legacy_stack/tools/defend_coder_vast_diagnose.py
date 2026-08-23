@@ -9,7 +9,7 @@
 # ==============================================================
 """DEFENDcoder Vast.ai offer-search diagnostic (read-only, zero-spend).
 
-Run:  python -m tools.defend_coder_vast_diagnose [--runtype ssh_proxy|ssh_direct]
+Run:  python -m legacy_stack.tools.defend_coder_vast_diagnose [--runtype ssh_proxy|ssh_direct]
 
 Defaults to the ssh_proxy qualification lane (no direct-port filter).
 Use --runtype ssh_direct to inspect the explicit direct-SSH lane
@@ -27,13 +27,13 @@ from __future__ import annotations
 import argparse
 import sys
 
-from defend_control.coder_control_plane import (
+from defend_coder.runtime.control_plane import (
     CoderNoQualifyingOffer,
     CoderPolicy,
     resource_profile,
 )
 from defend_control.products import ProductsSettings
-from defend_control.vast import (
+from shared_platform.vast import (
     OFFER_REJECTION_CATEGORIES,
     VastClient,
     approved_vast_gpu_names,
@@ -47,7 +47,7 @@ def _load_api_key() -> str | None:
     import os
     from pathlib import Path
 
-    from defend_control.secrets import DpapiSecretStore
+    from shared_platform.secure_store import DpapiSecretStore
     from tools.defend_control_center import _load_coder_secrets
 
     local_app_data = os.environ.get("LOCALAPPDATA")

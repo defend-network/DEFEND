@@ -12,7 +12,7 @@ from dataclasses import dataclass
 import time
 
 from .health import HealthResult, probe_http
-from .processes import ProcessSpec, ProcessSupervisor
+from shared_platform.processes import ProcessSpec, ProcessSupervisor
 from .settings import ControlSettings
 
 _PROBE_TIMEOUT_SECONDS = 2.0

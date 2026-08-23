@@ -32,7 +32,7 @@ from defend_integrations.matching import MatchLevel, match_event, normalize_name
 from defend_integrations.phase_c_adapters import OddspapiPhaseCAdapter
 from defend_integrations.probing import ProbeBudget
 from defend_integrations.stores import SecretRegistry, default_secret_path
-from defend_control.secrets import DpapiSecretStore
+from shared_platform.secure_store import DpapiSecretStore
 
 LEAGUE_MAP = {
     "czech-liga-pro": "czech-republic-czech-liga-pro",
