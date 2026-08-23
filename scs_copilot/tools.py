@@ -105,15 +105,59 @@ class ToolRegistry:
         error = self.validate(name, arguments)
         if error:
             return {"ok": False, "tool": name, "error": error,
-                    "side_effect": "none"}
+                    "error_code": "INVALID_TOOL_REQUEST", "retryable": False,
+                    "alternate": None, "side_effect": "none"}
         handler: Callable[[dict[str, Any]], dict[str, Any]] = getattr(
             self, "_exec_" + name.replace(".", "_"), None)
         if handler is None:
-            return {"ok": False, "tool": name, "error": "no server handler"}
-        result = handler(arguments or {})
+            return {"ok": False, "tool": name, "error": "no server handler",
+                    "error_code": "NO_SERVER_HANDLER", "retryable": False,
+                    "alternate": None}
+        try:
+            result = handler(arguments or {})
+        except Exception as error:  # tool errors are observations, not evidence
+            return {"ok": False, "tool": name, "error": f"{type(error).__name__}: {error}",
+                    "error_code": "TOOL_ERROR", "retryable": True,
+                    "alternate": None, "side_effect": "none"}
+        result.setdefault("error_code", None)
+        result.setdefault("retryable", None)
+        result.setdefault("alternate", None)
         self._executed.append({"tool": name, "arguments": arguments,
                                "ok": result.get("ok", True)})
         return result
+
+    def compact_observation(self, result: dict[str, Any]) -> dict[str, Any]:
+        """Structured compact tool observation (P53) - no arbitrary JSON cut."""
+        data = result.get("data")
+        facts: list[dict[str, Any]] = []
+        if isinstance(data, dict):
+            if data.get("design"):
+                facts.append({"concept": "DESIGN", "values": data["design"]})
+            if data.get("formula_id") is not None:
+                facts.append({"concept": "CALCULATED",
+                              "value": data.get("result"), "unit": data.get("units"),
+                              "formula": data.get("formula_id")})
+            if data.get("identity"):
+                facts.append({"concept": "OEM_IDENTITY",
+                              "value": data["identity"].get("resolution")})
+            if data.get("readings") or data.get("readings") == {}:
+                facts.append({"concept": "FIELD", "keys": list(data.get("readings", {}).keys())})
+            if data.get("verdict") or data.get("checks"):
+                facts.append({"concept": "VALIDATION",
+                              "summary": data.get("verdict") or data.get("summary")})
+        source_refs = []
+        if isinstance(data, dict) and data.get("source_id"):
+            source_refs.append(data["source_id"])
+        if isinstance(data, dict) and data.get("source"):
+            source_refs.append(str(data.get("source", {}).get("sheet") or data.get("source")))
+        return {
+            "tool": result.get("tool"), "success": result.get("ok", False),
+            "error": result.get("error"), "error_code": result.get("error_code"),
+            "retryable": result.get("retryable"),
+            "alternate": result.get("alternate"),
+            "facts": facts[:8], "source_refs": source_refs[:8],
+            "next_state": (data.get("next") if isinstance(data, dict) else None),
+        }
 
     # ---- tool handlers ------------------------------------------------------
 

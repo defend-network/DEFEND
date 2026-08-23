@@ -115,6 +115,13 @@ def verify_answer(facts: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def verify_claims(claims: list[dict[str, Any]],
+                  evidence: dict[str, Any]) -> dict[str, Any]:
+    """Structured-claim verification (M1.4.1). Delegates to claims.verify_claims."""
+    from .claims import verify_claims as _structured_verify
+    return _structured_verify(claims, evidence)
+
+
 def strip_unsupported_numeric_claims(claims: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Remove unverifiable numeric claims entirely (H3: never send confidently)."""
     return [c for c in claims

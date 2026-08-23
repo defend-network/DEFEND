@@ -35,13 +35,17 @@ class InstrumentRegistry:
                  accuracy: str | None = None,
                  setup: str | None = None,
                  manual_source_id: str | None = None,
-                 serial: str | None = None) -> dict[str, Any]:
+                 serial: str | None = None,
+                 calibration_date: str | None = None,
+                 calibration_due: str | None = None) -> dict[str, Any]:
         profile = {
             "manufacturer": manufacturer, "model": model,
             "serial": serial, "capabilities": capabilities,
             "range": range_, "resolution": resolution, "accuracy": accuracy,
             "setup": setup, "manual_source_id": manual_source_id,
-            "calibration_state": None,
+            "calibration_date": calibration_date,
+            "calibration_due": calibration_due,
+            "calibration_state": calibration_state(calibration_date, calibration_due),
         }
         self._profiles[f"{manufacturer} {model}".upper()] = profile
         self._save()
@@ -58,3 +62,21 @@ class InstrumentRegistry:
 
     def all(self) -> list[dict[str, Any]]:
         return list(self._profiles.values())
+
+
+def calibration_state(calibration_date: str | None, due_date: str | None) -> str:
+    """CURRENT / DUE_SOON / EXPIRED / UNKNOWN (M1.4.1 P32)."""
+    from datetime import date, datetime
+    if not due_date:
+        return "UNKNOWN"
+    try:
+        due = datetime.strptime(due_date, "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        return "UNKNOWN"
+    today = date.today()
+    days = (due - today).days
+    if days < 0:
+        return "EXPIRED"
+    if days <= 30:
+        return "DUE_SOON"
+    return "CURRENT"
