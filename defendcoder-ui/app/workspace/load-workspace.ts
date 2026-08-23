@@ -439,3 +439,203 @@ export async function sendChat(
     tier: string;
   };
 }
+
+export type FileContentResponse = {
+  path: string;
+  binary: boolean;
+  content: string | null;
+  size: number;
+};
+
+export async function fetchFileContent(
+  fetchImpl: typeof fetch,
+  base: string,
+  workspaceId: string,
+  path: string
+): Promise<FileContentResponse> {
+  const response = await apiFetch(
+    fetchImpl,
+    `${base}/v1/workspaces/${workspaceId}/files/content?path=${encodeURIComponent(path)}`
+  );
+  return (await response.json()) as FileContentResponse;
+}
+
+export type GitStatusResponse = {
+  is_repo: boolean;
+  status: string;
+  unstaged_diff: string;
+  staged_diff: string;
+  unstaged_diff_truncated?: boolean;
+  staged_diff_truncated?: boolean;
+  untracked: string[];
+  conflicts: string[];
+  staged_count: number;
+  unstaged_count: number;
+  dirty: boolean;
+  error?: string;
+};
+
+export async function fetchGitStatus(
+  fetchImpl: typeof fetch,
+  base: string,
+  workspaceId: string
+): Promise<GitStatusResponse> {
+  const response = await apiFetch(
+    fetchImpl,
+    `${base}/v1/workspaces/${workspaceId}/git/status`
+  );
+  return (await response.json()) as GitStatusResponse;
+}
+
+export type AttemptRecord = {
+  attempt_id: string;
+  checkpoint_revision: number | null;
+  summary: string;
+  failure_class: string | null;
+  relevant_files: string[];
+  test_summary: string | null;
+  tool_refs: string[];
+  state: string;
+};
+
+export type CheckpointRecord = {
+  checkpoint_id: string;
+  revision: number;
+  objective: string;
+  current_task: string | null;
+  completed_work: string[];
+  current_failure: string | null;
+  relevant_files: string[];
+  latest_tests: string[];
+  provider: string;
+  model: string;
+  identity_version: string;
+  prompt_core_version: string;
+  technical_profile_version: string;
+};
+
+export type ToolExecution = {
+  execution_id: string;
+  tool_call_id: string;
+  tool_name: string;
+  argument_hash: string;
+  mutation_class: string;
+  state: string;
+  result_ref: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+};
+
+export type ModelCall = {
+  step: number;
+  phase: string;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  total_tokens: number | null;
+  finish_reason: string | null;
+  tool_calls_requested: number;
+  request_roundtrip_seconds: number;
+  tokens_per_second: number | null;
+};
+
+export async function fetchRunAttempts(
+  fetchImpl: typeof fetch,
+  base: string,
+  workspaceId: string,
+  runId: string
+): Promise<AttemptRecord[]> {
+  const response = await apiFetch(
+    fetchImpl,
+    `${base}/v1/workspaces/${workspaceId}/runs/${runId}/attempts`
+  );
+  const body = (await response.json()) as { attempts: AttemptRecord[] };
+  return body.attempts;
+}
+
+export async function fetchRunCheckpoints(
+  fetchImpl: typeof fetch,
+  base: string,
+  workspaceId: string,
+  runId: string
+): Promise<CheckpointRecord[]> {
+  const response = await apiFetch(
+    fetchImpl,
+    `${base}/v1/workspaces/${workspaceId}/runs/${runId}/checkpoints`
+  );
+  const body = (await response.json()) as { checkpoints: CheckpointRecord[] };
+  return body.checkpoints;
+}
+
+export async function fetchRunToolExecutions(
+  fetchImpl: typeof fetch,
+  base: string,
+  workspaceId: string,
+  runId: string
+): Promise<ToolExecution[]> {
+  const response = await apiFetch(
+    fetchImpl,
+    `${base}/v1/workspaces/${workspaceId}/runs/${runId}/tool-executions`
+  );
+  const body = (await response.json()) as { tool_executions: ToolExecution[] };
+  return body.tool_executions;
+}
+
+export async function fetchRunTelemetry(
+  fetchImpl: typeof fetch,
+  base: string,
+  workspaceId: string,
+  runId: string
+): Promise<ModelCall[]> {
+  const response = await apiFetch(
+    fetchImpl,
+    `${base}/v1/workspaces/${workspaceId}/runs/${runId}/telemetry`
+  );
+  const body = (await response.json()) as { model_calls: ModelCall[] };
+  return body.model_calls;
+}
+
+export async function resumeRun(
+  fetchImpl: typeof fetch,
+  base: string,
+  workspaceId: string,
+  runId: string,
+  csrfToken: string | null
+): Promise<RunRecord> {
+  const response = await apiFetch(
+    fetchImpl,
+    `${base}/v1/workspaces/${workspaceId}/runs/${runId}/resume`,
+    {
+      method: "POST",
+      headers: csrfToken ? { "X-CSRF-Token": csrfToken } : {},
+    }
+  );
+  const body = (await response.json()) as { run: RunRecord };
+  return body.run;
+}
+
+export async function resolveRecovery(
+  fetchImpl: typeof fetch,
+  base: string,
+  workspaceId: string,
+  runId: string,
+  executionId: string,
+  resolution: "CONFIRMED_APPLIED" | "CONFIRMED_NOT_APPLIED" | "ABANDON_RUN",
+  csrfToken: string | null
+): Promise<{ resolution: string; resulting_state: string }> {
+  const response = await apiFetch(
+    fetchImpl,
+    `${base}/v1/workspaces/${workspaceId}/runs/${runId}/recovery/${executionId}/resolve`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(csrfToken ? { "X-CSRF-Token": csrfToken } : {}),
+      },
+      body: JSON.stringify({ resolution }),
+    }
+  );
+  return (await response.json()) as {
+    resolution: string;
+    resulting_state: string;
+  };
+}

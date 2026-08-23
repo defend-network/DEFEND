@@ -8,6 +8,7 @@ import time
 from typing import Any, Callable
 from uuid import UUID, uuid4
 
+from psycopg.errors import UniqueViolation
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
@@ -313,6 +314,36 @@ class RunsRepository:
                     """,
                     (phase, run_id),
                 )
+
+    def claim_active(self, run_id: UUID) -> None:
+        """Atomically claim exclusive workspace execution authority.
+
+        Transitioning the run to 'running' is enforced by the database
+        partial-unique index (one active run per workspace). A concurrent
+        claim (new or resumed) in the same workspace raises RunConflictError.
+        """
+        with self._db.connect() as connection:
+            with connection.cursor() as cursor:
+                try:
+                    cursor.execute(
+                        """
+                        UPDATE coder_runs
+                        SET status = 'running',
+                            phase = CASE
+                                WHEN phase = 'queued' THEN 'waiting_for_model'
+                                ELSE 'resuming'
+                            END,
+                            reason = 'unknown',
+                            error = NULL,
+                            finished_at = NULL
+                        WHERE run_id = %s
+                        """,
+                        (run_id,),
+                    )
+                except UniqueViolation:
+                    raise RunConflictError(
+                        "another run is already active for this workspace"
+                    ) from None
 
     def list_runs_for_workspace(
         self,
@@ -1022,6 +1053,10 @@ class RunRunner:
         proposal_factory: Callable[[object, object], object | None] | None = None,
         authority_resolver: Callable[[UUID], str] | None = None,
         envelope_loader: Callable[[UUID], object | None] | None = None,
+        tool_ledger: object | None = None,
+        checkpoint_store: object | None = None,
+        attempt_store: object | None = None,
+        context_budget_factory: Callable[[str, object], object] | None = None,
         # Deprecated legacy wiring (internal transport reuse only):
         client: AgentChatClient | None = None,
         client_resolver: Callable[[object], AgentChatClient] | None = None,
@@ -1035,6 +1070,10 @@ class RunRunner:
         self._proposal_factory = proposal_factory
         self._authority_resolver = authority_resolver
         self._envelope_loader = envelope_loader
+        self._tool_ledger = tool_ledger
+        self._checkpoint_store = checkpoint_store
+        self._attempt_store = attempt_store
+        self._context_budget_factory = context_budget_factory
         self._toolkit_factory = toolkit_factory
         self._log = log or (lambda _line: None)
         self._max_steps = max(1, min(100, int(max_steps)))
@@ -1063,6 +1102,10 @@ class RunRunner:
             raise KeyError(f"run {run_id} is not active on this server")
         event.set()
 
+    def is_active(self, run_id: UUID) -> bool:
+        """Whether a genuinely live worker currently holds this run."""
+        return run_id in self._cancel_events
+
     def start_existing(
         self,
         *,
@@ -1070,11 +1113,13 @@ class RunRunner:
         workspace: WorkspaceRecord,
         prompt: str,
     ) -> None:
-        """Start the worker for an ALREADY-prepared, ALREADY-routed run.
+        """Dispatch the worker for an ALREADY-authorized run.
 
-        Authority is validated BEFORE the run may transition to RUNNING: a
-        persisted execution envelope must exist and its workspace/prompt must
-        match the request. Without a valid envelope, execution cannot begin.
+        The RunLifecycleService performs reconcile -> recovery-eval -> authority
+        validation -> atomic workspace claim -> state transition BEFORE calling
+        this. This method only does a defense-in-depth envelope sanity check and
+        spawns the worker thread. It never reconciles mutations and never
+        transitions run status (both are the lifecycle service's authority).
         """
         if self._envelope_loader is not None:
             envelope = self._envelope_loader(run_id)
@@ -1087,7 +1132,6 @@ class RunRunner:
                 raise RunAuthorityError(
                     f"run {run_id} envelope workspace mismatch"
                 )
-        self._repository.update_run_status(run_id, status="running")
         cancel_event = threading.Event()
         self._cancel_events[run_id] = cancel_event
         thread = threading.Thread(
@@ -1111,6 +1155,45 @@ class RunRunner:
         """
         raise RunAuthorityError(
             "RunRunner.start is disabled; use prepare_run then start_existing"
+        )
+
+    def _finish_attempt(
+        self,
+        attempt_id: object | None,
+        state: str,
+        failure_class: str | None = None,
+    ) -> None:
+        if attempt_id is None or self._attempt_store is None:
+            return
+        try:
+            self._attempt_store.finish(
+                attempt_id,
+                state=state,
+                failure_class=failure_class,
+            )
+        except Exception as error:  # noqa: BLE001
+            self._log(f"attempt finish failed: {error!r}")
+
+    @staticmethod
+    def _checkpoint_from_record(record: object) -> object:
+        from .context import build_checkpoint
+
+        return build_checkpoint(
+            objective=record.objective,
+            workspace="",
+            current_task=record.current_task or "",
+            completed=record.completed_work,
+            current_failure=record.current_failure,
+            relevant_files=record.relevant_files,
+            latest_tests=record.latest_tests,
+            constraints=record.constraints,
+            next_action=record.next_action,
+            branch=record.branch,
+            head=record.head,
+            dirty_files=record.dirty_files,
+            identity_version=record.identity_version,
+            model_route=record.model,
+            pending_approvals=record.pending_approvals,
         )
 
     def _resolve_provider(self, run_id: UUID) -> CoderProvider:
@@ -1156,6 +1239,93 @@ class RunRunner:
             if self._authority_resolver is not None
             else None
         )
+        coordinator = None
+        checkpoint_persist = None
+        attempt_id = None
+        checkpoint_revision = None
+        if self._checkpoint_store is not None:
+            envelope = (
+                self._envelope_loader(run_id)
+                if self._envelope_loader is not None
+                else None
+            )
+            if envelope is not None:
+                from .context import (
+                    RunContextCoordinator,
+                    build_checkpoint,
+                    resolve_context_budget,
+                )
+
+                budget_factory = (
+                    self._context_budget_factory or resolve_context_budget
+                )
+                budget = budget_factory(envelope.provider, envelope.model)
+                latest = self._checkpoint_store.latest(run_id)
+                checkpoint = (
+                    self._checkpoint_from_record(latest)
+                    if latest is not None
+                    else build_checkpoint(
+                        objective=prompt,
+                        workspace=str(workspace.workspace_id),
+                        identity_version=envelope.identity_version,
+                        model_route=envelope.model,
+                    )
+                )
+                coordinator = RunContextCoordinator(
+                    checkpoint=checkpoint, budget=budget
+                )
+                revision = latest.revision if latest is not None else 1
+                checkpoint_revision = revision
+
+                def persist(ckpt):
+                    nonlocal revision
+                    revision += 1
+                    self._checkpoint_store.write(
+                        run_id=run_id,
+                        revision=revision,
+                        objective=ckpt.objective,
+                        identity=(
+                            envelope.identity_profile_id,
+                            envelope.identity_version,
+                            envelope.identity_hash,
+                        ),
+                        prompt_core=(
+                            envelope.prompt_core_id,
+                            envelope.prompt_core_version,
+                            envelope.prompt_core_hash,
+                        ),
+                        provider=envelope.provider,
+                        model=envelope.model,
+                        technical=(
+                            envelope.technical_profile_id,
+                            envelope.technical_profile_version,
+                            envelope.technical_profile_hash,
+                        ),
+                        current_task=ckpt.current_task,
+                        completed_work=ckpt.completed,
+                        current_failure=ckpt.current_failure,
+                        relevant_files=ckpt.relevant_files,
+                        latest_tests=ckpt.latest_tests,
+                        constraints=ckpt.constraints,
+                        next_action=ckpt.next_action,
+                        branch=ckpt.branch,
+                        head=ckpt.head,
+                        dirty_files=ckpt.dirty_files,
+                        pending_approvals=ckpt.pending_approvals,
+                    )
+                    return ckpt
+
+                checkpoint_persist = persist
+        if self._attempt_store is not None:
+            try:
+                attempt_id = self._attempt_store.begin(
+                    run_id=run_id,
+                    checkpoint_revision=checkpoint_revision,
+                    summary=prompt[:200],
+                )
+            except Exception as error:  # noqa: BLE001
+                self._log(f"run {run_id}: attempt begin failed: {error!r}")
+
         agent = CodingAgent(
             provider=provider,
             toolkit=toolkit,
@@ -1173,6 +1343,10 @@ class RunRunner:
             ),
             phase_max_tokens=self._phase_max_tokens,
             system_authority=system_authority,
+            tool_ledger=self._tool_ledger,
+            run_id=run_id,
+            context_coordinator=coordinator,
+            checkpoint_persist=checkpoint_persist,
         )
         seq_lock = threading.Lock()
         seq_counter = self._repository.max_message_seq(run_id)
@@ -1227,6 +1401,7 @@ class RunRunner:
                 error="internal agent failure",
                 reason="internal_error",
             )
+            self._finish_attempt(attempt_id, "failed", "internal_error")
             return
         finally:
             self._cancel_events.pop(run_id, None)
@@ -1302,6 +1477,11 @@ class RunRunner:
             self._log(
                 f"run {run_id}: wall-clock accounting failed: {error!r}"
             )
+        if attempt_id is not None:
+            if outcome.state in ("succeeded", "partial_success"):
+                self._finish_attempt(attempt_id, "succeeded")
+            else:
+                self._finish_attempt(attempt_id, "failed", outcome.reason)
         self._log(f"run {run_id}: finished with state {outcome.state}")
 
 

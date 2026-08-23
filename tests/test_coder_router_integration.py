@@ -107,6 +107,9 @@ class FakeRunsRepository:
     def update_run_status(self, run_id, *, status, error=None, reason="unknown"):
         return None
 
+    def claim_active(self, run_id):
+        return None
+
     def set_run_identity(self, run_id, *, profile_id, version, identity_hash):
         self.identity = {
             "profile_id": profile_id,
@@ -272,6 +275,31 @@ class FakePreparation:
 
         return PreparedRun(run_id=run.run_id, checkpoint_id=uuid4())
 
+    def load_envelope(self, run_id):
+        from types import SimpleNamespace
+
+        workspace = self._workspace
+        return SimpleNamespace(
+            run_id=run_id,
+            workspace_id=workspace.workspace_id,
+            owner_account_id=workspace.owner_account_id,
+            requested_mode="AUTO",
+            selected_tier="DEEPSEEK",
+            provider="deepseek",
+            model="deepseek-v4-flash",
+            prompt_sha256=None,
+            identity_profile_id="defendcoder-identity-v1",
+            identity_version="1",
+            identity_hash="a" * 64,
+            prompt_core_id="core",
+            prompt_core_version="1",
+            prompt_core_hash="b" * 64,
+            technical_profile_id="t",
+            technical_profile_version="1",
+            technical_profile_hash="c" * 64,
+            initial_checkpoint_revision=1,
+        )
+
 
 class FakeRepository:
     def __init__(self, workspace: Any) -> None:
@@ -302,6 +330,9 @@ class FakeRunner:
         self._run_id = run_id
         self._workspace = workspace
         self.start_existing_calls = 0
+
+    def is_active(self, run_id):
+        return False
 
     def start_existing(self, *, run_id, workspace, prompt):
         self.start_existing_calls += 1

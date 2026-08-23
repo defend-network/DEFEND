@@ -150,6 +150,15 @@ class ProductRuntimeAdapterBoundary:
         del product_id
         return dict(self._status)
 
+    def next_availability(self) -> bool:
+        """Next is a routable tier only when a runtime is known (ready,
+        retained/stopped, or starting). ABSENT/UNKNOWN/FAILED are not."""
+        return str(self._status.get("state") or "offline") in (
+            "ready",
+            "stopped",
+            "starting",
+        )
+
     def get_runtime_endpoint(self, product_id: str = "defendcoder") -> str | None:
         del product_id
         state = str(self._status.get("state") or "stopped")

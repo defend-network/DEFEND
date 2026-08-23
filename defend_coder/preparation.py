@@ -8,12 +8,20 @@ failure rolls back everything (no half-prepared queued run).
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 from typing import Any
 from uuid import UUID, uuid4
 
+from psycopg.errors import UniqueViolation
 from psycopg.rows import dict_row
 
 from .db import CoderDatabase
+
+
+def prompt_sha256(prompt: str) -> str:
+    """Server-derived canonical immutable task identity (browser cannot
+    control the trusted hash)."""
+    return hashlib.sha256(prompt.encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -27,6 +35,7 @@ class RunExecutionEnvelope:
     selected_tier: str
     provider: str
     model: str
+    prompt_sha256: str | None
     identity_profile_id: str
     identity_version: str
     identity_hash: str
@@ -77,129 +86,140 @@ class RunPreparationService:
         pc_id, pc_version, pc_hash = prompt_core
         tp_id, tp_version, tp_hash = technical
         objective_text = objective or prompt.strip()
+        task_hash = prompt_sha256(prompt)
 
         with self._db.connect() as connection:
-            with connection.transaction():
-                with connection.cursor() as cur:
-                    cur.execute(
-                        """
-                        INSERT INTO coder_runs(
-                            run_id, workspace_id, owner_account_id, prompt,
-                            status, phase, reason, requested_mode,
-                            selected_tier, selected_model, selected_provider,
-                            route_reason, identity_profile_id,
-                            identity_version, identity_hash,
-                            prompt_bundle_id, prompt_bundle_version,
-                            prompt_bundle_hash
+            try:
+                with connection.transaction():
+                    with connection.cursor() as cur:
+                        cur.execute(
+                            """
+                            INSERT INTO coder_runs(
+                                run_id, workspace_id, owner_account_id, prompt,
+                                status, phase, reason, requested_mode,
+                                selected_tier, selected_model, selected_provider,
+                                route_reason, identity_profile_id,
+                                identity_version, identity_hash,
+                                prompt_bundle_id, prompt_bundle_version,
+                                prompt_bundle_hash
+                            )
+                            VALUES (%s, %s, %s, %s, 'queued', 'queued', 'unknown',
+                                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            """,
+                            (
+                                run_id,
+                                workspace_id,
+                                owner_account_id,
+                                prompt,
+                                requested_mode,
+                                selected_tier,
+                                model,
+                                provider,
+                                reason,
+                                ip_id,
+                                ip_version,
+                                ip_hash,
+                                pc_id,
+                                pc_version,
+                                pc_hash,
+                            ),
                         )
-                        VALUES (%s, %s, %s, %s, 'queued', 'queued', 'unknown',
-                                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        """,
-                        (
-                            run_id,
-                            workspace_id,
-                            owner_account_id,
-                            prompt,
-                            requested_mode,
-                            selected_tier,
-                            model,
-                            provider,
-                            reason,
-                            ip_id,
-                            ip_version,
-                            ip_hash,
-                            pc_id,
-                            pc_version,
-                            pc_hash,
-                        ),
-                    )
-                    cur.execute(
-                        """
-                        INSERT INTO coder_run_route_history(
-                            run_id, revision, provider, model,
-                            technical_profile_id, technical_profile_version,
-                            technical_profile_hash, requested_mode, reason
+                        cur.execute(
+                            """
+                            INSERT INTO coder_run_route_history(
+                                run_id, revision, provider, model,
+                                technical_profile_id,
+                                technical_profile_version,
+                                technical_profile_hash, requested_mode, reason
+                            )
+                            VALUES (%s, 1, %s, %s, %s, %s, %s, %s, %s)
+                            """,
+                            (
+                                run_id,
+                                provider,
+                                model,
+                                tp_id,
+                                tp_version,
+                                tp_hash,
+                                requested_mode,
+                                reason,
+                            ),
                         )
-                        VALUES (%s, 1, %s, %s, %s, %s, %s, %s, %s)
-                        """,
-                        (
-                            run_id,
-                            provider,
-                            model,
-                            tp_id,
-                            tp_version,
-                            tp_hash,
-                            requested_mode,
-                            reason,
-                        ),
-                    )
-                    cur.execute(
-                        """
-                        INSERT INTO coder_run_execution_envelopes(
-                            run_id, workspace_id, owner_account_id,
-                            requested_mode, selected_tier, provider, model,
-                            identity_profile_id, identity_version,
-                            identity_hash, prompt_core_id, prompt_core_version,
-                            prompt_core_hash, technical_profile_id,
-                            technical_profile_version, technical_profile_hash,
-                            initial_checkpoint_revision
+                        cur.execute(
+                            """
+                            INSERT INTO coder_run_execution_envelopes(
+                                run_id, workspace_id, owner_account_id,
+                                requested_mode, selected_tier, provider, model,
+                                prompt_sha256, identity_profile_id,
+                                identity_version, identity_hash, prompt_core_id,
+                                prompt_core_version, prompt_core_hash,
+                                technical_profile_id,
+                                technical_profile_version,
+                                technical_profile_hash,
+                                initial_checkpoint_revision
+                            )
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                                    %s, %s, %s, %s, %s, %s, 1)
+                            """,
+                            (
+                                run_id,
+                                workspace_id,
+                                owner_account_id,
+                                requested_mode,
+                                selected_tier,
+                                provider,
+                                model,
+                                task_hash,
+                                ip_id,
+                                ip_version,
+                                ip_hash,
+                                pc_id,
+                                pc_version,
+                                pc_hash,
+                                tp_id,
+                                tp_version,
+                                tp_hash,
+                            ),
                         )
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                                %s, %s, %s, %s, %s, 1)
-                        """,
-                        (
-                            run_id,
-                            workspace_id,
-                            owner_account_id,
-                            requested_mode,
-                            selected_tier,
-                            provider,
-                            model,
-                            ip_id,
-                            ip_version,
-                            ip_hash,
-                            pc_id,
-                            pc_version,
-                            pc_hash,
-                            tp_id,
-                            tp_version,
-                            tp_hash,
-                        ),
-                    )
-                    cur.execute(
-                        """
-                        INSERT INTO coder_run_checkpoints(
-                            checkpoint_id, run_id, revision, objective,
-                            completed_work, relevant_files, latest_tests,
-                            constraints, dirty_files, pending_approvals,
-                            identity_profile_id, identity_version,
-                            identity_hash, prompt_core_id, prompt_core_version,
-                            prompt_core_hash, provider, model,
-                            technical_profile_id, technical_profile_version,
-                            technical_profile_hash
+                        cur.execute(
+                            """
+                            INSERT INTO coder_run_checkpoints(
+                                checkpoint_id, run_id, revision, objective,
+                                completed_work, relevant_files, latest_tests,
+                                constraints, dirty_files, pending_approvals,
+                                identity_profile_id, identity_version,
+                                identity_hash, prompt_core_id,
+                                prompt_core_version, prompt_core_hash,
+                                provider, model, technical_profile_id,
+                                technical_profile_version,
+                                technical_profile_hash
+                            )
+                            VALUES (%s, %s, 1, %s, '[]'::jsonb, '[]'::jsonb,
+                                    '[]'::jsonb, '[]'::jsonb, '[]'::jsonb,
+                                    '[]'::jsonb, %s, %s, %s, %s, %s, %s, %s, %s,
+                                    %s, %s, %s)
+                            """,
+                            (
+                                checkpoint_id,
+                                run_id,
+                                objective_text,
+                                ip_id,
+                                ip_version,
+                                ip_hash,
+                                pc_id,
+                                pc_version,
+                                pc_hash,
+                                provider,
+                                model,
+                                tp_id,
+                                tp_version,
+                                tp_hash,
+                            ),
                         )
-                        VALUES (%s, %s, 1, %s, '[]'::jsonb, '[]'::jsonb,
-                                '[]'::jsonb, '[]'::jsonb, '[]'::jsonb,
-                                '[]'::jsonb, %s, %s, %s, %s, %s, %s, %s, %s,
-                                %s, %s, %s)
-                        """,
-                        (
-                            checkpoint_id,
-                            run_id,
-                            objective_text,
-                            ip_id,
-                            ip_version,
-                            ip_hash,
-                            pc_id,
-                            pc_version,
-                            pc_hash,
-                            provider,
-                            model,
-                            tp_id,
-                            tp_version,
-                            tp_hash,
-                        ),
-                    )
+            except UniqueViolation:
+                raise RunPreparationError(
+                    "another run is already active for this workspace"
+                ) from None
         return PreparedRun(run_id=run_id, checkpoint_id=checkpoint_id)
 
     def load_envelope(self, run_id: UUID) -> RunExecutionEnvelope | None:
@@ -209,11 +229,11 @@ class RunPreparationService:
                     """
                     SELECT run_id, workspace_id, owner_account_id,
                            requested_mode, selected_tier, provider, model,
-                           identity_profile_id, identity_version,
-                           identity_hash, prompt_core_id, prompt_core_version,
-                           prompt_core_hash, technical_profile_id,
-                           technical_profile_version, technical_profile_hash,
-                           initial_checkpoint_revision
+                           prompt_sha256, identity_profile_id,
+                           identity_version, identity_hash, prompt_core_id,
+                           prompt_core_version, prompt_core_hash,
+                           technical_profile_id, technical_profile_version,
+                           technical_profile_hash, initial_checkpoint_revision
                     FROM coder_run_execution_envelopes
                     WHERE run_id = %s
                     """,
@@ -230,6 +250,7 @@ class RunPreparationService:
             selected_tier=row["selected_tier"],
             provider=row["provider"],
             model=row["model"],
+            prompt_sha256=row["prompt_sha256"],
             identity_profile_id=row["identity_profile_id"],
             identity_version=row["identity_version"],
             identity_hash=row["identity_hash"],

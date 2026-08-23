@@ -52,6 +52,34 @@ function routedFetch(routes: Record<string, RouteHandler>) {
     const url = String(input);
     const pattern = patterns.find((key) => url.includes(key));
     if (!pattern) {
+      // The shell refreshes git status + tool-executions on mount; default
+      // them to empty so tests don't have to route every read endpoint.
+      if (url.includes("/git/status")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            is_repo: true,
+            status: "",
+            unstaged_diff: "",
+            staged_diff: "",
+            unstaged_diff_truncated: false,
+            staged_diff_truncated: false,
+            untracked: [],
+            conflicts: [],
+            staged_count: 0,
+            unstaged_count: 0,
+            dirty: false,
+          }),
+        };
+      }
+      if (url.includes("/tool-executions")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ tool_executions: [] }),
+        };
+      }
       throw new Error(`unhandled fetch: ${url}`);
     }
     const data = await routes[pattern](init);

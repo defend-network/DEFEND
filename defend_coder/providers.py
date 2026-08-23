@@ -247,11 +247,12 @@ def sol_target(
     )
 
 
-def next_target(*, availability: bool = True, endpoint: str | None = None) -> ModelTarget:
-    """TIER_2 self-hosted Next. Availability is the RUNTIME availability;
-    the target itself is always resolvable (it may be STOPPED_RETAINED).
-    The endpoint comes from the platform runtime manager forward port, never
-    a hard-coded legacy tunnel port."""
+def next_target(*, availability: bool = False, endpoint: str | None = None) -> ModelTarget:
+    """TIER_2 self-hosted Next. Availability is the RUNTIME availability and
+    FAILS CLOSED (False) unless the product runtime manager supplies a concrete
+    healthy endpoint; STOPPED_RETAINED / UNKNOWN / ABSENT are never READY.
+    The endpoint comes from the product runtime manager forward port, never a
+    hard-coded legacy tunnel port."""
     return ModelTarget(
         tier="NEXT",
         alias=NEXT_ALIAS,

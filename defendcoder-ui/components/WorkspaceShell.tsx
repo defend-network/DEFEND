@@ -9,12 +9,17 @@ import {
   denyEscalation,
   EscalationProposal,
   fetchEscalations,
+  fetchFileContent,
+  fetchGitStatus,
   fetchRunDetail,
+  fetchRunToolExecutions,
   fetchRouting,
   FileEntry,
+  GitStatusResponse,
   listFiles,
   listRuns,
   ModelTargetPublic,
+  resumeRun,
   RunDetail,
   RunMessage,
   RunRecord,
@@ -22,9 +27,13 @@ import {
   RuntimeStatus,
   selectModel,
   sendChat,
+  ToolExecution,
 } from "@/app/workspace/load-workspace";
 import EscalationModal from "./EscalationModal";
+import FileViewer from "./FileViewer";
 import ModelSelector, { ModelMode } from "./ModelSelector";
+import RecoveryCard from "./RecoveryCard";
+import RunInspector from "./RunInspector";
 
 type Account = {
   username: string;
@@ -238,11 +247,19 @@ export default function WorkspaceShell({
   const [repoBranch, setRepoBranch] = useState("");
 
   const [activeRun, setActiveRun] = useState<RunDetail | null>(null);
+  const [inspectedRun, setInspectedRun] = useState<RunDetail | null>(null);
   const [prompt, setPrompt] = useState("");
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [filesPath, setFilesPath] = useState(".");
   const [filesError, setFilesError] = useState<string | null>(null);
   const [tab, setTab] = useState<ExecutionTab>("terminal");
+  const [viewingFile, setViewingFile] = useState<string | null>(null);
+  const [toolExecutions, setToolExecutions] = useState<ToolExecution[]>([]);
+  const [gitStatus, setGitStatus] = useState<GitStatusResponse | null>(null);
+  const [gitDirty, setGitDirty] = useState(false);
+  const [resumeBusy, setResumeBusy] = useState(false);
+  const [runHistory, setRunHistory] = useState<RunRecord[]>([]);
+  const [inspectingRunId, setInspectingRunId] = useState<string | null>(null);
 
   const [modelMode, setModelMode] = useState<ModelMode>("AUTO");
   const [currentModel, setCurrentModel] = useState<string | null>(
@@ -282,7 +299,7 @@ export default function WorkspaceShell({
       return (
         "The model runtime is " +
         (runtimeState === "failed" ? "failed" : "offline") +
-        " — start DEFENDcoder in Control Center, then retry."
+        " — DEFENDcoder model runtime is unavailable; start it from the DEFENDcoder runtime controls, then retry."
       );
     }
     if (!runtimeReady) {
@@ -322,6 +339,93 @@ export default function WorkspaceShell({
     return () => window.clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runActive, activeWorkspace?.workspace_id, activeRun?.run.run_id]);
+
+  useEffect(() => {
+    if (!activeWorkspace) {
+      setGitStatus(null);
+      setGitDirty(false);
+      return;
+    }
+    void fetchGitStatus(fetch, "/v1", activeWorkspace.workspace_id)
+      .then((g) => {
+        setGitStatus(g.is_repo ? g : null);
+        setGitDirty(g.dirty);
+      })
+      .catch(() => {
+        setGitStatus(null);
+        setGitDirty(false);
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeWorkspace?.workspace_id]);
+
+  useEffect(() => {
+    if (!activeWorkspace || !activeRun) {
+      setToolExecutions([]);
+      return;
+    }
+    void fetchRunToolExecutions(
+      fetch,
+      "/v1",
+      activeWorkspace.workspace_id,
+      activeRun.run.run_id
+    )
+      .then((list) => setToolExecutions(Array.isArray(list) ? list : []))
+      .catch(() => setToolExecutions([]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeWorkspace?.workspace_id, activeRun?.run.run_id, activeRun?.run.status]);
+
+  function openFile(workspaceId: string, path: string) {
+    setViewingFile(path);
+    void fetchFileContent(fetch, "/v1", workspaceId, path)
+      .then(() => {
+        // content is loaded inside FileViewer via load callback
+      })
+      .catch(() => setError("Unable to read file."));
+  }
+
+  async function openRun(runId: string) {
+    if (!activeWorkspace) return;
+    setInspectingRunId(runId);
+    try {
+      const detail = await fetchRunDetail(
+        fetch,
+        "/v1",
+        activeWorkspace.workspace_id,
+        runId
+      );
+      // Historical inspection is READ-ONLY: it never replaces the
+      // operational activeRun (which drives resume/model-select/escalation).
+      setInspectedRun(detail);
+    } catch (cause) {
+      setError(
+        cause instanceof ApiError ? cause.message : "Unable to load run."
+      );
+    }
+  }
+
+  async function onResume() {
+    if (!activeWorkspace || !activeRun) return;
+    setResumeBusy(true);
+    try {
+      const csrf = window.sessionStorage.getItem("defendcoder_csrf");
+      await resumeRun(
+        fetch,
+        "/v1",
+        activeWorkspace.workspace_id,
+        activeRun.run.run_id,
+        csrf
+      );
+      setError(null);
+    } catch (cause) {
+      setError(
+        cause instanceof ApiError
+          ? cause.message
+          : "Unable to resume the run."
+      );
+    } finally {
+      setResumeBusy(false);
+    }
+  }
 
   async function refreshFiles(workspaceId: string, path: string) {
     try {
@@ -520,9 +624,12 @@ export default function WorkspaceShell({
     setFiles([]);
     setFilesPath(".");
     setFilesError(null);
+    setInspectingRunId(null);
+    setInspectedRun(null);
 
     try {
       const runs = await listRuns(fetch, "/v1", workspaceId);
+      setRunHistory(runs);
       if (runs.length > 0) {
         const latest = runs[0];
         const detail = await fetchRunDetail(
@@ -575,7 +682,7 @@ export default function WorkspaceShell({
       } else if (cause instanceof ApiError && cause.status === 503) {
         setError(
           "Agent execution is not connected. Start the model runtime " +
-            "in Control Center, then retry."
+            "using the DEFENDcoder runtime controls, then retry."
         );
       } else {
         setError("Unable to start the agent run. Please try again.");
@@ -724,8 +831,10 @@ export default function WorkspaceShell({
     }
   }
 
-  const userPrompt = promptForRun(activeRun?.run);
-  const conversation = activeRun ? activeRun.messages : [];
+  const inspected = inspectedRun ?? activeRun;
+  const isInspecting = inspectedRun !== null;
+  const userPrompt = promptForRun(inspected?.run);
+  const conversation = inspected ? inspected.messages : [];
   const changedFiles = changedFileHints(conversation);
 
   const terminalMessages = conversation.filter(
@@ -769,7 +878,7 @@ export default function WorkspaceShell({
       return "Select or create a workspace to begin.";
     }
     if (runtimeState === "offline" || runtimeState === "failed") {
-      return "The model runtime is " + runtimeState + " — start it in Control Center.";
+      return "The model runtime is " + runtimeState + " — start it from the DEFENDcoder runtime controls.";
     }
     if (!runtimeReady) {
       return "The model runtime is starting — wait for READY.";
@@ -1012,6 +1121,37 @@ export default function WorkspaceShell({
             </div>
           </section>
 
+          {activeWorkspace && runHistory.length > 0 ? (
+            <section className="run-history-section">
+              <h3>Run history</h3>
+              <ul className="run-history-list">
+                {runHistory.map((run) => (
+                  <li key={run.run_id}>
+                    <button
+                      type="button"
+                      className={
+                        inspectingRunId === run.run_id
+                          ? "run-history-item-active"
+                          : ""
+                      }
+                      onClick={() => void openRun(run.run_id)}
+                    >
+                      <span className="run-history-id">
+                        {run.run_id.slice(0, 8)}…
+                      </span>
+                      <span className="run-history-status">
+                        {run.status}
+                      </span>
+                      <span className="run-history-prompt">
+                        {run.prompt.slice(0, 60)}
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
+
           {error ? (
             <div className="workspace-error" role="alert">
               {error}
@@ -1100,19 +1240,42 @@ export default function WorkspaceShell({
               <>
                 <div className="run-banner">
                   <span className="run-status-chip">
-                    {runStatusLabel(activeRun.run.status)}
+                    {runStatusLabel(inspected!.run.status)}
                   </span>
                   <span className="run-prompt-text">{userPrompt}</span>
                   {!runActive &&
                     ["failed", "partial_success", "cancelled"].includes(
-                      activeRun.run.status
+                      inspected!.run.status
                     ) &&
-                    runReasonLabel(activeRun.run.reason) && (
+                    runReasonLabel(inspected!.run.reason) && (
                       <span className="run-reason">
-                        {runReasonLabel(activeRun.run.reason)}
+                        {runReasonLabel(inspected!.run.reason)}
                       </span>
                     )}
+                  {!isInspecting &&
+                    !runActive &&
+                    ["succeeded", "partial_success", "failed", "cancelled"].includes(
+                      activeRun.run.status
+                    ) && (
+                      <button
+                        type="button"
+                        className="resume-run"
+                        onClick={() => void onResume()}
+                        disabled={resumeBusy}
+                      >
+                        {resumeBusy ? "Resuming…" : "Resume"}
+                      </button>
+                    )}
                 </div>
+
+                <RecoveryCard executions={toolExecutions} />
+
+                {inspectingRunId && activeWorkspace ? (
+                  <RunInspector
+                    workspaceId={activeWorkspace.workspace_id}
+                    runId={inspectingRunId}
+                  />
+                ) : null}
 
                 {conversation.length === 0 ? (
                   <div className="empty-agent-state">
@@ -1238,6 +1401,21 @@ export default function WorkspaceShell({
             ) : null}
           </div>
 
+          {viewingFile && activeWorkspace ? (
+            <FileViewer
+              path={viewingFile}
+              load={() =>
+                fetchFileContent(
+                  fetch,
+                  "/v1",
+                  activeWorkspace.workspace_id,
+                  viewingFile
+                )
+              }
+              onClose={() => setViewingFile(null)}
+            />
+          ) : null}
+
           <div className="changed-files">
             {!activeWorkspace ? (
               <p className="muted">
@@ -1284,7 +1462,18 @@ export default function WorkspaceShell({
                             {entry.name}/
                           </button>
                         ) : (
-                          <span className="file-entry">{entry.name}</span>
+                          <button
+                            type="button"
+                            className="file-entry"
+                            onClick={() =>
+                              openFile(
+                                activeWorkspace.workspace_id,
+                                joinPath(filesPath, entry.name)
+                              )
+                            }
+                          >
+                            {entry.name}
+                          </button>
                         )}
                       </li>
                     ))
@@ -1336,6 +1525,8 @@ export default function WorkspaceShell({
               logMessages={logMessages}
               run={activeRun?.run ?? null}
               changedFiles={changedFiles}
+              gitStatus={gitStatus}
+              gitDirty={gitDirty}
             />
           </div>
         </section>
@@ -1368,6 +1559,8 @@ function OutputPane({
   logMessages,
   run,
   changedFiles,
+  gitStatus,
+  gitDirty,
 }: {
   tab: ExecutionTab;
   terminalMessages: RunMessage[];
@@ -1376,6 +1569,8 @@ function OutputPane({
   logMessages: RunMessage[];
   run: RunRecord | null;
   changedFiles: string[];
+  gitStatus: GitStatusResponse | null;
+  gitDirty: boolean;
 }) {
   if (tab === "terminal") {
     return <MessageList messages={terminalMessages} empty="No terminal output yet." />;
@@ -1386,6 +1581,35 @@ function OutputPane({
   if (tab === "diff") {
     if (diffMessages.length > 0) {
       return <MessageList messages={diffMessages} empty="No diff output yet." />;
+    }
+    if (
+      gitStatus &&
+      (gitStatus.dirty ||
+        gitStatus.staged_diff ||
+        gitStatus.unstaged_diff ||
+        gitStatus.untracked.length > 0 ||
+        gitStatus.conflicts.length > 0)
+    ) {
+      const g = gitStatus;
+      const parts: string[] = [];
+      if (g.staged_diff) {
+        parts.push("STAGED CHANGES (git diff --cached):\n" + g.staged_diff);
+        if (g.staged_diff_truncated) parts.push("[staged diff truncated]");
+      }
+      if (g.unstaged_diff) {
+        parts.push("UNSTAGED CHANGES (git diff):\n" + g.unstaged_diff);
+        if (g.unstaged_diff_truncated) parts.push("[unstaged diff truncated]");
+      }
+      if (g.untracked.length > 0) {
+        parts.push("UNTRACKED FILES:\n" + g.untracked.map((p) => `  ${p}`).join("\n"));
+      }
+      if (g.conflicts.length > 0) {
+        parts.push("CONFLICTS:\n" + g.conflicts.map((p) => `  ${p}`).join("\n"));
+      }
+      return <pre>{parts.join("\n\n")}</pre>;
+    }
+    if (gitDirty === false && changedFiles.length === 0) {
+      return <pre>Working tree is clean; no uncommitted changes.</pre>;
     }
     if (changedFiles.length > 0) {
       return (

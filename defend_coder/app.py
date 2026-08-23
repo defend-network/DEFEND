@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 import os
 from pathlib import Path
 import secrets
+import subprocess
 import threading
 from typing import Callable
 from uuid import UUID
@@ -22,7 +23,16 @@ from .config import CoderSettings
 from .credentials import CredentialStore
 from .db import CoderDatabase
 from .identity import default_identity_profile
+from .lifecycle import (
+    EnvelopeValidationError,
+    NotResumableError,
+    RecoveryRequiredError,
+    RunConflictError,
+    RunLifecycleError,
+    RunLifecycleService,
+)
 from .preparation import RunPreparationService
+from .tool_ledger import ToolLedgerError
 from .provider_adapters import CoderProviderFactory
 from .providers import (
     NEXT_MODEL,
@@ -113,11 +123,16 @@ class CredentialRequest(BaseModel):
     api_key: str = Field(min_length=1, max_length=4096)
 
 
+class RecoveryRequest(BaseModel):
+    resolution: str = Field(min_length=1, max_length=64)
+    note: str | None = Field(default=None, max_length=2000)
+
+
 def _default_secret_store() -> object:
     """Platform DPAPI secret store loader (defendcoder product)."""
     from pathlib import Path as _Path
 
-    from defend_control.secrets import DpapiSecretStore
+    from shared_platform.dpapi import DpapiSecretStore
 
     local = os.environ.get("LOCALAPPDATA") or "."
     return DpapiSecretStore(_Path(local) / "DEFEND" / "secrets.dpapi")
@@ -222,6 +237,82 @@ def _message_dict(message: object) -> dict[str, object]:
     return result
 
 
+def _git_snapshot(root: Path) -> dict[str, object]:
+    """Read-only git truth from the workspace root.
+
+    Distinguishes unstaged/staged/untracked/conflict state server-side so the
+    UI never fabricates a changed-file list. Diffs are bounded with explicit
+    truncation flags.
+    """
+    if not (root / ".git").exists():
+        return {
+            "is_repo": False,
+            "status": "",
+            "unstaged_diff": "",
+            "staged_diff": "",
+            "untracked": [],
+            "conflicts": [],
+            "dirty": False,
+        }
+
+    def _run(args: list[str]) -> str | None:
+        try:
+            result = subprocess.run(
+                ["git", *args],
+                cwd=str(root),
+                capture_output=True,
+                text=True,
+                errors="replace",
+                timeout=30,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return None
+        if result.returncode != 0:
+            return None
+        return result.stdout
+
+    short = _run(["status", "--porcelain"]) or ""
+    lines = [ln for ln in short.splitlines() if ln.strip()]
+
+    untracked: list[str] = []
+    conflicts: list[str] = []
+    staged_count = 0
+    unstaged_count = 0
+    for line in lines:
+        x = line[:1]
+        y = line[1:2]
+        path = line[3:].strip()
+        if x == "?" and y == "?":
+            untracked.append(path)
+            continue
+        # Conflict markers: U in either column, or AA/DD.
+        if x == "U" or y == "U" or (x == "A" and y == "A") or (x == "D" and y == "D"):
+            conflicts.append(path)
+        if x not in (" ", "?"):
+            staged_count += 1
+        if y not in (" ", "?"):
+            unstaged_count += 1
+
+    unstaged = _run(["diff"]) or ""
+    staged = _run(["diff", "--cached"]) or ""
+    unstaged_truncated = len(unstaged) > 64 * 1024
+    staged_truncated = len(staged) > 64 * 1024
+
+    return {
+        "is_repo": True,
+        "status": short,
+        "unstaged_diff": unstaged[: 64 * 1024],
+        "staged_diff": staged[: 64 * 1024],
+        "unstaged_diff_truncated": unstaged_truncated,
+        "staged_diff_truncated": staged_truncated,
+        "untracked": untracked,
+        "conflicts": conflicts,
+        "staged_count": staged_count,
+        "unstaged_count": unstaged_count,
+        "dirty": bool(lines),
+    }
+
+
 def build_coder_app(
     *,
     settings: CoderSettings,
@@ -238,6 +329,7 @@ def build_coder_app(
     # Router integration (additive; defaults preserve legacy behavior).
     credentials: object | None = None,
     runtime_adapter: object | None = None,
+    runtime_manager: object | None = None,
     model_selector: ModelSelector | None = None,
     identity_registry: IdentityRegistry | None = None,
     prompt_registry: PromptBundleRegistry | None = None,
@@ -245,6 +337,9 @@ def build_coder_app(
     provider_factory: object | None = None,
     technical_registry: object | None = None,
     preparation: object | None = None,
+    attempt_store: object | None = None,
+    checkpoint_store: object | None = None,
+    tool_ledger: object | None = None,
 ) -> FastAPI:
     idle_timeout_seconds = (
         settings.idle_timeout_seconds
@@ -313,7 +408,18 @@ def build_coder_app(
     _credentials = credentials or CredentialStore(
         store_loader=_default_secret_store
     )
-    _runtime_adapter = runtime_adapter or ProductRuntimeAdapterBoundary()
+    # Runtime authority: the concrete product manager is the production
+    # authority. ProductRuntimeAdapterBoundary is a deterministic TEST fake and
+    # is used only when a test explicitly injects it; the production default
+    # is the fail-closed concrete manager (never manufactures READY).
+    if runtime_manager is not None:
+        _runtime_manager = runtime_manager
+    elif runtime_adapter is not None:
+        _runtime_manager = runtime_adapter
+    else:
+        from .runtime_manager import CoderRuntimeManager
+
+        _runtime_manager = CoderRuntimeManager()
     _selector = model_selector or ModelSelector()
     _identity_registry = identity_registry or IdentityRegistry()
     if _identity_registry.active_key is None:
@@ -330,15 +436,33 @@ def build_coder_app(
     _provider_factory = provider_factory or CoderProviderFactory(_credentials)
     _technical_registry = technical_registry or ProviderTechnicalRegistry()
     _preparation = preparation or RunPreparationService(db)
+    _attempt_store = attempt_store
+    _checkpoint_store = checkpoint_store
+    _tool_ledger = tool_ledger
+    _lifecycle = RunLifecycleService(
+        runs=runs_repository,
+        preparation=_preparation,
+        tool_ledger=_tool_ledger,
+        runner=runner,
+    )
 
     def _live_targets() -> dict[str, ModelTarget]:
-        """Targets keyed by MODEL ID with LIVE credential availability."""
+        """Targets keyed by MODEL ID with LIVE availability.
+
+        DeepSeek/Sol availability comes from credentials. NEXT availability
+        comes from the product runtime manager (fail-closed): READY only when
+        the manager reports a concrete healthy intended endpoint, never
+        hardcoded True.
+        """
         deepseek = deepseek_target(
             availability=_credentials.configured("deepseek")
         )
         return {
             deepseek.model_id: deepseek,
-            NEXT_MODEL: next_target(availability=True),
+            NEXT_MODEL: next_target(
+                availability=_runtime_manager.next_availability(),
+                endpoint=_runtime_manager.get_runtime_endpoint(),
+            ),
             SOL_MODEL: sol_target(
                 availability=_credentials.configured("sol")
             ),
@@ -372,6 +496,22 @@ def build_coder_app(
             raise HTTPException(status_code=404, detail="run not found")
         return detail
 
+    def _require_actionable(run: object) -> None:
+        """Reject routing/mutation on a non-actionable (terminal) run.
+
+        A historical/terminal run must not become mutable merely because it
+        was opened in the UI; routing mutation is legal only for actionable
+        run states (queued/running/resumable failed/partial).
+        """
+        if getattr(run, "status", None) in ("succeeded", "cancelled"):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"run is {run.status}; routing mutation is not allowed "
+                    "on a terminal run"
+                ),
+            )
+
     def _resume_same_run(
         detail: RunDetail,
         workspace_id: str,
@@ -380,25 +520,17 @@ def build_coder_app(
     ) -> None:
         """Continue the SAME run after an owner escalation choice.
 
-        Persists route change first (done by the caller), transitions to
-        resuming/running, and re-dispatches the worker on the same run_id.
-        The per-run RoutingAgentClient resolves the CURRENT routing before
-        the next generation call, so the approved provider is actually used.
+        Persists route change first (done by the caller), then re-dispatches
+        the worker through the single authoritative lifecycle (reconcile ->
+        recovery-eval -> authority validation -> atomic claim -> dispatch).
         """
         workspace = owned_workspace(account, workspace_id)
         runs_repository.update_run_phase(UUID(run_id), "resuming")
-        runs_repository.update_run_status(
-            UUID(run_id),
-            status="running",
-            error=None,
-            reason="unknown",
+        _lifecycle.start(
+            run_id=UUID(run_id),
+            workspace=workspace,
+            account_id=account.account_id,
         )
-        if runner is not None:
-            runner.start_existing(
-                run_id=UUID(run_id),
-                workspace=workspace,
-                prompt=detail.prompt,
-            )
 
     def _resolve_targets_public() -> dict[str, object]:
         return {
@@ -593,10 +725,25 @@ def build_coder_app(
         account = current_account(request)
         require_csrf(request)
 
+        # Filesystem authority: consumers get a server-authoritative root;
+        # admins may select a root only inside the configured admin root.
+        if account.role == "admin":
+            try:
+                root = workspace_service.validate_admin_root(
+                    payload.workspace_root
+                )
+            except WorkspaceAccessError as error:
+                raise HTTPException(status_code=400, detail=str(error)) from None
+        else:
+            root = workspace_service.allocate_consumer_root(
+                account.account_id,
+                payload.name,
+            )
+
         workspace = repository.create_workspace(
             owner_account_id=account.account_id,
             name=payload.name,
-            workspace_root=payload.workspace_root,
+            workspace_root=root,
             repository_url=payload.repository_url,
             default_branch=payload.default_branch,
         )
@@ -791,12 +938,18 @@ def build_coder_app(
                 detail=f"run preparation failed: {type(error).__name__}",
             ) from None
 
-        # ONLY NOW start execution on the persisted, complete envelope.
-        runner.start_existing(
-            run_id=prepared.run_id,
-            workspace=workspace,
-            prompt=payload.prompt,
-        )
+        # ONLY NOW start execution through the single authoritative lifecycle
+        # (reconcile -> recovery-eval -> authority validation -> atomic claim
+        # -> dispatch). The prepare_run INSERT already atomically reserved the
+        # workspace's execution authority (partial unique index).
+        try:
+            _lifecycle.start(
+                run_id=prepared.run_id,
+                workspace=workspace,
+                account_id=account.account_id,
+            )
+        except RunLifecycleError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from None
 
         run = runs_repository.get_run(prepared.run_id)
         return {
@@ -841,6 +994,103 @@ def build_coder_app(
             ) from None
         return {"cancelled": True}
 
+    @app.post("/v1/workspaces/{workspace_id}/runs/{run_id}/resume")
+    def resume_run(
+        workspace_id: str,
+        run_id: str,
+        request: Request,
+    ) -> dict[str, object]:
+        account = current_account(request)
+        require_csrf(request)
+        workspace = owned_workspace(account, workspace_id)
+        parsed_run_id = UUID(run_id)
+        if runner is None:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "agent execution is not connected; the model runtime "
+                    "must be started first"
+                ),
+            )
+        # Single authoritative resume flow: reconcile -> recovery-eval ->
+        # authority validation -> atomic claim -> dispatch. Recovery and
+        # resumability gates are enforced here (fail closed, no worker on
+        # any failure).
+        try:
+            result = _lifecycle.start(
+                run_id=parsed_run_id,
+                workspace=workspace,
+                account_id=account.account_id,
+            )
+        except RecoveryRequiredError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from None
+        except NotResumableError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from None
+        except RunConflictError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from None
+        except EnvelopeValidationError as error:
+            raise HTTPException(status_code=403, detail=str(error)) from None
+        except RunLifecycleError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from None
+        run = runs_repository.get_run(parsed_run_id)
+        return {"run": _run_dict(run), "resumed": result.resumed}
+
+    @app.post(
+        "/v1/workspaces/{workspace_id}/runs/{run_id}/recovery/"
+        "{execution_id}/resolve"
+    )
+    def resolve_recovery(
+        workspace_id: str,
+        run_id: str,
+        execution_id: str,
+        payload: RecoveryRequest,
+        request: Request,
+    ) -> dict[str, object]:
+        account = current_account(request)
+        require_csrf(request)
+        workspace = owned_workspace(account, workspace_id)
+        parsed_run_id = UUID(run_id)
+        run = runs_repository.get_run(parsed_run_id)
+        if run is None or run.workspace_id != workspace.workspace_id:
+            raise HTTPException(status_code=404, detail="run not found")
+        if _tool_ledger is None:
+            raise HTTPException(
+                status_code=503,
+                detail="tool ledger is not connected",
+            )
+        resolution = payload.resolution.strip().upper()
+        executions = _tool_ledger.list_for_run(parsed_run_id)
+        target = next(
+            (e for e in executions if str(e.execution_id) == execution_id),
+            None,
+        )
+        if target is None:
+            raise HTTPException(status_code=404, detail="execution not found")
+        try:
+            resulting = _tool_ledger.resolve_recovery(
+                run_id=parsed_run_id,
+                execution_id=target.execution_id,
+                tool_call_id=target.tool_call_id,
+                tool_name=target.tool_name,
+                owner_account_id=account.account_id,
+                resolution=resolution,
+                note=payload.note,
+            )
+        except ToolLedgerError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from None
+        if resolution == "ABANDON_RUN":
+            runs_repository.update_run_status(
+                parsed_run_id,
+                status="cancelled",
+                error="abandoned after UNKNOWN_AFTER_INTERRUPTION recovery",
+                reason="user_cancel",
+            )
+        return {
+            "execution_id": execution_id,
+            "resolution": resolution,
+            "resulting_state": resulting,
+        }
+
     @app.get("/v1/workspaces/{workspace_id}/runs/{run_id}/routing")
     def get_run_routing(
         workspace_id: str,
@@ -854,7 +1104,7 @@ def build_coder_app(
             "identity": PRODUCT_IDENTITY,
             "routing": routing.as_public_dict() if routing is not None else None,
             "targets": _resolve_targets_public(),
-            "runtime": _runtime_adapter.runtime_status("defendcoder"),
+            "runtime": _runtime_manager.runtime_status("defendcoder"),
         }
 
     @app.post("/v1/workspaces/{workspace_id}/runs/{run_id}/model")
@@ -865,7 +1115,9 @@ def build_coder_app(
         request: Request,
     ) -> dict[str, object]:
         account = current_account(request)
-        _owned_run(account, workspace_id, run_id)
+        require_csrf(request)
+        detail = _owned_run(account, workspace_id, run_id)
+        _require_actionable(detail)
         mode = (payload.requested_mode or "AUTO").strip().upper()
         if mode not in ("AUTO", "DEEPSEEK", "NEXT", "SOL"):
             raise HTTPException(
@@ -894,7 +1146,7 @@ def build_coder_app(
                 status_code=400,
                 detail=f"{route.tier.value} is not currently configured",
             )
-        runtime = _runtime_adapter.runtime_status("defendcoder")
+        runtime = _runtime_manager.runtime_status("defendcoder")
         next_step = None
         if route.tier == ModelTier.NEXT and route.target.requires_external_runtime:
             next_step = (
@@ -939,8 +1191,10 @@ def build_coder_app(
         request: Request,
     ) -> dict[str, object]:
         account = current_account(request)
+        require_csrf(request)
         _require_owner(account)
         detail = _owned_run(account, workspace_id, run_id)
+        _require_actionable(detail)
         proposals = runs_repository.list_escalation_proposals(UUID(run_id))
         proposal = next(
             (
@@ -980,7 +1234,7 @@ def build_coder_app(
                 detail=f"{to_model} is not currently configured",
             )
         if to_tier == ModelTier.NEXT:
-            runtime_state = _runtime_adapter.runtime_status("defendcoder")
+            runtime_state = _runtime_manager.runtime_status("defendcoder")
             retained = bool(
                 runtime_state.get("instance_id")
                 or runtime_state.get("provider_instance_state")
@@ -992,7 +1246,7 @@ def build_coder_app(
             elif runtime_state.get("state") == "stopped" and retained:
                 # Resume the retained instance (owner-authorized escalation).
                 try:
-                    _runtime_adapter.start_runtime(
+                    _runtime_manager.start_runtime(
                         "defendcoder", authorize_resume=True
                     )
                 except RuntimeResumeDenied as error:
@@ -1030,7 +1284,7 @@ def build_coder_app(
         _resume_same_run(detail, workspace_id, run_id, account)
         return {
             "routing": runs_repository.get_run_routing(UUID(run_id)).as_public_dict(),
-            "runtime": _runtime_adapter.runtime_status("defendcoder"),
+            "runtime": _runtime_manager.runtime_status("defendcoder"),
             "state": "resuming",
         }
 
@@ -1045,8 +1299,10 @@ def build_coder_app(
         request: Request,
     ) -> dict[str, object]:
         account = current_account(request)
+        require_csrf(request)
         _require_owner(account)
         detail = _owned_run(account, workspace_id, run_id)
+        _require_actionable(detail)
         proposals = runs_repository.list_escalation_proposals(UUID(run_id))
         if not any(item["proposal_id"] == proposal_id for item in proposals):
             raise HTTPException(status_code=404, detail="proposal not found")
@@ -1202,6 +1458,182 @@ def build_coder_app(
                 for message in detail.messages
             ],
         }
+
+    @app.get("/v1/workspaces/{workspace_id}/runs/{run_id}/attempts")
+    def run_attempts(workspace_id: str, run_id: str, request: Request):
+        account = current_account(request)
+        owned_run(account, workspace_id, run_id)
+        if _attempt_store is None:
+            return {"attempts": []}
+        attempts = _attempt_store.list(UUID(run_id))
+        return {
+            "attempts": [
+                {
+                    "attempt_id": str(a.attempt_id),
+                    "checkpoint_revision": a.checkpoint_revision,
+                    "summary": a.summary,
+                    "failure_class": a.failure_class,
+                    "relevant_files": list(a.relevant_files),
+                    "test_summary": a.test_summary,
+                    "tool_refs": list(a.tool_refs),
+                    "state": a.state,
+                }
+                for a in attempts
+            ]
+        }
+
+    @app.get("/v1/workspaces/{workspace_id}/runs/{run_id}/checkpoints")
+    def run_checkpoints(workspace_id: str, run_id: str, request: Request):
+        account = current_account(request)
+        owned_run(account, workspace_id, run_id)
+        if _checkpoint_store is None:
+            return {"checkpoints": []}
+        checkpoints = _checkpoint_store.list(UUID(run_id))
+        return {
+            "checkpoints": [
+                {
+                    "checkpoint_id": str(c.checkpoint_id),
+                    "revision": c.revision,
+                    "objective": c.objective,
+                    "current_task": c.current_task,
+                    "completed_work": list(c.completed_work),
+                    "current_failure": c.current_failure,
+                    "relevant_files": list(c.relevant_files),
+                    "latest_tests": list(c.latest_tests),
+                    "provider": c.provider,
+                    "model": c.model,
+                    "identity_version": c.identity_version,
+                    "prompt_core_version": c.prompt_core_version,
+                    "technical_profile_version": c.technical_profile_version,
+                }
+                for c in checkpoints
+            ]
+        }
+
+    @app.get("/v1/workspaces/{workspace_id}/runs/{run_id}/tool-executions")
+    def run_tool_executions(workspace_id: str, run_id: str, request: Request):
+        account = current_account(request)
+        owned_run(account, workspace_id, run_id)
+        if _tool_ledger is None:
+            return {"tool_executions": []}
+        executions = _tool_ledger.list_for_run(UUID(run_id))
+        return {
+            "tool_executions": [
+                {
+                    "execution_id": str(e.execution_id),
+                    "tool_call_id": e.tool_call_id,
+                    "tool_name": e.tool_name,
+                    "argument_hash": e.argument_hash,
+                    "mutation_class": e.mutation_class,
+                    "state": e.state,
+                    "result_ref": e.result_ref,
+                    "started_at": (
+                        e.started_at.isoformat()
+                        if e.started_at is not None
+                        else None
+                    ),
+                    "finished_at": (
+                        e.finished_at.isoformat()
+                        if e.finished_at is not None
+                        else None
+                    ),
+                }
+                for e in executions
+            ]
+        }
+
+    @app.get("/v1/workspaces/{workspace_id}/runs/{run_id}/telemetry")
+    def run_telemetry(workspace_id: str, run_id: str, request: Request):
+        account = current_account(request)
+        owned_run(account, workspace_id, run_id)
+        calls = runs_repository.model_calls_for_run(UUID(run_id))
+        aggregated = runs_repository.aggregate_model_calls(UUID(run_id))
+        return {
+            "aggregate": aggregated,
+            "model_calls": [
+                {
+                    "step": c.step,
+                    "phase": c.phase,
+                    "input_tokens": c.input_tokens,
+                    "output_tokens": c.output_tokens,
+                    "total_tokens": c.total_tokens,
+                    "finish_reason": c.finish_reason,
+                    "tool_calls_requested": c.tool_calls_requested,
+                    "request_roundtrip_seconds": c.request_roundtrip_seconds,
+                    "tokens_per_second": c.tokens_per_second,
+                }
+                for c in calls
+            ],
+        }
+
+    @app.get("/v1/workspaces/{workspace_id}/files/content")
+    def file_content(
+        workspace_id: str,
+        request: Request,
+        path: str = ".",
+    ) -> dict[str, object]:
+        account = current_account(request)
+        workspace = owned_workspace(account, workspace_id)
+        try:
+            target = workspace_service.resolve_owned_path(
+                account.account_id,
+                workspace.workspace_id,
+                path,
+            )
+        except WorkspaceAccessError as error:
+            raise HTTPException(
+                status_code=400,
+                detail=str(error),
+            ) from None
+
+        if not target.is_file():
+            raise HTTPException(
+                status_code=400,
+                detail="path is not a file",
+            )
+        if target.stat().st_size > 256 * 1024:
+            raise HTTPException(
+                status_code=413,
+                detail="file too large to display",
+            )
+        try:
+            data = target.read_bytes()
+        except OSError as error:
+            raise HTTPException(
+                status_code=500,
+                detail="could not read file",
+            ) from error
+        if b"\x00" in data[:8192]:
+            return {
+                "path": str(path),
+                "binary": True,
+                "content": None,
+                "size": len(data),
+            }
+        try:
+            content = data.decode("utf-8")
+        except UnicodeDecodeError:
+            return {
+                "path": str(path),
+                "binary": True,
+                "content": None,
+                "size": len(data),
+            }
+        return {
+            "path": str(path),
+            "binary": False,
+            "content": content,
+            "size": len(data),
+        }
+
+    @app.get("/v1/workspaces/{workspace_id}/git/status")
+    def git_status(workspace_id: str, request: Request) -> dict[str, object]:
+        account = current_account(request)
+        workspace = owned_workspace(account, workspace_id)
+        root = workspace_service.resolve_owned_path(
+            account.account_id, workspace.workspace_id, "."
+        )
+        return _git_snapshot(root)
 
     @app.get("/v1/workspaces/{workspace_id}/files")
     def list_files(

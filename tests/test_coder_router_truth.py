@@ -622,6 +622,7 @@ class TestEscalationLifecycle:
 
         from test_coder_router_integration import (
             FakeAuth,
+            FakePreparation,
             FakeRepository,
             FakeRunsRepository,
             FakeRunner,
@@ -685,6 +686,7 @@ class TestEscalationLifecycle:
             repository=FakeRepository(workspace),
             runs_repository=runs,
             runner=runner,
+            preparation=FakePreparation(runs, workspace),
             configured_root=Path("C:/fake/root"),
             idle_timeout_seconds=0,
             runtime_adapter=runtime,

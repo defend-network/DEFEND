@@ -49,7 +49,7 @@ def prep(db) -> RunPreparationService:
     return RunPreparationService(db)
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def seeded(db):
     """Create one real account + workspace (FK requirements)."""
     account_id = uuid4()

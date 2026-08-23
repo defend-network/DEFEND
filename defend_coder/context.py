@@ -220,42 +220,113 @@ def compose_checkpoint_context(
     )
 
 
+def _message_payload(message: Mapping[str, Any]) -> str:
+    """Serialized payload actually sent to a provider for one message.
+
+    Includes tool-call names + arguments (assistant) and tool results (tool
+    role), so a giant apply_patch/run_command argument is never counted as
+    ~zero merely because ``content`` is empty.
+    """
+    parts: list[str] = []
+    content = message.get("content")
+    if isinstance(content, str):
+        parts.append(content)
+    elif isinstance(content, list):
+        for part in content:
+            if isinstance(part, Mapping) and part.get("text"):
+                parts.append(str(part["text"]))
+    tool_calls = message.get("tool_calls")
+    if isinstance(tool_calls, list):
+        for call in tool_calls:
+            if isinstance(call, Mapping):
+                fn = call.get("function") if isinstance(call.get("function"), Mapping) else {}
+                parts.append(str(fn.get("name", "")))
+                parts.append(str(fn.get("arguments", "")))
+    if message.get("role") == "tool":
+        parts.append(str(message.get("tool_call_id", "")))
+    return "\n".join(parts)
+
+
 def _estimate_tokens(messages: Iterable[Mapping[str, Any]]) -> int:
-    """Deterministic token estimate (char/4 heuristic, no tokenizer)."""
+    """Deterministic conservative token estimate (char/4, no tokenizer)."""
     total = 0
     for message in messages:
-        text = ""
         if isinstance(message, Mapping):
-            content = message.get("content")
-            if isinstance(content, str):
-                text = content
-            elif isinstance(content, list):
-                text = " ".join(
-                    part.get("text", "")
-                    for part in content
-                    if isinstance(part, Mapping)
-                )
-        total += max(1, len(text) // 4)
+            total += max(1, len(_message_payload(message)) // 4)
+        else:
+            total += max(1, len(str(message)) // 4)
+    return total
+
+
+def estimate_tool_schemas(tools: Iterable[Any]) -> int:
+    """Approximate request cost of the tool schema block (repeated per call)."""
+    import json
+
+    total = 0
+    for tool in tools:
+        try:
+            total += max(1, len(json.dumps(tool, sort_keys=True, default=str)) // 4)
+        except Exception:  # noqa: BLE001
+            total += max(1, len(str(tool)) // 4)
     return total
 
 
 @dataclass(frozen=True)
+class ContextBudgetConfig:
+    """Per-provider/model context contract (configured, not measured)."""
+
+    context_window_tokens: int
+    output_reserve_tokens: int = 8192
+    protocol_reserve_tokens: int = 512
+    compaction_ratio: float = 0.8
+    measured: bool = False
+
+
+#: Conservative configured context windows (NOT measured per provider).
+_CONTEXT_WINDOW_TOKENS: dict[str, int] = {
+    "deepseek": 131_072,
+    "self_hosted": 131_072,
+    "openai": 200_000,
+}
+_DEFAULT_CONTEXT_WINDOW_TOKENS = 131_072
+
+
+def resolve_context_budget(
+    provider: str,
+    model: str | None = None,
+    *,
+    output_reserve_tokens: int = 8192,
+) -> ContextBudgetManager:
+    window = _CONTEXT_WINDOW_TOKENS.get(
+        (provider or "").lower(), _DEFAULT_CONTEXT_WINDOW_TOKENS
+    )
+    return ContextBudgetManager(
+        limit_tokens=window,
+        output_reserve_tokens=output_reserve_tokens,
+        protocol_reserve_tokens=512,
+        compaction_ratio=0.8,
+        measured=False,
+    )
+
+
+@dataclass(frozen=True)
 class ContextBudgetDecision:
-    """Outcome of a budget check: run as-is, or compact first."""
+    """Outcome of a budget check: run, compact, or hard-fail."""
 
     allow: bool
     estimated_tokens: int
     limit_tokens: int
     compact: bool = False
+    hard_overflow: bool = False
 
 
 class ContextBudgetManager:
     """Bounded context budget with protocol-safe compaction triggers.
 
-    Budgets are estimates only (char/4) — they bound the conversation, never
-    a provider-reported truth. Compaction folds the durable checkpoint into a
-    single system-adjacent message and drops stale tool chatter; it never
-    rewrites the stable authority prefix.
+    Budgets are conservative estimates (char/4 + tool args/results/schemas +
+    output reserve) — they bound the request, never a provider-reported truth.
+    Compaction applies only to dynamic run context; the stable authority
+    prefix is never compacted (it is not part of the conversation queue).
     """
 
     def __init__(
@@ -263,17 +334,27 @@ class ContextBudgetManager:
         *,
         limit_tokens: int,
         reserve_tokens: int = 0,
+        output_reserve_tokens: int = 0,
+        protocol_reserve_tokens: int = 0,
         compaction_ratio: float = 0.8,
+        measured: bool = False,
     ) -> None:
         if limit_tokens < 1:
             raise ValueError("limit_tokens must be positive")
         self._limit = int(limit_tokens)
         self._reserve = int(reserve_tokens)
+        self._output_reserve = int(output_reserve_tokens)
+        self._protocol_reserve = int(protocol_reserve_tokens)
         self._ratio = float(compaction_ratio)
+        self._measured = bool(measured)
 
     @property
     def limit_tokens(self) -> int:
         return self._limit
+
+    @property
+    def measured(self) -> bool:
+        return self._measured
 
     def estimate(self, messages: Iterable[Mapping[str, Any]]) -> int:
         return _estimate_tokens(messages)
@@ -281,9 +362,18 @@ class ContextBudgetManager:
     def decide(
         self,
         messages: Iterable[Mapping[str, Any]],
+        *,
+        tools: Iterable[Any] = (),
+        output_tokens: int = 0,
         incoming_tokens: int = 0,
     ) -> ContextBudgetDecision:
-        estimated = self.estimate(messages) + max(0, incoming_tokens)
+        estimated = (
+            self.estimate(messages)
+            + estimate_tool_schemas(tools)
+            + max(0, int(output_tokens))
+            + self._protocol_reserve
+            + max(0, incoming_tokens)
+        )
         available = self._limit - self._reserve
         if estimated > available:
             return ContextBudgetDecision(
@@ -291,6 +381,7 @@ class ContextBudgetManager:
                 estimated_tokens=estimated,
                 limit_tokens=self._limit,
                 compact=True,
+                hard_overflow=True,
             )
         if estimated > int(self._limit * self._ratio):
             return ContextBudgetDecision(
@@ -306,6 +397,35 @@ class ContextBudgetManager:
         )
 
 
+def _tool_summary(name: str, arguments: Mapping[str, Any]) -> str:
+    """Deterministic short summary of a tool call (no hidden reasoning)."""
+    if not isinstance(arguments, Mapping):
+        return name
+    path = arguments.get("path")
+    if path:
+        return f"{name}: {path}"
+    command = arguments.get("command")
+    if command:
+        return f"{name}: {str(command)[:120]}"
+    return name
+
+
+def _file_path(name: str, arguments: Mapping[str, Any]) -> str | None:
+    """Workspace-relative path touched by a file-mutating/reading tool."""
+    if not isinstance(arguments, Mapping):
+        return None
+    if name in (
+        "write_file",
+        "edit_file",
+        "delete_file",
+        "read_file",
+        "apply_patch",
+    ):
+        path = arguments.get("path")
+        return str(path) if path else None
+    return None
+
+
 @dataclass(frozen=True)
 class StructuredEvent:
     kind: str
@@ -318,6 +438,10 @@ class RunContextCoordinator:
     The coordinator never dumps a whole repository; it maintains a bounded
     conversation and folds durable progress into the checkpoint before
     compaction. It emits structured events (no hidden reasoning, no secrets).
+
+    An assistant tool-call turn plus all of its tool results form an ATOMIC
+    protocol block: compaction never splits a block, and never compacts while
+    a tool round is pending.
     """
 
     def __init__(
@@ -332,6 +456,14 @@ class RunContextCoordinator:
         self._max_messages = int(max_conversation_messages)
         self._conversation: deque[dict[str, Any]] = deque()
         self._events: list[StructuredEvent] = []
+        self._pending_tool_results = 0
+        # Server-observed structured facts (never hidden reasoning, never
+        # secrets). Folded into the checkpoint before compaction so the work
+        # dropped from the conversation remains durably represented.
+        self._completed_work: list[str] = []
+        self._relevant_files: list[str] = []
+        self._latest_tests: list[str] = []
+        self._current_failure: str | None = None
 
     @property
     def checkpoint(self) -> TaskCheckpoint:
@@ -341,47 +473,153 @@ class RunContextCoordinator:
     def budget(self) -> ContextBudgetManager:
         return self._budget
 
+    @property
+    def pending_tool_round(self) -> bool:
+        return self._pending_tool_results > 0
+
     def events(self) -> tuple[StructuredEvent, ...]:
         return tuple(self._events)
 
     def emit(self, kind: str, **detail: Any) -> None:
         self._events.append(StructuredEvent(kind=kind, detail=dict(detail)))
 
+    def note_tool_execution(
+        self,
+        name: str,
+        arguments: Mapping[str, Any],
+        *,
+        ok: bool,
+        content: str | None,
+        kind: str | None = None,
+    ) -> None:
+        """Record a server-observed tool outcome as structured progress."""
+        self._completed_work.append(_tool_summary(name, arguments))
+        path = _file_path(name, arguments)
+        if path:
+            self._relevant_files.append(path)
+        if not ok:
+            self._current_failure = (content or "tool failed")[:500]
+        if name == "run_tests" or kind == "tests":
+            self._latest_tests.append((content or "")[:500])
+        self._completed_work = self._completed_work[-200:]
+        self._relevant_files = self._relevant_files[-200:]
+        self._latest_tests = self._latest_tests[-20:]
+
+    def fold_progress(self) -> None:
+        """Fold server-observed structured facts into the checkpoint.
+
+        This is what makes compaction durable: the work that is about to be
+        dropped from the conversation is represented in the checkpoint FIRST.
+        Idempotent (deduplicated), deterministic, no hidden reasoning.
+        """
+        cp = self._checkpoint
+        completed = tuple(
+            dict.fromkeys([*cp.completed, *self._completed_work])
+        )[-200:]
+        files = tuple(dict.fromkeys([*cp.relevant_files, *self._relevant_files]))[
+            -200:
+        ]
+        tests = tuple(dict.fromkeys([*cp.latest_tests, *self._latest_tests]))[
+            -20:
+        ]
+        self._checkpoint = TaskCheckpoint(
+            objective=cp.objective,
+            workspace=cp.workspace,
+            current_task=cp.current_task,
+            completed=completed,
+            current_failure=self._current_failure or cp.current_failure,
+            relevant_files=files,
+            latest_tests=tests,
+            attempts=cp.attempts,
+            constraints=cp.constraints,
+            next_action=cp.next_action,
+            branch=cp.branch,
+            head=cp.head,
+            dirty_files=cp.dirty_files,
+            identity_version=cp.identity_version,
+            model_route=cp.model_route,
+            pending_approvals=cp.pending_approvals,
+        )
+
+    def has_progress(self) -> bool:
+        cp = self._checkpoint
+        return bool(
+            cp.completed
+            or cp.relevant_files
+            or cp.latest_tests
+            or cp.current_failure
+            or cp.current_task
+            or cp.next_action
+        )
+
+    def checkpoint_context_message(self) -> dict[str, Any] | None:
+        """Bounded server-generated dynamic checkpoint context.
+
+        Returned as a clearly-marked message (never masquerading as an owner
+        request, never part of the stable authority). Only emitted when there
+        is meaningful durable progress.
+        """
+        if not self.has_progress():
+            return None
+        return {
+            "role": "user",
+            "content": (
+                "[SERVER DURABLE CHECKPOINT — DYNAMIC CONTEXT]\n"
+                + checkpoint_to_prompt(self._checkpoint)
+            ),
+        }
+
     def add(self, message: Mapping[str, Any]) -> None:
+        role = message.get("role")
+        if role == "assistant":
+            tool_calls = message.get("tool_calls") or []
+            self._pending_tool_results += len(tool_calls)
+        elif role == "tool":
+            self._pending_tool_results = max(0, self._pending_tool_results - 1)
         self._conversation.append(dict(message))
-        while len(self._conversation) > self._max_messages:
-            self._conversation.popleft()
 
     def conversation(self) -> list[dict[str, Any]]:
-        return list(self._conversation)
+        messages: list[dict[str, Any]] = []
+        context = self.checkpoint_context_message()
+        if context is not None:
+            messages.append(context)
+        messages.extend(self._conversation)
+        return messages
 
     def update_checkpoint(self, checkpoint: TaskCheckpoint) -> None:
         self._checkpoint = checkpoint
 
-    def compact(self) -> None:
-        """Protocol-safe compaction: fold progress into the checkpoint and
-        keep only a bounded recent slice of the conversation. The stable
-        authority prefix is never part of this conversation queue, so it is
-        never rewritten here."""
-        self._checkpoint = TaskCheckpoint(
-            objective=self._checkpoint.objective,
-            workspace=self._checkpoint.workspace,
-            current_task=self._checkpoint.current_task,
-            completed=self._checkpoint.completed,
-            current_failure=self._checkpoint.current_failure,
-            relevant_files=self._checkpoint.relevant_files,
-            latest_tests=self._checkpoint.latest_tests,
-            attempts=self._checkpoint.attempts,
-            constraints=self._checkpoint.constraints,
-            next_action=self._checkpoint.next_action,
-            branch=self._checkpoint.branch,
-            head=self._checkpoint.head,
-            dirty_files=self._checkpoint.dirty_files,
-            identity_version=self._checkpoint.identity_version,
-            model_route=self._checkpoint.model_route,
-            pending_approvals=self._checkpoint.pending_approvals,
-        )
+    def _safe_cut(self) -> int:
+        """Index of the first message that must be retained (never split a
+        protocol block, never compact a pending tool round)."""
+        items = list(self._conversation)
+        n = len(items)
+        if n <= 2:
+            return 0
+        if self._pending_tool_results > 0:
+            # Keep the opening assistant tool-call turn of the pending round.
+            for i in range(n - 1, -1, -1):
+                if (
+                    items[i].get("role") == "assistant"
+                    and items[i].get("tool_calls")
+                ):
+                    return i
+            return 0
         keep = max(2, self._max_messages // 2)
-        while len(self._conversation) > keep:
+        cut = max(0, n - keep)
+        while cut < n and items[cut].get("role") == "tool":
+            cut += 1
+        return cut
+
+    def compact(self) -> None:
+        """Protocol-safe compaction of dynamic context only.
+
+        The durable checkpoint must be persisted by the caller BEFORE this
+        call (checkpoint-before-drop). This only drops stale, COMPLETE
+        protocol blocks and never the stable authority prefix (which is not
+        in this queue).
+        """
+        cut = self._safe_cut()
+        for _ in range(cut):
             self._conversation.popleft()
         self.emit("context_compacted", messages_retained=len(self._conversation))
