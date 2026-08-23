@@ -24,11 +24,24 @@ from defend_control.model_registry import ADAPTER_REPO
 from defend_control.orchestrator import StackOrchestrator
 from defend_control.preflight import CheckResult, PreflightRunner
 from defend_control.processes import ProcessSupervisor
+from defend_control.platform import PlatformService
+from defend_control.platform_audit import PlatformAuditLog
+from defend_control.platform_credentials import PlatformCredentialRegistry
 from defend_control.products import ProductsSettings, build_products
 from defend_control.product_runtime import ProductRuntimeRegistry
 from defend_control.secrets import DpapiSecretStore
 from defend_control.settings import ControlSettings, JsonSettingsStore
+from defend_control.supervision import (
+    ProductSupervisionManifestStore,
+    build_compatibility_manifests,
+)
 from defend_control.ui import ControlCenterUI, SetupDialog
+from defend_integrations.service import SetupIntegrationsService
+from defend_integrations.stores import (
+    ProviderConfigStore,
+    SecretRegistry,
+    default_config_path,
+)
 from scs_ai.config import ScsAiSettings
 from scs_ai.tunnel import (
     EnvTokenSource,
@@ -717,6 +730,53 @@ def _build_runtime(
         raise
 
 
+def _build_platform_service(
+    *,
+    secret_store,
+    repository: Path,
+    python_executable: str,
+    products_settings,
+    supervisor,
+    products,
+) -> PlatformService:
+    """Assemble the owner-facing PLATFORM view.
+
+    Fails closed: every neutral component is optional, so a corrupt config
+    store or missing data root never takes down the Control Center. Unavailable
+    components surface as NOT_CONFIGURED in the PLATFORM tab.
+    """
+    try:
+        secret_registry = SecretRegistry(secret_store)
+        config_store = ProviderConfigStore(default_config_path())
+        integration_service = SetupIntegrationsService(
+            secret_registry, config_store
+        )
+        credentials = PlatformCredentialRegistry(integration_service)
+    except Exception:
+        credentials = None
+    try:
+        supervision = ProductSupervisionManifestStore(
+            build_compatibility_manifests(
+                products_settings, repository, python_executable
+            )
+        )
+    except Exception:
+        supervision = None
+    try:
+        audit = PlatformAuditLog()
+    except Exception:
+        audit = None
+    return PlatformService(
+        supervision=supervision,
+        credential_registry=credentials,
+        audit=audit,
+        supervisor=supervisor,
+        products=tuple(products),
+        settings=products_settings,
+        repository=repository,
+    )
+
+
 def _schedule_settings_load_error(root: tk.Misc, error: Exception) -> None:
     """Schedule a settings error without closing over an exception variable."""
     error_type = type(error).__name__
@@ -860,6 +920,15 @@ def run_control_center() -> None:
         )
         webbrowser.open(public_url)
 
+    platform_service = _build_platform_service(
+        secret_store=secret_store,
+        repository=repo_root,
+        python_executable=sys.executable,
+        products_settings=ProductsSettings.from_env(),
+        supervisor=runtime.supervisor,
+        products=runtime.products,
+    )
+
     app = ControlCenterUI(
         root,
         coordinator.runtime.controller,
@@ -868,6 +937,7 @@ def run_control_center() -> None:
         open_setup=open_setup,
         submit_exit_cleanup=submit_exit_cleanup,
         destroy_window=destroy_window,
+        platform=platform_service,
     )
     app.wire_coder_fingerprint_confirmer(
         coordinator.runtime.coder_fingerprint_confirmer

@@ -62,6 +62,11 @@ _PRODUCT_ACTIONS = (
     ("Open", "open"),
     ("Logs", "logs"),
 )
+# Product Setup is PRODUCT-owned (Section 13/31). No product exposes a
+# standalone Setup surface yet, so the Control Center renders a disabled button
+# instead of re-implementing product settings locally.
+_PRODUCT_SETUP_LABEL = "Product Setup"
+_PRODUCT_SETUP_DISABLED_NOTE = "Setup not yet implemented in product"
 _COMPONENT_LABELS = {
     "model": "Model",
     "ssh tunnel": "SSH tunnel",
@@ -1028,6 +1033,7 @@ class ControlCenterUI:
         destroy_window: Callable[[], None] | None = None,
         products: tuple[object, ...] = (),
         coder_service: CoderM0Service | None = None,
+        platform: object | None = None,
     ) -> None:
         self.root = root
         self._controller = controller
@@ -1036,6 +1042,9 @@ class ControlCenterUI:
         self._submit_exit_cleanup = submit_exit_cleanup
         self._destroy_window = destroy_window or root.destroy
         self._products = tuple(products)
+        self._platform = platform
+        self._platform_sections: dict[str, tk.StringVar] = {}
+        self._platform_refresh_counter = 0
         self._product_states: dict[str, tk.StringVar] = {}
         self._product_text: dict[str, tk.StringVar] = {}
         self._product_state_labels: dict[str, ttk.Label] = {}
@@ -1125,6 +1134,12 @@ class ControlCenterUI:
 
     def set_products(self, products: tuple[object, ...]) -> None:
         self._products = tuple(products)
+
+    def set_platform(self, platform: object | None) -> None:
+        """Swap the Platform service (owner-facing shared-infrastructure view)."""
+        self._platform = platform
+        self._render_platform()
+
     def set_coder_service(self, coder_service: CoderM0Service) -> None:
         """Swap observation source (e.g. live Vast backend later)."""
         self._coder = coder_service
@@ -1198,6 +1213,322 @@ class ControlCenterUI:
         }
 
         return names.get(application_id, display_name)
+
+    # ------------------------------------------------------------- PLATFORM
+
+    _PLATFORM_SECTIONS = (
+        ("overview", "Platform overview"),
+        ("credentials", "Credentials"),
+        ("infrastructure", "Infrastructure"),
+        ("database_storage", "Database / storage"),
+        ("membership", "Membership"),
+        ("billing", "Billing"),
+        ("networking", "Networking"),
+        ("audit", "Platform audit"),
+    )
+
+    def _build_platform_tab(self, notebook: ttk.Notebook) -> None:
+        """Owner interface for genuinely shared infrastructure.
+
+        Not product settings. Functional sections (overview, credentials,
+        infrastructure, audit) render real, read-only data; sections without
+        repository truth render an explicit NOT_CONFIGURED / NOT_IMPLEMENTED
+        status with no fake buttons.
+        """
+        tab = ttk.Frame(notebook, padding=12)
+        notebook.add(tab, text="PLATFORM")
+        tab.columnconfigure(0, weight=1)
+        tab.rowconfigure(1, weight=1)
+
+        header = ttk.Frame(tab)
+        header.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        header.columnconfigure(1, weight=1)
+
+        ttk.Label(
+            header,
+            text="PLATFORM",
+            font=("Segoe UI", 12, "bold"),
+        ).grid(row=0, column=0, sticky="w")
+
+        ttk.Label(
+            header,
+            text=(
+                "Owner interface for shared infrastructure only. "
+                "Product setup and settings stay product-owned."
+            ),
+            font=("Segoe UI", 9),
+        ).grid(row=1, column=0, sticky="w", pady=(3, 0))
+
+        ttk.Button(
+            header,
+            text="Refresh",
+            command=self._render_platform,
+        ).grid(row=0, column=1, sticky="e")
+
+        ttk.Button(
+            header,
+            text="Open Setup",
+            command=self._setup,
+        ).grid(row=1, column=1, sticky="e", pady=(3, 0))
+
+        canvas = tk.Canvas(tab, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(
+            tab, orient="vertical", command=canvas.yview
+        )
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.grid(row=1, column=0, sticky="nsew")
+        scrollbar.grid(row=1, column=1, sticky="ns")
+
+        body = ttk.Frame(canvas)
+        canvas.create_window((0, 0), window=body, anchor="nw")
+        body.bind(
+            "<Configure>",
+            lambda _event: canvas.configure(
+                scrollregion=canvas.bbox("all")
+            ),
+        )
+        body.columnconfigure(0, weight=1)
+
+        self._platform_sections = {}
+        for index, (key, title) in enumerate(self._PLATFORM_SECTIONS):
+            frame = ttk.LabelFrame(body, text=title, padding=8)
+            frame.grid(row=index, column=0, sticky="ew", pady=(0, 8))
+            frame.columnconfigure(0, weight=1)
+            var = tk.StringVar(self.root, value="\u2014")
+            ttk.Label(
+                frame,
+                textvariable=var,
+                justify="left",
+                anchor="w",
+                wraplength=840,
+            ).grid(row=0, column=0, sticky="w")
+            self._platform_sections[key] = var
+
+        self._render_platform()
+
+    def _render_platform(self) -> None:
+        """Recompute every PLATFORM section from the injected service.
+
+        Never fabricates: when the platform service is absent or raises, the
+        section text states so explicitly instead of claiming a fake status.
+        """
+        if not self._platform_sections:
+            return
+        platform = self._platform
+        if platform is None:
+            self._set_platform_text(
+                "overview",
+                "PLATFORM SERVICE NOT_CONFIGURED",
+            )
+            for key, _title in self._PLATFORM_SECTIONS:
+                if key != "overview":
+                    self._set_platform_text(key, "NOT_CONFIGURED")
+            return
+        try:
+            overview = platform.overview()
+            credentials = platform.credentials_view()
+            infrastructure = platform.infrastructure()
+            database_storage = platform.database_storage()
+            membership = platform.membership()
+            billing = platform.billing()
+            networking = platform.networking()
+            audit = platform.audit_view()
+        except Exception as error:
+            self._set_platform_text(
+                "overview",
+                f"PLATFORM data unavailable ({type(error).__name__})",
+            )
+            return
+        self._set_platform_text(
+            "overview", self._platform_overview_text(overview)
+        )
+        self._set_platform_text(
+            "credentials", self._platform_credentials_text(credentials)
+        )
+        self._set_platform_text(
+            "infrastructure",
+            self._platform_infrastructure_text(infrastructure),
+        )
+        self._set_platform_text(
+            "database_storage",
+            self._platform_database_storage_text(database_storage),
+        )
+        self._set_platform_text(
+            "membership", self._platform_membership_text(membership)
+        )
+        self._set_platform_text(
+            "billing", self._platform_billing_text(billing)
+        )
+        self._set_platform_text(
+            "networking", self._platform_networking_text(networking)
+        )
+        self._set_platform_text("audit", self._platform_audit_text(audit))
+
+    def _set_platform_text(self, key: str, text: str) -> None:
+        var = self._platform_sections.get(key)
+        if var is not None:
+            var.set(str(text))
+
+    @staticmethod
+    def _platform_overview_text(overview: object) -> str:
+        data = overview if isinstance(overview, dict) else {}
+        posture = data.get("posture") or {}
+        lines = [
+            "Product supervision",
+            f"  total={posture.get('total', 0)} "
+            f"running={posture.get('running', 0)} "
+            f"starting={posture.get('starting', 0)} "
+            f"stopped={posture.get('stopped', 0)} "
+            f"attention={posture.get('attention', 0)}",
+        ]
+        for row in data.get("products", []):
+            owned = row.get("owned_processes") or []
+            lines.append(
+                f"  {row.get('display_name', '?')}: {row.get('state', 'UNKNOWN')} "
+                f"(reported={row.get('reported_state', 'unavailable')}, "
+                f"api={row.get('api_port') or '-NONE-'}, "
+                f"processes={len(owned)})"
+            )
+        collisions = data.get("collisions") or {}
+        lines.append(
+            f"Port collision check: {collisions.get('result', 'UNKNOWN')}"
+        )
+        credentials = data.get("credentials") or {}
+        lines.append(
+            f"Credentials configured={credentials.get('configured', 0)} "
+            f"verified={credentials.get('verified', 0)}"
+        )
+        lines.append(f"Audit entries: {data.get('audit_entries', 0)}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _platform_credentials_text(credentials: object) -> str:
+        data = credentials if isinstance(credentials, dict) else {}
+        if data.get("status") == "NOT_CONFIGURED":
+            return "CREDENTIALS NOT_CONFIGURED"
+        rows = data.get("credentials") or []
+        if not rows:
+            return "No neutral credentials registered."
+        lines = [
+            f"Credential entitlements (configured={data.get('configured', 0)}, "
+            f"verified={data.get('verified', 0)})"
+        ]
+        for row in rows:
+            products = ", ".join(row.get("authorized_products") or [])
+            masked = row.get("masked")
+            masked_text = masked if masked else "not set"
+            lines.append(
+                f"  {row.get('credential_key', '?')} "
+                f"[{row.get('provider_name', row.get('provider', '?'))}] "
+                f"state={row.get('verification_state', 'UNKNOWN')} "
+                f"products={products or '-'} masked={masked_text}"
+            )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _platform_infrastructure_text(infrastructure: object) -> str:
+        data = infrastructure if isinstance(infrastructure, dict) else {}
+        lines = [
+            f"Host: {data.get('host', 'UNKNOWN')}",
+            f"OS: {data.get('os', 'UNKNOWN')}",
+            f"Python: {data.get('python', 'UNKNOWN')}",
+            f"Node: {data.get('node', 'UNKNOWN')}",
+        ]
+        for label, info in (data.get("data_roots") or {}).items():
+            lines.append(f"Data root {label}: {info.get('root', '?')}")
+        for label, usage in (data.get("disk") or {}).items():
+            if "total_gb" in usage:
+                lines.append(
+                    f"Disk {label}: total={usage['total_gb']} GB "
+                    f"free={usage['free_gb']} GB"
+                )
+            else:
+                lines.append(f"Disk {label}: {usage.get('status', 'UNKNOWN')}")
+        lines.append(
+            f"Secret store: {data.get('shared_secret_store', 'UNKNOWN')}"
+        )
+        processes = data.get("processes") or []
+        if processes:
+            for proc in processes:
+                lines.append(
+                    f"Process {proc.get('name', '?')} pid={proc.get('pid')} "
+                    f"owned={proc.get('owned')} running={proc.get('running')}"
+                )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _platform_database_storage_text(database_storage: object) -> str:
+        data = database_storage if isinstance(database_storage, dict) else {}
+        lines = [
+            f"Status: {data.get('status', 'UNKNOWN')}",
+            f"Hosted PostgreSQL: {data.get('hosted_postgres', 'NOT_CONFIGURED')}",
+        ]
+        for item in data.get("inventory") or []:
+            lines.append(
+                f"  {item.get('area', '?')} -> {item.get('location', '?')} "
+                f"(durability={item.get('durability', 'UNKNOWN')}, "
+                f"backup={item.get('backup', 'UNKNOWN')}, "
+                f"private={item.get('contains_private_data', 'UNKNOWN')})"
+            )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _platform_membership_text(membership: object) -> str:
+        data = membership if isinstance(membership, dict) else {}
+        return (
+            f"Status: {data.get('status', 'NOT_CONFIGURED')}\n"
+            f"Identity authority: {data.get('identity_authority', 'UNKNOWN')}\n"
+            f"{data.get('note', '')}"
+        )
+
+    @staticmethod
+    def _platform_billing_text(billing: object) -> str:
+        data = billing if isinstance(billing, dict) else {}
+        return (
+            f"Status: {data.get('status', 'NOT_IMPLEMENTED')}\n"
+            f"Neutral primitives: {data.get('neutral_primitives', 'UNKNOWN')}\n"
+            f"{data.get('note', '')}"
+        )
+
+    @staticmethod
+    def _platform_networking_text(networking: object) -> str:
+        data = networking if isinstance(networking, dict) else {}
+        lines = [
+            f"Status: {data.get('status', 'OBSERVED')}",
+            f"Cloudflare: {data.get('cloudflare', 'NOT_CONFIGURED')}",
+            f"Tunnel state: {data.get('tunnel_state', 'NOT_OBSERVABLE')}",
+        ]
+        for origin in data.get("product_origins") or []:
+            lines.append(
+                f"  {origin.get('product_id', '?')} "
+                f"{origin.get('origin', '?')} "
+                f"(api={origin.get('api_port', '-')}, "
+                f"web={origin.get('web_port', '-')})"
+            )
+        collisions = data.get("collisions") or {}
+        lines.append(f"Collision check: {collisions.get('result', 'UNKNOWN')}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _platform_audit_text(audit: object) -> str:
+        data = audit if isinstance(audit, dict) else {}
+        if data.get("status") == "NOT_CONFIGURED":
+            return "PLATFORM AUDIT NOT_CONFIGURED"
+        entries = data.get("entries") or []
+        if not entries:
+            return "No platform audit events yet."
+        lines = [
+            "Neutral platform events (redacted; no secrets, no model reasoning, "
+            "no customer content)"
+        ]
+        for entry in entries[-12:]:
+            lines.append(
+                f"  {entry.get('occurred_at', '?')} "
+                f"{entry.get('event_type', '?')} "
+                f"{entry.get('product_id') or ''} "
+                f"{entry.get('detail') or ''}".rstrip()
+            )
+        return "\n".join(lines)
 
     def _build_product_detail_tab(
         self,
@@ -1311,6 +1642,18 @@ class ControlCenterUI:
         self._tab_buttons[
             application_id
         ] = tab_buttons
+
+        setup_button = ttk.Button(
+            actions,
+            text=_PRODUCT_SETUP_LABEL,
+            state="disabled",
+        )
+        setup_button.pack(side="left", padx=(0, 6))
+        setup_button.bind(
+            "<Enter>",
+            lambda _event, aid=application_id: self._show_product_setup_note(aid),
+        )
+        tab_buttons["setup"] = setup_button
 
         detail_frame = ttk.LabelFrame(
             tab,
@@ -1577,8 +1920,8 @@ class ControlCenterUI:
     def _ordered_products(self) -> tuple[object, ...]:
         order = {
             "defend": 0,
-            "sports": 1,
-            "coder": 2,
+            "coder": 1,
+            "sports": 2,
             "scs": 3,
         }
 
@@ -1952,6 +2295,13 @@ class ControlCenterUI:
                 self._notebook,
                 product,
             )
+
+        # ==========================================================
+        # PLATFORM - owner interface for shared infrastructure.
+        # Product tabs are supervisory; PLATFORM is neutral only.
+        # ==========================================================
+
+        self._build_platform_tab(self._notebook)
 
         # ==========================================================
         # DEFEND AI identity/runtime-specific controls
@@ -2477,6 +2827,16 @@ class ControlCenterUI:
     def _setup(self) -> None:
         self._open_setup()
 
+    def _show_product_setup_note(self, application_id: str) -> None:
+        """Product Setup stays product-owned; no product surface exists yet.
+
+        The disabled button explains itself rather than re-implementing product
+        settings inside Control Center.
+        """
+        var = self._product_tab_text.get(application_id)
+        if var is not None:
+            var.set(_PRODUCT_SETUP_DISABLED_NOTE)
+
     def _destroy_vast(self) -> None:
         state = self._controller.poll_state()
         instance_id = state.vast_instance_id
@@ -2510,6 +2870,7 @@ class ControlCenterUI:
     def _poll(self) -> None:
         self._run_idle_reaper_if_due()
         self._publish_coder_runtime_status()
+        self._render_platform_throttled()
         try:
             state = self._controller.poll_state()
             self._render(state)
@@ -2527,6 +2888,17 @@ class ControlCenterUI:
             self._begin_exit_cleanup()
             return
         self.root.after(_POLL_MILLISECONDS, self._poll)
+
+    def _render_platform_throttled(self) -> None:
+        """Refresh the PLATFORM tab at a bounded cadence (every 8 polls ~2s)."""
+        counter = getattr(self, "_platform_refresh_counter", 0) + 1
+        self._platform_refresh_counter = counter
+        if counter % 8 != 0:
+            return
+        try:
+            self._render_platform()
+        except Exception:
+            pass
 
     def _publish_coder_runtime_status(self) -> None:
         """Publish the coder model status for the DEFENDcoder API child.

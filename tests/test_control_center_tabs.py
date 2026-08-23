@@ -50,9 +50,20 @@ def test_control_center_orders_defend_products_before_scs():
 
     assert "_ordered_products" in source
     assert '"defend": 0' in source
-    assert '"sports": 1' in source
-    assert '"coder": 2' in source
+    assert '"coder": 1' in source
+    assert '"sports": 2' in source
     assert '"scs": 3' in source
+
+
+def test_control_center_has_platform_tab_after_products():
+    import inspect
+    from defend_control import ui
+
+    source = inspect.getsource(ui.ControlCenterUI)
+
+    assert "_build_platform_tab" in source
+    assert 'text="PLATFORM"' in source
+    assert "platform" in ui.ControlCenterUI.__init__.__code__.co_varnames
 
 
 def test_home_uses_four_product_cards():
