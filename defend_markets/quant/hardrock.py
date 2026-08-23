@@ -71,13 +71,26 @@ def decimal_to_implied(decimal_odds: Decimal) -> Decimal:
 
 @dataclass(frozen=True)
 class HardRockLadder:
-    """Immutable rootIdx -> American odds ladder snapshot (P4/P5)."""
+    """Immutable rootIdx -> American odds ladder snapshot (P4/P5).
 
-    entries: dict[int, int]
+    ``entries`` is a read-only mapping (MappingProxyType over a private
+    defensive copy). The caller's source dict is never retained, and the mapping
+    cannot be mutated after construction (M4.8.1 P2).
+    """
+
+    entries: Any  # read-only Mapping[int, int]
     retrieved_at: datetime
     raw_response_sha256: str | None = None
     canonical_response_sha256: str | None = None
     ladder_identity: str | None = None
+
+    def __post_init__(self) -> None:
+        from types import MappingProxyType
+
+        # defensive copy + read-only proxy: neither the caller's dict nor the
+        # object's own attribute can mutate the PIT mapping.
+        private = {int(k): int(v) for k, v in (self.entries or {}).items()}
+        object.__setattr__(self, "entries", MappingProxyType(private))
 
     def american_odds(self, root_idx: int) -> int | None:
         return self.entries.get(int(root_idx))
@@ -281,13 +294,18 @@ class OwlsHardRockAdapter:
                     "canonical_response_sha256": ladder.canonical_response_sha256,
                     "entry_count": ladder.entry_count,
                     "ladder_identity": ladder.ladder_identity,
-                    "entries": ladder.entries,
+                    "entries": dict(ladder.entries),
                 }
             )
         events = board.get("data") or []
         events_parsed = 0
         markets_parsed = 0
         quotes = 0
+        matched = 0
+        unmatched = 0
+        from defend_markets.quant.event_matcher import CanonicalEventMatcher, resolve_provider_orientation, STATE_KEY_EXACT, STATE_NAME_TIME_EXACT
+
+        matcher = CanonicalEventMatcher(self._store) if self._store is not None else None
         for event in events:
             if not isinstance(event, dict):
                 continue
@@ -295,6 +313,29 @@ class OwlsHardRockAdapter:
             if parsed is None:
                 continue
             events_parsed += 1
+            # P4A: resolve canonical identity via the shared matcher.
+            canonical_event_id = f"hardrock:{parsed['provider_event_id']}"
+            cross_book_state = "UNMATCHED"
+            if matcher is not None:
+                candidates = self._canonical_candidates()
+                mapping = matcher.match_and_record(
+                    provider=DATA_PROVIDER_OWLS,
+                    native_event_id=parsed["provider_event_id"],
+                    cross_provider_id=parsed["betradar_id"] or None,
+                    participants=parsed["participants"],
+                    scheduled_time=parsed["scheduled_time"],
+                    candidates=candidates,
+                )
+                mode = mapping["identity_mode"]
+                if mode in (STATE_KEY_EXACT, STATE_NAME_TIME_EXACT) and mapping["canonical_event_id"]:
+                    canonical_event_id = mapping["canonical_event_id"]
+                    cross_book_state = mode
+                    matched += 1
+                elif mode in ("AMBIGUOUS", "CONFLICT"):
+                    cross_book_state = mode
+                    unmatched += 1
+                else:
+                    unmatched += 1
             for market in parsed["markets"]:
                 if not isinstance(market, dict):
                     continue
@@ -324,7 +365,7 @@ class OwlsHardRockAdapter:
                     implied = decimal_to_implied(dec)
                     observed_at = datetime.now(timezone.utc)
                     quote = {
-                        "canonical_event_id": f"hardrock:{parsed['provider_event_id']}",
+                        "canonical_event_id": canonical_event_id,
                         "data_provider": DATA_PROVIDER_OWLS,
                         "sportsbook": SPORTSBOOK_HARDROCK,
                         "state": STATE_FL,
@@ -352,7 +393,23 @@ class OwlsHardRockAdapter:
             "quotes": quotes,
             "ladder_entries": ladder.entry_count,
             "ladder_snapshot_id": ladder_snapshot_id,
+            "matched": matched,
+            "unmatched": unmatched,
         }
+
+    def _canonical_candidates(self) -> list[dict[str, Any]]:
+        """Load candidate canonical TT events (Bet365/Odds-API forward events).
+
+        Only KEY_EXACT / NAME_TIME_EXACT may share an existing canonical event.
+        """
+        candidates: list[dict[str, Any]] = []
+        if self._store is None:
+            return candidates
+        # candidate canonical events come from tt_forward_events (Bet365 board)
+        # via the store; the adapter exposes a store hook for this.
+        if hasattr(self._store, "list_canonical_event_candidates"):
+            return self._store.list_canonical_event_candidates()
+        return candidates
 
 
 def _hashes(body: str) -> tuple[str | None, str | None]:

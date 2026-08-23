@@ -11,8 +11,8 @@ def _markets_settings(data_root: Path) -> MarketsSettings:
     return MarketsSettings(
         data_root=data_root,
         database_url="postgresql://x:x@localhost:5432/markets",
-        api_port=8300,
-        web_port=3300,
+        api_port=8500,
+        web_port=3500,
         public_origin="https://defendmarkets.defend-network.org",
         session_cookie="markets_session",
     )
@@ -89,8 +89,8 @@ def test_markets_ports_do_not_collide_with_existing_applications(tmp_path):
         for context in _existing(tmp_path)
         for port in (context.api_port, context.web_port)
     }
-    assert markets.api_port == 8300
-    assert markets.web_port == 3300
+    assert markets.api_port == 8500
+    assert markets.web_port == 3500
     assert markets.api_port not in existing_ports
     assert markets.web_port not in existing_ports
 
@@ -129,8 +129,8 @@ def test_markets_deployment_profile_requires_api_and_web_services(tmp_path):
         "sports",
         "markets",
     ]
-    assert deployment.service("markets", "api").port == 8300
-    assert deployment.service("markets", "web").port == 3300
+    assert deployment.service("markets", "api").port == 8500
+    assert deployment.service("markets", "web").port == 3500
 
 
 def test_markets_origin_is_a_distinct_https_origin(tmp_path):

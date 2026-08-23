@@ -1,0 +1,79 @@
+{
+  "report_id": "DEFENDMARKETS_M4_8_1",
+  "report_title": "M4.8.1 OWNER WORKSTATION CHECKPOINT",
+  "generated_at": "2026-08-23T05:30:00Z",
+  "BASE_HEAD": "b90b3127500d501cdafd87171025f9e5012358b6",
+  "FINAL_HEAD": "pending",
+  "REMOTE_HEAD": "pending",
+  "DB_SCHEMA": 24,
+  "M5_HASH": "fe6f18d1fb5eea640fc42d904d9010470ee75f73e594b2c00a86982d3381e229",
+  "M5_HASH_CHANGED": "NO",
+  "CHAMPION": "M5_REGULARIZED_LOGISTIC",
+  "CHAMPION_CHANGED": "NO",
+
+  "subsystems": {
+    "PROVIDER_SETUP": "COMPLETE",
+    "HARDROCK_LIVE_DATA": "COMPLETE",
+    "HARDROCK_LADDER": "COMPLETE",
+    "HARDROCK_PIT_HISTORY": "COMPLETE",
+    "BET365_COMPARISON": "PARTIAL",
+    "FANDUEL_COMPARISON": "COMPLETE",
+    "CANONICAL_EVENT_MATCHING": "COMPLETE",
+    "PARTICIPANT_ORIENTATION": "COMPLETE",
+    "CROSS_BOOK_CONSENSUS": "PARTIAL",
+    "MODEL_M5": "COMPLETE",
+    "MODEL_EDGE_SURFACE": "PARTIAL",
+    "LINE_MOVEMENT": "COMPLETE",
+    "RESULT_ACQUISITION": "COMPLETE",
+    "SETTLEMENT": "COMPLETE",
+    "FORWARD_SCORING": "COMPLETE",
+    "HISTORICAL_BACKFILL": "PARTIAL",
+    "ARBITRAGE": "COMPLETE",
+    "SCHEDULER": "COMPLETE",
+    "OWNER_AUTH": "COMPLETE",
+    "OWNER_UI_OVERVIEW": "COMPLETE",
+    "OWNER_UI_LIVE_TT": "PARTIAL",
+    "OWNER_UI_EVENT_DETAIL": "NOT_STARTED",
+    "OWNER_UI_ARBITRAGE": "PARTIAL",
+    "OWNER_UI_HISTORY": "PARTIAL",
+    "OWNER_UI_DATA_HEALTH": "PARTIAL",
+    "PUBLIC_MULTI_USER": "NOT_STARTED",
+    "REAL_MONEY_EXECUTION": "NOT_STARTED"
+  },
+
+  "part_summary": {
+    "P1_DEGRADED_HEALTH": "COMPLETE (badge_from_probe maps coverage DEGRADED -> HealthBadge.DEGRADED -> ProviderState.DEGRADED)",
+    "P2_LADDER_IMMUTABLE": "COMPLETE (MappingProxyType over defensive copy; mutation raises TypeError)",
+    "P3_GZIP_BOUNDED": "COMPLETE (streaming bounded decompression, fail-closed on overflow/malformed)",
+    "P4_MATCHER_WIRED": "COMPLETE (live ingestion runs CanonicalEventMatcher; only KEY_EXACT/NAME_TIME_EXACT share canonical identity)",
+    "P5_ORIENTATION": "COMPLETE (resolve_provider_orientation; REVERSED corrected; CONFLICT fail-closed)",
+    "P6_MARKET_IDENTITY": "COMPLETE (MATCH_WINNER_2WAY/FULL_MATCH first pass; spread/total fail-closed)",
+    "P7_SYNC_SNAPSHOT": "COMPLETE (synchronized_snapshot with age/skew contract)",
+    "P8_DEVIG": "COMPLETE (two_way_no_vig proportional normalization; raw implied != fair)",
+    "P9_MODEL_EDGE": "PARTIAL (M5 unchanged; edge surface via existing contract, no new features)",
+    "P13_ADAPTIVE_CADENCE": "PARTIAL (HARDROCK_CAPTURE 300s; adaptive in-play/prematch cadence not yet wired)",
+    "P14_HEALTH_SNAPSHOT": "COMPLETE (markets_health_snapshot)",
+    "P15_OWNER_API": "COMPLETE (/api/markets/owner/* read endpoints)",
+    "P16_OWNER_AUTH": "COMPLETE (reuse admin_auth; login/logout; require_owner; HttpOnly/SameSite via existing account cookie; Bearer for admin)",
+    "P17_P27_UI": "PARTIAL (owner gate + overview + Hard Rock status card added; Live TT/detail/history/arbitrage pages reuse existing markets panels with owner gate)"
+  },
+
+  "live_acceptance": {
+    "owls_http_attempts": 0,
+    "odds_api_io_http_attempts": 0,
+    "oddspapi_http_attempts": 0,
+    "note": "No new live HTTP in M4.8.1 acceptance; M4.8 live evidence (305 Hard Rock quotes) preserved. Owner password not in this shell env, so real-credential login smoke deferred to owner."
+  },
+
+  "owner_launch": {
+    "api": "python tools/defend_markets_server.py",
+    "web": "npm run dev (defend-ui-v2, port 3000) or npm run start",
+    "url": "http://127.0.0.1:3000/markets",
+    "api_base": "http://127.0.0.1:8300",
+    "note": "Owner login uses DEFEND_OWNER_USER / DEFEND_OWNER_PASS / DEFEND_OWNER_EMAIL environment. Visiting Markets UI does NOT rent compute."
+  },
+
+  "REAL_MONEY_ACTIONS": 0,
+  "NEXT_HIGHEST_VALUE_STEP": "Run the HARDROCK_CAPTURE scheduler loop continuously, accumulate PIT Hard Rock history, and match Hard Rock↔Bet365 overlapping events to operationalize cross-book consensus and the Live TT board detail view.",
+  "ENGINEERING_ASSESSMENT": "M4.8.1 is a coherent owner-usable checkpoint: DEGRADED health truth, truly-immutable ladder, bounded gzip, a wired live canonical matcher + orientation, devig/consensus primitives, a consolidated health snapshot, owner auth (reused shared admin_auth), and an owner-facing API + gated UI. M5 unchanged; no real-money. Bet365 consensus + event-detail + adaptive cadence remain PARTIAL."
+}

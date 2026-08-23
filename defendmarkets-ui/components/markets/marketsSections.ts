@@ -1,7 +1,8 @@
 export const MARKETS_SECTIONS = [
   { id: "", label: "Overview" },
-  { id: "opportunities", label: "Opportunities" },
   { id: "sports", label: "Table Tennis" },
+  { id: "opportunities", label: "Opportunities" },
+  { id: "arbitrage", label: "Arbitrage" },
   { id: "equities", label: "Equities" },
   { id: "macro", label: "Macro" },
   { id: "crypto", label: "Crypto" },

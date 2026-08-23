@@ -28,3 +28,5 @@ defend-ui-v2/.npm-cache/
 .pytest_cache/
 *-tokenizer-archive/
 rapidapi_tt_micro-matches-live-*.json
+# DEFENDmarkets product-owned runtime state (launcher PID/HEAD metadata + logs)
+defend_markets/runtime/
