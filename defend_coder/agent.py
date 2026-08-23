@@ -140,6 +140,7 @@ class CodingAgent:
         # Provider-scoped, per-turn private reasoning state (never visible,
         # never persisted, never crosses provider).
         self._reasoning_by_call: dict[str, str] = {}
+        self._protocol_state: dict[str, Any] = {}
         self._provider_key: tuple[str, str] | None = None
         # ONE prompt authority: the resolved system authority is always the
         # composed bundle (identity + owner directive + contracts). When the
@@ -235,10 +236,18 @@ class CodingAgent:
         if self._provider_key != key:
             self._provider_key = key
             self._reasoning_by_call = {}
+            self._protocol_state = {}
+        self._protocol_state = dict(response.protocol_state)
         reasoning = response.protocol_state.get("reasoning_content")
         if reasoning:
             for call in response.tool_calls:
                 self._reasoning_by_call[call.id] = reasoning
+
+    def _continuation_state(self) -> dict[str, Any]:
+        return {
+            **self._protocol_state,
+            "reasoning_by_call": self._reasoning_by_call,
+        }
 
     def _set_phase(self, phase: str) -> None:
         try:
@@ -326,9 +335,7 @@ class CodingAgent:
                             conversation=tuple(messages[1:]),
                             tools=tuple(tool_schemas),
                             max_output_tokens=self._max_tokens_for(call_phase),
-                            continuation_state={
-                                "reasoning_by_call": self._reasoning_by_call
-                            },
+                            continuation_state=self._continuation_state(),
                         )
                     )
                     self._record_provider_private_state(response)
@@ -559,9 +566,7 @@ class CodingAgent:
                     tools=(),
                     max_output_tokens=self._max_tokens_for("finalizing"),
                     timeout_seconds=budget,
-                    continuation_state={
-                        "reasoning_by_call": self._reasoning_by_call
-                    },
+                    continuation_state=self._continuation_state(),
                 )
             )
         except CoderProviderTimeout as error:

@@ -12,8 +12,8 @@ beneath DeepSeek/Next adapters — it is never selected as provider authority.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
+import json
 from typing import Any, Callable, Protocol
 
 from .agent_client import (
@@ -101,6 +101,89 @@ class CoderGenerationRequest:
 
 
 @dataclass(frozen=True)
+class CoderUsage:
+    """Provider-neutral token usage (adapter-normalized)."""
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    cached_input_tokens: int | None = None
+    reasoning_tokens: int | None = None
+
+
+class CompletionState(str):
+    STOP = "stop"
+    TOOL_CALLS = "tool_calls"
+    MAX_OUTPUT = "max_output"
+    INCOMPLETE = "incomplete"
+    CANCELLED = "cancelled"
+    ERROR = "error"
+    UNKNOWN = "unknown"
+
+    @classmethod
+    def from_chat_finish(cls, finish_reason: str | None, has_tools: bool) -> "CompletionState":
+        if has_tools:
+            return cls.TOOL_CALLS
+        reason = (finish_reason or "").casefold()
+        if reason in ("stop", "end_turn"):
+            return cls.STOP
+        if reason in ("length", "max_tokens"):
+            return cls.MAX_OUTPUT
+        if reason == "tool_calls":
+            return cls.TOOL_CALLS
+        return cls.UNKNOWN
+
+    @classmethod
+    def from_responses_status(cls, status: str | None, has_tools: bool) -> "CompletionState":
+        if has_tools:
+            return cls.TOOL_CALLS
+        if status == "completed":
+            return cls.STOP
+        if status == "incomplete":
+            return cls.INCOMPLETE
+        return cls.UNKNOWN
+
+
+def _int_or_none(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def normalize_chat_usage(raw: dict[str, Any] | None) -> CoderUsage:
+    raw = raw or {}
+    input_tokens = _int_or_none(raw.get("prompt_tokens")) or 0
+    output_tokens = _int_or_none(raw.get("completion_tokens")) or 0
+    total_tokens = _int_or_none(raw.get("total_tokens")) or (
+        input_tokens + output_tokens
+    )
+    return CoderUsage(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        total_tokens=total_tokens,
+        cached_input_tokens=_int_or_none(raw.get("cached_input_tokens")),
+        reasoning_tokens=_int_or_none(raw.get("reasoning_tokens")),
+    )
+
+
+def normalize_responses_usage(raw: dict[str, Any] | None) -> CoderUsage:
+    raw = raw or {}
+    input_tokens = _int_or_none(raw.get("input_tokens")) or 0
+    output_tokens = _int_or_none(raw.get("output_tokens")) or 0
+    total_tokens = _int_or_none(raw.get("total_tokens")) or (
+        input_tokens + output_tokens
+    )
+    return CoderUsage(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        total_tokens=total_tokens,
+        cached_input_tokens=_int_or_none(raw.get("input_tokens_details", {}).get("cached_tokens")) if isinstance(raw.get("input_tokens_details"), dict) else None,
+        reasoning_tokens=_int_or_none(raw.get("output_tokens_details", {}).get("reasoning_tokens")) if isinstance(raw.get("output_tokens_details"), dict) else None,
+    )
+
+
+@dataclass(frozen=True)
 class CoderGenerationResult:
     visible_content: str | None
     tool_calls: tuple[ToolCall, ...]
@@ -108,6 +191,9 @@ class CoderGenerationResult:
     finish_reason: str | None
     provider: str
     model: str
+    #: Provider-neutral normalized usage + completion state.
+    normalized_usage: CoderUsage = field(default_factory=CoderUsage)
+    completion: CompletionState = CompletionState.UNKNOWN
     #: Opaque provider-internal continuation state. NEVER browser/transcript/
     #: checkpoint/telemetry exposed.
     protocol_state: dict[str, Any] = field(default_factory=dict, repr=False)
@@ -258,6 +344,10 @@ class ChatCompletionsProvider:
             finish_reason=response.finish_reason,
             provider=self.provider_id,
             model=self.model_id,
+            normalized_usage=normalize_chat_usage(response.usage),
+            completion=CompletionState.from_chat_finish(
+                response.finish_reason, bool(response.tool_calls)
+            ),
             protocol_state={"reasoning_content": response.reasoning_content},
         )
 
@@ -314,15 +404,32 @@ class OpenAIResponsesProvider:
             return json.loads(response.read().decode("utf-8"))
 
     def generate(self, request: CoderGenerationRequest) -> CoderGenerationResult:
+        response_id = request.continuation_state.get("response_id")
+        tool_outputs = [
+            {
+                "type": "function_call_output",
+                "call_id": m.get("tool_call_id"),
+                "output": m.get("content") or "",
+            }
+            for m in request.conversation
+            if m.get("role") == "tool" and m.get("tool_call_id")
+        ]
         payload = {
             "model": self.model_id,
             "instructions": request.system_authority,
-            "input": [
-                {"role": m["role"], "content": m["content"]}
-                for m in request.conversation
-            ],
             "max_output_tokens": request.max_output_tokens,
         }
+        if response_id and tool_outputs:
+            # Continuation: previous_response_id + exact function_call_output
+            # items (call_id preserved). Authority is re-sent explicitly.
+            payload["previous_response_id"] = response_id
+            payload["input"] = tool_outputs
+        else:
+            payload["input"] = [
+                {"role": m["role"], "content": m["content"]}
+                for m in request.conversation
+                if m.get("role") in ("user", "assistant") and m.get("content")
+            ]
         if request.tools:
             payload["tools"] = [
                 {
@@ -362,7 +469,14 @@ class OpenAIResponsesProvider:
             finish_reason=data.get("status"),
             provider=self.provider_id,
             model=self.model_id,
-            protocol_state={"response_id": data.get("id")},
+            normalized_usage=normalize_responses_usage(usage),
+            completion=CompletionState.from_responses_status(
+                data.get("status"), bool(tool_calls)
+            ),
+            protocol_state={
+                "response_id": data.get("id"),
+                "call_ids": [call.id for call in tool_calls],
+            },
         )
 
 

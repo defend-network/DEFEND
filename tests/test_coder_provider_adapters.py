@@ -288,6 +288,72 @@ class TestOpenAIResponsesProvider:
         assert result.tool_calls[0].id == "fc_1"
         assert result.tool_calls[0].arguments == {"path": "a.py"}
 
+    def test_responses_function_output_continuation(self):
+        calls = []
+
+        def transport(body: bytes) -> dict:
+            payload = json.loads(body)
+            calls.append(payload)
+            if "previous_response_id" in payload:
+                return {
+                    "id": "resp_3",
+                    "status": "completed",
+                    "output": [
+                        {
+                            "type": "message",
+                            "content": [{"type": "output_text", "text": "final answer"}],
+                        }
+                    ],
+                    "usage": {"input_tokens": 3, "output_tokens": 2, "total_tokens": 5},
+                }
+            return {
+                "id": "resp_1",
+                "status": "in_progress",
+                "output": [
+                    {
+                        "type": "function_call",
+                        "call_id": "fc_1",
+                        "name": "read_file",
+                        "arguments": '{"path": "a.py"}',
+                    }
+                ],
+            }
+
+        provider = OpenAIResponsesProvider(
+            "gpt-5.6-sol", api_key="sk-fake", transport=transport
+        )
+        first = provider.generate(
+            CoderGenerationRequest(
+                system_authority="DEFEND authority",
+                conversation=(),
+                tools=(),
+            )
+        )
+        assert first.tool_calls[0].id == "fc_1"
+        assert first.protocol_state["response_id"] == "resp_1"
+        # Continuation: tool result becomes function_call_output with the SAME
+        # call_id, plus previous_response_id.
+        second = provider.generate(
+            CoderGenerationRequest(
+                system_authority="DEFEND authority",
+                conversation=(
+                    {"role": "tool", "tool_call_id": "fc_1", "content": "file contents"},
+                ),
+                continuation_state=first.protocol_state,
+            )
+        )
+        assert second.visible_content == "final answer"
+        continuation_payload = calls[1]
+        assert continuation_payload["previous_response_id"] == "resp_1"
+        assert continuation_payload["input"] == [
+            {
+                "type": "function_call_output",
+                "call_id": "fc_1",
+                "output": "file contents",
+            }
+        ]
+        assert continuation_payload["instructions"] == "DEFEND authority"
+
 
 class TestCoderProviderFactory:
     def test_factory_routes_to_correct_provider(self):
