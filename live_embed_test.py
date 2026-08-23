@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from ollama_embedding_client import OllamaEmbeddingClient
+from defend_ai.ollama_embedding_client import OllamaEmbeddingClient
 
 
 async def main():

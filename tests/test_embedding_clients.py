@@ -8,7 +8,7 @@ from functools import wraps
 import httpx
 import pytest
 
-from openai_embedding_client import OpenAIEmbeddingClient
+from defend_ai.openai_embedding_client import OpenAIEmbeddingClient
 
 
 def run_async(function):

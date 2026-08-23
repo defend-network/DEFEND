@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from control_plane import PolicyDecision, AgentRequest
-from tool_sdk import DefendTool, ToolPermission, RiskLevel, SideEffect
-from execution_protocol import PlanStep
+from .control_plane import PolicyDecision, AgentRequest
+from .tool_sdk import DefendTool, ToolPermission, RiskLevel, SideEffect
+from .execution_protocol import PlanStep
 
 
 # Public agent allowlist.

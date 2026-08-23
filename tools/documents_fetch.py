@@ -10,7 +10,7 @@ import pymupdf
 
 import httpx
 
-from tool_sdk import (
+from defend_ai.tool_sdk import (
     DefendTool,
     ToolContext,
     ToolResult,
@@ -22,7 +22,7 @@ from tool_sdk import (
     DataClassification,
     SourceRef,
 )
-from bootstrap_models import (
+from defend_ai.bootstrap_models import (
     DocumentsFetchInput,
     DocumentsFetchOutput,
     DocumentMediaType,

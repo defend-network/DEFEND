@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from control_plane import PolicyDecision
-from tool_sdk import RiskLevel, SideEffect, ToolPermission
+from .control_plane import PolicyDecision
+from .tool_sdk import RiskLevel, SideEffect, ToolPermission
 
 
 class DevWebPolicy:

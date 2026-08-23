@@ -4,8 +4,8 @@ import sys
 import types
 from pathlib import Path
 
-from bootstrap_models import RagIngestInput
-from tool_sdk import ToolContext, ToolErrorCode
+from defend_ai.bootstrap_models import RagIngestInput
+from defend_ai.tool_sdk import ToolContext, ToolErrorCode
 
 
 def _load_rag_ingest(monkeypatch):

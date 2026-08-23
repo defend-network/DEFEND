@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 
 from defend_data.memory_manager import MemoryManager
 from defend_data.namespace_policy import resolve_public_scope
-from tool_sdk import (
+from defend_ai.tool_sdk import (
     DataClassification,
     DefendTool,
     RiskLevel,

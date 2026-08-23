@@ -11,7 +11,7 @@ from pathlib import Path, PureWindowsPath
 import uuid
 
 from defend_data.ingest_policy import AIIngestExcluded, assert_ai_ingest_allowed
-from embedding_client import EmbeddingClient
+from defend_ai.embedding_client import EmbeddingClient
 
 
 MAX_PERMANENT_FILE_BYTES = 25_000_000

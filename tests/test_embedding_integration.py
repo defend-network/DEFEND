@@ -1,4 +1,4 @@
-from registry import build_default_registry
+from defend_ai.registry import build_default_registry
 from defend_data.admin_rag import PermanentRagService
 
 

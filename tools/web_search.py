@@ -5,7 +5,7 @@ import os
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
-from tool_sdk import (
+from defend_ai.tool_sdk import (
     DefendTool,
     ToolContext,
     ToolResult,
@@ -17,7 +17,7 @@ from tool_sdk import (
     DataClassification,
     SourceRef,
 )
-from bootstrap_models import WebSearchInput, WebSearchOutput, WebSearchResult
+from defend_ai.bootstrap_models import WebSearchInput, WebSearchOutput, WebSearchResult
 from tools.ddgs_provider import DDGSSearchProvider
 
 

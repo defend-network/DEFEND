@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 import httpx
 from bs4 import BeautifulSoup
 
-from tool_sdk import (
+from defend_ai.tool_sdk import (
     DefendTool,
     ToolContext,
     ToolResult,
@@ -21,7 +21,7 @@ from tool_sdk import (
     DataClassification,
     SourceRef,
 )
-from bootstrap_models import WebFetchInput, WebFetchOutput
+from defend_ai.bootstrap_models import WebFetchInput, WebFetchOutput
 
 
 MAX_DOWNLOAD_BYTES = 2_000_000

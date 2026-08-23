@@ -8,14 +8,14 @@ from typing import Any, Type, TypeVar
 import httpx
 from pydantic import BaseModel, ValidationError
 
-from model_client import (
+from .model_client import (
     ModelNotFoundError,
     ModelProtocolError,
     ModelTimeoutError,
     ModelUnavailableError,
     StructuredOutputError,
 )
-from model_types import (
+from .model_types import (
     ChatMessage,
     GenerationOptions,
     MessageRole,

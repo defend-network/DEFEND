@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from tool_sdk import (
+from defend_ai.tool_sdk import (
     DefendTool,
     ToolContext,
     ToolResult,
@@ -10,10 +10,10 @@ from tool_sdk import (
     SideEffect,
     DataClassification,
 )
-from bootstrap_models import RagQueryInput, RagQueryOutput, RagHit
-from rag_store import get_or_create_table, ensure_fts_index
-from embedding_client import EmbeddingClient
-from ollama_embedding_client import OllamaEmbeddingClient
+from defend_ai.bootstrap_models import RagQueryInput, RagQueryOutput, RagHit
+from defend_ai.rag_store import get_or_create_table, ensure_fts_index
+from defend_ai.embedding_client import EmbeddingClient
+from defend_ai.ollama_embedding_client import OllamaEmbeddingClient
 
 
 def _score_from_row(row: dict) -> tuple[float | None, float]:

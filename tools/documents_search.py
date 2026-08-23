@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from tool_sdk import (
+from defend_ai.tool_sdk import (
     DefendTool,
     ToolContext,
     ToolResult,
@@ -10,7 +10,7 @@ from tool_sdk import (
     SideEffect,
     DataClassification,
 )
-from bootstrap_models import DocumentsSearchInput, DocumentsSearchOutput, RagQueryInput
+from defend_ai.bootstrap_models import DocumentsSearchInput, DocumentsSearchOutput, RagQueryInput
 from tools.rag_query import RagQueryTool
 
 

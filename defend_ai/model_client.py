@@ -4,7 +4,7 @@ from typing import Protocol, TypeVar
 
 from pydantic import BaseModel
 
-from model_types import ChatMessage, GenerationOptions, ModelResponse
+from .model_types import ChatMessage, GenerationOptions, ModelResponse
 
 
 T = TypeVar("T", bound=BaseModel)

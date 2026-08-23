@@ -5,9 +5,9 @@ from dataclasses import dataclass, field
 import ipaddress
 from urllib.parse import urlsplit
 
-from embedding_client import EmbeddingClient
-from ollama_embedding_client import OllamaEmbeddingClient
-from openai_embedding_client import OpenAIEmbeddingClient
+from .embedding_client import EmbeddingClient
+from .ollama_embedding_client import OllamaEmbeddingClient
+from .openai_embedding_client import OpenAIEmbeddingClient
 
 
 _VECTOR_DIM = 1024

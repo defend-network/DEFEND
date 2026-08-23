@@ -7,10 +7,10 @@ from pathlib import Path
 
 import gradio as gr
 
-from control_plane import AgentRequest, ControlPlane
-from registry import build_default_registry
-from ollama_client import OllamaClient
-from defend_system import get_system_prompt
+from defend_ai.control_plane import AgentRequest, ControlPlane
+from defend_ai.registry import build_default_registry
+from defend_ai.ollama_client import OllamaClient
+from defend_ai.defend_system import get_system_prompt
 
 try:
     from production_policy import ProductionPolicy

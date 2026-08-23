@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from tool_sdk import DefendTool
+from .tool_sdk import DefendTool
 from tools.calculator import CalculatorTool
 from tools.time_tool import TimeNowTool
 from tools.web_search import WebSearchTool
@@ -13,7 +13,7 @@ from tools.documents_search import DocumentsSearchTool
 from tools.research_cache_ingest import ResearchCacheIngestTool
 from tools.memory_search import MemorySearchTool
 from tools.memory_propose import MemoryProposeTool
-from embedding_client import EmbeddingClient
+from .embedding_client import EmbeddingClient
 
 
 def build_default_registry(

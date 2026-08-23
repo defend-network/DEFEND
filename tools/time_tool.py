@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from tool_sdk import (
+from defend_ai.tool_sdk import (
     DataClassification,
     DefendTool,
     RiskLevel,
@@ -13,7 +13,7 @@ from tool_sdk import (
     ToolErrorCode,
     ToolResult,
 )
-from bootstrap_models import TimeNowInput, TimeNowOutput
+from defend_ai.bootstrap_models import TimeNowInput, TimeNowOutput
 
 
 class TimeNowTool(DefendTool[TimeNowInput, TimeNowOutput]):

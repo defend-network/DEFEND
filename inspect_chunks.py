@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from rag_store import get_or_create_table
+from defend_ai.rag_store import get_or_create_table
 
 DOC = "doc_27df51c1baea47bb"
 NEEDLES = ["table 13", "table13", "table  13", "tble 13", "tabl e 13"]

@@ -5,9 +5,9 @@ from __future__ import annotations
 import asyncio
 import json
 
-from control_plane import AgentRequest, ControlPlane
-from registry import build_default_registry
-from model_types import ChatMessage, MessageRole, ModelResponse, GenerationOptions
+from defend_ai.control_plane import AgentRequest, ControlPlane
+from defend_ai.registry import build_default_registry
+from defend_ai.model_types import ChatMessage, MessageRole, ModelResponse, GenerationOptions
 
 
 class SpyClient:

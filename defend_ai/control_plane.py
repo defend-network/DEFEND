@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from model_client import ModelClient
+from .model_client import ModelClient
 import asyncio
 import re
 import inspect
@@ -10,11 +10,11 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Protocol
 from uuid import uuid4
-from defend_system import get_system_prompt
+from .defend_system import get_system_prompt
 
 from pydantic import BaseModel, Field
 
-from tool_sdk import (
+from .tool_sdk import (
     DefendTool,
     RiskLevel,
     SideEffect,
@@ -24,7 +24,7 @@ from tool_sdk import (
     ToolPermission,
     ToolResult,
 )
-from execution_protocol import (
+from .execution_protocol import (
     ApprovalMode,
     ExecutablePlan,
     FailurePolicy,
@@ -591,7 +591,7 @@ class ControlPlane:
         request: AgentRequest,
         trace_id: str,
     ) -> tuple[list[Any], PlanExecution | None]:
-        from execution_protocol import PlanBudget, StepBudget
+        from .execution_protocol import PlanBudget, StepBudget
         plan = ExecutablePlan(
             objective=query,
             steps=[
@@ -835,7 +835,7 @@ class ControlPlane:
             )
             choice_by_step[step_id] = cand
 
-        from execution_protocol import PlanBudget, StepBudget
+        from .execution_protocol import PlanBudget, StepBudget
         # tighten per-fetch timeouts so a hung download cannot burn the full wall clock
         capped_steps: list[PlanStep] = []
         for st in fetch_steps:
@@ -1059,7 +1059,7 @@ class ControlPlane:
                 reason="Model unavailable; heuristic assessment",
             )
 
-        from model_types import ChatMessage, GenerationOptions, MessageRole
+        from .model_types import ChatMessage, GenerationOptions, MessageRole
 
         blocks = []
         for e in state.evidence[:12]:
@@ -1110,7 +1110,7 @@ class ControlPlane:
     ) -> str | None:
         if self.model is None:
             return request.message + " official statistics government"
-        from model_types import ChatMessage, GenerationOptions, MessageRole
+        from .model_types import ChatMessage, GenerationOptions, MessageRole
 
         system = (
             "Propose ONE refined web search query for primary official statistics. "
@@ -1140,7 +1140,7 @@ class ControlPlane:
         if self.model is None:
             return "Model not connected."
 
-        from model_types import ChatMessage, GenerationOptions, MessageRole
+        from .model_types import ChatMessage, GenerationOptions, MessageRole
 
         # Cap evidence so the finalizer cannot blow context
         max_items = 8
@@ -1223,7 +1223,7 @@ class ControlPlane:
         if self.model is None:
             content = "Model not connected yet."
         else:
-            from model_types import ChatMessage, GenerationOptions, MessageRole
+            from .model_types import ChatMessage, GenerationOptions, MessageRole
 
             turn_context = self._build_turn_context(request)
             system = (
@@ -1295,9 +1295,9 @@ class ControlPlane:
         if self.model is None:
             return None
 
-        from model_types import ChatMessage, GenerationOptions, MessageRole
-        from execution_protocol import SingleToolDecision
-        from model_client import (
+        from .model_types import ChatMessage, GenerationOptions, MessageRole
+        from .execution_protocol import SingleToolDecision
+        from .model_client import (
             StructuredOutputError,
             ModelTimeoutError,
             ModelUnavailableError,
@@ -1346,7 +1346,7 @@ class ControlPlane:
         if self.model is None:
             return None
 
-        from model_types import ChatMessage, GenerationOptions, MessageRole
+        from .model_types import ChatMessage, GenerationOptions, MessageRole
 
         available = []
         for tool in self.tools.values():
@@ -1389,7 +1389,7 @@ class ControlPlane:
         if self.model is None:
             return f"Model not connected. Execution finished with status: {execution.status.value}"
 
-        from model_types import ChatMessage, GenerationOptions, MessageRole
+        from .model_types import ChatMessage, GenerationOptions, MessageRole
 
         step_summaries = []
         for step_id, step_exec in execution.steps.items():
@@ -2114,8 +2114,8 @@ class ControlPlane:
         if self.model is None or not results:
             return None
 
-        from model_types import ChatMessage, GenerationOptions, MessageRole
-        from execution_protocol import SourceSelection
+        from .model_types import ChatMessage, GenerationOptions, MessageRole
+        from .execution_protocol import SourceSelection
 
         candidate_map = {r.source_id: r for r in results}
 

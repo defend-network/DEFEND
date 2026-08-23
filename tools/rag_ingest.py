@@ -4,7 +4,7 @@ import hashlib
 import re
 from datetime import datetime, timezone
 
-from tool_sdk import (
+from defend_ai.tool_sdk import (
     DefendTool,
     ToolContext,
     ToolResult,
@@ -14,12 +14,12 @@ from tool_sdk import (
     SideEffect,
     DataClassification,
 )
-from bootstrap_models import RagIngestInput, RagIngestOutput
+from defend_ai.bootstrap_models import RagIngestInput, RagIngestOutput
 from defend_data.ingest_policy import AIIngestExcluded, assert_ai_ingest_allowed
 from tools.documents_store import load_raw, load_meta
-from rag_store import ChunkRow, get_or_create_table, delete_document_chunks, VECTOR_DIM
-from embedding_client import EmbeddingClient
-from ollama_embedding_client import OllamaEmbeddingClient
+from defend_ai.rag_store import ChunkRow, get_or_create_table, delete_document_chunks, VECTOR_DIM
+from defend_ai.embedding_client import EmbeddingClient
+from defend_ai.ollama_embedding_client import OllamaEmbeddingClient
 
 
 def _chunk_text(text: str, max_chars: int = 1800, overlap: int = 200) -> list[tuple[int, int, str]]:

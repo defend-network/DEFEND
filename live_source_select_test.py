@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import asyncio
 
-from control_plane import AgentRequest, ControlPlane
-from registry import build_default_registry
-from ollama_client import OllamaClient
-from dev_policy import DevWebPolicy
-from execution_protocol import ExecutablePlan, PlanStep, ToolCall
+from defend_ai.control_plane import AgentRequest, ControlPlane
+from defend_ai.registry import build_default_registry
+from defend_ai.ollama_client import OllamaClient
+from defend_ai.dev_policy import DevWebPolicy
+from defend_ai.execution_protocol import ExecutablePlan, PlanStep, ToolCall
 
 
 async def main():

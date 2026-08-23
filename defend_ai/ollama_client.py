@@ -6,7 +6,7 @@ from typing import Any, TypeVar
 import httpx
 from pydantic import BaseModel, ValidationError
 
-from model_client import (
+from .model_client import (
     ModelClientError,
     ModelNotFoundError,
     ModelProtocolError,
@@ -14,7 +14,7 @@ from model_client import (
     ModelUnavailableError,
     StructuredOutputError,
 )
-from model_types import (
+from .model_types import (
     ChatMessage,
     GenerationOptions,
     ModelResponse,

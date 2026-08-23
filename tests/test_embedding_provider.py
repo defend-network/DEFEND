@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from embedding_provider import EmbeddingSettings, build_embedding_client
-from ollama_embedding_client import OllamaEmbeddingClient
-from openai_embedding_client import OpenAIEmbeddingClient
+from defend_ai.embedding_provider import EmbeddingSettings, build_embedding_client
+from defend_ai.ollama_embedding_client import OllamaEmbeddingClient
+from defend_ai.openai_embedding_client import OpenAIEmbeddingClient
 
 
 def test_embedding_settings_default_to_explicit_ollama_compatibility():

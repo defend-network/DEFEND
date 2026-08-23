@@ -4,7 +4,7 @@ import ast
 import math
 import operator
 
-from tool_sdk import (
+from defend_ai.tool_sdk import (
     DataClassification,
     DefendTool,
     RiskLevel,
@@ -14,7 +14,7 @@ from tool_sdk import (
     ToolErrorCode,
     ToolResult,
 )
-from bootstrap_models import CalculatorInput, CalculatorOutput
+from defend_ai.bootstrap_models import CalculatorInput, CalculatorOutput
 
 
 _ALLOWED_OPS = {

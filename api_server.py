@@ -19,9 +19,9 @@ from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadF
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from control_plane import AgentRequest, ControlPlane
-from registry import build_default_registry
-from model_factory import build_model_client
+from defend_ai.control_plane import AgentRequest, ControlPlane
+from defend_ai.registry import build_default_registry
+from defend_ai.model_factory import build_model_client
 from admin_auth import AdminPrincipal, configure_identity_store, require_admin
 from api_admin_tt_routes import router as admin_tt_router
 from api_batch3_routes import router as batch3_router, ensure_visitor_session
@@ -40,10 +40,10 @@ from defend_integrations.stores import (
     default_config_path,
     default_secret_path,
 )
-from embedding_client import EmbeddingClient
-from embedding_provider import EmbeddingSettings, build_embedding_client
+from defend_ai.embedding_client import EmbeddingClient
+from defend_ai.embedding_provider import EmbeddingSettings, build_embedding_client
 
-from production_policy import ProductionPolicy
+from defend_ai.production_policy import ProductionPolicy
 
 API_TOKEN = os.getenv("DEFEND_API_TOKEN", "").strip()
 MODEL_NAME = os.getenv("DEFEND_MODEL", "defend-ai:latest")

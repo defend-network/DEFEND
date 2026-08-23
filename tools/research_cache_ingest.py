@@ -4,19 +4,19 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import re
 
-from tool_sdk import (
+from defend_ai.tool_sdk import (
     DefendTool, ToolContext, ToolResult, ToolError, ToolErrorCode,
     RiskLevel, SideEffect, DataClassification,
 )
-from bootstrap_models import RagIngestInput, RagIngestOutput, DocumentsReadInput
+from defend_ai.bootstrap_models import RagIngestInput, RagIngestOutput, DocumentsReadInput
 from tools.documents_store import load_meta
 from tools.documents_read import DocumentsReadTool
-from rag_store import (
+from defend_ai.rag_store import (
     ChunkRow, VECTOR_DIM, get_or_create_table,
     delete_document_chunks, ensure_fts_index, purge_expired,
 )
-from ollama_embedding_client import OllamaEmbeddingClient
-from embedding_client import EmbeddingClient
+from defend_ai.ollama_embedding_client import OllamaEmbeddingClient
+from defend_ai.embedding_client import EmbeddingClient
 
 DEFAULT_TTL_HOURS = 24 * 7
 
