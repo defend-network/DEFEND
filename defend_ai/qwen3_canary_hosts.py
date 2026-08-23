@@ -104,7 +104,7 @@ class ConcreteVastGateway:
         return offers[0] if offers else None
 
     def create(self, offer: VastOffer):
-        return self._get_client().create_instance(offer, candidate_canary_launch())
+        return self._get_client().create_instance(offer, candidate_canary_launch(self._run_id))
 
     def destroy(self, instance_id: int) -> bool:
         return self._get_client().destroy_instance(instance_id, confirmed_instance_id=instance_id)
@@ -162,6 +162,10 @@ class ConcreteRemoteHost:
         self._ssh_runner = ssh_runner or self._default_ssh_runner
         self._git_head = git_head
         self._train_remote_path = train_remote_path
+        self._run_id = ""
+
+    def set_run_id(self, run_id: str) -> None:
+        self._run_id = run_id
 
     @property
     def target(self) -> CanaryRemoteTarget | None:
@@ -183,16 +187,8 @@ class ConcreteRemoteHost:
     def _build_ssh_command(target: CanaryRemoteTarget, remote_command: str) -> list[str]:
         return ["ssh", "-p", str(target.port), f"{target.user}@{target.host}", remote_command]
 
-    @staticmethod
-    def _run_id_from_adapter_dir(adapter_dir: str) -> str:
-        parts = adapter_dir.replace("\\", "/").rstrip("/").split("/")
-        # canary-artifacts/<run_id>/adapter
-        if len(parts) >= 2 and parts[0] == "canary-artifacts":
-            return parts[1]
-        return ""
-
     def _stage_command(self, stage: str, adapter_dir: str, git_head: str) -> str:
-        run_id = self._run_id_from_adapter_dir(adapter_dir)
+        run_id = self._run_id
         if stage == "HOST_PREFLIGHT":
             head = git_head or self._git_head
             return (

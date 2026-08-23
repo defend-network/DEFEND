@@ -43,6 +43,7 @@ from .training_hardening import (
     RUNTIME_AMBIGUOUS,
     RUNTIME_UNKNOWN,
     classify_production_runtime,
+    candidate_label_matches,
     resolve_production_identity,
     validate_candidate_canary_identity,
 )
@@ -291,7 +292,7 @@ def build_certification(
         purpose="TRAINING",
         role="CANDIDATE_CANARY",
     )
-    launch_ok = candidate_canary_launch().label == "defend-ai-qwen3-candidate-canary"
+    launch_ok = candidate_label_matches(candidate_canary_launch().label)
 
     converted, conversion = convert_sft_to_qwen3(train_rows)
     converted_sha = conversion["dataset_sha256"]
@@ -566,6 +567,9 @@ class Qwen3CanaryExecutor:
                 instance_id=canary_id, host=target_info["host"], port=target_info["port"],
                 user=target_info.get("user", "root"), offer_id=offer.offer_id, hourly_rate=actual_rate,
             ))
+            set_run_id = getattr(self.remote, "set_run_id", None)
+            if set_run_id is not None:
+                set_run_id(self.run_id)
             evidence.append(PhaseEvidence("TARGET_READY", "PASS", False, True, f"instance={canary_id}"))
 
             adapter_dir = f"canary-artifacts/{self.run_id}/adapter"

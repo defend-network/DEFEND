@@ -10,19 +10,25 @@ from decimal import Decimal
 
 from shared_platform.compute_types import LaunchSpec, ResourceProfile
 
+CANDIDATE_LABEL_PREFIX = "defend-ai-qwen3-canary"
+
 
 def production_serving_launch() -> LaunchSpec:
     """DEFEND AI production serving launch (vLLM image, production label)."""
     return LaunchSpec("vllm/vllm-openai:v0.10.0", 160, "ssh_proxy", "defend-vllm")
 
 
-def candidate_canary_launch() -> LaunchSpec:
-    """DEFEND AI Qwen3 QLoRA training canary launch — isolated non-production label."""
+def candidate_canary_launch(run_id: str = "") -> LaunchSpec:
+    """DEFEND AI Qwen3 QLoRA training canary launch — direct SSH, non-production,
+    run-scoped label derived from the trusted run_id."""
+    from .canary_plan import run_candidate_label
+
+    label = run_candidate_label(run_id) if run_id else CANDIDATE_LABEL_PREFIX
     return LaunchSpec(
         "pytorch/pytorch:2.7.1-cuda12.8-cudnn9-devel",
         200,
-        "ssh_proxy",
-        "defend-ai-qwen3-candidate-canary",
+        "ssh_direct",
+        label,
     )
 
 

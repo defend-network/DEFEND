@@ -904,7 +904,15 @@ class VastClient:
             and launch.runtype in (coder.runtype, coder_heavy.runtype)
         )
         candidate_canary = LaunchSpec.candidate_canary()
-        is_candidate_canary_launch = launch == candidate_canary
+        is_candidate_canary_launch = (
+            launch.image == candidate_canary.image
+            and launch.disk_gb == candidate_canary.disk_gb
+            and launch.runtype == candidate_canary.runtype
+            and (
+                launch.label == candidate_canary.label
+                or launch.label.startswith(candidate_canary.label + "-")
+            )
+        )
         if (
             launch != LaunchSpec.default()
             and not is_coder_launch
