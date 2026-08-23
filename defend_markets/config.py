@@ -52,7 +52,10 @@ class MarketsSettings:
     data_root: Path
     database_url: str = field(repr=False)
     api_port: int = 8300
-    web_port: int = 3300
+    # The Markets owner UI is served by the shared defend-ui-v2 web surface
+    # (port 3000), not a standalone Markets web app. 3300 collides with
+    # SCS_AI_WEB_PORT; the canonical Markets UI port is 3000.
+    web_port: int = 3000
     public_origin: str = "https://defendmarkets.defend-network.org"
     session_cookie: str = "markets_session"
 
@@ -68,7 +71,7 @@ class MarketsSettings:
             data_root=_environment_data_root(),
             database_url=_required_database_url(),
             api_port=_environment_port("MARKETS_API_PORT", 8300),
-            web_port=_environment_port("MARKETS_WEB_PORT", 3300),
+            web_port=_environment_port("MARKETS_WEB_PORT", 3000),
             public_origin=_environment_value(
                 "MARKETS_PUBLIC_ORIGIN", "https://defendmarkets.defend-network.org"
             ),

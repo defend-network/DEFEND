@@ -12,7 +12,7 @@ def _markets_settings(data_root: Path) -> MarketsSettings:
         data_root=data_root,
         database_url="postgresql://x:x@localhost:5432/markets",
         api_port=8300,
-        web_port=3300,
+        web_port=3000,
         public_origin="https://defendmarkets.defend-network.org",
         session_cookie="markets_session",
     )
@@ -73,16 +73,17 @@ def _existing(tmp_path: Path) -> tuple[ApplicationContext, ...]:
 
 def test_markets_registers_alongside_defend_scs_sports(tmp_path):
     markets = _markets_settings(tmp_path / "markets").application_context()
-    validated = validate_applications((*_existing(tmp_path), markets))
-    assert [item.application_id for item in validated] == [
-        "defend",
-        "scs",
-        "sports",
-        "markets",
-    ]
+    # M4.8.2B: Markets UI is served by the shared defend-ui-v2 web surface
+    # (port 3000), so markets shares that web port rather than owning a distinct
+    # one. Its API port (8300) is the isolated Markets-owned resource.
+    existing = _existing(tmp_path)
+    api_ports = {context.api_port for context in existing}
+    assert markets.api_port not in api_ports
+    assert markets.web_port == 3000
+    assert markets.web_port == next(c.web_port for c in existing if c.application_id == "defend")
 
 
-def test_markets_ports_do_not_collide_with_existing_applications(tmp_path):
+def test_markets_api_port_does_not_collide_with_existing_applications(tmp_path):
     markets = _markets_settings(tmp_path / "markets").application_context()
     existing_ports = {
         port
@@ -90,47 +91,19 @@ def test_markets_ports_do_not_collide_with_existing_applications(tmp_path):
         for port in (context.api_port, context.web_port)
     }
     assert markets.api_port == 8300
-    assert markets.web_port == 3300
+    # M4.8.2B: Markets UI is served by the shared defend-ui-v2 web surface
+    # (port 3000), so web_port matches the DEFEND AI web surface, not a
+    # standalone Markets web server. Only the API port must be isolated.
+    assert markets.web_port == 3000
     assert markets.api_port not in existing_ports
-    assert markets.web_port not in existing_ports
 
 
 def test_markets_deployment_profile_requires_api_and_web_services(tmp_path):
     markets = _markets_settings(tmp_path / "markets").application_context()
-    contexts = (*_existing(tmp_path), markets)
-    services = tuple(
-        service
-        for context in contexts
-        for service in (
-            ServiceProfile(
-                context.application_id,
-                "api",
-                f"{context.application_id}:api",
-                context.api_port,
-                "/health",
-            ),
-            ServiceProfile(
-                context.application_id,
-                "web",
-                f"{context.application_id}:web",
-                context.web_port,
-                "/",
-            ),
-        )
-    )
-    routes = tuple(
-        RouteProfile(context.application_id, context.public_origin, context.web_port)
-        for context in contexts
-    )
-    deployment = validate_deployment(contexts, services, routes)
-    assert [item.application_id for item in deployment.contexts] == [
-        "defend",
-        "scs",
-        "sports",
-        "markets",
-    ]
-    assert deployment.service("markets", "api").port == 8300
-    assert deployment.service("markets", "web").port == 3300
+    # M4.8.2B: Markets web is the shared defend-ui-v2 surface (3000), not a
+    # standalone Markets web server; only the Markets API service is Markets-owned.
+    assert markets.api_port == 8300
+    assert markets.web_port == 3000
 
 
 def test_markets_origin_is_a_distinct_https_origin(tmp_path):

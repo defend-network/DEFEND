@@ -257,8 +257,11 @@ export type PerformanceResponse = {
   as_of?: string | null;
 };
 
+// Same-origin: the browser talks to the Next frontend origin, which proxies
+// /api/markets/* and /v1/* to the loopback Markets API (127.0.0.1:8300) via
+// next.config.mjs rewrites. This avoids cross-origin CORS entirely.
 export const MARKETS_API_BASE = (
-  process.env.NEXT_PUBLIC_MARKETS_API_BASE ?? "http://127.0.0.1:8300"
+  process.env.NEXT_PUBLIC_MARKETS_API_BASE ?? ""
 ).replace(/\/$/, "");
 
 export class MarketsApiError extends Error {
