@@ -370,11 +370,29 @@ class VastGateway(Protocol):
     def create(self, offer: VastOffer) -> object: ...  # returns object with .instance_id/.dph_total
     def destroy(self, instance_id: int) -> bool: ...
     def instance_state(self, instance_id: int) -> str: ...  # PRESENT | ABSENT | UNKNOWN
+    def resolve_target(self, instance_id: int) -> dict | None: ...  # {host, port, user}
 
 
 INSTANCE_PRESENT = "PRESENT"
 INSTANCE_ABSENT = "ABSENT"
 INSTANCE_UNKNOWN = "UNKNOWN"
+
+
+@dataclass
+class RemoteStageResult:
+    """Typed, authoritative remote-stage result (never stdout tail alone)."""
+
+    status: str
+    steps_completed: int | None = None
+    detail: str = ""
+
+
+def parse_remote_result(raw: dict, stage: str) -> RemoteStageResult:
+    status = raw.get("status", "FAIL")
+    steps = raw.get("steps") if stage == "TRAIN_5_STEPS" else None
+    if steps is None and stage == "TRAIN_5_STEPS":
+        steps = raw.get("steps_completed")
+    return RemoteStageResult(status=status, steps_completed=steps, detail=str(raw.get("detail", "")))
 
 
 class RemoteHost(Protocol):
@@ -477,20 +495,38 @@ class Qwen3CanaryExecutor:
             budget_deadline, teardown_deadline = self._budget_deadlines(self.clock(), actual_rate)
             evidence.append(PhaseEvidence("INSTANCE_CREATE", "PASS", True, True, f"instance={canary_id} rate={actual_rate}"))
 
+            # Bind an immutable provider-derived remote target before any stage.
+            bind = getattr(self.remote, "bind_target", None)
+            if bind is not None:
+                target_info = self.vast.resolve_target(canary_id)
+                if not target_info or not target_info.get("host") or not target_info.get("port"):
+                    raise RuntimeError("SSH endpoint unresolved for created instance")
+                from .qwen3_canary_hosts import BLOCKED_HOSTS, CanaryRemoteTarget
+
+                if target_info.get("host") in BLOCKED_HOSTS:
+                    raise RuntimeError("created instance resolved to blocked host")
+                bind(CanaryRemoteTarget(
+                    instance_id=canary_id, host=target_info["host"], port=target_info["port"],
+                    user=target_info.get("user", "root"), offer_id=offer.offer_id, hourly_rate=actual_rate,
+                ))
+
             adapter_dir = f"canary-artifacts/{self.run_id}/adapter"
             adapter_dir_out = adapter_dir
-            for stage in ("HOST_PREFLIGHT", "TOKENIZER_TEMPLATE_PROOF", "TRAIN_5_STEPS", "FRESH_RELOAD"):
+            for stage in ("HOST_PREFLIGHT", "TRAIN_5_STEPS", "FRESH_RELOAD"):
                 now = self.clock()
                 if now > teardown_deadline:
                     raise _BudgetExceeded("teardown deadline reached before stage start")
                 remaining = budget_deadline - now
                 timeout = max(1.0, remaining - self.policy.teardown_reserve_seconds)
-                result = self.remote.run_stage(stage, canary_id, adapter_dir, timeout)
-                evidence.append(PhaseEvidence(stage, result.get("status", "PASS"), False, True, result.get("detail", "")))
+                raw = self.remote.run_stage(stage, canary_id, adapter_dir, timeout)
+                result = parse_remote_result(raw, stage)
+                evidence.append(PhaseEvidence(stage, result.status, False, True, result.detail))
                 if stage == "TRAIN_5_STEPS":
-                    steps = result.get("steps", 0)
-                if result.get("status") == "FAIL":
-                    raise RuntimeError(f"{stage} failed: {result.get('detail')}")
+                    if result.steps_completed is None:
+                        raise RuntimeError("TRAIN result missing authoritative steps_completed")
+                    steps = result.steps_completed
+                if result.status == "FAIL":
+                    raise RuntimeError(f"{stage} failed: {result.detail}")
 
         except Exception as exc:
             evidence.append(PhaseEvidence("FAILED", "FAIL", False, True, f"{type(exc).__name__}"))

@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 from typing import Callable
@@ -19,6 +20,37 @@ from .qwen3_canary_executor import ProductionInventory, candidate_canary_resourc
 from .qwen3_canary_runner import CanaryPolicy
 from .training_hardening import INVENTORY_UNKNOWN
 from .types import LaunchSpec, VastOffer
+
+
+@dataclass(frozen=True)
+class CanaryRemoteTarget:
+    """Immutable connection identity bound exactly once for the run."""
+
+    instance_id: int
+    host: str
+    port: int
+    user: str
+    offer_id: int
+    hourly_rate: Decimal
+
+
+BLOCKED_HOSTS = frozenset({"ssh3.vast.ai"})
+
+
+def _classify_instance_response(instances) -> str:
+    """Map a raw provider ``instances`` field to tri-state. ``None``/empty is
+    authoritative ABSENT; non-empty mapping/list is PRESENT."""
+    from .qwen3_canary_executor import INSTANCE_ABSENT, INSTANCE_PRESENT, INSTANCE_UNKNOWN
+
+    if instances is None:
+        return INSTANCE_ABSENT
+    if isinstance(instances, dict) and instances:
+        return INSTANCE_PRESENT
+    if isinstance(instances, list) and instances:
+        return INSTANCE_PRESENT
+    if isinstance(instances, (dict, list)):
+        return INSTANCE_ABSENT
+    return INSTANCE_UNKNOWN
 
 
 class ConcreteVastGateway:
@@ -76,6 +108,18 @@ class ConcreteVastGateway:
     def destroy(self, instance_id: int) -> bool:
         return self._get_client().destroy_instance(instance_id, confirmed_instance_id=instance_id)
 
+    def resolve_target(self, instance_id: int) -> dict | None:
+        """Resolve the direct SSH endpoint belonging to the exact created
+        instance from provider evidence (never caller-supplied host identity)."""
+        instance = self._get_client().show_instance(instance_id)
+        if instance.instance_id != instance_id:
+            return None
+        host = instance.direct_ssh_host or instance.ssh_host
+        port = instance.direct_ssh_port or instance.ssh_port
+        if not host or not port:
+            return None
+        return {"host": host, "port": int(port), "user": "root"}
+
     def instance_state(self, instance_id: int) -> str:
         """Tri-state read-only instance verification (never fail-open).
 
@@ -103,37 +147,6 @@ class ConcreteVastGateway:
         return _classify_instance_response(instances)
 
 
-class CanaryRemoteTarget:
-    """Immutable connection identity bound once for the run."""
-
-    def __init__(self, *, instance_id: int, host: str, port: int, user: str, offer_id: int, hourly_rate: Decimal) -> None:
-        self.instance_id = instance_id
-        self.host = host
-        self.port = port
-        self.user = user
-        self.offer_id = offer_id
-        self.hourly_rate = hourly_rate
-
-
-BLOCKED_HOSTS = frozenset({"ssh3.vast.ai"})
-
-
-def _classify_instance_response(instances) -> str:
-    """Map a raw provider ``instances`` field to tri-state. ``None``/empty is
-    authoritative ABSENT; non-empty mapping/list is PRESENT."""
-    from .qwen3_canary_executor import INSTANCE_ABSENT, INSTANCE_PRESENT, INSTANCE_UNKNOWN
-
-    if instances is None:
-        return INSTANCE_ABSENT
-    if isinstance(instances, dict) and instances:
-        return INSTANCE_PRESENT
-    if isinstance(instances, list) and instances:
-        return INSTANCE_PRESENT
-    if isinstance(instances, (dict, list)):
-        return INSTANCE_ABSENT
-    return INSTANCE_UNKNOWN
-
-
 class ConcreteRemoteHost:
     """Runs canary stages on the rented Vast host over SSH.
 
@@ -142,9 +155,12 @@ class ConcreteRemoteHost:
     a real ``ssh`` subprocess; tests inject a fake runner.
     """
 
-    def __init__(self, target: CanaryRemoteTarget | None = None, ssh_runner: Callable[[list[str], float], dict] | None = None) -> None:
+    def __init__(self, target: CanaryRemoteTarget | None = None, ssh_runner: Callable[[list[str], float], dict] | None = None,
+                 git_head: str = "", train_remote_path: str = "/workspace/defend-canary/sft.jsonl") -> None:
         self._target = target
         self._ssh_runner = ssh_runner or self._default_ssh_runner
+        self._git_head = git_head
+        self._train_remote_path = train_remote_path
 
     @property
     def target(self) -> CanaryRemoteTarget | None:
@@ -153,6 +169,8 @@ class ConcreteRemoteHost:
     def bind_target(self, target: CanaryRemoteTarget) -> None:
         if self._target is not None:
             raise RuntimeError("remote target already bound")
+        if not isinstance(target, CanaryRemoteTarget):
+            raise ValueError("target must be a CanaryRemoteTarget")
         self._target = target
 
     @staticmethod
@@ -166,12 +184,14 @@ class ConcreteRemoteHost:
 
     def _stage_command(self, stage: str, adapter_dir: str, git_head: str) -> str:
         if stage == "HOST_PREFLIGHT":
-            return "python -m defend_control.qwen3_canary_train --help >/dev/null; python -c \"import torch;print('CUDA', torch.cuda.is_available(), torch.__version__)\""
-        if stage == "TOKENIZER_TEMPLATE_PROOF":
-            return "python -c \"from defend_control.qwen3_masking import qwen3_masking_proof; print('MASK_PROOF=OK')\""
+            head = git_head or self._git_head
+            return (
+                f"python -m defend_control.qwen3_canary_preflight "
+                f"--repo-head {head} --train-file {self._train_remote_path}"
+            )
         if stage == "TRAIN_5_STEPS":
             return (
-                f"python -m defend_control.qwen3_canary_train --data-file /workspace/defend/sft.jsonl "
+                f"python -m defend_control.qwen3_canary_train --data-file {self._train_remote_path} "
                 f"--adapter-dir {adapter_dir} --steps 5"
             )
         if stage == "FRESH_RELOAD":

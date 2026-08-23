@@ -120,7 +120,7 @@ def test_run_stage_blocked_host():
 
 def test_no_placeholder_stages():
     host = ConcreteRemoteHost()
-    for stage in ("HOST_PREFLIGHT", "TOKENIZER_TEMPLATE_PROOF", "TRAIN_5_STEPS", "FRESH_RELOAD"):
+    for stage in ("HOST_PREFLIGHT", "TRAIN_5_STEPS", "FRESH_RELOAD"):
         cmd = host._stage_command(stage, "/adapter", "")
         assert "echo STAGE" not in cmd
         assert cmd.strip() != ""
@@ -141,3 +141,49 @@ def test_execution_contract_derived_fields():
     assert contract.billing_verify_valid is True
     assert contract.spend_watchdog_valid is True
     assert contract.production_guard_valid is True
+
+
+# ─────────────────────────────────────────────────────────────
+# C4 — immutable target + one-time bind + typed stage results
+# ─────────────────────────────────────────────────────────────
+
+def test_target_is_immutable():
+    target = CanaryRemoteTarget(instance_id=999, host="x", port=22, user="root", offer_id=1, hourly_rate=Decimal("0.96"))
+    import dataclasses
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        target.host = "evil.vast.ai"
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        target.instance_id = 777
+
+
+def test_target_binds_once():
+    host = ConcreteRemoteHost()
+    target = CanaryRemoteTarget(instance_id=999, host="x", port=22, user="root", offer_id=1, hourly_rate=Decimal("0.96"))
+    host.bind_target(target)
+    with pytest.raises(RuntimeError):
+        host.bind_target(target)
+
+
+def test_parse_remote_result_steps():
+    from defend_control.qwen3_canary_executor import parse_remote_result
+    r = parse_remote_result({"status": "PASS", "steps": 5}, "TRAIN_5_STEPS")
+    assert r.status == "PASS"
+    assert r.steps_completed == 5
+    missing = parse_remote_result({"status": "PASS"}, "TRAIN_5_STEPS")
+    assert missing.steps_completed is None
+
+
+def test_preflight_real_entrypoint_wrong_revision():
+    from defend_control.qwen3_canary_preflight import run_preflight
+    from pathlib import Path
+    ok, evidence = run_preflight("abc", Path("does-not-matter.jsonl"), "deadbeef")
+    assert ok is False
+    assert evidence["revision_ok"] is False
+
+
+def test_preflight_real_entrypoint_missing_train():
+    from defend_control.qwen3_canary_preflight import run_preflight
+    from pathlib import Path
+    ok, evidence = run_preflight("abc", Path("no-such-file.jsonl"), "9216db5781bf21249d130ec9da846c4624c16137")
+    assert ok is False
+    assert evidence["converted_sha_ok"] is False

@@ -217,11 +217,18 @@ class FakeVast:
     def instance_state(self, instance_id):
         return "ABSENT" if self.absent_ok else "PRESENT"
 
+    def resolve_target(self, instance_id):
+        return {"host": "x.vast.ai", "port": 22, "user": "root"}
+
 
 class FakeRemote:
     def __init__(self, fail_stage=None):
         self.calls = []
         self.fail_stage = fail_stage
+        self._target = None
+
+    def bind_target(self, target):
+        self._target = target
 
     def run_stage(self, stage, instance_id, adapter_dir, timeout_seconds=None):
         self.calls.append(stage)
@@ -233,7 +240,7 @@ class FakeRemote:
 
 
 EXPECTED_STAGES = [
-    "HOST_PREFLIGHT", "TOKENIZER_TEMPLATE_PROOF", "TRAIN_5_STEPS", "FRESH_RELOAD",
+    "HOST_PREFLIGHT", "TRAIN_5_STEPS", "FRESH_RELOAD",
 ]
 
 
