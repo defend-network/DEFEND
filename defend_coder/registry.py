@@ -22,20 +22,20 @@ from .identity import (
 from .prompts import (
     OWNER_DIRECTIVE_SHA256,
     owner_directive,
-    qwen_technical_instructions,
+)
+from .technical import (
+    deepseek_technical_instructions,
+    openai_responses_technical_instructions,
+    vllm_technical_instructions,
 )
 
 PROVIDER_TECHNICAL: dict[str, Callable[[], str]] = {
-    # OpenAI-compatible chat-completions lanes (DeepSeek, self-hosted vLLM)
-    # share the pinned Qwen3CoderToolParser technical instructions.
-    "deepseek": qwen_technical_instructions,
-    "self_hosted": qwen_technical_instructions,
-    # Sol (OpenAI Responses) receives a minimal provider technical section.
-    "openai": lambda: (
-        "Use the OpenAI Responses API contract. Functions/custom tools use "
-        "the Responses tool shape. Keep all file and command activity within "
-        "the authorized workspace."
-    ),
+    # Provider-specific technical instructions are isolated: DeepSeek NEVER
+    # receives Qwen/vLLM tool-parser instructions.
+    "deepseek": deepseek_technical_instructions,
+    "self_hosted": vllm_technical_instructions,
+    "qwen3-vllm": vllm_technical_instructions,
+    "openai": openai_responses_technical_instructions,
 }
 
 
@@ -350,7 +350,7 @@ def build_provider_technical_profile(
             version=version,
             provider=provider,
             protocol="chat_completions",
-            technical_instructions=qwen_technical_instructions(),
+            technical_instructions=deepseek_technical_instructions(),
         )
     if provider in ("self_hosted", "qwen3-vllm"):
         return ProviderTechnicalProfile(
@@ -358,7 +358,7 @@ def build_provider_technical_profile(
             version=version,
             provider=provider,
             protocol="chat_completions",
-            technical_instructions=qwen_technical_instructions(),
+            technical_instructions=vllm_technical_instructions(),
         )
     if provider == "openai":
         return ProviderTechnicalProfile(
@@ -366,11 +366,7 @@ def build_provider_technical_profile(
             version=version,
             provider=provider,
             protocol="responses",
-            technical_instructions=(
-                "Use the OpenAI Responses API contract. Functions/custom "
-                "tools use the Responses tool shape. Keep all file and "
-                "command activity within the authorized workspace."
-            ),
+            technical_instructions=openai_responses_technical_instructions(),
         )
     raise ValueError(f"unknown provider {provider!r}")
 

@@ -208,3 +208,41 @@ class TestProviderNeutralCore:
         assert deepseek.protocol == "chat_completions"
         assert openai.protocol == "responses"
         assert deepseek.profile_id != openai.profile_id
+
+
+class TestProviderTechnicalContent:
+    def test_deepseek_profile_never_contains_qwen_or_vllm(self):
+        from defend_coder.registry import build_provider_technical_profile
+
+        profile = build_provider_technical_profile("deepseek")
+        text = profile.technical_instructions
+        assert "Qwen3" not in text
+        assert "Qwen3CoderToolParser" not in text
+        assert "vLLM" not in text
+        assert "chat completions" in text.lower() or "Chat Completions" in text
+
+    def test_vllm_profile_contains_qwen_semantics(self):
+        from defend_coder.registry import build_provider_technical_profile
+
+        profile = build_provider_technical_profile("qwen3-vllm")
+        assert "Qwen" in profile.technical_instructions
+
+    def test_sol_profile_uses_responses(self):
+        from defend_coder.registry import build_provider_technical_profile
+
+        profile = build_provider_technical_profile("openai")
+        assert profile.protocol == "responses"
+        assert "Responses" in profile.technical_instructions
+
+    def test_composed_deepseek_authority_has_no_qwen_parser(self):
+        from defend_coder.registry import PromptAuthorityComposer
+
+        composer = PromptAuthorityComposer()
+        authority = composer.compose(
+            default_identity_profile(), provider="deepseek"
+        )
+        # The DeepSeek technical section must not carry Qwen/vLLM tool-parser
+        # instructions (the governance core may legitimately name providers
+        # as implementation details).
+        assert "Qwen3CoderToolParser" not in authority
+        assert "[DEFEND OWNER DIRECTIVE]" in authority
