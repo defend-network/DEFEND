@@ -24,6 +24,7 @@ from defend_coder.auth import AuthService
 from defend_coder.config import CoderSettings
 from defend_coder.db import CoderDatabase
 from defend_coder.model_config import load_model_config
+from defend_coder.preparation import RunPreparationService
 from defend_coder.repositories import CoderRepository
 from defend_coder.runs import RunRunner, RunsRepository
 from defend_coder.tools import CoderToolkit
@@ -179,6 +180,7 @@ def main() -> None:
 
     authority_store = build_authority_store(database)
     hydrated = hydrate_authority(authority_store)
+    preparation = RunPreparationService(database)
 
     identity_registry = IdentityRegistry()
     for profile in hydrated.identity_profiles.values():
@@ -287,6 +289,7 @@ def main() -> None:
         provider_resolver=_provider_for,
         proposal_factory=_proposal_for,
         authority_resolver=_authority_for,
+        envelope_loader=preparation.load_envelope,
         toolkit_factory=lambda log_reader: CoderToolkit(
             repository=repository,
             configured_root=settings.workspace_root,
@@ -318,6 +321,8 @@ def main() -> None:
         identity_registry=identity_registry,
         prompt_registry=prompt_registry,
         prompt_authority=prompt_authority,
+        technical_registry=technical_registry,
+        preparation=preparation,
     )
 
     uvicorn.run(

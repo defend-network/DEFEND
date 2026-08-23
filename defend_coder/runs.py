@@ -148,6 +148,10 @@ class RunConflictError(RuntimeError):
     """Another agent run is already active on the same workspace."""
 
 
+class RunAuthorityError(RuntimeError):
+    """Execution cannot begin without a valid persisted authority envelope."""
+
+
 class RunsRepository:
     def __init__(self, db: CoderDatabase) -> None:
         self._db = db
@@ -1017,6 +1021,7 @@ class RunRunner:
         phase_max_tokens: dict[str, int] | None = None,
         proposal_factory: Callable[[object, object], object | None] | None = None,
         authority_resolver: Callable[[UUID], str] | None = None,
+        envelope_loader: Callable[[UUID], object | None] | None = None,
         # Deprecated legacy wiring (internal transport reuse only):
         client: AgentChatClient | None = None,
         client_resolver: Callable[[object], AgentChatClient] | None = None,
@@ -1029,6 +1034,7 @@ class RunRunner:
         self._legacy_client_resolver = client_resolver
         self._proposal_factory = proposal_factory
         self._authority_resolver = authority_resolver
+        self._envelope_loader = envelope_loader
         self._toolkit_factory = toolkit_factory
         self._log = log or (lambda _line: None)
         self._max_steps = max(1, min(100, int(max_steps)))
@@ -1064,11 +1070,23 @@ class RunRunner:
         workspace: WorkspaceRecord,
         prompt: str,
     ) -> None:
-        """Start the worker for an ALREADY-created, ALREADY-routed run.
+        """Start the worker for an ALREADY-prepared, ALREADY-routed run.
 
-        Routing is persisted by the caller BEFORE this returns, so the
-        worker's per-run client resolution sees the selected backend.
+        Authority is validated BEFORE the run may transition to RUNNING: a
+        persisted execution envelope must exist and its workspace/prompt must
+        match the request. Without a valid envelope, execution cannot begin.
         """
+        if self._envelope_loader is not None:
+            envelope = self._envelope_loader(run_id)
+            if envelope is None:
+                raise RunAuthorityError(
+                    f"run {run_id} has no persisted execution envelope; "
+                    "prepare_run must commit before execution"
+                )
+            if str(envelope.workspace_id) != str(workspace.workspace_id):
+                raise RunAuthorityError(
+                    f"run {run_id} envelope workspace mismatch"
+                )
         self._repository.update_run_status(run_id, status="running")
         cancel_event = threading.Event()
         self._cancel_events[run_id] = cancel_event
@@ -1086,30 +1104,14 @@ class RunRunner:
         workspace: WorkspaceRecord,
         prompt: str,
     ) -> RunRecord:
-        active = self._repository.get_active_run_for_workspace(
-            workspace.workspace_id
-        )
-        if active is not None:
-            raise RunConflictError(
-                "an agent run is already active for this workspace"
-            )
+        """Disabled: a run may only execute through prepare_run + start_existing.
 
-        run = self._repository.create_run(
-            workspace=workspace,
-            prompt=prompt,
+        The old self-creating path bypassed authority/route persistence and is
+        removed so execution can never begin without a valid persisted envelope.
+        """
+        raise RunAuthorityError(
+            "RunRunner.start is disabled; use prepare_run then start_existing"
         )
-        self._repository.update_run_status(run.run_id, status="running")
-        cancel_event = threading.Event()
-        self._cancel_events[run.run_id] = cancel_event
-
-        thread = threading.Thread(
-            target=self._execute,
-            args=(run.run_id, workspace, prompt, cancel_event),
-            name=f"coder-run-{run.run_id}",
-            daemon=True,
-        )
-        thread.start()
-        return run
 
     def _resolve_provider(self, run_id: UUID) -> CoderProvider:
         """Resolve the ACTUAL CoderProvider for a run, per generation.
