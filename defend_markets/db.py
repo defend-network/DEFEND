@@ -24,6 +24,8 @@ _MIGRATIONS = (
     (15, Path(__file__).with_name("migrations") / "0015_markets_quant_market_truth.sql"),
     (16, Path(__file__).with_name("migrations") / "0016_markets_quant_forward_evidence.sql"),
     (17, Path(__file__).with_name("migrations") / "0017_markets_quant_action_status.sql"),
+    (18, Path(__file__).with_name("migrations") / "0018_markets_quant_result_acquisition.sql"),
+    (19, Path(__file__).with_name("migrations") / "0019_markets_quant_arb.sql"),
 )
 
 

@@ -1467,6 +1467,366 @@ class PostgresQuantStore(QuantStore):
             columns = [column.name for column in cursor.description]
             return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
+    def upsert_result_acquisition(self, row):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO quant_result_acquisition "
+                "(canonical_event_id, provider, provider_event_id, commence_at, acquisition_state, result_status, "
+                "actual_a, actual_b, winner_side, orientation, raw_provenance_hash, evidence_ref, request_count, "
+                "last_requested_at, next_poll_at, last_error, settled) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (canonical_event_id) DO UPDATE SET "
+                "provider = EXCLUDED.provider, provider_event_id = EXCLUDED.provider_event_id, "
+                "acquisition_state = EXCLUDED.acquisition_state, result_status = EXCLUDED.result_status, "
+                "actual_a = EXCLUDED.actual_a, actual_b = EXCLUDED.actual_b, winner_side = EXCLUDED.winner_side, "
+                "orientation = EXCLUDED.orientation, raw_provenance_hash = EXCLUDED.raw_provenance_hash, "
+                "evidence_ref = EXCLUDED.evidence_ref, request_count = EXCLUDED.request_count, "
+                "last_requested_at = EXCLUDED.last_requested_at, next_poll_at = EXCLUDED.next_poll_at, "
+                "last_error = EXCLUDED.last_error, settled = EXCLUDED.settled, updated_at = now() "
+                "RETURNING acquisition_id",
+                (
+                    row["canonical_event_id"],
+                    row.get("provider", "odds_api_io"),
+                    row.get("provider_event_id"),
+                    row.get("commence_at"),
+                    row["acquisition_state"],
+                    row.get("result_status"),
+                    row.get("actual_a"),
+                    row.get("actual_b"),
+                    row.get("winner_side"),
+                    row.get("orientation"),
+                    row.get("raw_provenance_hash"),
+                    row.get("evidence_ref"),
+                    row.get("request_count", 0),
+                    row.get("last_requested_at"),
+                    row.get("next_poll_at"),
+                    row.get("last_error"),
+                    row.get("settled", False),
+                ),
+            )
+            return cursor.fetchone() is not None
+
+    def list_result_acquisition(self, limit=2000):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT acquisition_id, canonical_event_id, provider, provider_event_id, commence_at, "
+                "acquisition_state, result_status, actual_a, actual_b, winner_side, orientation, "
+                "raw_provenance_hash, evidence_ref, request_count, last_requested_at, next_poll_at, "
+                "last_error, settled, created_at, updated_at "
+                "FROM quant_result_acquisition ORDER BY acquisition_id DESC LIMIT %s",
+                (limit,),
+            )
+            columns = [column.name for column in cursor.description]
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+    def record_result_request(self, row):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO quant_result_request_ledger "
+                "(provider, request_kind, events_requested, events_returned, status_code, ok, error, cost_estimate) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                (
+                    row.get("provider", "odds_api_io"),
+                    row["request_kind"],
+                    row.get("events_requested", 0),
+                    row.get("events_returned", 0),
+                    row.get("status_code"),
+                    row.get("ok", False),
+                    row.get("error"),
+                    row.get("cost_estimate"),
+                ),
+            )
+
+    def list_result_requests(self, limit=500):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT ledger_id, provider, request_kind, events_requested, events_returned, status_code, "
+                "ok, error, cost_estimate, observed_at "
+                "FROM quant_result_request_ledger ORDER BY ledger_id DESC LIMIT %s",
+                (limit,),
+            )
+            columns = [column.name for column in cursor.description]
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+    def upsert_market_reference(self, row):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO quant_market_reference "
+                "(canonical_event_id, policy_version, market, side, bookmaker, price, observation_id, referenced_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (canonical_event_id, policy_version, market, side) DO UPDATE SET "
+                "bookmaker = EXCLUDED.bookmaker, price = EXCLUDED.price, "
+                "observation_id = EXCLUDED.observation_id, referenced_at = EXCLUDED.referenced_at "
+                "RETURNING reference_id",
+                (
+                    row["canonical_event_id"],
+                    row["policy_version"],
+                    row["market"],
+                    row["side"],
+                    row["bookmaker"],
+                    row["price"],
+                    row.get("observation_id"),
+                    row.get("referenced_at"),
+                ),
+            )
+            return cursor.fetchone() is not None
+
+    def list_market_reference(self, canonical_event_id=None, limit=2000):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            if canonical_event_id is not None:
+                cursor.execute(
+                    "SELECT reference_id, canonical_event_id, policy_version, market, side, bookmaker, price, "
+                    "observation_id, referenced_at, created_at "
+                    "FROM quant_market_reference WHERE canonical_event_id = %s ORDER BY reference_id DESC LIMIT %s",
+                    (canonical_event_id, limit),
+                )
+            else:
+                cursor.execute(
+                    "SELECT reference_id, canonical_event_id, policy_version, market, side, bookmaker, price, "
+                    "observation_id, referenced_at, created_at "
+                    "FROM quant_market_reference ORDER BY reference_id DESC LIMIT %s",
+                    (limit,),
+                )
+            columns = [column.name for column in cursor.description]
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+    def get_circuit_breaker(self, provider, function_name):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT circuit_id, provider, function_name, state, consecutive_failures, opened_at, "
+                "cooldown_until, last_error, policy_version, updated_at "
+                "FROM quant_provider_circuit_breaker WHERE provider = %s AND function_name = %s",
+                (provider, function_name),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return None
+            columns = [column.name for column in cursor.description]
+            return dict(zip(columns, row))
+
+    def upsert_circuit_breaker(self, row):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO quant_provider_circuit_breaker "
+                "(provider, function_name, state, consecutive_failures, opened_at, cooldown_until, last_error, policy_version) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (provider, function_name) DO UPDATE SET "
+                "state = EXCLUDED.state, consecutive_failures = EXCLUDED.consecutive_failures, "
+                "opened_at = EXCLUDED.opened_at, cooldown_until = EXCLUDED.cooldown_until, "
+                "last_error = EXCLUDED.last_error, policy_version = EXCLUDED.policy_version, updated_at = now() "
+                "RETURNING circuit_id",
+                (
+                    row["provider"],
+                    row["function_name"],
+                    row["state"],
+                    row.get("consecutive_failures", 0),
+                    row.get("opened_at"),
+                    row.get("cooldown_until"),
+                    row.get("last_error"),
+                    row.get("policy_version", "PROVIDER_CIRCUIT_BREAKER_V1"),
+                ),
+            )
+            return cursor.fetchone() is not None
+
+    def quota_used(self, request_class, period_start):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT used, budget, reserved FROM quant_request_quota "
+                "WHERE request_class = %s AND period_start = %s",
+                (request_class, period_start),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return {"used": 0, "budget": 0, "reserved": 0}
+            return {"used": int(row[0]), "budget": int(row[1]), "reserved": int(row[2])}
+
+    def reserve_quota(self, request_class, period_start, budget):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO quant_request_quota (period_start, request_class, reserved, used, budget) "
+                "VALUES (%s, %s, %s, 0, %s) "
+                "ON CONFLICT (period_start, request_class) DO UPDATE SET budget = EXCLUDED.budget, "
+                "reserved = quant_request_quota.reserved + EXCLUDED.reserved, updated_at = now() "
+                "RETURNING quota_id",
+                (period_start, request_class, budget, budget),
+            )
+            return cursor.fetchone() is not None
+
+    def consume_quota(self, request_class, period_start, amount=1):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "UPDATE quant_request_quota SET used = used + %s, updated_at = now() "
+                "WHERE request_class = %s AND period_start = %s RETURNING quota_id",
+                (amount, request_class, period_start),
+            )
+            return cursor.fetchone() is not None
+
+    def insert_arb_opportunity(self, opp):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO quant_arb_opportunities "
+                "(opportunity_id, fingerprint, canonical_event_id, canonical_market_key, detected_at, "
+                "first_seen_at, last_verified_at, expires_at, expired_at, bookmakers, quote_ids, odds, "
+                "inverse_sum, raw_margin, stake_plan, worst_case_profit, worst_case_roi, freshness_state, "
+                "cross_book_time_delta, settlement_compatibility, classification, risk_flags, policy_version, status) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (fingerprint) DO NOTHING RETURNING opportunity_id",
+                (
+                    opp["opportunity_id"],
+                    opp["fingerprint"],
+                    opp["canonical_event_id"],
+                    opp["canonical_market_key"],
+                    opp["detected_at"],
+                    opp["first_seen_at"],
+                    opp.get("last_verified_at"),
+                    opp.get("expires_at"),
+                    opp.get("expired_at"),
+                    Jsonb(opp.get("bookmakers", [])),
+                    Jsonb(opp.get("quote_ids", [])),
+                    Jsonb(opp.get("odds", [])),
+                    opp["inverse_sum"],
+                    opp["raw_margin"],
+                    Jsonb(opp.get("stake_plan", [])),
+                    opp.get("worst_case_profit"),
+                    opp.get("worst_case_roi"),
+                    opp.get("freshness_state"),
+                    opp.get("cross_book_time_delta"),
+                    opp.get("settlement_compatibility"),
+                    opp["classification"],
+                    Jsonb(opp.get("risk_flags", [])),
+                    opp["policy_version"],
+                    opp.get("status", "ACTIVE"),
+                ),
+            )
+            return cursor.fetchone() is not None
+
+    def list_arb_opportunities(self, limit=500, status=None):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            if status:
+                cursor.execute(
+                    "SELECT opportunity_id, fingerprint, canonical_event_id, canonical_market_key, detected_at, "
+                    "first_seen_at, last_verified_at, expires_at, expired_at, bookmakers, quote_ids, odds, "
+                    "inverse_sum, raw_margin, stake_plan, worst_case_profit, worst_case_roi, freshness_state, "
+                    "cross_book_time_delta, settlement_compatibility, classification, risk_flags, policy_version, "
+                    "status, created_at FROM quant_arb_opportunities WHERE status = %s "
+                    "ORDER BY detected_at DESC LIMIT %s",
+                    (status, limit),
+                )
+            else:
+                cursor.execute(
+                    "SELECT opportunity_id, fingerprint, canonical_event_id, canonical_market_key, detected_at, "
+                    "first_seen_at, last_verified_at, expires_at, expired_at, bookmakers, quote_ids, odds, "
+                    "inverse_sum, raw_margin, stake_plan, worst_case_profit, worst_case_roi, freshness_state, "
+                    "cross_book_time_delta, settlement_compatibility, classification, risk_flags, policy_version, "
+                    "status, created_at FROM quant_arb_opportunities ORDER BY detected_at DESC LIMIT %s",
+                    (limit,),
+                )
+            columns = [column.name for column in cursor.description]
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+    def expire_arb_opportunity(self, opportunity_id, *, expired_at, status="EXPIRED"):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "UPDATE quant_arb_opportunities SET status = %s, expired_at = %s "
+                "WHERE opportunity_id = %s RETURNING opportunity_id",
+                (status, expired_at, opportunity_id),
+            )
+            return cursor.fetchone() is not None
+
+    def insert_paper_arb_ticket(self, ticket):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO quant_paper_arb_tickets "
+                "(opportunity_id, canonical_event_id, canonical_market_key, strategy, decision_time, legs, "
+                "bookmakers, odds, stakes, expected_return, worst_case_profit, quote_age_seconds, constraints, "
+                "reason, settlement_id, settlement_revision, capital_allocated, realized_payout, realized_pnl, "
+                "roi, void_state) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (opportunity_id) DO NOTHING RETURNING arb_ticket_id",
+                (
+                    ticket["opportunity_id"],
+                    ticket["canonical_event_id"],
+                    ticket["canonical_market_key"],
+                    ticket.get("strategy", "PAPER_ARB"),
+                    ticket["decision_time"],
+                    Jsonb(ticket.get("legs", [])),
+                    Jsonb(ticket.get("bookmakers", [])),
+                    Jsonb(ticket.get("odds", [])),
+                    Jsonb(ticket.get("stakes", [])),
+                    ticket.get("expected_return"),
+                    ticket.get("worst_case_profit"),
+                    Jsonb(ticket.get("quote_age_seconds", {})),
+                    Jsonb(ticket.get("constraints", {})),
+                    ticket.get("reason"),
+                    ticket.get("settlement_id"),
+                    ticket.get("settlement_revision"),
+                    ticket.get("capital_allocated"),
+                    ticket.get("realized_payout"),
+                    ticket.get("realized_pnl"),
+                    ticket.get("roi"),
+                    ticket.get("void_state"),
+                ),
+            )
+            return cursor.fetchone() is not None
+
+    def list_paper_arb_tickets(self, limit=500):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT arb_ticket_id, opportunity_id, canonical_event_id, canonical_market_key, strategy, "
+                "decision_time, legs, bookmakers, odds, stakes, expected_return, worst_case_profit, "
+                "quote_age_seconds, constraints, reason, settlement_id, settlement_revision, capital_allocated, "
+                "realized_payout, realized_pnl, roi, void_state, created_at "
+                "FROM quant_paper_arb_tickets ORDER BY arb_ticket_id DESC LIMIT %s",
+                (limit,),
+            )
+            columns = [column.name for column in cursor.description]
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+    def settle_paper_arb_ticket(self, opportunity_id, *, settlement_id, realized_payout, realized_pnl, roi, void_state=None, settlement_revision=1):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "UPDATE quant_paper_arb_tickets SET settlement_id = %s, settlement_revision = %s, "
+                "realized_payout = %s, realized_pnl = %s, roi = %s, void_state = %s "
+                "WHERE opportunity_id = %s RETURNING arb_ticket_id",
+                (settlement_id, settlement_revision, realized_payout, realized_pnl, roi, void_state, opportunity_id),
+            )
+            return cursor.fetchone() is not None
+
+    def upsert_book_access_profile(self, row):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO quant_book_access_profile "
+                "(bookmaker, owner_can_legally_access, account_available, currency, known_balance, "
+                "known_stake_limits, settlement_rule_state) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (bookmaker) DO UPDATE SET "
+                "owner_can_legally_access = EXCLUDED.owner_can_legally_access, "
+                "account_available = EXCLUDED.account_available, currency = EXCLUDED.currency, "
+                "known_balance = EXCLUDED.known_balance, known_stake_limits = EXCLUDED.known_stake_limits, "
+                "settlement_rule_state = EXCLUDED.settlement_rule_state, updated_at = now() RETURNING bookmaker",
+                (
+                    row["bookmaker"],
+                    row.get("owner_can_legally_access", "UNKNOWN"),
+                    row.get("account_available", "UNKNOWN"),
+                    row.get("currency"),
+                    row.get("known_balance"),
+                    Jsonb(row.get("known_stake_limits", {})),
+                    row.get("settlement_rule_state", "UNKNOWN"),
+                ),
+            )
+            return cursor.fetchone() is not None
+
+    def list_book_access_profiles(self, limit=200):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT bookmaker, owner_can_legally_access, account_available, currency, known_balance, "
+                "known_stake_limits, settlement_rule_state, updated_at "
+                "FROM quant_book_access_profile ORDER BY bookmaker LIMIT %s",
+                (limit,),
+            )
+            columns = [column.name for column in cursor.description]
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
 
 @dataclass
 class InMemoryQuantStore(QuantStore):
@@ -1499,6 +1859,15 @@ class InMemoryQuantStore(QuantStore):
     official_predictions: dict[tuple[str, str], dict[str, Any]] = field(default_factory=dict)
     settlements: dict[tuple[str, str], dict[str, Any]] = field(default_factory=dict)
     forward_scores: dict[tuple[str, str, int], dict[str, Any]] = field(default_factory=dict)
+    result_acquisition: dict[str, dict[str, Any]] = field(default_factory=dict)
+    result_request_ledger: list[dict[str, Any]] = field(default_factory=list)
+    market_reference: dict[tuple[str, str, str, str], dict[str, Any]] = field(default_factory=dict)
+    circuit_breakers: dict[tuple[str, str], dict[str, Any]] = field(default_factory=dict)
+    request_quota: dict[tuple[str, str], dict[str, Any]] = field(default_factory=dict)
+    arb_opportunities: dict[str, dict[str, Any]] = field(default_factory=dict)
+    paper_arb_tickets: dict[str, dict[str, Any]] = field(default_factory=dict)
+    book_access_profiles: dict[str, dict[str, Any]] = field(default_factory=dict)
+    _next_result_request: int = 1
     _next_research: int = 1
     _next_thread: int = 1
     _next_message: int = 1
@@ -2030,3 +2399,121 @@ class InMemoryQuantStore(QuantStore):
 
     def list_forward_scores(self, limit=2000):
         return list(reversed(list(self.forward_scores.values())))[:limit]
+
+    def upsert_result_acquisition(self, row):
+        key = row["canonical_event_id"]
+        existing = self.result_acquisition.get(key, {})
+        merged = dict(existing)
+        merged.update(row)
+        merged["updated_at"] = _utcnow().isoformat()
+        self.result_acquisition[key] = merged
+        return True
+
+    def list_result_acquisition(self, limit=2000):
+        return list(reversed(list(self.result_acquisition.values())))[:limit]
+
+    def record_result_request(self, row):
+        entry = dict(row, ledger_id=self._next_result_request, observed_at=_utcnow().isoformat())
+        self._next_result_request += 1
+        self.result_request_ledger.append(entry)
+        return entry["ledger_id"]
+
+    def list_result_requests(self, limit=500):
+        return list(reversed(self.result_request_ledger))[:limit]
+
+    def upsert_market_reference(self, row):
+        key = (row["canonical_event_id"], row["policy_version"], row["market"], row["side"])
+        self.market_reference[key] = dict(row, created_at=_utcnow().isoformat())
+        return True
+
+    def list_market_reference(self, canonical_event_id=None, limit=2000):
+        entries = list(self.market_reference.values())
+        if canonical_event_id is not None:
+            entries = [e for e in entries if e["canonical_event_id"] == canonical_event_id]
+        return list(reversed(entries))[:limit]
+
+    def get_circuit_breaker(self, provider, function_name):
+        return self.circuit_breakers.get((provider, function_name))
+
+    def upsert_circuit_breaker(self, row):
+        key = (row["provider"], row["function_name"])
+        existing = self.circuit_breakers.get(key, {})
+        merged = dict(existing)
+        merged.update(row)
+        merged["updated_at"] = _utcnow().isoformat()
+        self.circuit_breakers[key] = merged
+        return True
+
+    def quota_used(self, request_class, period_start):
+        row = self.request_quota.get((request_class, period_start))
+        if row is None:
+            return {"used": 0, "budget": 0, "reserved": 0}
+        return {"used": row["used"], "budget": row["budget"], "reserved": row["reserved"]}
+
+    def reserve_quota(self, request_class, period_start, budget):
+        key = (request_class, period_start)
+        existing = self.request_quota.get(key, {"used": 0, "reserved": 0, "budget": 0})
+        self.request_quota[key] = {
+            "period_start": period_start,
+            "request_class": request_class,
+            "used": existing["used"],
+            "reserved": existing["reserved"] + budget,
+            "budget": budget,
+        }
+        return True
+
+    def consume_quota(self, request_class, period_start, amount=1):
+        key = (request_class, period_start)
+        if key not in self.request_quota:
+            return False
+        self.request_quota[key]["used"] += amount
+        return True
+
+    def insert_arb_opportunity(self, opp):
+        if opp["fingerprint"] in self.arb_opportunities:
+            return False
+        self.arb_opportunities[opp["fingerprint"]] = dict(opp, created_at=_utcnow().isoformat())
+        return True
+
+    def list_arb_opportunities(self, limit=500, status=None):
+        entries = list(self.arb_opportunities.values())
+        if status:
+            entries = [e for e in entries if e.get("status") == status]
+        entries.sort(key=lambda e: e.get("detected_at", ""), reverse=True)
+        return entries[:limit]
+
+    def expire_arb_opportunity(self, opportunity_id, *, expired_at, status="EXPIRED"):
+        for entry in self.arb_opportunities.values():
+            if entry.get("opportunity_id") == opportunity_id:
+                entry["status"] = status
+                entry["expired_at"] = expired_at
+                return True
+        return False
+
+    def insert_paper_arb_ticket(self, ticket):
+        if ticket["opportunity_id"] in self.paper_arb_tickets:
+            return False
+        self.paper_arb_tickets[ticket["opportunity_id"]] = dict(ticket, created_at=_utcnow().isoformat())
+        return True
+
+    def list_paper_arb_tickets(self, limit=500):
+        return list(reversed(list(self.paper_arb_tickets.values())))[:limit]
+
+    def settle_paper_arb_ticket(self, opportunity_id, *, settlement_id, realized_payout, realized_pnl, roi, void_state=None, settlement_revision=1):
+        ticket = self.paper_arb_tickets.get(opportunity_id)
+        if ticket is None:
+            return False
+        ticket["settlement_id"] = settlement_id
+        ticket["settlement_revision"] = settlement_revision
+        ticket["realized_payout"] = realized_payout
+        ticket["realized_pnl"] = realized_pnl
+        ticket["roi"] = roi
+        ticket["void_state"] = void_state
+        return True
+
+    def upsert_book_access_profile(self, row):
+        self.book_access_profiles[row["bookmaker"]] = dict(row, updated_at=_utcnow().isoformat())
+        return True
+
+    def list_book_access_profiles(self, limit=200):
+        return list(self.book_access_profiles.values())[:limit]

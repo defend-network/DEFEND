@@ -552,6 +552,12 @@ class MarketsIntelligenceOrchestrator:
     def register_scheduler_jobs(self) -> None:
         self._scheduler.register(SchedulerJob("DAILY_LIGHT_REVIEW", 86400))
         self._scheduler.register(SchedulerJob("WEEKLY_RESEARCH_REVIEW", 604800))
+        self._scheduler.register(SchedulerJob("RESULT_DISCOVERY", 900))
+        self._scheduler.register(SchedulerJob("SETTLEMENT", 300))
+        self._scheduler.register(SchedulerJob("FORWARD_SCORING", 300))
+        self._scheduler.register(SchedulerJob("ARB_SCAN", 60))
+        self._scheduler.register(SchedulerJob("ARB_EXPIRATION", 300))
+        self._scheduler.register(SchedulerJob("PAPER_ARB_SETTLEMENT", 600))
 
     def run_scheduled_review(self, *, weekly: bool = False) -> dict[str, Any]:
         job_name = "WEEKLY_RESEARCH_REVIEW" if weekly else "DAILY_LIGHT_REVIEW"
@@ -567,6 +573,182 @@ class MarketsIntelligenceOrchestrator:
             "leader": self._scheduler._owner,
             "daily": self._scheduler.status("DAILY_LIGHT_REVIEW"),
             "weekly": self._scheduler.status("WEEKLY_RESEARCH_REVIEW"),
+            "result_discovery": self._scheduler.status("RESULT_DISCOVERY"),
+            "settlement": self._scheduler.status("SETTLEMENT"),
+            "forward_scoring": self._scheduler.status("FORWARD_SCORING"),
+            "arb_scan": self._scheduler.status("ARB_SCAN"),
+            "arb_expiration": self._scheduler.status("ARB_EXPIRATION"),
+            "paper_arb_settlement": self._scheduler.status("PAPER_ARB_SETTLEMENT"),
+        }
+
+    def _runtime_database(self):
+        database = getattr(self._tools, "_database", None)
+        if database is not None:
+            return database
+        return None
+
+    def run_result_discovery(self) -> dict[str, Any]:
+        """P9: durable RESULT_DISCOVERY job."""
+        database = self._runtime_database()
+        if database is None:
+            return {"ran": False, "reason": "no markets database"}
+        from defend_markets.quant.result_acquisition import OddsApiIOResultAdapter, TableTennisResultAcquisitionService
+
+        def handler() -> dict[str, Any]:
+            key = _load_odds_api_io_key()
+            if not key:
+                return {"summary": "result discovery: no provider key", "result": {"ok": False, "reason": "no provider key"}}
+            from defend_markets.quant.circuit_breaker import ProviderCircuitBreaker
+
+            breaker = ProviderCircuitBreaker(self._store)
+            if not breaker.allow_request("odds_api_io", "result"):
+                return {"summary": "result discovery: breaker OPEN", "result": {"ok": False, "reason": "circuit open"}}
+            feed = OddsApiIOResultAdapter(key, store=self._store)
+            service = TableTennisResultAcquisitionService(database, self._store, feed)
+            try:
+                outcome = service.acquire_and_settle()
+            except Exception as error:  # noqa: BLE001
+                breaker.record_failure("odds_api_io", "result", error=f"{type(error).__name__}: {error}")
+                return {"summary": "result discovery failed", "result": {"ok": False, "error": str(error)}}
+            breaker.record_success("odds_api_io", "result")
+            if outcome.get("settled", 0) > 0:
+                self.record_event_trigger("SETTLEMENT_BATCH_COMPLETED", {"settled": outcome.get("settled", 0)}, invoke=False)
+            return {"summary": outcome.get("summary", "result discovery ran"), "result": outcome}
+
+        return self._scheduler.run_due("RESULT_DISCOVERY", handler=handler)
+
+    def run_settlement(self) -> dict[str, Any]:
+        """P9: durable SETTLEMENT job (settles anything newly available)."""
+        database = self._runtime_database()
+        if database is None:
+            return {"ran": False, "reason": "no markets database"}
+        from defend_markets.quant.forward_evidence import settlement_catchup
+
+        def handler() -> dict[str, Any]:
+            outcome = settlement_catchup(database, self._store)
+            return {"summary": f"settlement: {outcome.get('settled', 0)} settled, {outcome.get('scores', 0)} scored", "result": outcome}
+
+        return self._scheduler.run_due("SETTLEMENT", handler=handler)
+
+    def run_forward_scoring(self) -> dict[str, Any]:
+        """P9: durable FORWARD_SCORING job (scores once settlements exist)."""
+        database = self._runtime_database()
+        if database is None:
+            return {"ran": False, "reason": "no markets database"}
+        from defend_markets.quant.result_acquisition import forward_evidence_summary
+
+        def handler() -> dict[str, Any]:
+            summary = forward_evidence_summary(self._store)
+            return {"summary": f"forward scoring: {summary.get('m5', {}).get('events', 0)} M5 events scored", "result": summary}
+
+        return self._scheduler.run_due("FORWARD_SCORING", handler=handler)
+
+    def run_arb_scan(self) -> dict[str, Any]:
+        """P30: durable ARB_SCAN job."""
+        database = self._runtime_database()
+        if database is None:
+            return {"ran": False, "reason": "no markets database"}
+        from defend_markets.quant.arb_feed import CanonicalOddsFeed, SportsArbScanner
+
+        def handler() -> dict[str, Any]:
+            scanner = SportsArbScanner(database, self._store, feed=CanonicalOddsFeed(database))
+            outcome = scanner.scan()
+            if outcome.get("funnel", {}).get("mathematical_arbs", 0) > 0:
+                self.record_event_trigger(
+                    "ARB_OPPORTUNITY_DETECTED",
+                    {"mathematical_arbs": outcome["funnel"]["mathematical_arbs"], "stored": outcome.get("stored", 0)},
+                    invoke=False,
+                )
+            return {"summary": outcome.get("summary", "arb scan ran"), "result": outcome}
+
+        return self._scheduler.run_due("ARB_SCAN", handler=handler)
+
+    def run_arb_expiration(self) -> dict[str, Any]:
+        """P32: durable ARB_EXPIRATION job."""
+        database = self._runtime_database()
+        if database is None:
+            return {"ran": False, "reason": "no markets database"}
+        from defend_markets.quant.arb_feed import SportsArbScanner
+
+        def handler() -> dict[str, Any]:
+            scanner = SportsArbScanner(database, self._store)
+            outcome = scanner.scan()  # re-scan expires stale ACTIVE opportunities
+            return {"summary": "arb expiration ran", "result": {"expired": outcome.get("funnel", {}).get("expired", 0)}}
+
+        return self._scheduler.run_due("ARB_EXPIRATION", handler=handler)
+
+    def run_paper_arb_settlement(self) -> dict[str, Any]:
+        """P46: settle PAPER_ARB tickets using the canonical FINAL result."""
+        database = self._runtime_database()
+        if database is None:
+            return {"ran": False, "reason": "no markets database"}
+        from defend_markets.quant.paper_arb import PaperArbStore
+
+        def handler() -> dict[str, Any]:
+            settled_any = 0
+            settlements = self._store.list_settlements(limit=100000)
+            tickets = self._store.list_paper_arb_tickets(limit=5000)
+            unsettled_events = {str(t.get("canonical_event_id")) for t in tickets if t.get("settlement_id") is None}
+            for event_id in unsettled_events:
+                settlement = next((s for s in settlements if str(s.get("canonical_event_id")) == event_id and s.get("status") == "FINAL"), None)
+                if settlement is None:
+                    continue
+                paper = PaperArbStore(self._store)
+                outcome = paper.settle_for_event(
+                    canonical_event_id=event_id,
+                    settlement_id=int(settlement["settlement_id"]),
+                    actual_winner_side=str(settlement.get("winner_side") or ""),
+                )
+                settled_any += outcome["settled"]
+            return {"summary": f"paper arb settlement: {settled_any} tickets settled", "result": {"settled": settled_any}}
+
+        return self._scheduler.run_due("PAPER_ARB_SETTLEMENT", handler=handler)
+
+    def arbitrage_status(self) -> dict[str, Any]:
+        """P53/P61: sports arb observability."""
+        opportunities = self._store.list_arb_opportunities(limit=5000)
+        active = [o for o in opportunities if o.get("status") == "ACTIVE"]
+        math = [o for o in opportunities if o.get("classification") in ("MATHEMATICAL_ARB", "EXECUTABLE_ARB")]
+        paper = self._store.list_paper_arb_tickets(limit=5000)
+        profiles = {p["bookmaker"]: p for p in self._store.list_book_access_profiles()}
+        return {
+            "arb_opportunities_24h": len(opportunities),
+            "current_active_arbs": len(active),
+            "current_mathematical_arbs": len(math),
+            "paper_actionable_arbs": len([o for o in math if o.get("classification") == "EXECUTABLE_ARB"]),
+            "paper_arb_tickets": len(paper),
+            "median_arb_lifetime": None,
+            "owner_access_profiles": profiles,
+            "last_arb_scan": self._scheduler.status("ARB_SCAN"),
+        }
+
+    def result_runtime_status(self) -> dict[str, Any]:
+        """P61: result pipeline observability."""
+        acquisitions = self._store.list_result_acquisition(limit=5000)
+        by_state: dict[str, int] = {}
+        for row in acquisitions:
+            by_state[str(row.get("acquisition_state"))] = by_state.get(str(row.get("acquisition_state")), 0) + 1
+        requests = self._store.list_result_requests(limit=1000)
+        returned = sum(int(r.get("events_returned", 0)) for r in requests)
+        requested = sum(int(r.get("events_requested", 0)) for r in requests)
+        ok_requests = sum(1 for r in requests if r.get("ok"))
+        yield_rate = (returned / requested) if requested else None
+        from defend_markets.quant.result_acquisition import forward_evidence_summary
+
+        scores = forward_evidence_summary(self._store)
+        return {
+            "unsettled_past_events": sum(1 for s in by_state if s in ("LOCAL_RESULT_MISSING_NOT_REQUESTED", "PROVIDER_RESULT_REQUESTED_EMPTY", "PROVIDER_EVENT_NOT_FOUND", "PROVIDER_RESULT_ERROR", "PROVIDER_RESULT_SCHEMA_UNKNOWN")),
+            "acquisition_states": by_state,
+            "result_requests_used": len(requests),
+            "result_requests_ok": ok_requests,
+            "result_events_requested": requested,
+            "result_events_returned": returned,
+            "result_request_yield": round(yield_rate, 4) if yield_rate is not None else None,
+            "last_result_provider_call": requests[0]["observed_at"] if requests else None,
+            "last_settlement": None,
+            "last_forward_score": None,
+            "forward_evidence": scores,
+            "settlements": len(self._store.list_settlements(limit=100000)),
         }
 
     def record_event_trigger(self, trigger_type: str, evidence: dict[str, Any], *, invoke: bool = False) -> dict[str, Any]:
@@ -653,7 +835,20 @@ class MarketsIntelligenceOrchestrator:
         inserted = int((settle.get("settle") or {}).get("inserted", 0))
         if inserted > 0:
             self.record_event_trigger("SETTLEMENT_BATCH_COMPLETED", {"inserted": inserted}, invoke=False)
-        return {"executed": executed, "reviews": review_outcomes, "settlement": settle}
+        jobs = {}
+        for name, method in (
+            ("RESULT_DISCOVERY", self.run_result_discovery),
+            ("SETTLEMENT", self.run_settlement),
+            ("FORWARD_SCORING", self.run_forward_scoring),
+            ("ARB_SCAN", self.run_arb_scan),
+            ("ARB_EXPIRATION", self.run_arb_expiration),
+            ("PAPER_ARB_SETTLEMENT", self.run_paper_arb_settlement),
+        ):
+            result = method()
+            jobs[name] = {"ran": result.get("ran", False), "reason": result.get("reason")}
+            if result.get("ran"):
+                executed += 1
+        return {"executed": executed, "reviews": review_outcomes, "settlement": settle, "jobs": jobs}
 
     def database_identity(self) -> dict[str, Any]:
         from urllib.parse import urlsplit
@@ -741,3 +936,16 @@ class MarketsIntelligenceOrchestrator:
             "ai_hard_limit": self._settings.daily_cost_hard_limit,
             "last_triggers": self.list_event_triggers(limit=5),
         }
+
+def _load_odds_api_io_key() -> str:
+    """Load the Odds-API.io key without ever logging it."""
+    try:
+        from defend_integrations.stores import SecretRegistry, default_secret_path
+        from defend_control.secrets import DpapiSecretStore
+    except Exception:
+        return ""
+    try:
+        key = SecretRegistry(DpapiSecretStore(default_secret_path())).get("ODDS_API_IO_API_KEY")
+    except Exception:
+        return ""
+    return str(key or "")

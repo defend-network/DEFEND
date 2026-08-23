@@ -256,4 +256,47 @@ def build_quant_router(orchestrator: MarketsIntelligenceOrchestrator) -> APIRout
         _require_markets_admin(_principal)
         return {"entries": orchestrator.list_research()}
 
+    @router.get("/arbitrage/status")
+    async def arbitrage_status(_principal: AdminPrincipal = Depends(require_admin)) -> dict:
+        _require_markets_admin(_principal)
+        return orchestrator.arbitrage_status()
+
+    @router.get("/arbitrage/opportunities")
+    async def arbitrage_opportunities(
+        status: str | None = None,
+        _principal: AdminPrincipal = Depends(require_admin),
+    ) -> dict:
+        _require_markets_admin(_principal)
+        rows = orchestrator._store.list_arb_opportunities(limit=200, status=status)
+        return {"opportunities": rows}
+
+    @router.get("/arbitrage/paper-tickets")
+    async def arbitrage_paper_tickets(
+        _principal: AdminPrincipal = Depends(require_admin),
+    ) -> dict:
+        _require_markets_admin(_principal)
+        return {"tickets": orchestrator._store.list_paper_arb_tickets(limit=200)}
+
+    @router.get("/arbitrage/access-profiles")
+    async def arbitrage_access_profiles(
+        _principal: AdminPrincipal = Depends(require_admin),
+    ) -> dict:
+        _require_markets_admin(_principal)
+        return {"profiles": orchestrator._store.list_book_access_profiles()}
+
+    @router.get("/results/status")
+    async def results_status(_principal: AdminPrincipal = Depends(require_admin)) -> dict:
+        _require_markets_admin(_principal)
+        return orchestrator.result_runtime_status()
+
+    @router.post("/results/acquire")
+    async def results_acquire(_principal: AdminPrincipal = Depends(require_admin)) -> dict:
+        _require_markets_admin(_principal)
+        return orchestrator.run_result_discovery()
+
+    @router.post("/arbitrage/scan")
+    async def arbitrage_scan(_principal: AdminPrincipal = Depends(require_admin)) -> dict:
+        _require_markets_admin(_principal)
+        return orchestrator.run_arb_scan()
+
     return router

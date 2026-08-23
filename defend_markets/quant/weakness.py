@@ -132,6 +132,54 @@ class WeaknessDetector:
                         state_hash=state_hash({"bookmaker": bookmaker_id, "attestation_state": "ZERO_CURRENT_COVERAGE"}),
                     )
                 )
+
+        arb = snapshot.get("arb", {})
+        funnel = arb.get("rejection_funnel", {}) or {}
+        opportunities = arb.get("opportunities", []) or []
+        active = [o for o in opportunities if o.get("status") == "ACTIVE"]
+        if len(active) == 0 and funnel.get("quote_sets_examined", 0) > 0 and funnel.get("mathematical_arbs", 0) == 0:
+            specs.append(
+                self._spec(
+                    now,
+                    weakness_type="ARB_SECOND_BOOK_ZERO",
+                    category="ARBITRAGE_DATA",
+                    title="Arb scan examined sets but found no two-book overlap",
+                    description=f"{funnel.get('quote_sets_examined')} quote sets examined, {funnel.get('mathematical_arbs')} mathematical arbs",
+                    severity="MEDIUM",
+                    evidence={"metric_name": "mathematical_arbs", "metric_value": funnel.get("mathematical_arbs", 0), "sample_size": funnel.get("quote_sets_examined", 0)},
+                    state_hash=state_hash({"class": "ARB", "math": funnel.get("mathematical_arbs", 0), "examined": funnel.get("quote_sets_examined", 0)}),
+                )
+            )
+        if funnel.get("rejected_stale", 0) > 0 and funnel.get("quote_sets_examined", 0) > 0:
+            stale_rate = funnel.get("rejected_stale", 0) / funnel.get("quote_sets_examined", 0)
+            if stale_rate > 0.5:
+                specs.append(
+                    self._spec(
+                        now,
+                        weakness_type="ARB_QUOTE_STALENESS_HIGH",
+                        category="ARBITRAGE_DATA",
+                        title="Most arb quote sets rejected as stale",
+                        description=f"{funnel.get('rejected_stale')} of {funnel.get('quote_sets_examined')} sets stale",
+                        severity="MEDIUM",
+                        evidence={"metric_name": "stale_rate", "metric_value": round(stale_rate, 4), "sample_size": funnel.get("quote_sets_examined", 0)},
+                        state_hash=state_hash({"class": "ARB", "stale": funnel.get("rejected_stale", 0), "examined": funnel.get("quote_sets_examined", 0)}),
+                    )
+                )
+        if funnel.get("rejected_time_delta", 0) > 0 and funnel.get("quote_sets_examined", 0) > 0:
+            delta_rate = funnel.get("rejected_time_delta", 0) / funnel.get("quote_sets_examined", 0)
+            if delta_rate > 0.5:
+                specs.append(
+                    self._spec(
+                        now,
+                        weakness_type="ARB_CROSS_BOOK_DELTA_HIGH",
+                        category="ARBITRAGE_DATA",
+                        title="Most arb quote sets fail the cross-book time guard",
+                        description=f"{funnel.get('rejected_time_delta')} of {funnel.get('quote_sets_examined')} sets failed time delta",
+                        severity="MEDIUM",
+                        evidence={"metric_name": "delta_rate", "metric_value": round(delta_rate, 4), "sample_size": funnel.get("quote_sets_examined", 0)},
+                        state_hash=state_hash({"class": "ARB", "delta": funnel.get("rejected_time_delta", 0), "examined": funnel.get("quote_sets_examined", 0)}),
+                    )
+                )
         return specs
 
     @staticmethod

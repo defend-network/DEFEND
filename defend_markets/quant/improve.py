@@ -49,6 +49,7 @@ def collect_operational_snapshot(store: Any, database: Any, *, live_selected: li
             "selected": bool(entry.get("selected")),
             "attestation_state": entry.get("attestation_state", "UNKNOWN"),
         }
+    arb = _arb_snapshot(store)
     return {
         "prices": {"observations": observations, "unique_events_priced": priced_events},
         "events": {"discovered": discovered},
@@ -58,7 +59,25 @@ def collect_operational_snapshot(store: Any, database: Any, *, live_selected: li
         "selected_bookmakers": selected,
         "pairing": pairing,
         "pass_reasons": pass_reasons,
+        "arb": arb,
     }
+
+
+def _arb_snapshot(store: Any) -> dict[str, Any]:
+    opportunities = store.list_arb_opportunities(limit=5000)
+    funnel: dict[str, int] = {}
+    for opp in opportunities:
+        classification = str(opp.get("classification") or "")
+        if classification in ("MATHEMATICAL_ARB", "EXECUTABLE_ARB"):
+            funnel["mathematical_arbs"] = funnel.get("mathematical_arbs", 0) + 1
+        if classification == "EXECUTABLE_ARB":
+            funnel["paper_actionable"] = funnel.get("paper_actionable", 0) + 1
+        risk_flags = opp.get("risk_flags") or []
+        for flag in risk_flags:
+            key = f"rejected_{str(flag).lower()}"
+            funnel[key] = funnel.get(key, 0) + 1
+    funnel["quote_sets_examined"] = len(opportunities)
+    return {"rejection_funnel": funnel, "opportunities": opportunities}
 
 
 class ImprovementOrchestrator:
