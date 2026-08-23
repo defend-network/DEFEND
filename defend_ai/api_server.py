@@ -23,7 +23,6 @@ from defend_ai.control_plane import AgentRequest, ControlPlane
 from defend_ai.registry import build_default_registry
 from defend_ai.model_factory import build_model_client
 from defend_ai.admin_auth import AdminPrincipal, configure_identity_store, require_admin
-from api_admin_tt_routes import router as admin_tt_router
 from defend_ai.api_batch3_routes import router as batch3_router, ensure_visitor_session
 from defend_ai.api_identity_routes import SensitivePathRedactionMiddleware, router as identity_router
 from defend_ai.api_identity_admin_routes import router as identity_admin_router
@@ -460,7 +459,6 @@ app.add_middleware(SensitivePathRedactionMiddleware)
 
 
 # Additive server-side admin login + owner-only TableTennis routes.
-app.include_router(admin_tt_router)
 app.include_router(batch3_router)
 app.include_router(identity_router)
 app.include_router(identity_admin_router)

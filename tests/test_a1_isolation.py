@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import os
 
-from defend_ai.settings import PRODUCT_ID, load_settings
-from defend_ai.supervision import supervision_manifest
+from defend_ai.settings import load_settings
+from defend_ai.supervision import APPLICATION_ID, supervision_dict, supervision_manifest
 
 
 def test_product_settings_authority_env_driven(monkeypatch):
@@ -20,16 +20,24 @@ def test_product_settings_authority_env_driven(monkeypatch):
 
 def test_supervision_manifest_owns_ports_and_health():
     m = supervision_manifest()
-    assert m["product_id"] == PRODUCT_ID
-    assert m["api_port"] == int(os.getenv("DEFEND_API_PORT", "8000"))
-    assert m["health_url"].endswith("/health")
-    # no provider/training/promotion authority exposed
-    for forbidden in ("training", "canary", "gpu", "rent", "promote", "provider_mutation"):
-        assert forbidden not in m
+    assert m.application_id == "defend"
+    assert m.display_name == "DEFEND AI"
+    assert m.health_url.endswith("/health")
+    assert m.api_launch == ("python", "-m", "defend_ai.api_server")
 
 
 def test_supervision_manifest_is_canonical_product():
-    m = supervision_manifest()
-    assert m["display_name"] == "DEFEND AI"
-    assert m["api_command"]
+    m = supervision_dict()
+    assert m["application_id"] == APPLICATION_ID
+    assert m["api_launch"] == ["python", "-m", "defend_ai.api_server"]
     assert m["graceful_stop_contract"]
+    # no provider/training/promotion authority exposed
+    for forbidden in ("training", "canary", "gpu", "rent", "promote", "provider_mutation", "vast"):
+        assert forbidden not in m
+
+
+def test_supervision_launch_references_package_entrypoint():
+    import importlib.util
+
+    spec = importlib.util.find_spec("defend_ai.api_server")
+    assert spec is not None

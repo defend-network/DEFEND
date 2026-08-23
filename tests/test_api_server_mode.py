@@ -12,7 +12,7 @@ def _reload_api_server(monkeypatch, mode: str | None):
         monkeypatch.delenv("DEFEND_API_MODE", raising=False)
     else:
         monkeypatch.setenv("DEFEND_API_MODE", mode)
-    import api_server
+    import defend_ai.api_server as api_server
 
     return importlib.reload(api_server)
 
