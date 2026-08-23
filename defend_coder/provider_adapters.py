@@ -413,21 +413,48 @@ class OpenAIResponsesProvider:
         }
         if response_id and call_ids:
             # Continuation: use ONLY the immediately preceding response's
-            # call_ids (provider-private, never client-supplied). Emit each
-            # expected function_call_output exactly once, in provider order,
-            # and fail closed on missing/duplicate/mismatched results.
+            # function_call_outputs. Locate the MOST RECENT assistant
+            # tool-call block, require its call ids to exactly match the
+            # expected provider call_ids, and collect only that block's
+            # subsequent tool outputs. Historical prior tool results (even a
+            # reused call id) never affect the current continuation.
+            conversation = list(request.conversation)
+            block_idx: int | None = None
+            for i in range(len(conversation) - 1, -1, -1):
+                m = conversation[i]
+                if m.get("role") == "assistant" and m.get("tool_calls"):
+                    block_idx = i
+                    break
+            if block_idx is None:
+                raise CoderProviderProtocolError(
+                    "no assistant tool-call block for continuation"
+                )
+            block_call_ids = [
+                tc.get("id")
+                for tc in conversation[block_idx].get("tool_calls", [])
+                if isinstance(tc, dict)
+            ]
+            if block_call_ids != list(call_ids):
+                raise CoderProviderProtocolError(
+                    "assistant call ids do not match expected call_ids"
+                )
             results_by_call: dict[str, str] = {}
-            for m in request.conversation:
+            for m in conversation[block_idx + 1:]:
                 if m.get("role") != "tool":
                     continue
-                call_id = m.get("tool_call_id")
-                if not call_id:
+                cid = m.get("tool_call_id")
+                if cid is None:
                     continue
-                if call_id in results_by_call:
+                if cid not in call_ids:
                     raise CoderProviderProtocolError(
-                        f"duplicate tool result for call {call_id!r}"
+                        f"unexpected tool result for call {cid!r} in the "
+                        "current block"
                     )
-                results_by_call[call_id] = m.get("content") or ""
+                if cid in results_by_call:
+                    raise CoderProviderProtocolError(
+                        f"duplicate tool result for call {cid!r}"
+                    )
+                results_by_call[cid] = m.get("content") or ""
             tool_outputs = []
             for call_id in call_ids:
                 if call_id not in results_by_call:

@@ -27,6 +27,11 @@ from .provider_adapters import (
 )
 from .registry import PromptAuthorityComposer
 from .telemetry import ModelCallRecord, build_call_record
+from .tool_ledger import (
+    ToolAlreadyFailedError,
+    ToolIdentityMismatchError,
+    ToolRecoveryRequiredError,
+)
 from .tools import CoderToolkit
 
 
@@ -109,6 +114,8 @@ class CodingAgent:
         timeout_seconds: float = 600.0,
         tool_ledger: object | None = None,
         run_id: UUID | None = None,
+        context_coordinator: object | None = None,
+        checkpoint_persist: Callable[[object], object] | None = None,
     ) -> None:
         if not isinstance(toolkit, CoderToolkit):
             raise TypeError("toolkit must be a CoderToolkit")
@@ -131,6 +138,8 @@ class CodingAgent:
         self._toolkit = toolkit
         self._tool_ledger = tool_ledger
         self._run_id = run_id
+        self._context_coordinator = context_coordinator
+        self._checkpoint_persist = checkpoint_persist
         self._log = log or (lambda _line: None)
         self._max_steps = max(1, min(100, int(max_steps)))
         self._max_loop_seconds = max(30.0, float(max_loop_seconds))
@@ -270,9 +279,10 @@ class CodingAgent:
         """Execute a tool call with the durable mutation crash policy.
 
         Mutating tools are recorded in the durable ledger before execution.
-        A completed mutation is never re-executed (idempotent skip); an
-        in-flight execution that crashes is marked UNKNOWN_AFTER_INTERRUPTION
-        (ambiguous recovery) rather than silently repeated.
+        A completed mutation is never re-executed (idempotent skip with the
+        durable result_ref); an interrupted/in-flight execution raises
+        ToolRecoveryRequiredError (never auto-run); a same call id with
+        changed identity raises ToolIdentityMismatchError (fail closed).
         """
         from .tool_ledger import (
             TOOL_STATE_FAILED,
@@ -307,12 +317,22 @@ class CodingAgent:
                 argument_hash=argument_hash(call.arguments),
                 mutation_class=mutation_class,
             )
-        except ToolAlreadySucceededError:
+        except ToolAlreadySucceededError as error:
             return ToolResult(
-                content="already completed (durable ledger); not re-executed",
+                content=(
+                    "already completed (durable ledger); not re-executed"
+                    + (
+                        f" — {error.result_ref}"
+                        if error.result_ref
+                        else ""
+                    )
+                ),
                 kind="tool",
                 ok=True,
             )
+        # ToolRecoveryRequiredError / ToolAlreadyFailedError /
+        # ToolIdentityMismatchError propagate unchanged: the run must NOT
+        # silently re-execute the mutation.
         try:
             result = self._toolkit.execute(
                 call.name,
@@ -330,6 +350,60 @@ class CodingAgent:
             state=TOOL_STATE_SUCCEEDED if result.ok else TOOL_STATE_FAILED,
         )
         return result
+
+    def _persist_checkpoint(self, coordinator) -> None:
+        """Persist the coordinator's checkpoint (revision N+1) BEFORE any
+        dynamic context is dropped. Raises on failure so compaction does not
+        discard the conversation when durability is unavailable."""
+        if self._checkpoint_persist is None:
+            return
+        persisted = self._checkpoint_persist(coordinator.checkpoint)
+        if persisted is not None:
+            coordinator.update_checkpoint(persisted)
+
+    def _bounded_conversation(
+        self,
+        coordinator,
+        tool_schemas,
+        output_tokens: int,
+    ) -> list[dict[str, Any]] | None:
+        """Run the live budget decision and protocol-safe compaction.
+
+        Returns the conversation to send, or None if the request would
+        exceed the hard budget (the caller must fail closed with ZERO
+        provider calls).
+        """
+        budget = coordinator.budget
+        conversation = coordinator.conversation()
+        decision = budget.decide(
+            conversation, tools=tool_schemas, output_tokens=output_tokens
+        )
+        if decision.compact:
+            coordinator.emit(
+                "context_budget_warning",
+                estimated_tokens=decision.estimated_tokens,
+                limit_tokens=decision.limit_tokens,
+            )
+            coordinator.emit("context_compaction_started")
+            # P14: persist the next checkpoint revision BEFORE dropping.
+            self._persist_checkpoint(coordinator)
+            coordinator.compact()
+            coordinator.emit(
+                "context_checkpoint_persisted",
+                messages_retained=len(coordinator.conversation()),
+            )
+            conversation = coordinator.conversation()
+            decision = budget.decide(
+                conversation, tools=tool_schemas, output_tokens=output_tokens
+            )
+        if decision.hard_overflow:
+            coordinator.emit(
+                "context_budget_blocked",
+                estimated_tokens=decision.estimated_tokens,
+                limit_tokens=decision.limit_tokens,
+            )
+            return None
+        return conversation
 
     def run(
         self,
@@ -354,12 +428,27 @@ class CodingAgent:
 
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": self._system_authority},
-            {"role": "user", "content": prompt},
         ]
+        coordinator = self._context_coordinator
+        if coordinator is not None:
+            coordinator.add({"role": "user", "content": prompt})
+        else:
+            messages.append({"role": "user", "content": prompt})
         tool_schemas = self._toolkit.schema()
         steps = 0
         started_at = time.monotonic()
         previous_tool_failed = False
+
+        def record(message: dict[str, Any]) -> None:
+            if coordinator is not None:
+                coordinator.add(message)
+            else:
+                messages.append(message)
+
+        def current_conversation() -> list[dict[str, Any]]:
+            if coordinator is not None:
+                return coordinator.conversation()
+            return messages[1:]
 
         self._log(
             f"agent: run started (max {self._max_steps} steps, "
@@ -403,14 +492,45 @@ class CodingAgent:
                     else "tool_work"
                 )
                 call_started = time.monotonic()
+                response = None
+                call_error = None
                 try:
                     self._set_phase("model_generating")
+                    max_tokens = self._max_tokens_for(call_phase)
+                    if coordinator is not None:
+                        conversation = self._bounded_conversation(
+                            coordinator, tool_schemas, max_tokens
+                        )
+                        if conversation is None:
+                            # Hard context overflow: fail closed with ZERO
+                            # provider calls this turn.
+                            sink(
+                                role="log",
+                                content=(
+                                    "context_budget_exceeded: the pending "
+                                    "request would exceed the configured "
+                                    "context budget; no model call was made."
+                                ),
+                                kind="log",
+                                ok=False,
+                            )
+                            return AgentOutcome(
+                                state="partial_success",
+                                error=(
+                                    "context budget exceeded; the request "
+                                    "was not sent"
+                                ),
+                                steps=steps,
+                                reason="action_limit",
+                            )
+                    else:
+                        conversation = messages[1:]
                     response = self._provider.generate(
                         CoderGenerationRequest(
                             system_authority=self._system_authority,
-                            conversation=tuple(messages[1:]),
+                            conversation=tuple(conversation),
                             tools=tuple(tool_schemas),
-                            max_output_tokens=self._max_tokens_for(call_phase),
+                            max_output_tokens=max_tokens,
                             continuation_state=self._continuation_state(),
                         )
                     )
@@ -471,7 +591,7 @@ class CodingAgent:
                 # Provider protocol state (e.g. DeepSeek reasoning_content)
                 # is NOT embedded in the conversation: the provider replays it
                 # internally from continuation_state on the next turn.
-                messages.append(assistant_message)
+                record(assistant_message)
 
                 sink(
                     role="assistant",
@@ -498,6 +618,58 @@ class CodingAgent:
                             account_id=account_id,
                             workspace_id=workspace_id,
                         )
+                    except ToolRecoveryRequiredError as error:
+                        sink(
+                            role="log",
+                            content=(
+                                "MUTATION_STATE_UNKNOWN_AFTER_INTERRUPTION: "
+                                f"{error}; the mutation was NOT re-executed. "
+                                "Owner recovery is required."
+                            ),
+                            kind="mutation_state",
+                            ok=False,
+                        )
+                        return self._fail(
+                            sink,
+                            "tool_error",
+                            (
+                                f"tool {call.name} requires recovery: "
+                                f"{error}; not re-executed"
+                            ),
+                            steps,
+                        )
+                    except ToolAlreadyFailedError as error:
+                        sink(
+                            role="log",
+                            content=(
+                                "MUTATION_STATE_FAILED (terminal): "
+                                f"{error}; retry requires a new tool call id."
+                            ),
+                            kind="mutation_state",
+                            ok=False,
+                        )
+                        return self._fail(
+                            sink,
+                            "tool_error",
+                            f"tool {call.name} is terminal (failed): {error}",
+                            steps,
+                        )
+                    except ToolIdentityMismatchError as error:
+                        sink(
+                            role="log",
+                            content=(
+                                "MUTATION_IDENTITY_MISMATCH: "
+                                f"{error}; protocol integrity failure."
+                            ),
+                            kind="mutation_state",
+                            ok=False,
+                        )
+                        return self._fail(
+                            sink,
+                            "tool_error",
+                            f"tool {call.name} identity mismatch: {error}",
+                            steps,
+                        )
                     except Exception as error:  # noqa: BLE001
                         return self._fail(
                             sink,
@@ -514,7 +686,7 @@ class CodingAgent:
                         f"{'ok' if result.ok else 'error'}"
                     )
                     previous_tool_failed = not result.ok
-                    messages.append(
+                    record(
                         {
                             "role": "tool",
                             "tool_call_id": call.id,
@@ -540,7 +712,13 @@ class CodingAgent:
                 kind="log",
             )
             self._log("agent: step limit reached")
-            return self._finalize(sink, messages, steps, started_at)
+            return self._finalize(
+                sink,
+                [{"role": "system", "content": self._system_authority}]
+                + current_conversation(),
+                steps,
+                started_at,
+            )
         except CoderProviderTimeout as error:
             return self._fail(
                 sink,

@@ -337,6 +337,9 @@ class TestOpenAIResponsesProvider:
             CoderGenerationRequest(
                 system_authority="DEFEND authority",
                 conversation=(
+                    {"role": "assistant", "content": "", "tool_calls": [
+                        {"id": "fc_1", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}
+                    ]},
                     {"role": "tool", "tool_call_id": "fc_1", "content": "file contents"},
                 ),
                 continuation_state=first.protocol_state,
@@ -391,6 +394,9 @@ class TestOpenAIResponsesProvider:
             CoderGenerationRequest(
                 system_authority="A",
                 conversation=(
+                    {"role": "assistant", "content": "", "tool_calls": [
+                        {"id": "fc_1", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}
+                    ]},
                     {"role": "tool", "tool_call_id": "fc_1", "content": "r1"},
                 ),
                 continuation_state=r1.protocol_state,
@@ -402,7 +408,13 @@ class TestOpenAIResponsesProvider:
             CoderGenerationRequest(
                 system_authority="A",
                 conversation=(
+                    {"role": "assistant", "content": "", "tool_calls": [
+                        {"id": "fc_1", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}
+                    ]},
                     {"role": "tool", "tool_call_id": "fc_1", "content": "r1"},
+                    {"role": "assistant", "content": "", "tool_calls": [
+                        {"id": "fc_2", "type": "function", "function": {"name": "write_file", "arguments": "{}"}}
+                    ]},
                     {"role": "tool", "tool_call_id": "fc_2", "content": "r2"},
                 ),
                 continuation_state=r2.protocol_state,
@@ -438,6 +450,10 @@ class TestOpenAIResponsesProvider:
             CoderGenerationRequest(
                 system_authority="A",
                 conversation=(
+                    {"role": "assistant", "content": "", "tool_calls": [
+                        {"id": "fc_a", "type": "function", "function": {"name": "read_file", "arguments": "{}"}},
+                        {"id": "fc_b", "type": "function", "function": {"name": "write_file", "arguments": "{}"}},
+                    ]},
                     {"role": "tool", "tool_call_id": "fc_a", "content": "ra"},
                     {"role": "tool", "tool_call_id": "fc_b", "content": "rb"},
                 ),
@@ -463,6 +479,56 @@ class TestOpenAIResponsesProvider:
                     system_authority="A",
                     conversation=(),
                     continuation_state=r1.protocol_state,
+                )
+            )
+
+    def test_responses_historical_reused_call_id_not_replayed(self):
+        payloads = []
+
+        def transport(body: bytes) -> dict:
+            payloads.append(json.loads(body))
+            return {"id": "resp_final", "status": "completed", "output": [
+                {"type": "message", "content": [{"type": "output_text", "text": "ok"}]}
+            ]}
+
+        provider = OpenAIResponsesProvider("gpt-5.6-sol", api_key="sk-fake", transport=transport)
+        # Conversation contains a historical block reusing fc_1 (result 1),
+        # then the CURRENT block reusing fc_1 (result 2). Continuation must
+        # emit only the current block's result 2, not the historical one.
+        conversation = (
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "fc_1", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "fc_1", "content": "result 1"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "fc_1", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "fc_1", "content": "result 2"},
+        )
+        provider.generate(
+            CoderGenerationRequest(
+                system_authority="A",
+                conversation=conversation,
+                continuation_state={"response_id": "resp_2", "call_ids": ["fc_1"]},
+            )
+        )
+        assert payloads[0]["input"] == [
+            {"type": "function_call_output", "call_id": "fc_1", "output": "result 2"}
+        ]
+
+    def test_responses_assistant_call_id_mismatch_fails_closed(self):
+        def transport(body: bytes) -> dict:
+            return {"id": "resp_final", "status": "completed", "output": [
+                {"type": "message", "content": [{"type": "output_text", "text": "ok"}]}
+            ]}
+
+        provider = OpenAIResponsesProvider("gpt-5.6-sol", api_key="sk-fake", transport=transport)
+        conversation = (
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "fc_1", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "fc_1", "content": "result 1"},
+        )
+        with pytest.raises(Exception):
+            provider.generate(
+                CoderGenerationRequest(
+                    system_authority="A",
+                    conversation=conversation,
+                    continuation_state={"response_id": "resp_2", "call_ids": ["fc_999"]},
                 )
             )
 

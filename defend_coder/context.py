@@ -220,42 +220,113 @@ def compose_checkpoint_context(
     )
 
 
+def _message_payload(message: Mapping[str, Any]) -> str:
+    """Serialized payload actually sent to a provider for one message.
+
+    Includes tool-call names + arguments (assistant) and tool results (tool
+    role), so a giant apply_patch/run_command argument is never counted as
+    ~zero merely because ``content`` is empty.
+    """
+    parts: list[str] = []
+    content = message.get("content")
+    if isinstance(content, str):
+        parts.append(content)
+    elif isinstance(content, list):
+        for part in content:
+            if isinstance(part, Mapping) and part.get("text"):
+                parts.append(str(part["text"]))
+    tool_calls = message.get("tool_calls")
+    if isinstance(tool_calls, list):
+        for call in tool_calls:
+            if isinstance(call, Mapping):
+                fn = call.get("function") if isinstance(call.get("function"), Mapping) else {}
+                parts.append(str(fn.get("name", "")))
+                parts.append(str(fn.get("arguments", "")))
+    if message.get("role") == "tool":
+        parts.append(str(message.get("tool_call_id", "")))
+    return "\n".join(parts)
+
+
 def _estimate_tokens(messages: Iterable[Mapping[str, Any]]) -> int:
-    """Deterministic token estimate (char/4 heuristic, no tokenizer)."""
+    """Deterministic conservative token estimate (char/4, no tokenizer)."""
     total = 0
     for message in messages:
-        text = ""
         if isinstance(message, Mapping):
-            content = message.get("content")
-            if isinstance(content, str):
-                text = content
-            elif isinstance(content, list):
-                text = " ".join(
-                    part.get("text", "")
-                    for part in content
-                    if isinstance(part, Mapping)
-                )
-        total += max(1, len(text) // 4)
+            total += max(1, len(_message_payload(message)) // 4)
+        else:
+            total += max(1, len(str(message)) // 4)
+    return total
+
+
+def estimate_tool_schemas(tools: Iterable[Any]) -> int:
+    """Approximate request cost of the tool schema block (repeated per call)."""
+    import json
+
+    total = 0
+    for tool in tools:
+        try:
+            total += max(1, len(json.dumps(tool, sort_keys=True, default=str)) // 4)
+        except Exception:  # noqa: BLE001
+            total += max(1, len(str(tool)) // 4)
     return total
 
 
 @dataclass(frozen=True)
+class ContextBudgetConfig:
+    """Per-provider/model context contract (configured, not measured)."""
+
+    context_window_tokens: int
+    output_reserve_tokens: int = 8192
+    protocol_reserve_tokens: int = 512
+    compaction_ratio: float = 0.8
+    measured: bool = False
+
+
+#: Conservative configured context windows (NOT measured per provider).
+_CONTEXT_WINDOW_TOKENS: dict[str, int] = {
+    "deepseek": 131_072,
+    "self_hosted": 131_072,
+    "openai": 200_000,
+}
+_DEFAULT_CONTEXT_WINDOW_TOKENS = 131_072
+
+
+def resolve_context_budget(
+    provider: str,
+    model: str | None = None,
+    *,
+    output_reserve_tokens: int = 8192,
+) -> ContextBudgetManager:
+    window = _CONTEXT_WINDOW_TOKENS.get(
+        (provider or "").lower(), _DEFAULT_CONTEXT_WINDOW_TOKENS
+    )
+    return ContextBudgetManager(
+        limit_tokens=window,
+        output_reserve_tokens=output_reserve_tokens,
+        protocol_reserve_tokens=512,
+        compaction_ratio=0.8,
+        measured=False,
+    )
+
+
+@dataclass(frozen=True)
 class ContextBudgetDecision:
-    """Outcome of a budget check: run as-is, or compact first."""
+    """Outcome of a budget check: run, compact, or hard-fail."""
 
     allow: bool
     estimated_tokens: int
     limit_tokens: int
     compact: bool = False
+    hard_overflow: bool = False
 
 
 class ContextBudgetManager:
     """Bounded context budget with protocol-safe compaction triggers.
 
-    Budgets are estimates only (char/4) — they bound the conversation, never
-    a provider-reported truth. Compaction folds the durable checkpoint into a
-    single system-adjacent message and drops stale tool chatter; it never
-    rewrites the stable authority prefix.
+    Budgets are conservative estimates (char/4 + tool args/results/schemas +
+    output reserve) — they bound the request, never a provider-reported truth.
+    Compaction applies only to dynamic run context; the stable authority
+    prefix is never compacted (it is not part of the conversation queue).
     """
 
     def __init__(
@@ -263,17 +334,27 @@ class ContextBudgetManager:
         *,
         limit_tokens: int,
         reserve_tokens: int = 0,
+        output_reserve_tokens: int = 0,
+        protocol_reserve_tokens: int = 0,
         compaction_ratio: float = 0.8,
+        measured: bool = False,
     ) -> None:
         if limit_tokens < 1:
             raise ValueError("limit_tokens must be positive")
         self._limit = int(limit_tokens)
         self._reserve = int(reserve_tokens)
+        self._output_reserve = int(output_reserve_tokens)
+        self._protocol_reserve = int(protocol_reserve_tokens)
         self._ratio = float(compaction_ratio)
+        self._measured = bool(measured)
 
     @property
     def limit_tokens(self) -> int:
         return self._limit
+
+    @property
+    def measured(self) -> bool:
+        return self._measured
 
     def estimate(self, messages: Iterable[Mapping[str, Any]]) -> int:
         return _estimate_tokens(messages)
@@ -281,9 +362,18 @@ class ContextBudgetManager:
     def decide(
         self,
         messages: Iterable[Mapping[str, Any]],
+        *,
+        tools: Iterable[Any] = (),
+        output_tokens: int = 0,
         incoming_tokens: int = 0,
     ) -> ContextBudgetDecision:
-        estimated = self.estimate(messages) + max(0, incoming_tokens)
+        estimated = (
+            self.estimate(messages)
+            + estimate_tool_schemas(tools)
+            + max(0, int(output_tokens))
+            + self._protocol_reserve
+            + max(0, incoming_tokens)
+        )
         available = self._limit - self._reserve
         if estimated > available:
             return ContextBudgetDecision(
@@ -291,6 +381,7 @@ class ContextBudgetManager:
                 estimated_tokens=estimated,
                 limit_tokens=self._limit,
                 compact=True,
+                hard_overflow=True,
             )
         if estimated > int(self._limit * self._ratio):
             return ContextBudgetDecision(
@@ -318,6 +409,10 @@ class RunContextCoordinator:
     The coordinator never dumps a whole repository; it maintains a bounded
     conversation and folds durable progress into the checkpoint before
     compaction. It emits structured events (no hidden reasoning, no secrets).
+
+    An assistant tool-call turn plus all of its tool results form an ATOMIC
+    protocol block: compaction never splits a block, and never compacts while
+    a tool round is pending.
     """
 
     def __init__(
@@ -332,6 +427,7 @@ class RunContextCoordinator:
         self._max_messages = int(max_conversation_messages)
         self._conversation: deque[dict[str, Any]] = deque()
         self._events: list[StructuredEvent] = []
+        self._pending_tool_results = 0
 
     @property
     def checkpoint(self) -> TaskCheckpoint:
@@ -341,6 +437,10 @@ class RunContextCoordinator:
     def budget(self) -> ContextBudgetManager:
         return self._budget
 
+    @property
+    def pending_tool_round(self) -> bool:
+        return self._pending_tool_results > 0
+
     def events(self) -> tuple[StructuredEvent, ...]:
         return tuple(self._events)
 
@@ -348,9 +448,13 @@ class RunContextCoordinator:
         self._events.append(StructuredEvent(kind=kind, detail=dict(detail)))
 
     def add(self, message: Mapping[str, Any]) -> None:
+        role = message.get("role")
+        if role == "assistant":
+            tool_calls = message.get("tool_calls") or []
+            self._pending_tool_results += len(tool_calls)
+        elif role == "tool":
+            self._pending_tool_results = max(0, self._pending_tool_results - 1)
         self._conversation.append(dict(message))
-        while len(self._conversation) > self._max_messages:
-            self._conversation.popleft()
 
     def conversation(self) -> list[dict[str, Any]]:
         return list(self._conversation)
@@ -358,30 +462,37 @@ class RunContextCoordinator:
     def update_checkpoint(self, checkpoint: TaskCheckpoint) -> None:
         self._checkpoint = checkpoint
 
-    def compact(self) -> None:
-        """Protocol-safe compaction: fold progress into the checkpoint and
-        keep only a bounded recent slice of the conversation. The stable
-        authority prefix is never part of this conversation queue, so it is
-        never rewritten here."""
-        self._checkpoint = TaskCheckpoint(
-            objective=self._checkpoint.objective,
-            workspace=self._checkpoint.workspace,
-            current_task=self._checkpoint.current_task,
-            completed=self._checkpoint.completed,
-            current_failure=self._checkpoint.current_failure,
-            relevant_files=self._checkpoint.relevant_files,
-            latest_tests=self._checkpoint.latest_tests,
-            attempts=self._checkpoint.attempts,
-            constraints=self._checkpoint.constraints,
-            next_action=self._checkpoint.next_action,
-            branch=self._checkpoint.branch,
-            head=self._checkpoint.head,
-            dirty_files=self._checkpoint.dirty_files,
-            identity_version=self._checkpoint.identity_version,
-            model_route=self._checkpoint.model_route,
-            pending_approvals=self._checkpoint.pending_approvals,
-        )
+    def _safe_cut(self) -> int:
+        """Index of the first message that must be retained (never split a
+        protocol block, never compact a pending tool round)."""
+        items = list(self._conversation)
+        n = len(items)
+        if n <= 2:
+            return 0
+        if self._pending_tool_results > 0:
+            # Keep the opening assistant tool-call turn of the pending round.
+            for i in range(n - 1, -1, -1):
+                if (
+                    items[i].get("role") == "assistant"
+                    and items[i].get("tool_calls")
+                ):
+                    return i
+            return 0
         keep = max(2, self._max_messages // 2)
-        while len(self._conversation) > keep:
+        cut = max(0, n - keep)
+        while cut < n and items[cut].get("role") == "tool":
+            cut += 1
+        return cut
+
+    def compact(self) -> None:
+        """Protocol-safe compaction of dynamic context only.
+
+        The durable checkpoint must be persisted by the caller BEFORE this
+        call (checkpoint-before-drop). This only drops stale, COMPLETE
+        protocol blocks and never the stable authority prefix (which is not
+        in this queue).
+        """
+        cut = self._safe_cut()
+        for _ in range(cut):
             self._conversation.popleft()
         self.emit("context_compacted", messages_retained=len(self._conversation))

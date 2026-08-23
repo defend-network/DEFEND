@@ -23,9 +23,11 @@ from defend_coder.app import build_coder_app
 from defend_coder.auth import AuthService
 from defend_coder.config import CoderSettings
 from defend_coder.db import CoderDatabase
+from defend_coder.context import resolve_context_budget
 from defend_coder.model_config import load_model_config
 from defend_coder.preparation import RunPreparationService
 from defend_coder.repositories import CoderRepository
+from defend_coder.run_store import RunAttemptStore, RunCheckpointStore
 from defend_coder.runs import RunRunner, RunsRepository
 from defend_coder.tool_ledger import DurableToolLedger
 from defend_coder.tools import CoderToolkit
@@ -183,6 +185,8 @@ def main() -> None:
     hydrated = hydrate_authority(authority_store)
     preparation = RunPreparationService(database)
     run_ledger = DurableToolLedger(database)
+    checkpoint_store = RunCheckpointStore(database)
+    attempt_store = RunAttemptStore(database)
 
     identity_registry = IdentityRegistry()
     for profile in hydrated.identity_profiles.values():
@@ -293,6 +297,9 @@ def main() -> None:
         authority_resolver=_authority_for,
         envelope_loader=preparation.load_envelope,
         tool_ledger=run_ledger,
+        checkpoint_store=checkpoint_store,
+        attempt_store=attempt_store,
+        context_budget_factory=resolve_context_budget,
         toolkit_factory=lambda log_reader: CoderToolkit(
             repository=repository,
             configured_root=settings.workspace_root,

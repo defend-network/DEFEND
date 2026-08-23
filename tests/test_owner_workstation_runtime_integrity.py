@@ -32,6 +32,7 @@ from defend_coder.context import (
     ContextBudgetManager,
     RunContextCoordinator,
     build_checkpoint,
+    estimate_tool_schemas,
 )
 from defend_coder.db import CoderDatabase
 from defend_coder.preparation import RunPreparationService
@@ -56,6 +57,7 @@ from defend_coder.runs import RunAuthorityError, RunRunner, RunsRepository
 from defend_coder.tool_ledger import (
     TOOL_STATE_RUNNING,
     TOOL_STATE_SUCCEEDED,
+    TOOL_STATE_UNKNOWN,
     DurableToolLedger,
     ToolAlreadySucceededError,
 )
@@ -504,25 +506,33 @@ class TestToolLedgerRestartSafety:
         workspace = _workspace_record(db)
         run_id, _ = _prepare(services, workspace)
 
-        e1 = services.ledger.begin(
+        # A mutating execution is left RUNNING (simulated crash before finish).
+        services.ledger.begin(
             run_id=run_id,
             tool_call_id="fc_1",
             tool_name="write_file",
             argument_hash="h1",
             mutation_class="mutating",
         )
-        # Restart with the execution still RUNNING (in-flight): the same
-        # execution id is returned (idempotent), never a duplicate.
-        restarted = _services(db).ledger
-        e2 = restarted.begin(
-            run_id=run_id,
-            tool_call_id="fc_1",
-            tool_name="write_file",
-            argument_hash="h1",
-            mutation_class="mutating",
+
+        # Restart: reconstruct services, reconcile at the resume boundary.
+        restarted = _services(db)
+        recovered = restarted.ledger.recover_interrupted(run_id)
+        assert recovered == 1
+        assert restarted.ledger.for_call(run_id, "fc_1").state == (
+            TOOL_STATE_UNKNOWN
         )
-        assert e1 == e2
-        assert restarted.for_call(run_id, "fc_1").state == TOOL_STATE_RUNNING
+        # Replaying the SAME call id must require recovery, never re-run.
+        from defend_coder.tool_ledger import ToolRecoveryRequiredError
+
+        with pytest.raises(ToolRecoveryRequiredError):
+            restarted.ledger.begin(
+                run_id=run_id,
+                tool_call_id="fc_1",
+                tool_name="write_file",
+                argument_hash="h1",
+                mutation_class="mutating",
+            )
 
 
 class TestAttemptCheckpointAndContext:
@@ -580,7 +590,7 @@ class TestAttemptCheckpointAndContext:
         assert attempts[0].state == ATTEMPT_STATE_SUCCEEDED
 
     def test_context_budget_compaction_is_protocol_safe(self):
-        budget = ContextBudgetManager(limit_tokens=200, reserve_tokens=50)
+        budget = ContextBudgetManager(limit_tokens=50)
         checkpoint = build_checkpoint(
             objective="objective",
             workspace="C:/fake",
@@ -591,14 +601,229 @@ class TestAttemptCheckpointAndContext:
         )
         for _ in range(6):
             coordinator.add({"role": "user", "content": "x" * 40})
-        assert len(coordinator.conversation()) == 4
+        assert len(coordinator.conversation()) == 6
         decision = budget.decide(coordinator.conversation(), incoming_tokens=0)
+        assert decision.compact
         coordinator.compact()
         assert len(coordinator.conversation()) <= 2
         assert any(e.kind == "context_compacted" for e in coordinator.events())
 
+    def test_compaction_preserves_pending_tool_round(self):
+        budget = ContextBudgetManager(limit_tokens=10_000)
+        checkpoint = build_checkpoint(objective="o", workspace="w")
+        coordinator = RunContextCoordinator(
+            checkpoint=checkpoint, budget=budget, max_conversation_messages=8
+        )
+        coordinator.add({"role": "user", "content": "do it"})
+        coordinator.add(
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "c1", "function": {"name": "write_file", "arguments": "{}"}}
+                ],
+            }
+        )
+        # pending round: assistant requested a tool, result not yet added
+        assert coordinator.pending_tool_round
+        coordinator.compact()
+        conv = coordinator.conversation()
+        # the assistant tool-call turn must not be dropped
+        assert any(
+            m.get("role") == "assistant" and m.get("tool_calls") for m in conv
+        )
+
+
+class _GrowingProvider:
+    """Fake provider: N large tool-call turns then a final answer, recording
+    the conversation size it receives on every call."""
+
+    provider_id = "deepseek"
+    model_id = "deepseek-v4-flash"
+    protocol = "chat_completions"
+
+    def __init__(self, turns: int, content_size: int) -> None:
+        self._turns = turns
+        self._size = content_size
+        self.received: list[int] = []
+
+    def generate(self, request: CoderGenerationRequest) -> CoderGenerationResult:
+        from defend_coder.agent_client import ToolCall
+
+        self.received.append(len(request.conversation))
+        if self._turns > 0:
+            self._turns -= 1
+            return CoderGenerationResult(
+                visible_content="x" * self._size,
+                tool_calls=(
+                    ToolCall(
+                        id=f"g{self._turns}",
+                        name="list_files",
+                        arguments={"path": "."},
+                    ),
+                ),
+                usage=None,
+                finish_reason="tool_calls",
+                provider=self.provider_id,
+                model=self.model_id,
+            )
+        return CoderGenerationResult(
+            visible_content="done",
+            tool_calls=(),
+            usage=None,
+            finish_reason="stop",
+            provider=self.provider_id,
+            model=self.model_id,
+        )
+
 
 class TestEndToEndRunAndEscalation:
+    def test_live_context_budget_bounds_provider_conversation(
+        self, db: CoderDatabase, tmp_path
+    ):
+        from defend_coder.agent import CodingAgent
+
+        services = _services(db)
+        root = tmp_path / "wsroot"
+        root.mkdir()
+        (root / "a.txt").write_text("hello", encoding="utf-8")
+        account_id, workspace_id = _make_workspace_with_root(db, root)
+        identity, prompt = _pins(services)
+        technical = services.technical_registry.active_for_provider("deepseek")
+        prepared = services.preparation.prepare_run(
+            workspace_id=workspace_id,
+            owner_account_id=account_id,
+            prompt="Inspect.",
+            requested_mode="AUTO",
+            selected_tier="DEEPSEEK",
+            provider="deepseek",
+            model="deepseek-v4-flash",
+            identity=identity,
+            prompt_core=prompt,
+            technical=(technical.profile_id, technical.version, technical.hash),
+        )
+        run_id = prepared.run_id
+        envelope = services.preparation.load_envelope(run_id)
+        assert envelope is not None
+
+        toolkit = CoderToolkit(
+            repository=CoderRepository(db), configured_root=str(root)
+        )
+        schema_tokens = estimate_tool_schemas(toolkit.schema())
+        budget = ContextBudgetManager(
+            limit_tokens=schema_tokens + 4096 + 5000,
+            compaction_ratio=0.5,
+        )
+        checkpoint = build_checkpoint(objective="Inspect.", workspace=str(root))
+        coordinator = RunContextCoordinator(
+            checkpoint=checkpoint, budget=budget, max_conversation_messages=12
+        )
+        revision = 1
+
+        def persist(ckpt):
+            nonlocal revision
+            revision += 1
+            services.checkpoints.write(
+                run_id=run_id,
+                revision=revision,
+                objective=ckpt.objective,
+                identity=(
+                    envelope.identity_profile_id,
+                    envelope.identity_version,
+                    envelope.identity_hash,
+                ),
+                prompt_core=(
+                    envelope.prompt_core_id,
+                    envelope.prompt_core_version,
+                    envelope.prompt_core_hash,
+                ),
+                provider=envelope.provider,
+                model=envelope.model,
+                technical=(
+                    envelope.technical_profile_id,
+                    envelope.technical_profile_version,
+                    envelope.technical_profile_hash,
+                ),
+                completed_work=ckpt.completed,
+            )
+            return ckpt
+
+        provider = _GrowingProvider(turns=5, content_size=2000)
+        agent = CodingAgent(
+            provider=provider,
+            toolkit=toolkit,
+            log=lambda _m: None,
+            run_id=run_id,
+            context_coordinator=coordinator,
+            checkpoint_persist=persist,
+        )
+        outcome = agent.run(
+            prompt="Inspect.",
+            account_id=account_id,
+            workspace_id=workspace_id,
+            sink=lambda **kw: None,
+        )
+        assert outcome.state == "succeeded"
+        # The provider conversation must be bounded (compaction happened).
+        assert max(provider.received) <= 14
+        # Compaction persisted a checkpoint revision beyond rev1.
+        assert services.checkpoints.latest(run_id).revision >= 2
+        # Structured context events were emitted.
+        kinds = {e.kind for e in coordinator.events()}
+        assert "context_compacted" in kinds
+
+    def test_hard_context_overflow_zero_provider_calls(
+        self, db: CoderDatabase, tmp_path
+    ):
+        from defend_coder.agent import CodingAgent
+
+        services = _services(db)
+        root = tmp_path / "wsroot"
+        root.mkdir()
+        account_id, workspace_id = _make_workspace_with_root(db, root)
+
+        class _NeverProvider:
+            provider_id = "deepseek"
+            model_id = "deepseek-v4-flash"
+            protocol = "chat_completions"
+            calls = 0
+
+            def generate(self, request):
+                type(self).calls += 1
+                return CoderGenerationResult(
+                    visible_content="should not happen",
+                    tool_calls=(),
+                    usage=None,
+                    finish_reason="stop",
+                    provider=self.provider_id,
+                    model=self.model_id,
+                )
+
+        toolkit = CoderToolkit(
+            repository=CoderRepository(db), configured_root=str(root)
+        )
+        budget = ContextBudgetManager(limit_tokens=10)  # impossible budget
+        coordinator = RunContextCoordinator(
+            checkpoint=build_checkpoint(objective="o", workspace="w"),
+            budget=budget,
+        )
+        provider = _NeverProvider()
+        agent = CodingAgent(
+            provider=provider,
+            toolkit=toolkit,
+            log=lambda _m: None,
+            context_coordinator=coordinator,
+        )
+        outcome = agent.run(
+            prompt="Inspect.",
+            account_id=account_id,
+            workspace_id=workspace_id,
+            sink=lambda **kw: None,
+        )
+        assert outcome.state == "partial_success"
+        assert provider.calls == 0
+        assert any(e.kind == "context_budget_blocked" for e in coordinator.events())
+
     def test_full_runner_roundtrip_with_restart(self, db: CoderDatabase):
         services = _services(db)
         workspace = _workspace_record(db)
