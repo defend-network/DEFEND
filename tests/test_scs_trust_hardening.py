@@ -112,7 +112,9 @@ def test_audit_a_verified_oem_claim_survives(m12_graph):
         "source_refs": ["SRC-OEM1"], "inference": False,
         "applicability": "FAMILY_APPLICABILITY", "confidence": "HIGH",
     }]
-    evidence = {"oem_sources": {"SRC-OEM1"}}
+    evidence = {"oem_sources": {"SRC-OEM1"},
+                "source_map": {"SRC-OEM1": {"source_type": "OEM_IOM",
+                                            "applicability": "FAMILY_APPLICABILITY"}}}
     report = verify_claims(claims, evidence)
     assert report["CLAIMS_VERIFIED"] == 1
 

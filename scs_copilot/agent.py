@@ -278,6 +278,7 @@ def _materialize_deterministic_session(pre_route: dict[str, Any],
     answer["session_durable"] = False
     if tool not in ("procedure.start", "diagnostic.start"):
         return
+    memory_backing = getattr(registry, "memory", None) is not None
     try:
         if tool == "procedure.start":
             procedure_id = (pre_route.get("procedure") or {}).get("procedure_id")
@@ -285,14 +286,16 @@ def _materialize_deterministic_session(pre_route: dict[str, Any],
                 result = registry.execute("procedure.start", {"procedure_id": procedure_id})
                 if result.get("ok"):
                     answer["procedure"] = result.get("data")
-                    answer["session_durable"] = True
+                    # P3: durable only when a real memory backing exists to
+                    # hold the session for the persistence path.
+                    answer["session_durable"] = memory_backing
         elif tool == "diagnostic.start":
             graph_id = (pre_route.get("graph") or {}).get("graph_id")
             if graph_id:
                 result = registry.execute("diagnostic.start", {"graph_id": graph_id})
                 if result.get("ok"):
                     answer["graph"] = result.get("data")
-                    answer["session_durable"] = True
+                    answer["session_durable"] = memory_backing
     except Exception:
         answer["session_durable"] = False
 

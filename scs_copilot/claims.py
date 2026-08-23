@@ -560,6 +560,9 @@ _APPLICABILITY_RANK = {
     "GENERAL_MANUFACTURER": 2, "UNKNOWN": 1,
 }
 
+_APPLICABILITY_CANONICAL = {"EXACT_MODEL", "MODEL_SERIES", "FAMILY",
+                            "GENERAL_MANUFACTURER", "UNKNOWN"}
+
 _APPLICABILITY_ALIASES = {
     "EXACT_APPLICABILITY": "EXACT_MODEL",
     "FAMILY_APPLICABILITY": "FAMILY",
@@ -570,31 +573,90 @@ _APPLICABILITY_ALIASES = {
 }
 
 
-def _normalize_applicability(value: str | None) -> str:
-    normalized = (value or "UNKNOWN").strip().upper()
-    return _APPLICABILITY_ALIASES.get(normalized, normalized)
+def _normalize_applicability(value: str | None) -> str | None:
+    """Symmetric canonical applicability normalization (P1/P2).
+
+    Blank -> UNKNOWN (no explicit assertion). A recognized alias maps to its
+    canonical value. An EXPLICIT unrecognized value -> None (fail-closed), so
+    it can never silently collapse to the weakest requirement via .get(x, 1).
+    """
+    raw = (value or "").strip().upper()
+    if not raw:
+        return "UNKNOWN"
+    canonical = _APPLICABILITY_ALIASES.get(raw, raw)
+    if canonical not in _APPLICABILITY_CANONICAL:
+        return None
+    return canonical
+
+
+def _normalize_id(value: str) -> str:
+    return re.sub(r"[^A-Z0-9]", "", (value or "").upper())
+
+
+def _family_of(model: str) -> str | None:
+    """Deterministic family prefix: the token before the first separator."""
+    head = re.split(r"[-./\s]", (model or "").strip().upper(), maxsplit=1)[0]
+    return head or None
+
+
+def _identity_coverage_ok(claim_entity: str | None,
+                          source_meta: dict[str, Any],
+                          source_level: str) -> bool:
+    """Applicability IDENTITY gate (P2): the source must deterministically
+    cover the claimed equipment/model, not merely assert a level."""
+    if not claim_entity:
+        return True  # no equipment/model specificity; level gate already applied
+    entity = (claim_entity or "").strip().upper()
+    if source_level == "EXACT_MODEL":
+        source_model = (source_meta.get("model") or "").strip().upper()
+        return bool(source_model) and _normalize_id(entity) == _normalize_id(source_model)
+    if source_level == "MODEL_SERIES":
+        series = (source_meta.get("model_series") or source_meta.get("model")
+                  or "").strip().upper()
+        if not series:
+            return False
+        n_entity, n_series = _normalize_id(entity), _normalize_id(series)
+        return len(n_series) >= 3 and n_entity.startswith(n_series)
+    if source_level == "FAMILY":
+        claim_family = _family_of(entity)
+        if not claim_family:
+            return False
+        families = {_normalize_id(str(t)) for t in
+                    (source_meta.get("equipment_family_tags") or [])}
+        if _normalize_id(claim_family) in families:
+            return True
+        source_model = (source_meta.get("model") or "").strip().upper()
+        source_family = _family_of(source_model) if source_model else None
+        if source_family and _normalize_id(source_family) == _normalize_id(claim_family):
+            return True
+        return False
+    # GENERAL_MANUFACTURER / UNKNOWN: no entity-specific identity gate
+    return True
 
 
 def _oem_applicability_ok(claim: dict[str, Any], source_id: str | None,
-                          source_map: dict[str, Any]) -> bool:
-    """P6: the cited OEM source must prove sufficient applicability for the
-    claim. Broad manufacturer evidence cannot satisfy an equipment/model-
-    specific technical limit (P6-P8)."""
-    required = (claim.get("applicability") or "UNKNOWN").upper()
+                          source_map: dict[str, Any]) -> str | None:
+    """P6-P8: the cited OEM source must prove sufficient applicability LEVEL
+    AND IDENTITY for the claim. Returns a blocked reason, or None when ok."""
     claim_entity = claim.get("entity_id")
+    required = _normalize_applicability(claim.get("applicability"))
     meta = source_map.get(source_id) or {}
     source_applicability = _normalize_applicability(meta.get("applicability"))
+    # fail closed on any explicit unrecognized applicability value
+    if required is None or source_applicability is None:
+        return "APPLICABILITY_UNRECOGNIZED"
     if required == "UNKNOWN" and not claim_entity:
-        # generic, non-model-specific manufacturer guidance: existing behavior
-        return True
+        return None  # generic, non-model-specific manufacturer guidance
     if required == "UNKNOWN" and claim_entity:
-        # P6(F): an entity/model-specific claim must require at least FAMILY;
-        # GENERAL_MANUFACTURER (rank 2) must NOT pass merely because UNKNOWN
-        # ranks lower.
+        # P6(F): entity/model-specific claim requires at least FAMILY
         required = "FAMILY"
-    req_rank = _APPLICABILITY_RANK.get(required, 1)
-    src_rank = _APPLICABILITY_RANK.get(source_applicability, 1)
-    return src_rank >= req_rank
+    req_rank = _APPLICABILITY_RANK[required]
+    src_rank = _APPLICABILITY_RANK[source_applicability]
+    if src_rank < req_rank:
+        return "OEM_APPLICABILITY_INSUFFICIENT"
+    if not _identity_coverage_ok(claim_entity, meta, source_applicability):
+        return "APPLICABILITY_UNPROVEN"
+    return None
 
 
 def _standard_edition_ok(claim: dict[str, Any], source_id: str | None,
@@ -681,8 +743,9 @@ def _verify_claim(claim: dict[str, Any], evidence: dict[str, Any]) -> tuple[bool
         bound = _bound_source(claim.get("source_refs"), oem_sources, "OEM_")
         if not bound:
             return False, "AUTHORITATIVE_OEM_SOURCE_NOT_INDEXED", "POSSIBLE"
-        if not _oem_applicability_ok(claim, bound, source_map):
-            return False, "OEM_APPLICABILITY_INSUFFICIENT", "POSSIBLE"
+        reason = _oem_applicability_ok(claim, bound, source_map)
+        if reason:
+            return False, reason, "POSSIBLE"
         return True, None, "RESOLVED"
     if claim_type == "STANDARD":
         bound = _bound_source(claim.get("source_refs"), standard_sources, "STANDARD_")

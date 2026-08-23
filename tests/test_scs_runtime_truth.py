@@ -202,7 +202,8 @@ def test_oem_claim_with_sufficient_applicability_verifies():
                    applicability="MODEL_SERIES")
     evidence = {"oem_sources": {"SRC-OEM1"},
                 "source_map": {"SRC-OEM1": {"source_type": "OEM_IOM",
-                                            "applicability": "EXACT_MODEL"}}}
+                                            "applicability": "EXACT_MODEL",
+                                            "model": "50TC-E08"}}}
     report = verify_claims([claim], evidence)
     assert report["CLAIMS_VERIFIED"] == 1
 
@@ -629,11 +630,12 @@ def _oem_claim(applicability="UNKNOWN", entity_id="50TC-E08"):
                   applicability=applicability)
 
 
-def _oem_evidence(source_applicability):
+def _oem_evidence(source_applicability, **extra):
+    meta = {"source_type": "OEM_IOM", "source_id": "SRC-OEM1",
+            "applicability": source_applicability}
+    meta.update(extra)
     return {"oem_sources": {"SRC-OEM1"},
-            "source_map": {"SRC-OEM1": {"source_type": "OEM_IOM",
-                                        "source_id": "SRC-OEM1",
-                                        "applicability": source_applicability}}}
+            "source_map": {"SRC-OEM1": meta}}
 
 
 def test_oem_model_specific_unknown_general_manufacturer_blocked():
@@ -644,7 +646,7 @@ def test_oem_model_specific_unknown_general_manufacturer_blocked():
 
 def test_oem_model_specific_unknown_family_passes():
     report = verify_claims([_oem_claim("UNKNOWN", "50TC-E08")],
-                           _oem_evidence("FAMILY"))
+                           _oem_evidence("FAMILY", equipment_family_tags=["50TC"]))
     assert report["CLAIMS_VERIFIED"] == 1
 
 
@@ -656,7 +658,7 @@ def test_oem_model_series_general_manufacturer_blocked():
 
 def test_oem_model_series_model_series_passes():
     report = verify_claims([_oem_claim("MODEL_SERIES", "50TC-E08")],
-                           _oem_evidence("MODEL_SERIES"))
+                           _oem_evidence("MODEL_SERIES", model="50TC-E"))
     assert report["CLAIMS_VERIFIED"] == 1
 
 
@@ -668,7 +670,7 @@ def test_oem_exact_model_family_blocked():
 
 def test_oem_exact_model_exact_model_passes():
     report = verify_claims([_oem_claim("EXACT_MODEL", "50TC-E08")],
-                           _oem_evidence("EXACT_MODEL"))
+                           _oem_evidence("EXACT_MODEL", model="50TC-E08"))
     assert report["CLAIMS_VERIFIED"] == 1
 
 
@@ -687,14 +689,163 @@ def test_oem_generic_no_entity_general_manufacturer_passes():
 def test_deterministic_session_durability_flag_truthful():
     from scs_copilot.agent import _materialize_deterministic_session
     from scs_copilot.tools import ToolRegistry
+    # no memory backing -> NOT durable, even though procedure.start succeeds
     registry = ToolRegistry(context=_context(), procedures=PROCEDURE_LIBRARY)
     pre_route = {"tool": "procedure.start",
                  "procedure": {"procedure_id": "vav_max_verification"}}
     answer = {}
     _materialize_deterministic_session(pre_route, registry, answer)
-    assert answer.get("session_durable") is True
+    assert answer.get("session_durable") is False
     # a failing registry (no procedures) must not claim durability
     empty_registry = ToolRegistry(context=_context())
     answer2 = {}
     _materialize_deterministic_session(pre_route, empty_registry, answer2)
     assert answer2.get("session_durable") is False
+
+
+# ---------------------------------------------------------------------------
+# M1.4.3B - symmetric applicability normalization + fail-closed (defect 1)
+# ---------------------------------------------------------------------------
+
+
+def test_claim_exact_applicability_alias_family_source_blocked():
+    report = verify_claims([_oem_claim("EXACT_APPLICABILITY", "50TC-E08")],
+                           _oem_evidence("FAMILY", equipment_family_tags=["50TC"]))
+    assert report["CLAIMS_BLOCKED"] == 1
+
+
+def test_claim_exact_applicability_alias_exact_model_passes():
+    report = verify_claims([_oem_claim("EXACT_APPLICABILITY", "50TC-E08")],
+                           _oem_evidence("EXACT_MODEL", model="50TC-E08"))
+    assert report["CLAIMS_VERIFIED"] == 1
+
+
+def test_claim_model_prefix_general_manufacturer_blocked():
+    report = verify_claims([_oem_claim("MODEL_PREFIX", "50TC-E08")],
+                           _oem_evidence("GENERAL_MANUFACTURER"))
+    assert report["CLAIMS_BLOCKED"] == 1
+
+
+def test_claim_model_prefix_model_series_passes():
+    report = verify_claims([_oem_claim("MODEL_PREFIX", "50TC-E08")],
+                           _oem_evidence("MODEL_SERIES", model="50TC-E"))
+    assert report["CLAIMS_VERIFIED"] == 1
+
+
+def test_unrecognized_claim_applicability_blocked():
+    report = verify_claims([_oem_claim("TOTALLY_UNKNOWN_SCOPE", "50TC-E08")],
+                           _oem_evidence("EXACT_MODEL", model="50TC-E08"))
+    assert report["CLAIMS_BLOCKED"] == 1
+    assert any(r.get("reason") == "APPLICABILITY_UNRECOGNIZED"
+               for r in report["results"])
+
+
+def test_unrecognized_source_applicability_blocked():
+    report = verify_claims([_oem_claim("FAMILY", "50TC-E08")],
+                           _oem_evidence("TOTALLY_UNKNOWN_SCOPE",
+                                         equipment_family_tags=["50TC"]))
+    assert report["CLAIMS_BLOCKED"] == 1
+    assert any(r.get("reason") == "APPLICABILITY_UNRECOGNIZED"
+               for r in report["results"])
+
+
+# ---------------------------------------------------------------------------
+# M1.4.3B - family / model_series identity coverage (defect 2)
+# ---------------------------------------------------------------------------
+
+
+def test_family_source_correct_family_passes():
+    report = verify_claims([_oem_claim("FAMILY", "50TC-E08")],
+                           _oem_evidence("FAMILY", manufacturer="CARRIER",
+                                         equipment_family_tags=["50TC"]))
+    assert report["CLAIMS_VERIFIED"] == 1
+
+
+def test_family_source_unrelated_family_blocked():
+    report = verify_claims([_oem_claim("FAMILY", "50TC-E08")],
+                           _oem_evidence("FAMILY", manufacturer="CARRIER",
+                                         equipment_family_tags=["48TC"]))
+    assert report["CLAIMS_BLOCKED"] == 1
+    assert any(r.get("reason") == "APPLICABILITY_UNPROVEN"
+               for r in report["results"])
+
+
+def test_family_source_no_identity_blocked():
+    report = verify_claims([_oem_claim("FAMILY", "50TC-E08")],
+                           _oem_evidence("FAMILY", manufacturer="CARRIER"))
+    assert report["CLAIMS_BLOCKED"] == 1
+    assert any(r.get("reason") == "APPLICABILITY_UNPROVEN"
+               for r in report["results"])
+
+
+def test_model_series_source_covering_series_passes():
+    report = verify_claims([_oem_claim("MODEL_SERIES", "50TC-E08")],
+                           _oem_evidence("MODEL_SERIES", model="50TC-E"))
+    assert report["CLAIMS_VERIFIED"] == 1
+
+
+def test_model_series_source_unrelated_series_blocked():
+    report = verify_claims([_oem_claim("MODEL_SERIES", "50TC-E08")],
+                           _oem_evidence("MODEL_SERIES", model="48TC-E"))
+    assert report["CLAIMS_BLOCKED"] == 1
+    assert any(r.get("reason") == "APPLICABILITY_UNPROVEN"
+               for r in report["results"])
+
+
+def test_exact_model_gate_continues():
+    report = verify_claims([_oem_claim("EXACT_MODEL", "50TC-E08")],
+                           _oem_evidence("EXACT_MODEL", model="50TC-E08"))
+    assert report["CLAIMS_VERIFIED"] == 1
+    report = verify_claims([_oem_claim("EXACT_MODEL", "50TC-E08")],
+                           _oem_evidence("EXACT_MODEL", model="50TC-E080"))
+    assert report["CLAIMS_BLOCKED"] == 1
+
+
+# ---------------------------------------------------------------------------
+# M1.4.3B - session_durable requires memory backing (defect 3)
+# ---------------------------------------------------------------------------
+
+
+def test_session_durable_procedure_with_memory_backing():
+    from scs_copilot.agent import _materialize_deterministic_session
+    from scs_copilot.memory import JobConversationMemory
+    registry = ToolRegistry(context=_context(), procedures=PROCEDURE_LIBRARY,
+                            memory=JobConversationMemory(job_id="J"))
+    pre_route = {"tool": "procedure.start",
+                 "procedure": {"procedure_id": "vav_max_verification"}}
+    answer = {}
+    _materialize_deterministic_session(pre_route, registry, answer)
+    assert answer.get("session_durable") is True
+
+
+def test_session_durable_diagnostic_with_memory_backing():
+    from scs_copilot.agent import _materialize_deterministic_session
+    from scs_copilot.memory import JobConversationMemory
+    registry = ToolRegistry(context=_context(), diagnostics={"LOW_AIRFLOW": low_airflow_graph()},
+                            memory=JobConversationMemory(job_id="J"))
+    pre_route = {"tool": "diagnostic.start", "graph": {"graph_id": "LOW_AIRFLOW"}}
+    answer = {}
+    _materialize_deterministic_session(pre_route, registry, answer)
+    assert answer.get("session_durable") is True
+
+
+def test_session_durable_procedure_without_memory_false():
+    from scs_copilot.agent import _materialize_deterministic_session
+    registry = ToolRegistry(context=_context(), procedures=PROCEDURE_LIBRARY)
+    pre_route = {"tool": "procedure.start",
+                 "procedure": {"procedure_id": "vav_max_verification"}}
+    answer = {}
+    _materialize_deterministic_session(pre_route, registry, answer)
+    assert answer.get("session_durable") is False
+
+
+def test_session_durable_failed_start_false():
+    from scs_copilot.agent import _materialize_deterministic_session
+    from scs_copilot.memory import JobConversationMemory
+    registry = ToolRegistry(context=_context(), procedures=PROCEDURE_LIBRARY,
+                            memory=JobConversationMemory(job_id="J"))
+    pre_route = {"tool": "procedure.start",
+                 "procedure": {"procedure_id": "does_not_exist"}}
+    answer = {}
+    _materialize_deterministic_session(pre_route, registry, answer)
+    assert answer.get("session_durable") is False
