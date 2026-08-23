@@ -39,6 +39,7 @@ SOURCE_ATTRS = (
     "document_type", "byte_size", "verification_method", "verified_by",
     "verified_at", "verification_evidence", "filename", "ingestion_state",
     "owner_approval_state", "model", "model_series", "page_count",
+    "source_origin",
 )
 
 # H5/H6: source verification + quarantine state + dedup lineage
@@ -88,6 +89,7 @@ class KnowledgeSource:
     model: str | None = None
     model_series: str | None = None
     page_count: int | None = None
+    source_origin: str = "LEGACY"
 
     def to_dict(self) -> dict[str, Any]:
         data = {attr: getattr(self, attr) for attr in SOURCE_ATTRS}
@@ -181,6 +183,7 @@ class SCSKnowledgeLibrary:
             "model": "TEXT",
             "model_series": "TEXT",
             "page_count": "INTEGER",
+            "source_origin": "TEXT DEFAULT 'LEGACY'",
         }
         for column, ddl in migrations.items():
             if column not in existing:
@@ -235,6 +238,12 @@ class SCSKnowledgeLibrary:
         assert state in SOURCE_STATES, state
         self._db.execute("UPDATE sources SET source_state=? WHERE source_id=?",
                          (state, source_id))
+        self._db.commit()
+
+    def mark_discovery_managed(self, source_id: str) -> None:
+        self._db.execute(
+            "UPDATE sources SET source_origin='DISCOVERY_MANAGED' WHERE source_id=?",
+            (source_id,))
         self._db.commit()
 
     def verify_source(self, source_id: str, *, method: str,

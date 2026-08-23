@@ -6,10 +6,14 @@ Unknown concepts and invalid units are rejected — the UI is NOT the authority.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any
 
-CONTRACT_VERSION = "1.0"
+CONTRACT_VERSION = "1.1"
+
+# Documented engineering constant: 1 in.w.c. = 249.089 Pa (standard air).
+_PASCAL_PER_INWC = 249.089
 
 
 @dataclass(frozen=True)
@@ -103,3 +107,51 @@ def contract() -> dict[str, Any]:
             for c in FIELD_CONCEPTS.values()
         ],
     }
+
+
+def _compact_unit(value: str) -> str:
+    return value.strip().upper().replace(".", "").replace(" ", "")
+
+
+def normalize_measurement(concept_id: str, submitted_value: float,
+                          submitted_unit: str | None) -> dict[str, Any] | None:
+    """Server-authoritative numeric measurement normalization (M1.5B2 6.5).
+
+    Returns canonical concept/value/unit plus the technician's submitted
+    value/unit. PA is NUMERICALLY converted to IN.W.C. (never relabeled);
+    synonymous units (IN.W.G./IN.W.C.) are label-normalized only."""
+    concept = FIELD_CONCEPTS.get(concept_id)
+    if concept is None:
+        return None
+    if not isinstance(submitted_value, (int, float)) or isinstance(submitted_value, bool) \
+            or not math.isfinite(submitted_value):
+        return None
+    raw_unit = submitted_unit.strip() if submitted_unit else None
+    submitted_unit_norm = raw_unit.upper().replace(".", "").replace(" ", "") if raw_unit else None
+    if submitted_unit_norm is None:
+        canonical_value = submitted_value
+        canonical_unit = concept.canonical_unit
+        submitted_unit_norm = concept.canonical_unit
+    else:
+        accepted = {_compact_unit(u) for u in concept.accepted_units}
+        if submitted_unit_norm not in accepted:
+            return None
+        canonical_unit = concept.canonical_unit
+        canonical_value = _convert_value(submitted_value, submitted_unit_norm,
+                                         _compact_unit(canonical_unit))
+    return {
+        "canonical_concept": concept_id,
+        "canonical_value": canonical_value,
+        "canonical_unit": canonical_unit,
+        "submitted_value": submitted_value,
+        "submitted_unit": submitted_unit_norm,
+    }
+
+
+def _convert_value(value: float, submitted_unit: str, canonical_unit: str) -> float:
+    if submitted_unit == canonical_unit:
+        return value
+    if submitted_unit == "PA" and canonical_unit == "INWC":
+        return value / _PASCAL_PER_INWC
+    # INWG -> INWC (and other synonymous pressure labels): magnitude unchanged
+    return value

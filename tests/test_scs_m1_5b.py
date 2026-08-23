@@ -15,6 +15,7 @@ from scs_copilot.concepts import (
 from scs_copilot.memory import JobConversationMemory
 from scs_knowledge.discovery import (
     DiscoveryLedgerError,
+    ForbiddenTransition,
     KnowledgeDiscoveryStore,
     KnowledgeRootNotConfigured,
 )
@@ -58,21 +59,24 @@ def test_blocked_cannot_be_approved(tmp_path, monkeypatch):
     record = _discover(store)
     store.block(record["discovery_id"], "customer invoice")
     assert store.get(record["discovery_id"])["state"] == "BLOCKED"
-    store.classify(record["discovery_id"])  # should not reopen
-    assert store.get(record["discovery_id"])["state"] == "BLOCKED"
-    store.approve(record["discovery_id"], manufacturer="CARRIER")
+    with pytest.raises(ForbiddenTransition):
+        store.classify(record["discovery_id"])
+    with pytest.raises(ForbiddenTransition):
+        store.approve(record["discovery_id"], manufacturer="CARRIER")
     assert store.get(record["discovery_id"])["state"] == "BLOCKED"
 
 
 def test_stale_cannot_be_approved(tmp_path, monkeypatch):
     store = _store(tmp_path, monkeypatch=monkeypatch)
     record = _discover(store, text="version one")
+    store.classify(record["discovery_id"])
     store.approve(record["discovery_id"], manufacturer="CARRIER")
     # change bytes -> stale via rediscovery
     (store._root / "manual.txt").write_text("version two changed", encoding="utf-8")
     store.discover()
     assert store.get(record["discovery_id"])["state"] == "STALE_CHANGED"
-    store.approve(record["discovery_id"], manufacturer="CARRIER")
+    with pytest.raises(ForbiddenTransition):
+        store.approve(record["discovery_id"], manufacturer="CARRIER")
     assert store.get(record["discovery_id"])["state"] == "STALE_CHANGED"
 
 
@@ -103,7 +107,8 @@ def test_parse_failed_requires_explicit_retry(tmp_path, monkeypatch):
     store.approve(record["discovery_id"])
     store.mark_parse_failed(record["discovery_id"], "boom")
     assert store.get(record["discovery_id"])["state"] == "PARSE_FAILED"
-    store.approve(record["discovery_id"])  # no generic re-approve
+    with pytest.raises(ForbiddenTransition):
+        store.approve(record["discovery_id"])  # no generic re-approve
     assert store.get(record["discovery_id"])["state"] == "PARSE_FAILED"
     store.retry(record["discovery_id"])  # explicit retry -> CLASSIFIED
     assert store.get(record["discovery_id"])["state"] == "CLASSIFIED"

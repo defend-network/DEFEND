@@ -55,6 +55,10 @@ class KnowledgeRootNotConfigured(Exception):
     """Authority mutation attempted without an explicit canonical root."""
 
 
+class ForbiddenTransition(ValueError):
+    """Raised when an owner action violates the discovery state machine."""
+
+
 def knowledge_root_configured() -> bool:
     return bool(os.environ.get("SCS_KNOWLEDGE_ROOT"))
 
@@ -131,7 +135,7 @@ class KnowledgeDiscoveryStore:
     def _set_state(self, record: dict[str, Any], new_state: str) -> None:
         current = record.get("state", "DISCOVERED")
         if new_state not in _TRANSITIONS.get(current, set()):
-            raise ValueError(
+            raise ForbiddenTransition(
                 f"forbidden transition {current} -> {new_state}")
         record["state"] = new_state
 
@@ -220,10 +224,7 @@ class KnowledgeDiscoveryStore:
         record = self._records.get(discovery_id)
         if record is None:
             return None
-        try:
-            self._set_state(record, "CLASSIFIED")
-        except ValueError:
-            return record  # BLOCKED/STALE/INDEXED cannot be reclassified
+        self._set_state(record, "CLASSIFIED")  # raises ForbiddenTransition
         for key in ("source_type", "manufacturer", "model", "model_series",
                     "family_tags", "applicability", "edition"):
             value = metadata.get(key)
@@ -243,7 +244,8 @@ class KnowledgeDiscoveryStore:
         if record is None:
             return None
         if record.get("state") != "CLASSIFIED":
-            return record  # BLOCKED/STALE/INDEXED/DISCOVERED refuse approval
+            raise ForbiddenTransition(
+                f"forbidden transition {record.get('state')} -> OWNER_APPROVED")
         # exact-byte gate: re-hash the current file before granting authority
         if not self._bytes_match(record):
             self._mark_stale(record)
@@ -267,10 +269,7 @@ class KnowledgeDiscoveryStore:
         record = self._records.get(discovery_id)
         if record is None:
             return None
-        try:
-            self._set_state(record, "BLOCKED")
-        except ValueError:
-            return record
+        self._set_state(record, "BLOCKED")
         record["blocked_reason"] = reason or "owner blocked"
         self._save()
         return record
@@ -281,10 +280,7 @@ class KnowledgeDiscoveryStore:
         record = self._records.get(discovery_id)
         if record is None:
             return None
-        try:
-            self._set_state(record, "CLASSIFIED")
-        except ValueError:
-            return record
+        self._set_state(record, "CLASSIFIED")
         self._save()
         return record
 
@@ -305,10 +301,7 @@ class KnowledgeDiscoveryStore:
         record = self._records.get(discovery_id)
         if record is None:
             return None
-        try:
-            self._set_state(record, "INDEXED")
-        except ValueError:
-            return record
+        self._set_state(record, "INDEXED")
         record["source_id"] = source_id
         record["indexed_at"] = _now()
         self._save()
@@ -319,10 +312,7 @@ class KnowledgeDiscoveryStore:
         record = self._records.get(discovery_id)
         if record is None:
             return None
-        try:
-            self._set_state(record, "PARSE_FAILED")
-        except ValueError:
-            return record
+        self._set_state(record, "PARSE_FAILED")
         record["blocked_reason"] = reason or "parse failed"
         self._save()
         return record
@@ -331,23 +321,30 @@ class KnowledgeDiscoveryStore:
                           verified_by: str = "owner",
                           private_root: Path | None = None,
                           **metadata: Any) -> dict[str, Any] | None:
-        """Approve then index, cryptographically bound to the discovered bytes.
+        """Approve then index, cryptographically bound to an immutable snapshot.
 
-        Pre-ingest rehash + post-ingest source-hash verification. Any byte
-        disagreement fails closed (STALE_CHANGED, no authority)."""
+        The source is staged into a private immutable snapshot whose SHA must
+        equal the discovery SHA; parsing/indexing consumes ONLY the snapshot.
+        Any byte disagreement fails closed (STALE_CHANGED, no authority)."""
         self._require_ok_ledger()
         self._require_root()
         record = self._records.get(discovery_id)
         if record is None:
             return None
         if record.get("state") not in ("CLASSIFIED", "OWNER_APPROVED"):
-            return record
+            raise ForbiddenTransition(
+                f"forbidden transition {record.get('state')} -> INDEXED")
         path = self._root / record["relative_location"]
         if not path.exists():
             self._mark_stale(record)
             return record
-        # pre-ingest exact-byte gate
-        if sha256_of(path) != record["file_sha256"]:
+        # Phase 1: stage an immutable private snapshot and bind to its bytes.
+        import shutil
+        import tempfile
+        staging_dir = Path(tempfile.mkdtemp(prefix="scs_stage_"))
+        snapshot = staging_dir / record["filename"]
+        shutil.copy2(path, snapshot)
+        if sha256_of(snapshot) != record["file_sha256"]:
             self._mark_stale(record)
             return record
         try:
@@ -364,8 +361,7 @@ class KnowledgeDiscoveryStore:
                         else:
                             record[key] = value
                 self._save()
-            result = ingest_file(library, path, private_root=private_root)
-            # post-ingest exact-byte gate (TOCTOU)
+            result = ingest_file(library, snapshot, private_root=private_root)
             if result.sha256 != record["file_sha256"]:
                 self._mark_stale(record)
                 return record
@@ -377,8 +373,9 @@ class KnowledgeDiscoveryStore:
                 verification_evidence=f"sha={record['file_sha256'][:16]} owner-approved",
                 manufacturer=record.get("manufacturer"),
                 document_number=None, edition=record.get("edition"), revision=None)
+            library.mark_discovery_managed(result.source_id)
             self.mark_indexed(discovery_id, result.source_id)
-        except (DiscoveryLedgerError, KnowledgeRootNotConfigured):
+        except (DiscoveryLedgerError, KnowledgeRootNotConfigured, ForbiddenTransition):
             raise
         except Exception as error:
             self.mark_parse_failed(discovery_id, f"{type(error).__name__}: {error}")
@@ -439,6 +436,12 @@ def approve_source(library, source_id: str, *, source_type: str | None = None,
     source = library.get_source(source_id)
     if source is None:
         return None
+    # AUDIT-B2-03: discovery-managed sources may ONLY be promoted through their
+    # discovery ID (with the hash/state gates). Legacy source-ID approval is
+    # forbidden for them.
+    if source.source_origin == "DISCOVERY_MANAGED":
+        raise ForbiddenTransition(
+            "DISCOVERY_MANAGED source cannot use legacy source-ID approval")
     if source_type:
         library.reclassify_source(source_id, source_type, manufacturer=manufacturer,
                                   applicability=applicability)

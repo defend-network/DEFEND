@@ -393,7 +393,8 @@ def test_changed_job_record_creates_new_revision(tmp_path):
     as_found_entries = [e for e in memory.readings[key] if e["stage"] == "AS_FOUND"]
     assert len(as_found_entries) == 2  # changed value -> new revision
     assert as_found_entries[-1]["value"] == 4100
-    assert as_found_entries[-1]["recorded_at"] == "SOURCE_TIMESTAMP_UNKNOWN"
+    assert as_found_entries[-1]["observed_at"] == "SOURCE_TIMESTAMP_UNKNOWN"
+    assert as_found_entries[-1]["recorded_at"]  # server-derived ingestion time
 
 
 def test_canonical_open_measurement_key_only():

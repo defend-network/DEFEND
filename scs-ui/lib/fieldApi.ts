@@ -37,10 +37,25 @@ export type HistoryEntry = {
 };
 
 export const READING_CONCEPTS = [
-  "SUPPLY_CFM","RETURN_CFM","OA_CFM","EXHAUST_CFM","VAV_CFM","TESP",
-  "SUPPLY_STATIC","RETURN_STATIC","FILTER_DP","COIL_DP","FAN_RPM","VFD_HZ",
-  "BUILDING_PRESSURE","DRY_BULB","RH",
+  "FIELD_SUPPLY_CFM","FIELD_RETURN_CFM","FIELD_OA_CFM","FIELD_EXHAUST_CFM","FIELD_VAV_CFM",
+  "FIELD_TESP","FIELD_SUPPLY_STATIC","FIELD_RETURN_STATIC","FILTER_DP","COIL_DP",
+  "FIELD_RPM","VFD_FREQUENCY","BUILDING_PRESSURE","DRY_BULB","RH",
 ] as const;
+
+export type FieldConcept = {
+  concept: string;
+  scope: "EQUIPMENT" | "JOB";
+  unit: string;
+  accepted_units: string[];
+  instrument_recommended: boolean;
+  operating_mode_applicable: boolean;
+};
+
+export type FieldConceptContract = {version: string; concepts: FieldConcept[]};
+
+export async function fieldConcepts(): Promise<FieldConceptContract> {
+  return api<FieldConceptContract>("/api/scs/field/concepts");
+}
 
 export type KnowledgeStatus = {
   knowledge_root: string;

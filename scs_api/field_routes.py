@@ -18,8 +18,9 @@ from scs_data.identity import ScsIdentityStore
 from scs_data.jobs import ScsJobStore
 from shared_platform.application import ApplicationContext
 
-from scs_copilot.concepts import normalize_concept, scope_of, validate_unit, contract
-from scs_knowledge.discovery import DiscoveryLedgerError
+from scs_copilot.concepts import (
+    normalize_concept, normalize_measurement, scope_of, validate_unit, contract)
+from scs_knowledge.discovery import DiscoveryLedgerError, ForbiddenTransition
 
 
 def _field_workspace() -> Path:
@@ -31,7 +32,7 @@ class ChatInput(BaseModel):
 
 
 class ReadingInput(BaseModel):
-    equipment_id: str
+    equipment_id: str | None = None
     concept: str
     value: float
     unit: str | None = None
@@ -229,11 +230,14 @@ def build_field_router(context: ApplicationContext,
         authorize_field_job(actor, job_id)
         if body.stage not in STAGES:
             raise HTTPException(status_code=400, detail="invalid stage")
+        import math
+        if not math.isfinite(body.value):
+            raise HTTPException(status_code=400, detail="INVALID_MEASUREMENT_VALUE")
         concept = normalize_concept(body.concept)
         if concept is None:
             raise HTTPException(status_code=400, detail="INVALID_MEASUREMENT_CONCEPT")
-        unit = validate_unit(concept, body.unit)
-        if unit is None:
+        normalized = normalize_measurement(concept, body.value, body.unit)
+        if normalized is None:
             raise HTTPException(status_code=400, detail="INVALID_MEASUREMENT_UNIT")
         from scs_copilot.job_service import FieldJobRuntime
         runtime = FieldJobRuntime.from_workspace(_field_workspace())
@@ -242,7 +246,6 @@ def build_field_router(context: ApplicationContext,
         except FileNotFoundError:
             raise HTTPException(status_code=404, detail="Job not found") from None
         graph = runtime.load_graph(job_id)
-        # equipment identity validation (M1.5B 6.3)
         scope = scope_of(concept)
         known = _known_equipment_ids(record, graph)
         if scope == "EQUIPMENT":
@@ -251,14 +254,18 @@ def build_field_router(context: ApplicationContext,
             if body.equipment_id not in known:
                 raise HTTPException(status_code=400, detail="UNKNOWN_EQUIPMENT")
         elif scope == "JOB":
-            body.equipment_id = None  # explicit job-level scope
+            body.equipment_id = None  # explicit job-level scope, no dummy identity
         observed_at = _validated_timestamp(body.observed_at)
         memory_store = runtime.memory_store(job_id)
         entry = memory_store.update(job_id, lambda m: m.record_reading(
-            body.concept, body.value, stage=body.stage,
+            concept, normalized["canonical_value"], stage=body.stage,
             equipment_id=body.equipment_id, instrument_id=body.instrument_id,
             operating_mode=body.operating_mode, concept=concept,
-            recorded_at=observed_at, unit=unit, entered_by=actor.employee_id))
+            observed_at=observed_at, unit=normalized["canonical_unit"],
+            entered_by=actor.employee_id,
+            submitted_value=normalized["submitted_value"],
+            submitted_unit=normalized["submitted_unit"],
+            submitted_concept=body.concept))
         return {"reading": entry}
 
     # ---- knowledge ----------------------------------------------------------
@@ -318,7 +325,7 @@ def build_field_router(context: ApplicationContext,
                                     model_series=body.model_series,
                                     family_tags=body.equipment_family_tags,
                                     applicability=body.applicability, edition=body.edition)
-        except DiscoveryLedgerError as error:
+        except (DiscoveryLedgerError, ForbiddenTransition) as error:
             raise HTTPException(status_code=409, detail=str(error)) from None
         if result is None:
             raise HTTPException(status_code=404, detail="Candidate not found")
@@ -358,7 +365,7 @@ def build_field_router(context: ApplicationContext,
                         verified_by=actor.employee_id)
             except KnowledgeRootNotConfigured as error:
                 raise HTTPException(status_code=409, detail=str(error)) from None
-            except DiscoveryLedgerError as error:
+            except (DiscoveryLedgerError, ForbiddenTransition) as error:
                 raise HTTPException(status_code=409, detail=str(error)) from None
         finally:
             library.close()

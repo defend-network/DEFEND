@@ -102,20 +102,23 @@ class JobConversationMemory:
                        operating_mode: str | None = None,
                        concept: str | None = None,
                        source_key: str | None = None,
-                       recorded_at: str | None = None,
+                       observed_at: str | None = None,
                        unit: str | None = None,
-                       entered_by: str | None = None) -> dict[str, Any]:
+                       entered_by: str | None = None,
+                       submitted_value: Any = None,
+                       submitted_unit: str | None = None,
+                       submitted_concept: str | None = None) -> dict[str, Any]:
         """Store a timestamped reading with explicit stage; never overwrite.
 
-        P15: a ``source_key`` gives the reading stable source identity so the
-        same persistent reading is not duplicated on re-seed; a changed value
-        produces a new revision. P16: ``recorded_at`` preserves the original
-        measurement time. M1.5B: ``unit`` and ``entered_by`` are persisted as
-        evidence provenance.
+        M1.5B2: ``value``/``unit`` are the CANONICAL value+unit; the technician's
+        original ``submitted_value``/``submitted_unit``/``submitted_concept`` are
+        preserved. ``observed_at`` is when the measurement was taken (or the
+        SOURCE_TIMESTAMP_UNKNOWN marker); ``recorded_at`` is server-derived.
         """
         if equipment_id:
             self.active_entity = equipment_id
         canon = concept or canonical_measurement(key)
+        now = datetime.now().isoformat(timespec="seconds")
         if source_key:
             for e in self.readings.get(key, []):
                 if e.get("source_key") == source_key:
@@ -126,14 +129,18 @@ class JobConversationMemory:
             "job_id": self.job_id,
             "equipment_id": equipment_id,
             "concept": canon,
+            "submitted_concept": submitted_concept,
             "value": value,
             "unit": unit or "UNKNOWN_LEGACY",
+            "submitted_value": submitted_value,
+            "submitted_unit": submitted_unit,
             "stage": stage if stage in STAGES else "FIELD",
             "operating_mode": operating_mode, "instrument_id": instrument_id,
             "source": source,
             "entered_by": entered_by,
             "source_key": source_key,
-            "recorded_at": recorded_at or datetime.now().isoformat(timespec="seconds"),
+            "observed_at": observed_at or now,
+            "recorded_at": now,
         }
         self.readings.setdefault(key, []).append(entry)
         self._resolve_open(canon, equipment_id, value)

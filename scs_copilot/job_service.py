@@ -115,13 +115,13 @@ def _seed_memory_from_job(memory: JobConversationMemory, record: JobRecord) -> N
                                   stage="AS_FOUND", equipment_id=device_id,
                                   source="job_record",
                                   source_key=f"JOB_RECORD:{device_id}:CFM:AS_FOUND",
-                                  recorded_at="SOURCE_TIMESTAMP_UNKNOWN")
+                                  observed_at="SOURCE_TIMESTAMP_UNKNOWN")
         if getattr(device, "final_cfm", None) is not None:
             memory.record_reading(f"{device_id}:cfm", device.final_cfm,
                                   stage="FINAL", equipment_id=device_id,
                                   source="job_record",
                                   source_key=f"JOB_RECORD:{device_id}:CFM:FINAL",
-                                  recorded_at="SOURCE_TIMESTAMP_UNKNOWN")
+                                  observed_at="SOURCE_TIMESTAMP_UNKNOWN")
 
 
 def build_job_truth_packet(record: JobRecord, graph: MechanicalPlanGraph | None,
