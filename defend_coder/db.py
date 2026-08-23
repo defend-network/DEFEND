@@ -41,6 +41,11 @@ _MIGRATIONS = (
         Path(__file__).with_name("migrations")
         / "0010_authority_tables.sql",
     ),
+    (
+        11,
+        Path(__file__).with_name("migrations")
+        / "0011_authority_active_invariants.sql",
+    ),
 )
 
 

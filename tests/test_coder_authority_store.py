@@ -6,11 +6,58 @@ import pytest
 
 from defend_coder.authority_store import (
     MemoryAuthorityStore,
+    PostgresAuthorityStore,
     StartupIntegrityError,
+    build_authority_store,
     hydrate_authority,
 )
 from defend_coder.identity import default_identity_profile
 from defend_coder.registry import build_prompt_core_bundle, build_provider_technical_profile
+
+
+class TestStoreMode:
+    def test_default_mode_is_postgres(self):
+        store = build_authority_store(object())
+        assert isinstance(store, PostgresAuthorityStore)
+
+    def test_memory_test_mode_is_explicit(self):
+        store = build_authority_store(object(), mode="memory_test")
+        assert isinstance(store, MemoryAuthorityStore)
+
+    def test_unknown_mode_fails_startup(self):
+        with pytest.raises(StartupIntegrityError):
+            build_authority_store(object(), mode="bogus")
+
+    def test_hydration_propagates_integrity_error(self):
+        # No catch-all fallback: a store that raises must propagate.
+        class Boom:
+            def list_identities(self):
+                raise StartupIntegrityError("corrupt")
+
+            list_prompt_cores = list_identities
+            list_technicals = list_identities
+            save_identity = lambda self, p: None
+            set_identity_active = lambda self, a, b: None
+            active_identity_key = lambda self: None
+            save_prompt_core = lambda self, p: None
+            set_prompt_core_active = lambda self, a, b: None
+            active_prompt_core_key = lambda self: None
+            save_technical = lambda self, p: None
+            set_technical_active = lambda self, p, a, b: None
+            active_technical_for = lambda self, p: None
+
+        with pytest.raises(StartupIntegrityError):
+            hydrate_authority(Boom())
+
+    def test_technical_active_pointer_is_deterministic(self):
+        store = MemoryAuthorityStore()
+        hydrate_authority(store)
+        v1 = build_provider_technical_profile("deepseek", version="1")
+        v2 = build_provider_technical_profile("deepseek", version="2")
+        store.save_technical(v2)
+        store.set_technical_active("deepseek", v2.profile_id, "2")
+        assert store.active_technical_for("deepseek") == (v2.profile_id, "2")
+        assert store.get_technical(v1.profile_id, "1").hash == v1.hash
 
 
 class TestHydrationAndSeed:

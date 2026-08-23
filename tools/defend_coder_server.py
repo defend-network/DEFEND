@@ -170,19 +170,15 @@ def main() -> None:
     credentials = CredentialStore(store_loader=_secret_store_loader)
 
     # Durable authority: hydrate identity/prompt-core/technical profiles from
-    # the immutable store (postgres in production, memory fallback otherwise).
+    # the immutable store. POSTGRES is the default production mode and FAILS
+    # STARTUP on any store/hydration error (no silent memory fallback).
     from defend_coder.authority_store import (
-        MemoryAuthorityStore,
-        PostgresAuthorityStore,
+        build_authority_store,
         hydrate_authority,
     )
 
-    try:
-        authority_store = PostgresAuthorityStore(database)
-        hydrated = hydrate_authority(authority_store)
-    except Exception:  # noqa: BLE001
-        authority_store = MemoryAuthorityStore()
-        hydrated = hydrate_authority(authority_store)
+    authority_store = build_authority_store(database)
+    hydrated = hydrate_authority(authority_store)
 
     identity_registry = IdentityRegistry()
     for profile in hydrated.identity_profiles.values():

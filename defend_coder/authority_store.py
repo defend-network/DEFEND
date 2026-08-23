@@ -11,7 +11,10 @@ store exists for tests/dev and exercises the SAME hydration logic.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from typing import Protocol
+
+from psycopg.rows import dict_row
 
 from .identity import DefendCoderIdentityProfile, default_identity_profile
 from .registry import (
@@ -44,6 +47,7 @@ class AuthorityStore(Protocol):
 
     def list_technicals(self) -> list[dict[str, object]]: ...
     def save_technical(self, profile: ProviderTechnicalProfile) -> None: ...
+    def set_technical_active(self, provider: str, profile_id: str, version: str) -> None: ...
     def active_technical_for(self, provider: str) -> tuple[str, str] | None: ...
 
 
@@ -54,6 +58,7 @@ class MemoryAuthorityStore:
         self._technicals: dict[tuple[str, str], ProviderTechnicalProfile] = {}
         self._identity_active: tuple[str, str] | None = None
         self._prompt_active: tuple[str, str] | None = None
+        self._technical_active: dict[str, tuple[str, str]] = {}
 
     def list_identities(self):
         return [
@@ -141,10 +146,15 @@ class MemoryAuthorityStore:
         self._technicals[key] = profile
 
     def active_technical_for(self, provider):
-        for (profile_id, version), p in self._technicals.items():
-            if p.provider == provider:
-                return (profile_id, version)
-        return None
+        return self._technical_active.get(provider)
+
+    def set_technical_active(self, provider, profile_id, version):
+        if (profile_id, version) not in self._technicals:
+            raise StartupIntegrityError(
+                f"cannot activate unknown technical profile "
+                f"{profile_id}@{version}"
+            )
+        self._technical_active[provider] = (profile_id, version)
 
     def get_identity(self, profile_id, version):
         return self._identities.get((profile_id, version))
@@ -171,7 +181,7 @@ class PostgresAuthorityStore:
 
     def list_identities(self):
         with self._connect() as connection:
-            with connection.cursor() as cursor:
+            with connection.cursor(row_factory=dict_row) as cursor:
                 cursor.execute(
                     """
                     SELECT profile_id, version, identity_hash, system_policy,
@@ -195,7 +205,7 @@ class PostgresAuthorityStore:
 
     def save_identity(self, profile):
         with self._connect() as connection:
-            with connection.cursor() as cursor:
+            with connection.cursor(row_factory=dict_row) as cursor:
                 cursor.execute(
                     """
                     INSERT INTO coder_identity_profiles(
@@ -231,7 +241,7 @@ class PostgresAuthorityStore:
 
     def set_identity_active(self, profile_id, version):
         with self._connect() as connection:
-            with connection.cursor() as cursor:
+            with connection.cursor(row_factory=dict_row) as cursor:
                 cursor.execute(
                     "UPDATE coder_identity_profiles SET active = FALSE"
                 )
@@ -245,7 +255,7 @@ class PostgresAuthorityStore:
 
     def active_identity_key(self):
         with self._connect() as connection:
-            with connection.cursor() as cursor:
+            with connection.cursor(row_factory=dict_row) as cursor:
                 cursor.execute(
                     """
                     SELECT profile_id, version FROM coder_identity_profiles
@@ -257,7 +267,7 @@ class PostgresAuthorityStore:
 
     def list_prompt_cores(self):
         with self._connect() as connection:
-            with connection.cursor() as cursor:
+            with connection.cursor(row_factory=dict_row) as cursor:
                 cursor.execute(
                     """
                     SELECT bundle_id, version, bundle_hash, identity_profile_id,
@@ -286,7 +296,7 @@ class PostgresAuthorityStore:
 
     def save_prompt_core(self, bundle):
         with self._connect() as connection:
-            with connection.cursor() as cursor:
+            with connection.cursor(row_factory=dict_row) as cursor:
                 cursor.execute(
                     """
                     INSERT INTO coder_prompt_core_bundles(
@@ -327,7 +337,7 @@ class PostgresAuthorityStore:
 
     def set_prompt_core_active(self, bundle_id, version):
         with self._connect() as connection:
-            with connection.cursor() as cursor:
+            with connection.cursor(row_factory=dict_row) as cursor:
                 cursor.execute(
                     "UPDATE coder_prompt_core_bundles SET active = FALSE"
                 )
@@ -341,7 +351,7 @@ class PostgresAuthorityStore:
 
     def active_prompt_core_key(self):
         with self._connect() as connection:
-            with connection.cursor() as cursor:
+            with connection.cursor(row_factory=dict_row) as cursor:
                 cursor.execute(
                     """
                     SELECT bundle_id, version FROM coder_prompt_core_bundles
@@ -353,7 +363,7 @@ class PostgresAuthorityStore:
 
     def list_technicals(self):
         with self._connect() as connection:
-            with connection.cursor() as cursor:
+            with connection.cursor(row_factory=dict_row) as cursor:
                 cursor.execute(
                     """
                     SELECT profile_id, version, profile_hash, provider,
@@ -375,7 +385,7 @@ class PostgresAuthorityStore:
 
     def save_technical(self, profile):
         with self._connect() as connection:
-            with connection.cursor() as cursor:
+            with connection.cursor(row_factory=dict_row) as cursor:
                 cursor.execute(
                     """
                     INSERT INTO coder_provider_technical_profiles(
@@ -410,17 +420,48 @@ class PostgresAuthorityStore:
 
     def active_technical_for(self, provider):
         with self._connect() as connection:
-            with connection.cursor() as cursor:
+            with connection.cursor(row_factory=dict_row) as cursor:
                 cursor.execute(
                     """
                     SELECT profile_id, version
-                    FROM coder_provider_technical_profiles
-                    WHERE provider = %s LIMIT 1
+                    FROM coder_provider_technical_active
+                    WHERE provider = %s
                     """,
                     (provider,),
                 )
                 row = cursor.fetchone()
         return (row["profile_id"], row["version"]) if row else None
+
+    def set_technical_active(self, provider, profile_id, version):
+        with self._connect() as connection:
+            with connection.cursor(row_factory=dict_row) as cursor:
+                cursor.execute(
+                    """
+                    SELECT profile_hash FROM coder_provider_technical_profiles
+                    WHERE profile_id = %s AND version = %s
+                    """,
+                    (profile_id, version),
+                )
+                row = cursor.fetchone()
+                if row is None:
+                    raise StartupIntegrityError(
+                        f"cannot activate unknown technical profile "
+                        f"{profile_id}@{version}"
+                    )
+                cursor.execute(
+                    """
+                    INSERT INTO coder_provider_technical_active(
+                        provider, profile_id, version, profile_hash
+                    )
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (provider) DO UPDATE
+                    SET profile_id = EXCLUDED.profile_id,
+                        version = EXCLUDED.version,
+                        profile_hash = EXCLUDED.profile_hash,
+                        updated_at = now()
+                    """,
+                    (provider, profile_id, version, row["profile_hash"]),
+                )
 
 
 def _identity_from_record(record: dict[str, object]) -> DefendCoderIdentityProfile:
@@ -538,6 +579,9 @@ def hydrate_authority(
             technical = build_provider_technical_profile(provider)
             store.save_technical(technical)
             technicals[(technical.profile_id, technical.version)] = technical
+            store.set_technical_active(
+                provider, technical.profile_id, technical.version
+            )
 
     return HydratedAuthority(
         identity_profiles=identities,
@@ -546,3 +590,25 @@ def hydrate_authority(
         active_identity=active_identity,
         active_prompt_core=active_prompt_core,
     )
+
+
+AUTHORITY_STORE_MODE_ENV = "DEFENDCODER_AUTHORITY_STORE_MODE"
+
+
+def build_authority_store(db: object, mode: str | None = None) -> AuthorityStore:
+    """Select the authority store by explicit mode (never a catch-all fallback).
+
+    POSTGRES (default) is the only production mode and fails closed on any
+    store/hydration error. MEMORY_TEST is for tests/dev and must be chosen
+    explicitly.
+    """
+    mode = (
+        (mode or os.environ.get(AUTHORITY_STORE_MODE_ENV) or "postgres")
+        .strip()
+        .lower()
+    )
+    if mode == "postgres":
+        return PostgresAuthorityStore(db)
+    if mode == "memory_test":
+        return MemoryAuthorityStore()
+    raise StartupIntegrityError(f"unknown authority store mode {mode!r}")
