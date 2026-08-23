@@ -8,7 +8,7 @@ import sys
 
 import pytest
 
-import shared_platform.dpapi as secrets_module
+import shared_platform.secure_store as secrets_module
 from defend_control.model_registry import ADAPTER_REPO
 from defend_control.redaction import redact_text
 from defend_control.secrets import DpapiSecretStore
