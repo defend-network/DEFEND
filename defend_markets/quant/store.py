@@ -2359,6 +2359,28 @@ class PostgresQuantStore(QuantStore):
             )
             return cursor.fetchone() is not None
 
+    def list_canonical_event_candidates(self, limit=5000):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT canonical_event_id, provider_event_id, player_a_name, player_b_name, "
+                "competition, scheduled_commence FROM tt_forward_events "
+                "WHERE canonical_event_id IS NOT NULL ORDER BY scheduled_commence DESC LIMIT %s",
+                (limit,),
+            )
+            out = []
+            for row in cursor.fetchall():
+                out.append(
+                    {
+                        "canonical_event_id": str(row[0]),
+                        "native_event_id": str(row[1] or ""),
+                        "betradar_id": "",
+                        "participants": [str(row[2] or ""), str(row[3] or "")],
+                        "competition": str(row[4] or ""),
+                        "scheduled_time": row[5],
+                    }
+                )
+            return out
+
 
 @dataclass
 class InMemoryQuantStore(QuantStore):
@@ -2410,6 +2432,7 @@ class InMemoryQuantStore(QuantStore):
     hardrock_quotes: list[dict[str, Any]] = field(default_factory=list)
     provider_event_mappings: dict[tuple[str, str], dict[str, Any]] = field(default_factory=dict)
     backfill_checkpoints: dict[tuple[str, str], dict[str, Any]] = field(default_factory=dict)
+    _canonical_candidates: list[dict[str, Any]] = field(default_factory=list)
     _next_ladder_snapshot: int = 1
     _next_result_request: int = 1
     _next_governance: int = 1
@@ -3227,6 +3250,9 @@ class InMemoryQuantStore(QuantStore):
             "updated_at": _utcnow().isoformat(),
         }
         return True
+
+    def list_canonical_event_candidates(self, limit=5000):
+        return list(self._canonical_candidates)[:limit]
 
     def insert_arb_opportunity(self, opp):
         if opp["fingerprint"] in self.arb_opportunities:

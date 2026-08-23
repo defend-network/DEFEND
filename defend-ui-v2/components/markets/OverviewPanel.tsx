@@ -8,6 +8,7 @@ import {
   OverviewResponse,
   fetchOverview,
 } from "@/lib/marketsApi";
+import { HardRockStatusCard } from "@/components/markets/HardRockStatusCard";
 
 type LoadState<T> =
   | { kind: "loading" }
@@ -127,6 +128,7 @@ export function OverviewPanel() {
 
   return (
     <div className="dm-board">
+      <HardRockStatusCard />
       <section className="dm-hero">
         <div className="dm-hero-copy">
           <span className="dm-eyebrow">Cross-market research · ranking · decision engine</span>

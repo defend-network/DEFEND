@@ -2615,3 +2615,24 @@ body:before {
 @media (max-width: 420px) {
   .dm-match-grid { grid-template-columns: 1fr; }
 }
+
+/* M4.8.1 owner workstation */
+.markets-owner-bar {
+  display: flex; justify-content: flex-end; align-items: center; gap: 12px;
+  padding: 8px 0; font-size: 0.85rem; color: var(--muted, #8b93a7);
+}
+.markets-owner-user { font-weight: 600; }
+.markets-owner-logout {
+  background: transparent; border: 1px solid var(--border, #2a2f3f); color: var(--fg, #e8ecf5);
+  padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 0.8rem;
+}
+.markets-owner-logout:hover { border-color: var(--accent, #7aa2ff); }
+.markets-loading { padding: 40px; text-align: center; color: var(--muted, #8b93a7); }
+.hardrock-card { margin-bottom: 20px; }
+.hardrock-card .dm-panel-head {
+  display: flex; justify-content: space-between; align-items: center; gap: 12px;
+}
+.hardrock-kpis {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 14px; margin-top: 14px;
+}

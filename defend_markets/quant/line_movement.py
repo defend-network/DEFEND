@@ -142,3 +142,69 @@ def hardrock_reference_price(quotes_by_book: dict[str, list[dict[str, Any]]]) ->
         "deviation_from_consensus": str(deviation) if deviation is not None else None,
         "comparison_books": sorted(book for book in quotes_by_book if book != REFERENCE_SPORTSBOOK and book != REFERENCE_PROVIDER),
     }
+
+
+def two_way_no_vig(*, side_a_implied: Decimal | str | float, side_b_implied: Decimal | str | float) -> dict[str, Any]:
+    """P8: proportional no-vig normalization for a two-way market.
+
+    fair_p_i = raw_implied_i / sum(raw_implied_pair). Returns raw implied,
+    overround, and normalized no-vig pair. Never calls a raw-implied average
+    a fair probability.
+    """
+    try:
+        a = Decimal(str(side_a_implied))
+        b = Decimal(str(side_b_implied))
+    except Exception:
+        return {"ok": False}
+    total = a + b
+    if total <= 0:
+        return {"ok": False}
+    return {
+        "ok": True,
+        "raw_implied_a": str(a),
+        "raw_implied_b": str(b),
+        "overround": str(total),
+        "no_vig_a": str((a / total).quantize(Decimal("0.00000001"))),
+        "no_vig_b": str((b / total).quantize(Decimal("0.00000001"))),
+    }
+
+
+def synchronized_snapshot(
+    *,
+    quotes_by_book: dict[str, list[dict[str, Any]]],
+    max_age_seconds: float = 600.0,
+    max_skew_seconds: float = 120.0,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """P7: synchronized cross-book snapshot with explicit freshness/skew.
+
+    Selects the latest quote per book within a freshness window and rejects
+    books whose observation skew exceeds ``max_skew_seconds``. Hard Rock is
+    always the owner-facing reference book when valid.
+    """
+    now = now or datetime.now(timezone.utc)
+    fresh_books: dict[str, dict[str, Any]] = {}
+    skews: list[float] = []
+    timestamps: list[datetime] = []
+    for book, quotes in quotes_by_book.items():
+        if not quotes:
+            continue
+        latest = max(quotes, key=lambda q: _parse(q.get("observed_at")) or datetime.min.replace(tzinfo=timezone.utc))
+        t = _parse(latest.get("observed_at"))
+        if t is None:
+            continue
+        age = (now - t).total_seconds()
+        if age > max_age_seconds:
+            continue
+        fresh_books[book] = {**latest, "age_seconds": round(age, 3)}
+        timestamps.append(t)
+    if len(timestamps) >= 2:
+        spread = (max(timestamps) - min(timestamps)).total_seconds()
+        skews = [(t - min(timestamps)).total_seconds() for t in timestamps]
+    return {
+        "books": fresh_books,
+        "observed_skew_seconds": round(max(skews), 3) if skews else None,
+        "fresh": len(fresh_books) == len([b for b in quotes_by_book if quotes_by_book[b]]),
+        "reference_book": REFERENCE_SPORTSBOOK,
+        "reference_present": (REFERENCE_SPORTSBOOK in fresh_books) or (REFERENCE_PROVIDER in fresh_books),
+    }

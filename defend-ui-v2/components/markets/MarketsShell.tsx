@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { MARKETS_SECTIONS } from "@/components/markets/marketsSections";
 import { ProductSwitcher } from "@/components/ProductSwitcher";
+import MarketsOwnerGate from "@/components/markets/MarketsOwnerGate";
 
 export type { MarketsSectionId } from "@/components/markets/marketsSections";
 
@@ -12,28 +13,30 @@ export function MarketsShell({ children }: { children: React.ReactNode }) {
   const active = pathname.replace(/^\/markets\/?/, "");
 
   return (
-    <div className="markets-shell">
-      <header className="markets-header">
-        <div className="markets-header-top">
-          <Link href="/markets" className="markets-brand">
-            DEFENDmarkets
-          </Link>
-          <ProductSwitcher />
-        </div>
-        <nav className="markets-nav" aria-label="Markets sections">
-          {MARKETS_SECTIONS.map((section) => (
-            <Link
-              key={section.id}
-              href={`/markets${section.id ? `/${section.id}` : ""}`}
-              className={`markets-nav-link${active === section.id ? " active" : ""}`}
-            >
-              {section.label}
+    <MarketsOwnerGate>
+      <div className="markets-shell">
+        <header className="markets-header">
+          <div className="markets-header-top">
+            <Link href="/markets" className="markets-brand">
+              DEFENDmarkets
             </Link>
-          ))}
-        </nav>
-      </header>
-      <main className="markets-main">{children}</main>
-    </div>
+            <ProductSwitcher />
+          </div>
+          <nav className="markets-nav" aria-label="Markets sections">
+            {MARKETS_SECTIONS.map((section) => (
+              <Link
+                key={section.id}
+                href={`/markets${section.id ? `/${section.id}` : ""}`}
+                className={`markets-nav-link${active === section.id ? " active" : ""}`}
+              >
+                {section.label}
+              </Link>
+            ))}
+          </nav>
+        </header>
+        <main className="markets-main">{children}</main>
+      </div>
+    </MarketsOwnerGate>
   );
 }
 

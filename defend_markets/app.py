@@ -639,6 +639,18 @@ def build_markets_app(dependencies: MarketsDependencies) -> FastAPI:
         description="Cross-market research, ranking, and decision engine. Real data only.",
     )
 
+    # M4.8.1 owner login: reuse the shared admin_auth identity store so the owner
+    # can log into the Markets workstation with the same DEFEND_OWNER_* creds.
+    try:
+        import admin_auth as _admin_auth
+        from defend_data.data_core import DataCore
+
+        _admin_auth.configure_identity_store(DataCore().identity)
+    except Exception:
+        # identity store unavailable (e.g. missing owner env) — owner routes will
+        # return 503 from the shared admin_auth dependency, not crash startup.
+        pass
+
     @app.get("/health")
     def health() -> dict[str, object]:
         if deps.database is None:
@@ -999,6 +1011,9 @@ def build_markets_app(dependencies: MarketsDependencies) -> FastAPI:
                 artifact_dir=quant_artifact_dir,
             )
             app.include_router(build_quant_router(quant_orchestrator))
+            from defend_markets.quant.owner_routes import build_owner_router
+
+            app.include_router(build_owner_router(quant_orchestrator))
             quant_state = quant_orchestrator.health_state()
 
             import asyncio

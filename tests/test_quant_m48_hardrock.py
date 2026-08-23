@@ -27,6 +27,7 @@ from defend_markets.quant.event_matcher import (
     STATE_NAME_TIME_EXACT,
     STATE_UNMATCHED,
     match_event,
+    resolve_provider_orientation,
 )
 from defend_markets.quant.hardrock import (
     DATA_PROVIDER_OWLS,
@@ -78,12 +79,19 @@ class TestHardRockLadder:
         assert decimal_to_implied(Decimal("2.000")) == Decimal("0.50000000")
 
     def test_ladder_snapshot_immutable(self):
+        import pytest
+
         ladder = HardRockLadder.from_payload(_ladder_payload({55: -185}))
-        entries = dict(ladder.entries)
-        # a frozen ladder is immutable (entries is a plain dict copy; mutation of
-        # the object's dict does not affect a previously-derived observation)
-        ladder.entries[55] = -999
-        assert entries[55] == -185
+        # M4.8.1 P2: entries is a read-only mapping; assignment raises TypeError.
+        with pytest.raises(TypeError):
+            ladder.entries[55] = -999
+        assert ladder.american_odds(55) == -185
+
+    def test_input_dict_mutation_does_not_mutate_snapshot(self):
+        src = {55: -185}
+        ladder = HardRockLadder.from_payload(_ladder_payload(src))
+        src[55] = -999  # mutate the caller's dict after construction
+        assert ladder.american_odds(55) == -185
 
     def test_old_observation_retains_mapping(self):
         """P5: an observation captured with an old ladder keeps its own odds."""
@@ -259,3 +267,73 @@ class TestBackfillCapacityIsolation:
         from defend_markets.quant.governance import CLASS_RECONCILIATION, CLASS_RESULT
 
         assert CLASS_RECONCILIATION != CLASS_RESULT
+
+
+class TestParticipantOrientation:
+    def test_same_order(self):
+        a_maps, b_maps, state = resolve_provider_orientation(
+            provider_participant_a="Alice", provider_participant_b="Bob",
+            canonical_participant_1="Alice", canonical_participant_2="Bob",
+        )
+        assert state == "CANONICAL"
+        assert (a_maps, b_maps) == ("1", "2")
+
+    def test_reversed_order(self):
+        a_maps, b_maps, state = resolve_provider_orientation(
+            provider_participant_a="Bob", provider_participant_b="Alice",
+            canonical_participant_1="Alice", canonical_participant_2="Bob",
+        )
+        assert state == "REVERSED"
+        assert (a_maps, b_maps) == ("2", "1")
+
+    def test_name_mismatch_fails_closed(self):
+        _, _, state = resolve_provider_orientation(
+            provider_participant_a="Carol", provider_participant_b="Bob",
+            canonical_participant_1="Alice", canonical_participant_2="Bob",
+        )
+        assert state == "CONFLICT"
+
+
+class TestDevig:
+    def test_two_way_no_vig(self):
+        from defend_markets.quant.line_movement import two_way_no_vig
+
+        result = two_way_no_vig(side_a_implied="0.5556", side_b_implied="0.5263")
+        assert result["ok"] is True
+        # overround = 0.5556 + 0.5263 = 1.0819
+        assert result["overround"] == "1.0819"
+        # proportional normalization: 0.5556/1.0819 ~= 0.51354
+        assert result["no_vig_a"] == "0.51354099"
+        assert result["no_vig_b"] == "0.48645901"
+
+    def test_raw_implied_not_fair(self):
+        from defend_markets.quant.line_movement import two_way_no_vig
+
+        result = two_way_no_vig(side_a_implied="0.5556", side_b_implied="0.5263")
+        # raw implied sums > 1 (overround); no_vig is normalized to sum 1
+        assert result["raw_implied_a"] != result["no_vig_a"]
+
+
+class TestSyncSnapshot:
+    def test_fresh_and_skew(self):
+        from defend_markets.quant.line_movement import synchronized_snapshot
+
+        now = _NOW
+        quotes = {
+            "hardrock_bet": [{"decimal_odds": "1.8", "implied_probability": "0.55", "observed_at": now}],
+            "Bet365": [{"decimal_odds": "1.9", "implied_probability": "0.52", "observed_at": now - timedelta(seconds=30)}],
+        }
+        snap = synchronized_snapshot(quotes_by_book=quotes, now=now)
+        assert snap["reference_present"] is True
+        assert snap["observed_skew_seconds"] is not None
+
+    def test_stale_excluded(self):
+        from defend_markets.quant.line_movement import synchronized_snapshot
+
+        now = _NOW
+        quotes = {
+            "hardrock_bet": [{"decimal_odds": "1.8", "implied_probability": "0.55", "observed_at": now}],
+            "Bet365": [{"decimal_odds": "1.9", "implied_probability": "0.52", "observed_at": now - timedelta(hours=2)}],
+        }
+        snap = synchronized_snapshot(quotes_by_book=quotes, now=now)
+        assert "Bet365" not in snap["books"]  # stale -> excluded

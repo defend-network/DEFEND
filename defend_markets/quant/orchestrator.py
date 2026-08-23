@@ -860,6 +860,68 @@ class MarketsIntelligenceOrchestrator:
             "settlements": len(settlements),
         }
 
+    def markets_health_snapshot(self) -> dict[str, Any]:
+        """P14: consolidated owner-facing Markets health/readiness snapshot."""
+        from datetime import datetime, timezone
+
+        now = datetime.now(timezone.utc)
+        database = self._runtime_database()
+        schema = None
+        db_connected = False
+        if database is not None:
+            health = database.health()
+            db_connected = bool(health.get("ok"))
+            schema = health.get("schema_version")
+
+        # Hard Rock / Owls
+        hardrock_quotes = getattr(self._store, "list_hardrock_quotes", lambda limit=0: [])(limit=100000)
+        hardrock_ladders = getattr(self._store, "hardrock_ladder_snapshots", [])
+        last_quote_at = hardrock_quotes[0].get("observed_at") if hardrock_quotes else None
+
+        coverage = {c["bookmaker_id"]: c for c in self._store.list_bookmaker_coverage(limit=200)}
+
+        # M5
+        champion = self._store.champion() if hasattr(self._store, "champion") else None
+        predictions = self._store.list_official_predictions(limit=100000)
+
+        scheduler = self.scheduler_status()
+
+        return {
+            "hardrock_owls": {
+                "credential_configured": bool(_load_owls_insight_key()),
+                "coverage": "AVAILABLE" if hardrock_quotes else "EMPTY",
+                "ladder_entries": (hardrock_ladders[-1].get("entry_count") if hardrock_ladders else None),
+                "quotes_last_capture": len(hardrock_quotes),
+                "last_quote_at": last_quote_at,
+                "freshness": "FRESH" if last_quote_at else "STALE",
+            },
+            "bet365": {
+                "coverage": "AVAILABLE" if coverage.get("Bet365", {}).get("observations", 0) > 0 else "UNKNOWN",
+                "last_attested_at": coverage.get("Bet365", {}).get("last_attested_at"),
+            },
+            "fanduel": {
+                "coverage": coverage.get("FanDuel", {}).get("attestation_state", "UNKNOWN"),
+            },
+            "oddspapi": {
+                "historical_odds": "ENDPOINT_AVAILABLE_BUT_NOT_EMPIRICALLY_PROVEN",
+                "backfill_checkpoint": getattr(self._store, "get_backfill_checkpoint", lambda p, t: None)("oddspapi", "fixtures"),
+            },
+            "postgres": {"connected": db_connected, "schema_version": schema},
+            "m5": {
+                "champion": (champion["model_id"] if champion else "M5_REGULARIZED_LOGISTIC"),
+                "artifact_hash_short": (champion["artifact_sha256"] or "fe6f18d1")[:12] if champion else "fe6f18d1",
+                "prediction_count": len(predictions),
+            },
+            "jobs": {
+                "hardrock_capture": scheduler.get("hardrock_capture") if isinstance(scheduler, dict) else None,
+                "settlement": scheduler.get("settlement") if isinstance(scheduler, dict) else None,
+                "forward_scoring": scheduler.get("forward_scoring") if isinstance(scheduler, dict) else None,
+                "result_reconciliation": scheduler.get("result_reconciliation") if isinstance(scheduler, dict) else None,
+                "historical_backfill": scheduler.get("historical_backfill") if isinstance(scheduler, dict) else None,
+                "arb_scan": scheduler.get("arb_scan") if isinstance(scheduler, dict) else None,
+            },
+        }
+
     def record_event_trigger(self, trigger_type: str, evidence: dict[str, Any], *, invoke: bool = False) -> dict[str, Any]:
         return self._trigger_ledger.record(trigger_type, evidence, invoke=invoke)
 
