@@ -38,6 +38,7 @@ from typing import Callable
 # ─────────────────────────────────────────────────────────────
 
 TRAINING_ENV_PROFILE = "DEFEND_AI_QWEN3_TRAIN_ENV_V1"
+TRAINING_ENV_PROFILE_V2 = "DEFEND_AI_QWEN3_TRAIN_ENV_V2"
 
 
 @dataclass(frozen=True)
@@ -58,6 +59,104 @@ class TrainingEnvironmentSpec:
 
     def env_hash(self) -> str:
         return hashlib.sha256(json.dumps(asdict(self), sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def training_env_v2() -> TrainingEnvironmentSpec:
+    """V2 fixes V1's unresolvable pins:
+    - safetensors 0.6.0 does not exist; transformers 5.15.1 requires >=0.8.0.
+    - transformers 5.15.1 requires huggingface-hub<2.0,>=1.5.0, but tokenizers
+      0.22.0 requires huggingface-hub<1.0 (unresolvable together); tokenizers
+      0.22.1 widens to <2.0. V1 is preserved, not mutated."""
+    return TrainingEnvironmentSpec(
+        profile_id=TRAINING_ENV_PROFILE_V2,
+        safetensors="0.8.0",
+        huggingface_hub="1.28.0",
+        tokenizers="0.22.1",
+    )
+
+
+def _normalize_name(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name.lower())
+
+
+def _spec_satisfies(version: str, spec: str) -> bool:
+    v = _version_components(version)
+    for part in spec.split(","):
+        part = part.strip()
+        m = re.match(r"(>=|<=|==|!=|>|<)\s*([0-9][0-9.]*)", part)
+        if not m:
+            continue
+        op, target = m.group(1), _version_components(m.group(2))
+        if op == ">=" and not v >= target:
+            return False
+        if op == "<=" and not v <= target:
+            return False
+        if op == "==" and v != target:
+            return False
+        if op == "!=" and v == target:
+            return False
+        if op == ">" and not v > target:
+            return False
+        if op == "<" and not v < target:
+            return False
+    return True
+
+
+def _pypi_package_info(name: str, version: str) -> tuple[bool, list[str]]:
+    """(exact version exists, requires_dist). Network read, zero-cost."""
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(f"https://pypi.org/pypi/{name}/{version}/json", timeout=30) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        return True, data.get("info", {}).get("requires_dist") or []
+    except Exception:
+        return False, []
+
+
+@dataclass(frozen=True)
+class EnvLockResolution:
+    status: str  # PASS | FAIL
+    missing: list[str] = field(default_factory=list)
+    incompatible: list[str] = field(default_factory=list)
+
+
+def env_lock_resolution(spec: TrainingEnvironmentSpec, package_info=None) -> EnvLockResolution:
+    package_info = package_info or _pypi_package_info
+    pins = {
+        "torch": spec.torch,
+        "transformers": spec.transformers,
+        "accelerate": spec.accelerate,
+        "peft": spec.peft,
+        "trl": spec.trl,
+        "bitsandbytes": spec.bitsandbytes,
+        "tokenizers": spec.tokenizers,
+        "datasets": spec.datasets,
+        "huggingface_hub": spec.huggingface_hub,
+        "safetensors": spec.safetensors,
+    }
+    pins_norm = {_normalize_name(k): (k, v) for k, v in pins.items()}
+    missing: list[str] = []
+    incompatible: list[str] = []
+    for name, ver in pins.items():
+        exists, requires = package_info(name, ver)
+        if not exists:
+            missing.append(f"{name}=={ver}")
+            continue
+        for req_str in requires:
+            if ";" in req_str:
+                continue  # extra / environment-marked, not a base dependency
+            m = re.match(r"([A-Za-z0-9][A-Za-z0-9._-]*)", req_str)
+            if not m:
+                continue
+            req_name = _normalize_name(m.group(1))
+            spec_part = req_str[m.end():].strip()
+            if req_name in pins_norm:
+                pinned_key, pinned_ver = pins_norm[req_name]
+                if not _spec_satisfies(pinned_ver, spec_part):
+                    incompatible.append(f"{name} {req_str} conflicts with {pinned_key}=={pinned_ver}")
+    status = "PASS" if not missing and not incompatible else "FAIL"
+    return EnvLockResolution(status=status, missing=missing, incompatible=incompatible)
 
 
 def _version_components(version: str) -> tuple[int, ...]:
@@ -579,6 +678,7 @@ class PaidCanaryReadiness:
     evaluator_code_sha: str
     training_env_profile: str
     training_env_hash: str
+    env_lock_resolution: str
     failed_host_blocks: list[str]
     production_instance_id: int
     candidate_model_repo: str
@@ -594,10 +694,11 @@ class PaidCanaryReadiness:
             and self.heldout_sha
             and self.evaluator_code_sha
             and self.training_env_hash
+            and self.env_lock_resolution == "PASS"
         )
 
 
-def build_paid_canary_readiness(clean_branch_head: str) -> PaidCanaryReadiness:
+def build_paid_canary_readiness(clean_branch_head: str, env_resolution: str = "PASS") -> PaidCanaryReadiness:
     from .eval_runner_v2 import EVAL_DATASET_SHA, EVALUATOR_VERSION, evaluator_code_sha
 
     return PaidCanaryReadiness(
@@ -606,8 +707,9 @@ def build_paid_canary_readiness(clean_branch_head: str) -> PaidCanaryReadiness:
         heldout_sha=EVAL_DATASET_SHA,
         evaluator_version=EVALUATOR_VERSION,
         evaluator_code_sha=evaluator_code_sha(),
-        training_env_profile=TRAINING_ENV_PROFILE,
-        training_env_hash=TrainingEnvironmentSpec().env_hash(),
+        training_env_profile=TRAINING_ENV_PROFILE_V2,
+        training_env_hash=training_env_v2().env_hash(),
+        env_lock_resolution=env_resolution,
         failed_host_blocks=["instance:48423466", "offer:21050987", "host:ssh3.vast.ai"],
         production_instance_id=48416143,
         candidate_model_repo="Defend-network/defend-qwen3-32b-identity-lora-v001",

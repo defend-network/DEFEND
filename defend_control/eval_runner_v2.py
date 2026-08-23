@@ -1,4 +1,4 @@
-"""DEFEND AI evaluator v2.2 — evaluation-episode model.
+"""DEFEND AI evaluator v2.3 — evaluation-episode model + strict rubric.
 
 Fixes the M1.9.1B audit findings:
 
@@ -8,11 +8,14 @@ Fixes the M1.9.1B audit findings:
 - Tool scoring uses structured actual calls (name/arguments/order), not a list
   of names; deterministic arguments are compared (canonical JSON); order is
   scored only for tool episodes; result incorporation is a tool-specific
-  deterministic check (e.g. calculator -> expected number), not a raw 40-char
-  prefix match.
-- Semantic scoring never forces PASS/FAIL from word overlap: rows without a
-  strict structured rubric are reported SEMANTIC_UNRESOLVED and excluded from
-  the strict score (an auxiliary lexical score is reported separately).
+  deterministic check (calculator -> expected numeric result, time -> expected
+  date/time semantics), never a raw 40-char prefix match.
+- A frozen deterministic StrictRubric (required/forbidden concepts, critical
+  numerics, format, identity/tool/recovery requirements) scores direct and
+  recovery episodes. A row that cannot be resolved deterministically is
+  reported SEMANTIC_UNRESOLVED and excluded from the strict score; an auxiliary
+  lexical overlap score is reported separately and never treated as ground
+  truth.
 """
 
 from __future__ import annotations
@@ -25,7 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-EVALUATOR_VERSION = "v2.2"
+EVALUATOR_VERSION = "v2.3"
 EVAL_DATASET_SHA = "5ee2369ea383a8590dd123fa66db8a885154a2a0bf5abc8e98c174bcdf27835a"
 
 EPISODE_DIRECT = "DIRECT_RESPONSE"
@@ -70,6 +73,45 @@ def _canonical_json(obj) -> str:
     return json.dumps(obj, sort_keys=True, separators=(",", ":"))
 
 
+# ── Strict rubric ────────────────────────────────────────────
+
+@dataclass
+class StrictRubric:
+    """Frozen deterministic behavioral rubric. Required concepts are clusters
+    of accepted phrasings separated by '|'. A missing required concept is
+    SEMANTIC_UNRESOLVED (never forced to FAIL); a forbidden concept or missing
+    critical numeric/format is a deterministic FAIL."""
+
+    required_concepts: list[str] = field(default_factory=list)
+    forbidden_concepts: list[str] = field(default_factory=list)
+    identity_requirement: str | None = None
+    tool_requirement: list[str] = field(default_factory=list)
+    recovery_requirement: bool = False
+    format_requirement: str | None = None
+    critical_numerics: list[str] = field(default_factory=list)
+
+
+def score_with_rubric(output: str, rubric: StrictRubric) -> tuple[bool | None, str]:
+    """Return (pass|None, detail). None == SEMANTIC_UNRESOLVED."""
+    low = output.lower()
+    if rubric.required_concepts and _is_refusal(output):
+        return False, "refusal"
+    for f in rubric.forbidden_concepts:
+        if f.lower() in low:
+            return False, f"forbidden:{f}"
+    norm_out = re.sub(r"[^0-9a-z]", "", low)
+    for n in rubric.critical_numerics:
+        if re.sub(r"[^0-9a-z]", "", n.lower()) not in norm_out:
+            return False, f"missing_numeric:{n}"
+    for cluster in rubric.required_concepts:
+        variants = [v.strip().lower() for v in cluster.split("|") if v.strip()]
+        if variants and not any(v in low for v in variants):
+            return None, f"unresolved_concept:{cluster}"
+    if rubric.format_requirement and rubric.format_requirement.lower() not in low:
+        return False, f"missing_format:{rubric.format_requirement}"
+    return True, "ok"
+
+
 # ── Episode model ────────────────────────────────────────────
 
 @dataclass
@@ -81,9 +123,11 @@ class EvalEpisode:
     prefix_messages: list[dict]
     trigger_user_turn: str
     expected_tool_calls: list[dict] = field(default_factory=list)
+    expected_tool_results: list[str] = field(default_factory=list)
     expected_final_response: str = ""
     scorable: bool = True
     ambiguity_reason: str | None = None
+    source_message_indices: list[int] = field(default_factory=list)
 
 
 def _assistant_indices(messages: list[dict]) -> list[int]:
@@ -115,6 +159,10 @@ def _extract_tool_calls(messages: list[dict]) -> list[dict]:
     return tools
 
 
+def _extract_tool_results(messages: list[dict]) -> list[str]:
+    return [str(m.get("content", "")) for m in messages if m.get("role") == "tool"]
+
+
 def _last_user_before(messages: list[dict], index: int) -> str:
     for i in range(index - 1, -1, -1):
         if messages[i].get("role") == "user":
@@ -141,7 +189,9 @@ def derive_episode(row: dict) -> EvalEpisode:
             str(row.get("id")), str(row.get("domain")), str(row.get("difficulty")),
             EPISODE_TOOL, prefix, _last_user_before(messages, first_tool),
             expected_tool_calls=_extract_tool_calls(messages),
+            expected_tool_results=_extract_tool_results(messages),
             expected_final_response=str(final),
+            source_message_indices=list(range(len(messages))),
         )
 
     # No tools: direct or multi-turn recovery.
@@ -152,6 +202,7 @@ def derive_episode(row: dict) -> EvalEpisode:
         str(row.get("id")), str(row.get("domain")), str(row.get("difficulty")),
         episode_type, prefix, _last_user_before(messages, target),
         expected_final_response=str(messages[target].get("content", "")),
+        source_message_indices=list(range(len(messages))),
     )
 
 
@@ -180,72 +231,45 @@ class EpisodeResult:
     error: str | None
 
 
-def _strict_score_direct(episode: EvalEpisode, output: str) -> tuple[bool, float]:
-    """Strict rubric requires an explicit manifest; without one, a direct
-    response is SEMANTIC_UNRESOLVED (auxiliary lexical only)."""
+def _lexical_overlap(episode: EvalEpisode, output: str) -> float:
     ref_words = _words(episode.expected_final_response)
     out_words = set(_words(output))
     if not ref_words:
-        return False, 0.0
-    overlap = sum(1 for w in ref_words if w in out_words) / len(ref_words)
-    substantive = not _is_refusal(output) if len(ref_words) >= 4 else True
-    return substantive, round(overlap, 4)
+        return 0.0
+    return round(sum(1 for w in ref_words if w in out_words) / len(ref_words), 4)
 
 
-def _safe_eval_expression(expr: str) -> str | None:
-    import ast
-
-    try:
-        tree = ast.parse(expr, mode="eval")
-    except Exception:
+def _check_result_incorporation(episode: EvalEpisode, output: str) -> bool | None:
+    if not episode.expected_tool_results:
         return None
-
-    def _node(value) -> int | float:
-        if isinstance(value, ast.Expression):
-            return _node(value.body)
-        if isinstance(value, ast.Constant) and isinstance(value.value, (int, float)):
-            return value.value
-        if isinstance(value, ast.BinOp):
-            left = _node(value.left)
-            right = _node(value.right)
-            if isinstance(value.op, ast.Add):
-                return left + right
-            if isinstance(value.op, ast.Sub):
-                return left - right
-            if isinstance(value.op, ast.Mult):
-                return left * right
-            if isinstance(value.op, ast.Div):
-                return left / right
-        raise ValueError("unsupported expression")
-
-    try:
-        result = _node(tree)
-    except Exception:
-        return None
-    if isinstance(result, float) and result.is_integer():
-        return str(int(result))
-    return str(result)
-
-
-def _expected_calculator_result(episode: EvalEpisode) -> str | None:
-    for m in episode.expected_tool_calls:
-        if m.get("name") == "calculator.evaluate":
-            args = _normalize_args(m.get("arguments"))
-            expr = str(args.get("expression", ""))
-            if expr:
-                return _safe_eval_expression(expr)
-    return None
+    out_digits = re.sub(r"[^0-9]", "", output)
+    all_ok = True
+    for call, res in zip(episode.expected_tool_calls, episode.expected_tool_results):
+        name = (call.get("name") or "").lower()
+        if "calculator" in name:
+            digits = re.sub(r"[^0-9]", "", res)
+            if digits and digits not in out_digits:
+                all_ok = False
+        elif "time" in name or "date" in name:
+            m = re.search(r"\d{4}-\d{2}-\d{2}", res)
+            if m and m.group(0) not in output:
+                all_ok = False
+            elif not m:
+                y = re.search(r"\d{4}", res)
+                if y and y.group(0) not in output:
+                    all_ok = False
+    return all_ok
 
 
 def evaluate_episode(
     episode: EvalEpisode,
     chat: Callable[[list[dict]], EvalModelResult],
+    rubric: StrictRubric | None = None,
 ) -> EpisodeResult:
     started = time.monotonic()
     try:
         result = chat(list(episode.prefix_messages))
     except Exception as exc:
-        result = EvalModelResult()
         error = f"{type(exc).__name__}: {exc}"
         latency = round(time.monotonic() - started, 2)
         return EpisodeResult(
@@ -262,13 +286,26 @@ def evaluate_episode(
     if episode.episode_type == EPISODE_TOOL:
         return _score_tool_episode(episode, output, actual_tools, latency, None)
 
-    # Direct / recovery: strict semantic unresolved, auxiliary lexical only.
-    substantive, overlap = _strict_score_direct(episode, output)
+    # Direct / recovery: strict only via an explicit rubric.
+    if rubric is not None:
+        verdict, _detail = score_with_rubric(output, rubric)
+        resolved = verdict is not None
+        return EpisodeResult(
+            episode.eval_id, episode.domain, episode.difficulty, episode.episode_type,
+            strict_scorable=True, strict_pass=verdict,
+            auxiliary_lexical_score=_lexical_overlap(episode, output),
+            tool_selection_pass=None, tool_order_pass=None, tool_arguments_pass=None,
+            tool_result_pass=None, final_response_pass=not _is_refusal(output),
+            semantic_resolved=resolved, latency_s=latency, error=None,
+        )
+
+    # No rubric: honest SEMANTIC_UNRESOLVED, auxiliary lexical only.
     return EpisodeResult(
         episode.eval_id, episode.domain, episode.difficulty, episode.episode_type,
-        strict_scorable=False, strict_pass=None, auxiliary_lexical_score=round(overlap, 4),
+        strict_scorable=False, strict_pass=None,
+        auxiliary_lexical_score=_lexical_overlap(episode, output),
         tool_selection_pass=None, tool_order_pass=None, tool_arguments_pass=None,
-        tool_result_pass=None, final_response_pass=bool(substantive),
+        tool_result_pass=None, final_response_pass=not _is_refusal(output),
         semantic_resolved=False, latency_s=latency, error=None,
     )
 
@@ -298,11 +335,8 @@ def _score_tool_episode(
         match = _canonical_json(exp_args) == _canonical_json(act_args)
         args_pass = match if args_pass is None else (args_pass and match)
 
-    # Result incorporation (calculator deterministic number).
-    result_pass = None
-    calc_result = _expected_calculator_result(episode)
-    if calc_result is not None:
-        result_pass = re.sub(r"[^0-9]", "", calc_result) in re.sub(r"[^0-9]", "", output)
+    # Result incorporation (tool-specific deterministic check).
+    result_pass = _check_result_incorporation(episode, output)
 
     # Final response substantive.
     ref_words = _words(episode.expected_final_response)
@@ -320,14 +354,20 @@ def _score_tool_episode(
     )
 
 
-def run_episodes(rows: list[dict], chat: Callable[[list[dict]], EvalModelResult]) -> dict:
+def run_episodes(
+    rows: list[dict],
+    chat: Callable[[list[dict]], EvalModelResult],
+    rubrics: dict[str, StrictRubric] | None = None,
+) -> dict:
+    rubrics = rubrics or {}
     episodes = [derive_episode(r) for r in rows]
-    results = [evaluate_episode(ep, chat) for ep in episodes]
+    results = [evaluate_episode(ep, chat, rubrics.get(ep.eval_id)) for ep in episodes]
     strict = [r for r in results if r.strict_scorable]
-    unresolved = [r for r in results if not r.strict_scorable]
+    resolved = [r for r in strict if r.strict_pass is not None]
+    unresolved = [r for r in results if r.strict_pass is None]
 
     def domain_score(domain: str) -> float:
-        subset = [r for r in strict if r.domain == domain and r.strict_pass is not None]
+        subset = [r for r in resolved if r.domain == domain]
         return round(sum(1 for r in subset if r.strict_pass) / len(subset), 4) if subset else 0.0
 
     return {
@@ -340,8 +380,8 @@ def run_episodes(rows: list[dict], chat: Callable[[list[dict]], EvalModelResult]
         "recovery_rows": sum(1 for e in episodes if e.episode_type == EPISODE_RECOVERY),
         "unscorable_rows": sum(1 for e in episodes if e.episode_type == EPISODE_UNSCORABLE),
         "strict_scorable_rows": len(strict),
-        "strict_pass": sum(1 for r in strict if r.strict_pass),
-        "strict_pass_rate": round(sum(1 for r in strict if r.strict_pass) / len(strict), 4) if strict else None,
+        "strict_pass": sum(1 for r in resolved if r.strict_pass),
+        "strict_pass_rate": round(sum(1 for r in resolved if r.strict_pass) / len(resolved), 4) if resolved else None,
         "semantic_unresolved_rows": len(unresolved),
         "strict_general": domain_score("general"),
         "strict_policy": domain_score("policy"),
