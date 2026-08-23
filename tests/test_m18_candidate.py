@@ -18,6 +18,7 @@ from defend_control.deployment_profiles import (
 from defend_control.qwen3_candidate import (
     HELDOUT_EVAL_ROWS,
     HELDOUT_EVAL_SHA256,
+    convert_sft_row_to_qwen3,
     convert_sft_to_qwen3,
     heldout_evaluator_config,
     qwen3_qlora_config,
@@ -43,9 +44,10 @@ def _sample_sft_row() -> dict:
         "provenance": {"source": "synthetic_reviewed_repaired"},
         "messages": [
             {"role": "system", "content": "You are DEFEND AI. Follow the active policy."},
-            {"role": "user", "content": "What did the Naturalization Act of 1790 say?"},
-            {"role": "assistant", "content": "It limited naturalization to free White persons.", "tool_calls": [{"id": "t0"}]},
-            {"role": "tool", "content": "result payload"},
+            {"role": "user", "content": "Compute 17*23."},
+            {"role": "assistant", "content": None, "tool_calls": [{"name": "calculator", "arguments": {"expression": "17*23"}}]},
+            {"role": "tool", "content": "391"},
+            {"role": "assistant", "content": "17 times 23 is 391."},
         ],
     }
 
@@ -260,12 +262,35 @@ def test_exact_m17_collision_regression(tmp_path):
 
 def test_qwen3_conversion_preserves_semantic_content():
     row = _sample_sft_row()
-    out = __import__("defend_control.qwen3_candidate", fromlist=["convert_sft_row_to_qwen3"]).convert_sft_row_to_qwen3(row)
+    out = convert_sft_row_to_qwen3(row)
     original_contents = [(m["role"], m["content"]) for m in row["messages"]]
     new_contents = [(m["role"], m["content"]) for m in out["messages"]]
     assert new_contents == original_contents  # role+content preserved verbatim
-    assert out["format_version"] == "qwen3-chat-tool-v1"
+    assert out["format_version"] == "qwen3-chat-tool-v2"
     assert any(m.get("tool_call_id") for m in out["messages"] if m["role"] == "tool")
+
+
+def test_qwen3_conversion_preserves_tool_trajectory_losslessly():
+    row = _sample_sft_row()
+    out = convert_sft_row_to_qwen3(row)
+    asst = next(m for m in out["messages"] if m["role"] == "assistant" and m.get("tool_calls"))
+    tc = asst["tool_calls"][0]
+    assert tc["function"]["name"] == "calculator"
+    assert json.loads(tc["function"]["arguments"]) == {"expression": "17*23"}
+    tool = next(m for m in out["messages"] if m["role"] == "tool")
+    assert tool["tool_call_id"] == tc["id"]
+    assert tool["content"] == "391"
+    final = out["messages"][-1]
+    assert final["role"] == "assistant"
+    assert final["content"] == "17 times 23 is 391."
+
+
+def test_tool_result_without_prior_tool_call_rejected():
+    ok, _ = validate_sft_row({"messages": [
+        {"role": "assistant", "content": "plain text, no tool_calls"},
+        {"role": "tool", "content": "orphan result"},
+    ]})
+    assert not ok
 
 
 def test_malformed_row_rejected():
@@ -285,10 +310,11 @@ def test_qwen3_training_config_and_evaluator_ready():
     assert evaluator["baseline"]["status"] == "not_yet_captured"
 
 
-def test_instance_48416143_is_stopped_retained_in_runtime_registry():
-    from defend_control.product_runtime import ProductRuntimeRegistry
+def test_registry_stopped_retained_roundtrip_is_isolated(tmp_path):
+    from defend_control.product_runtime import ProductRuntimeRegistry, STATE_STOPPED_RETAINED
 
-    registry = ProductRuntimeRegistry()
+    registry = ProductRuntimeRegistry(tmp_path / "product-runtime.json")
+    registry.update("defend-ai", instance_id=48416143, state=STATE_STOPPED_RETAINED)
     record = registry.load()["defend-ai"]
     assert record.state == "stopped_retained"
     assert record.instance_id == 48416143

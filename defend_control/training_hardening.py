@@ -866,7 +866,7 @@ def build_paid_canary_readiness(
     candidate_repo, candidate_revision = _canonical_candidate_base()
     return PaidCanaryReadiness(
         clean_branch_head=clean_branch_head,
-        train_dataset_sha="26a715e07f4c9fb0e0fd90bce0c04ac200894337b8f959196939e6762251274c",
+        train_dataset_sha="d59b05ee323dc6d8bda8086c2aa3f9589acb8eae883afb173095f53117e1e854",
         heldout_sha=EVAL_DATASET_SHA,
         evaluator_version=EVALUATOR_VERSION,
         evaluator_code_sha=evaluator_code_sha(),
