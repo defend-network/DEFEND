@@ -116,3 +116,29 @@ class TestProductIsolation:
 
         assert dpapi.DpapiSecretStore is Shim
         assert hasattr(dpapi, "restrict_to_current_user")
+
+    def test_launch_manifest_is_product_owned(self):
+        from defend_coder.launch import (
+            API_PORT,
+            MODEL_FORWARD_PORT,
+            UI_PORT,
+            build_launch_manifest,
+        )
+
+        manifest = build_launch_manifest()
+        assert manifest.api_port == API_PORT == 8301
+        assert manifest.ui_port == UI_PORT == 3301
+        assert manifest.model_forward_port == MODEL_FORWARD_PORT == 8403
+        assert manifest.health_url == "http://127.0.0.1:8301/health"
+        assert "tools.defend_coder_server" in manifest.api_command
+
+    def test_production_runtime_manager_is_concrete_not_fake(self):
+        import inspect
+
+        import defend_coder.app as app_module
+
+        source = inspect.getsource(app_module)
+        # Production default must be the concrete manager, never the fake
+        # boundary as the fallback authority.
+        assert "CoderRuntimeManager()" in source
+        assert "ProductRuntimeAdapterBoundary()" not in source
