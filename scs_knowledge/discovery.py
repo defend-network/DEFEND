@@ -347,6 +347,7 @@ class KnowledgeDiscoveryStore:
         if sha256_of(snapshot) != record["file_sha256"]:
             self._mark_stale(record)
             return record
+        result = None
         try:
             if record.get("state") == "CLASSIFIED":
                 record["approved_by"] = verified_by
@@ -363,6 +364,7 @@ class KnowledgeDiscoveryStore:
                 self._save()
             result = ingest_file(library, snapshot, private_root=private_root)
             if result.sha256 != record["file_sha256"]:
+                _quarantine(library, result.source_id)
                 self._mark_stale(record)
                 return record
             if result.source_state == "QUARANTINED":
@@ -378,8 +380,18 @@ class KnowledgeDiscoveryStore:
         except (DiscoveryLedgerError, KnowledgeRootNotConfigured, ForbiddenTransition):
             raise
         except Exception as error:
+            _quarantine(library, result.source_id)
             self.mark_parse_failed(discovery_id, f"{type(error).__name__}: {error}")
         return self.get(discovery_id)
+
+
+def _quarantine(library, source_id: str | None) -> None:
+    if not source_id:
+        return
+    try:
+        library.set_source_state(source_id, "QUARANTINED")
+    except Exception:
+        pass
 
 
 def _now() -> str:
