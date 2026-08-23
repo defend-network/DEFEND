@@ -85,6 +85,7 @@ class CanaryPolicy:
     candidate_profile_id: str = CANDIDATE_TRAINING_PROFILE_ID
     candidate_purpose: str = CANDIDATE_CANARY_PURPOSE
     candidate_role: str = CANDIDATE_CANARY_ROLE
+    teardown_reserve_seconds: float = 300.0  # budget reserve before destroy must begin
 
 
 def validate_five_steps(requested_steps: int | None) -> tuple[bool, str]:

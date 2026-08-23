@@ -74,6 +74,20 @@ def build_qwen3_masked_example(tokenizer, messages: list[dict]) -> MaskedExample
     return MaskedExample(input_ids=input_ids, labels=labels, role_spans=role_spans)
 
 
+def prepare_qwen3_training_example(tokenizer, messages: list[dict]) -> dict:
+    """Canonical training example: input_ids/attention_mask/labels from the SAME
+    assistant-only masking pipeline used by the tokenizer/template proof.
+
+    Training MUST use this (never a text-only all-token-loss representation).
+    """
+    example = build_qwen3_masked_example(tokenizer, messages)
+    return {
+        "input_ids": example.input_ids,
+        "attention_mask": [1] * len(example.input_ids),
+        "labels": example.labels,
+    }
+
+
 def qwen3_masking_proof(tokenizer, messages: list[dict]) -> tuple[bool, dict]:
     example = build_qwen3_masked_example(tokenizer, messages)
     ok, failures = validate_assistant_masking(example.labels, example.role_spans)

@@ -42,6 +42,12 @@ def _validate_adapter_dir(adapter_dir: Path) -> tuple[bool, str]:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.base_repo != CANARY_BASE_REPO:
+        print("RELOAD_SANITY=FAIL (base repo pin mismatch)", file=sys.stderr)
+        return 5
+    if args.base_revision != CANARY_BASE_REVISION:
+        print("RELOAD_SANITY=FAIL (base revision pin mismatch)", file=sys.stderr)
+        return 5
     adapter_dir = Path(args.adapter_dir).expanduser().resolve()
 
     ok, detail = _validate_adapter_dir(adapter_dir)
@@ -60,8 +66,8 @@ def main(argv: list[str] | None = None) -> int:
         print("RELOAD_SANITY=FAIL (CUDA required)", file=sys.stderr)
         return 3
 
-    print(f"BASE_PIN_MATCH={'YES' if args.base_revision == CANARY_BASE_REVISION else 'NO'}", flush=True)
-    tokenizer = AutoTokenizer.from_pretrained(args.base_repo, revision=args.base_revision, trust_remote_code=True, use_fast=True)
+    print("BASE_PIN_MATCH=YES", flush=True)
+    tokenizer = AutoTokenizer.from_pretrained(CANARY_BASE_REPO, revision=CANARY_BASE_REVISION, trust_remote_code=True, use_fast=True)
     bnb = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_quant_type="nf4",
@@ -69,8 +75,8 @@ def main(argv: list[str] | None = None) -> int:
         bnb_4bit_compute_dtype=torch.bfloat16,
     )
     model = AutoModelForCausalLM.from_pretrained(
-        args.base_repo,
-        revision=args.base_revision,
+        CANARY_BASE_REPO,
+        revision=CANARY_BASE_REVISION,
         quantization_config=bnb,
         torch_dtype=torch.bfloat16,
         trust_remote_code=True,
@@ -80,13 +86,16 @@ def main(argv: list[str] | None = None) -> int:
     print("ADAPTER_LOADED=YES", flush=True)
 
     inputs = tokenizer(args.sanity_prompt, return_tensors="pt").to(model.device)
+    input_length = inputs["input_ids"].shape[1]
     outputs = model.generate(**inputs, max_new_tokens=16, do_sample=False)
-    text = tokenizer.decode(outputs[0], skip_special_tokens=True)
-    nonempty = bool(text.strip())
-    print(f"SANITY_OUTPUT_NONEMPTY={'YES' if nonempty else 'NO'}", flush=True)
+    generated_ids = outputs[0][input_length:]
+    generated_text = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
+    generated_nonempty = len(generated_ids) > 0 and bool(generated_text)
+    print(f"GENERATED_TOKENS={len(generated_ids)}", flush=True)
+    print(f"SANITY_COMPLETION_NONEMPTY={'YES' if generated_nonempty else 'NO'}", flush=True)
     print(f"CUDA_DEVICE={model.device}", flush=True)
-    print(f"RELOAD_SANITY={'PASS' if nonempty else 'FAIL'}", flush=True)
-    return 0 if nonempty else 4
+    print(f"RELOAD_SANITY={'PASS' if generated_nonempty else 'FAIL'}", flush=True)
+    return 0 if generated_nonempty else 4
 
 
 if __name__ == "__main__":

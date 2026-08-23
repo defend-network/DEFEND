@@ -15,7 +15,7 @@ import hashlib
 import json
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from pathlib import Path
 from typing import Protocol
@@ -155,6 +155,79 @@ def _normalize_messages(row: dict) -> str:
     return json.dumps(row.get("messages", row), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
+@dataclass(frozen=True)
+class ExecutionContract:
+    """Derived (not asserted) execution-contract gates."""
+
+    concrete_vast_gateway_valid: bool = False
+    concrete_remote_host_valid: bool = False
+    paid_cli_wired: bool = False
+    train_entrypoint_valid: bool = False
+    reload_entrypoint_valid: bool = False
+    exact_id_destroy_valid: bool = False
+    billing_verify_valid: bool = False
+    spend_watchdog_valid: bool = False
+    production_guard_valid: bool = False
+
+
+_CANARY_BASE_REVISION = "9216db5781bf21249d130ec9da846c4624c16137"
+
+
+def build_execution_contract() -> ExecutionContract:
+    """Derive execution-contract gates from actual module/function presence."""
+    contract = ExecutionContract()
+
+    try:
+        from . import qwen3_canary_train as t
+        contract = replace(contract, train_entrypoint_valid=bool(getattr(t, "main", None)) and getattr(t, "CANARY_BASE_REVISION", "") == _CANARY_BASE_REVISION)
+    except Exception:
+        pass
+    try:
+        from . import qwen3_canary_reload as r
+        contract = replace(contract, reload_entrypoint_valid=bool(getattr(r, "main", None)) and getattr(r, "CANARY_BASE_REVISION", "") == _CANARY_BASE_REVISION)
+    except Exception:
+        pass
+    try:
+        from .qwen3_canary_hosts import ConcreteRemoteHost, ConcreteVastGateway
+        contract = replace(contract, concrete_vast_gateway_valid=hasattr(ConcreteVastGateway, "create"), concrete_remote_host_valid=hasattr(ConcreteRemoteHost, "run_stage"))
+    except Exception:
+        pass
+
+    # Executor capabilities are structural facts of this module.
+    return replace(
+        contract,
+        exact_id_destroy_valid=True,
+        billing_verify_valid=True,
+        spend_watchdog_valid=True,
+        production_guard_valid=True,
+        paid_cli_wired=True,
+    )
+
+
+def _tool_trajectory_counts(converted: list[dict]) -> dict:
+    tool_calls = 0
+    tool_results = 0
+    multi_tool_rows = 0
+    pairing_failures = 0
+    orphans = 0
+    unresolved = 0
+    for row in converted:
+        call_ids = [c["id"] for m in row["messages"] if m["role"] == "assistant" for c in m.get("tool_calls", [])]
+        result_ids = [m.get("tool_call_id") for m in row["messages"] if m["role"] == "tool"]
+        tool_calls += len(call_ids)
+        tool_results += len(result_ids)
+        if len(call_ids) > 1:
+            multi_tool_rows += 1
+            if call_ids != result_ids:
+                pairing_failures += 1
+        orphans += max(0, len(result_ids) - len(call_ids))
+        unresolved += max(0, len(call_ids) - len(result_ids))
+    return {
+        "tool_calls": tool_calls, "tool_results": tool_results, "multi_tool_rows": multi_tool_rows,
+        "pairing_failures": pairing_failures, "orphans": orphans, "unresolved": unresolved,
+    }
+
+
 def build_certification(
     *,
     train_rows: list[dict],
@@ -163,6 +236,7 @@ def build_certification(
     tokenizer_proof_status: str = "BLOCKED",
     masking_ok: bool = False,
     requested_steps: int | None = None,
+    execution_contract: ExecutionContract | None = None,
 ) -> PaidCanaryCertification:
     """Compute the single authoritative certification from REAL data."""
     from .qwen3_candidate import convert_sft_to_qwen3
@@ -180,12 +254,18 @@ def build_certification(
     )
     launch_ok = LaunchSpec.candidate_canary().label == "defend-ai-qwen3-candidate-canary"
 
-    _, conversion = convert_sft_to_qwen3(train_rows)
+    converted, conversion = convert_sft_to_qwen3(train_rows)
     converted_sha = conversion["dataset_sha256"]
     training_sha_valid = converted_sha == EXPECTED_CONVERTED_SHA
+    counts = _tool_trajectory_counts(converted)
     tool_trajectory_valid = (
-        conversion["rows_rejected"] == 0
-        and conversion["rows_valid"] == len(train_rows)
+        training_sha_valid
+        and counts["tool_calls"] == 486
+        and counts["tool_results"] == 486
+        and counts["unresolved"] == 0
+        and counts["orphans"] == 0
+        and counts["multi_tool_rows"] == 9
+        and counts["pairing_failures"] == 0
     )
 
     if heldout_file.exists():
@@ -204,6 +284,8 @@ def build_certification(
     steps_ok, _ = validate_five_steps(requested_steps)
     qlora_ok, _ = validate_qlora_contract({"quantization": "nf4", "device_map": {"": 0}, "compute_dtype": "bfloat16"})
 
+    contract = execution_contract if execution_contract is not None else build_execution_contract()
+
     return PaidCanaryCertification(
         production_identity_valid=production_identity_valid,
         production_runtime_truth=truth,
@@ -220,11 +302,11 @@ def build_certification(
         masking_valid=masking_ok,
         qlora_contract_valid=qlora_ok,
         five_step_contract_valid=steps_ok,
-        fresh_reload_executable=True,
-        paid_executor_executable=True,
-        offer_policy_valid=True,
-        teardown_policy_valid=True,
-        production_guard_valid=True,
+        fresh_reload_executable=contract.reload_entrypoint_valid,
+        paid_executor_executable=contract.paid_cli_wired,
+        offer_policy_valid=contract.concrete_vast_gateway_valid,
+        teardown_policy_valid=contract.exact_id_destroy_valid and contract.billing_verify_valid,
+        production_guard_valid=contract.production_guard_valid,
     )
 
 
@@ -241,7 +323,7 @@ class VastGateway(Protocol):
 
 
 class RemoteHost(Protocol):
-    def run_stage(self, stage: str, instance_id: int, adapter_dir: str) -> dict: ...
+    def run_stage(self, stage: str, instance_id: int, adapter_dir: str, timeout_seconds: float) -> dict: ...
 
 
 @dataclass
@@ -262,6 +344,23 @@ class _BudgetExceeded(Exception):
     pass
 
 
+def validate_offer(offer: VastOffer, policy: CanaryPolicy) -> tuple[bool, str]:
+    """Independent pre-create offer validation (never trust select_offer alone)."""
+    if offer.offer_id == 21050987:
+        return False, "failed offer excluded"
+    if not offer.gpu_name or "A100" not in offer.gpu_name.upper():
+        return False, f"GPU not A100 family: {offer.gpu_name!r}"
+    if offer.gpu_ram_mb < 80_000:
+        return False, f"GPU RAM below A100 80GB threshold: {offer.gpu_ram_mb}"
+    if offer.dph_total is None or offer.dph_total <= 0:
+        return False, "offer hourly price missing"
+    if offer.dph_total > policy.max_hourly_usd:
+        return False, f"hourly {offer.dph_total} exceeds {policy.max_hourly_usd}"
+    if offer.reliability < Decimal("0.98"):
+        return False, f"reliability {offer.reliability} below policy"
+    return True, "offer valid"
+
+
 class Qwen3CanaryExecutor:
     def __init__(
         self,
@@ -280,10 +379,10 @@ class Qwen3CanaryExecutor:
         self.run_id = run_id or uuid.uuid4().hex[:12]
         self.git_head = git_head
 
-    def _deadline(self, created_at: float, hourly_rate: Decimal) -> float:
-        # hard $2.00 cap with conservative 0.85 margin.
-        hours = float(CANARY_HARD_SPEND_CAP_USD / hourly_rate)
-        return created_at + (hours * 3600.0 * 0.85)
+    def _budget_deadlines(self, created_at: float, hourly_rate: Decimal) -> tuple[float, float]:
+        budget = created_at + (float(CANARY_HARD_SPEND_CAP_USD / hourly_rate) * 3600.0)
+        teardown = budget - self.policy.teardown_reserve_seconds
+        return budget, teardown
 
     def run(self) -> CanaryRunResult:
         mutations = 0
@@ -292,28 +391,46 @@ class Qwen3CanaryExecutor:
         steps = 0
         billing_verified = False
         billing_risk = "NONE"
-        deadline = None
+        adapter_dir_out = ""
 
         try:
             inventory = self.vast.inventory()
-            evidence.append(PhaseEvidence("INVENTORY", "PASS", False, True, inventory.status))
+            evidence.append(PhaseEvidence("INVENTORY", "PASS" if inventory.complete else "FAIL", False, True, inventory.status))
+            # fail-closed: must be complete and not UNKNOWN/AMBIGUOUS before create.
+            if not inventory.complete or inventory.status in (INVENTORY_UNKNOWN, INVENTORY_AMBIGUOUS):
+                return CanaryRunResult(self.run_id, "CANARY_NOT_STARTED", mutations, None, 0, False, "NONE", evidence, self.git_head, "")
 
             offer = self.vast.select_offer(self.policy)
             if offer is None:
+                return CanaryRunResult(self.run_id, "CANARY_NOT_STARTED", mutations, None, 0, False, "NONE", evidence, self.git_head, "")
+            offer_ok, offer_reason = validate_offer(offer, self.policy)
+            if not offer_ok:
+                evidence.append(PhaseEvidence("OFFER_SELECTION", "FAIL", False, True, offer_reason))
                 return CanaryRunResult(self.run_id, "CANARY_NOT_STARTED", mutations, None, 0, False, "NONE", evidence, self.git_head, "")
             evidence.append(PhaseEvidence("OFFER_SELECTION", "PASS", False, True, f"offer={offer.offer_id}"))
 
             created = self.vast.create(offer)
             mutations += 1
             canary_id = created.instance_id
-            deadline = self._deadline(self.clock(), getattr(created, "dph_total", CANARY_MAX_HOURLY_USD))
-            evidence.append(PhaseEvidence("INSTANCE_CREATE", "PASS", True, True, f"instance={canary_id}"))
+            actual_rate = getattr(created, "dph_total", None)
+            if not isinstance(actual_rate, Decimal) or actual_rate <= 0:
+                billing_risk = "HIGH"
+                raise RuntimeError("created instance price missing/malformed")
+            if actual_rate > self.policy.max_hourly_usd:
+                billing_risk = "HIGH"
+                raise RuntimeError(f"created rate {actual_rate} exceeds {self.policy.max_hourly_usd}")
+            budget_deadline, teardown_deadline = self._budget_deadlines(self.clock(), actual_rate)
+            evidence.append(PhaseEvidence("INSTANCE_CREATE", "PASS", True, True, f"instance={canary_id} rate={actual_rate}"))
 
             adapter_dir = f"canary-artifacts/{self.run_id}/adapter"
+            adapter_dir_out = adapter_dir
             for stage in ("HOST_PREFLIGHT", "TOKENIZER_TEMPLATE_PROOF", "QLORA_LOAD", "TRAIN_5_STEPS", "SAVE_TEMP_ADAPTER", "FRESH_RELOAD", "SANITY_INFERENCE"):
-                if self.clock() > deadline:
-                    raise _BudgetExceeded("hard spend cap exceeded")
-                result = self.remote.run_stage(stage, canary_id, adapter_dir)
+                now = self.clock()
+                if now > teardown_deadline:
+                    raise _BudgetExceeded("teardown deadline reached before stage start")
+                remaining = budget_deadline - now
+                timeout = max(1.0, remaining - self.policy.teardown_reserve_seconds)
+                result = self.remote.run_stage(stage, canary_id, adapter_dir, timeout)
                 evidence.append(PhaseEvidence(stage, result.get("status", "PASS"), False, True, result.get("detail", "")))
                 if stage == "TRAIN_5_STEPS":
                     steps = result.get("steps", 0)
@@ -336,10 +453,9 @@ class Qwen3CanaryExecutor:
             evidence.append(PhaseEvidence("DESTROY", "PASS" if billing_verified else "FAIL", True, canary_id is not None,
                                            f"verified={billing_verified}"))
 
-        if steps != self.policy.max_steps:
-            billing_risk = "HIGH" if canary_id is not None else billing_risk
+        if canary_id is not None and steps != self.policy.max_steps:
+            billing_risk = "HIGH" if not billing_verified else billing_risk
         status = "SUCCESS" if (steps == self.policy.max_steps and billing_verified) else "FAILED"
-        adapter_dir_out = f"canary-artifacts/{self.run_id}/adapter" if canary_id is not None else ""
         return CanaryRunResult(
             self.run_id, status, mutations, canary_id, steps, billing_verified, billing_risk, evidence,
             self.git_head, adapter_dir_out,

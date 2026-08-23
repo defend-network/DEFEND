@@ -223,7 +223,7 @@ class FakeRemote:
         self.calls = []
         self.fail_stage = fail_stage
 
-    def run_stage(self, stage, instance_id, adapter_dir):
+    def run_stage(self, stage, instance_id, adapter_dir, timeout_seconds=None):
         self.calls.append(stage)
         if stage == self.fail_stage:
             return {"status": "FAIL", "detail": f"injected {stage}"}
@@ -333,11 +333,27 @@ def test_cli_paid_wrong_authorization():
     assert cli.main(["--execute-paid-canary", "--owner-authorization", "WRONG"]) == 2
 
 
-def test_cli_paid_correct_authorization_still_no_rent(capsys):
+def test_run_paid_canary_wires_to_executor_with_fakes():
     import tools.defend_ai_qwen3_canary as cli
-    assert cli.main(["--execute-paid-canary", "--owner-authorization", CANARY_OWNER_AUTHORIZATION]) == 0
-    out = capsys.readouterr().out
-    assert "PAID_CANARY_STARTED=NO" in out
+    vast = FakeVast()
+    remote = FakeRemote()
+    cert = _cert_full()
+    policy = CanaryPolicy()
+    result = cli.run_paid_canary(cert=cert, policy=policy, vast_gateway=vast, remote_host=remote, git_head="x")
+    assert vast.mutations.count("create") == 1
+    assert vast.mutations.count("destroy") == 1
+    assert result.status == "SUCCESS"
+
+
+def test_run_paid_canary_blocked_when_readiness_false():
+    import tools.defend_ai_qwen3_canary as cli
+    vast = FakeVast()
+    remote = FakeRemote()
+    cert = _cert_full()
+    cert = cert.__class__(**{**cert.__dict__, "training_data_sha_valid": False})
+    result = cli.run_paid_canary(cert=cert, policy=CanaryPolicy(), vast_gateway=vast, remote_host=remote, git_head="x")
+    assert result.status == "BLOCKED_READINESS"
+    assert vast.mutations == []
 
 
 def test_five_steps_locked():
@@ -353,6 +369,17 @@ def test_training_parser_rejects_forbidden_flags():
         parse_args(["--data-file", "x", "--adapter-dir", "y", "--full-train"])
 
 
+def test_training_parser_rejects_wrong_base_revision():
+    from defend_control.qwen3_canary_train import parse_args
+    with pytest.raises(SystemExit):
+        parse_args(["--data-file", "x", "--adapter-dir", "y", "--base-revision", "deadbeef"])
+
+
+def test_reload_rejects_wrong_base_revision(capsys):
+    from defend_control.qwen3_canary_reload import main as reload_main
+    assert reload_main(["--adapter-dir", "x", "--base-revision", "deadbeef"]) == 5
+
+
 def test_reload_parser_and_peft_validation(tmp_path):
     from defend_control.qwen3_canary_reload import _validate_adapter_dir
     ok, _ = _validate_adapter_dir(tmp_path)
@@ -361,3 +388,77 @@ def test_reload_parser_and_peft_validation(tmp_path):
     (tmp_path / "adapter_model.safetensors").write_bytes(b"x")
     ok2, _ = _validate_adapter_dir(tmp_path)
     assert ok2
+
+
+# ─────────────────────────────────────────────────────────────
+# C2 — executor fail-closed + offer/price validation
+# ─────────────────────────────────────────────────────────────
+
+def _cert_full():
+    rows = _load_rows() if TRAIN_FILE.exists() else []
+    return build_certification(
+        train_rows=rows, heldout_file=HELDOUT_FILE,
+        inventory=ProductionInventory(INVENTORY_NONE_FOUND, True, ()),
+        tokenizer_proof_status="PASS", masking_ok=True, requested_steps=5,
+    )
+
+
+def _executor_with(inventory, offer=None, created_rate=Decimal("0.96")):
+    class V(FakeVast):
+        def inventory(self):
+            return inventory
+        def select_offer(self, policy):
+            return offer if offer is not None else VastOffer(123, "A100 PCIE", 81920, Decimal("0.96"), Decimal("0.99"))
+        def create(self, offer):
+            self.mutations.append("create")
+            if created_rate is None:
+                return SimpleNamespace(instance_id=999, dph_total=None)
+            return SimpleNamespace(instance_id=999, dph_total=created_rate)
+    vast = V()
+    ex = Qwen3CanaryExecutor(policy=CanaryPolicy(), vast=vast, remote=FakeRemote(), clock=lambda: 0.0)
+    return ex.run(), vast
+
+
+def test_executor_unknown_inventory_no_create():
+    result, vast = _executor_with(ProductionInventory(INVENTORY_UNKNOWN, True, ()))
+    assert vast.mutations == []
+    assert result.status == "CANARY_NOT_STARTED"
+
+
+def test_executor_ambiguous_inventory_no_create():
+    result, vast = _executor_with(ProductionInventory(INVENTORY_AMBIGUOUS, True, ()))
+    assert vast.mutations == []
+
+
+def test_executor_incomplete_inventory_no_create():
+    result, vast = _executor_with(ProductionInventory(INVENTORY_NONE_FOUND, False, ()))
+    assert vast.mutations == []
+
+
+def test_executor_invalid_offer_gpu_no_create():
+    bad = VastOffer(124, "RTX 4090", 24000, Decimal("0.50"), Decimal("0.99"))
+    result, vast = _executor_with(ProductionInventory(INVENTORY_NONE_FOUND, True, ()), offer=bad)
+    assert vast.mutations == []
+
+
+def test_executor_offer_over_rate_no_create():
+    bad = VastOffer(125, "A100 PCIE", 81920, Decimal("1.21"), Decimal("0.99"))
+    result, vast = _executor_with(ProductionInventory(INVENTORY_NONE_FOUND, True, ()), offer=bad)
+    assert vast.mutations == []
+
+
+def test_executor_failed_offer_no_create():
+    bad = VastOffer(21050987, "A100 PCIE", 81920, Decimal("0.96"), Decimal("0.99"))
+    result, vast = _executor_with(ProductionInventory(INVENTORY_NONE_FOUND, True, ()), offer=bad)
+    assert vast.mutations == []
+
+
+def test_executor_created_missing_price_teardown():
+    result, vast = _executor_with(ProductionInventory(INVENTORY_NONE_FOUND, True, ()), created_rate=None)
+    assert vast.mutations.count("destroy") == 1
+    assert result.billing_risk == "HIGH"
+
+
+def test_executor_created_rate_over_cap_teardown():
+    result, vast = _executor_with(ProductionInventory(INVENTORY_NONE_FOUND, True, ()), created_rate=Decimal("1.30"))
+    assert vast.mutations.count("destroy") == 1
