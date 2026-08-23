@@ -11,8 +11,8 @@ import pytest
 from fastapi import FastAPI, Request, Response
 from fastapi.testclient import TestClient
 
-from api_batch3_routes import ensure_visitor_session, router as visitor_router
-from api_identity_routes import router as identity_router
+from defend_ai.api_batch3_routes import ensure_visitor_session, router as visitor_router
+from defend_ai.api_identity_routes import router as identity_router
 from defend_data.visitor_store import VisitorStore, client_ip
 
 

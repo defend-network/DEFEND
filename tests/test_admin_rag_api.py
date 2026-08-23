@@ -5,8 +5,8 @@ from dataclasses import dataclass
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from admin_auth import AdminPrincipal, require_admin
-from api_admin_rag_routes import build_admin_rag_router
+from defend_ai.admin_auth import AdminPrincipal, require_admin
+from defend_ai.api_admin_rag_routes import build_admin_rag_router
 from defend_data.admin_rag import PermanentRagValidationError
 
 

@@ -11,7 +11,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from admin_auth import AdminPrincipal, require_admin
+from defend_ai.admin_auth import AdminPrincipal, require_admin
 from defend_markets.quant.config import MarketsRuntimeState, QuantDirectorSettings
 from defend_markets.quant.explanation import explain_m5_prediction
 from defend_markets.quant.model_aliases import (

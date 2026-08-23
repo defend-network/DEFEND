@@ -22,13 +22,13 @@ from pydantic import BaseModel, Field
 from defend_ai.control_plane import AgentRequest, ControlPlane
 from defend_ai.registry import build_default_registry
 from defend_ai.model_factory import build_model_client
-from admin_auth import AdminPrincipal, configure_identity_store, require_admin
+from defend_ai.admin_auth import AdminPrincipal, configure_identity_store, require_admin
 from api_admin_tt_routes import router as admin_tt_router
-from api_batch3_routes import router as batch3_router, ensure_visitor_session
-from api_identity_routes import SensitivePathRedactionMiddleware, router as identity_router
-from api_identity_admin_routes import router as identity_admin_router
-from api_admin_rag_routes import build_admin_rag_router
-from api_setup_integrations_routes import build_setup_integrations_router
+from defend_ai.api_batch3_routes import router as batch3_router, ensure_visitor_session
+from defend_ai.api_identity_routes import SensitivePathRedactionMiddleware, router as identity_router
+from defend_ai.api_identity_admin_routes import router as identity_admin_router
+from defend_ai.api_admin_rag_routes import build_admin_rag_router
+from defend_ai.api_setup_integrations_routes import build_setup_integrations_router
 from shared_platform.secure_store import DpapiSecretStore
 from defend_data import DataCore
 from defend_data.admin_rag import PermanentRagService

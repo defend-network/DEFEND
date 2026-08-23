@@ -4,7 +4,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 
-from admin_auth import AdminPrincipal, require_admin
+from .admin_auth import AdminPrincipal, require_admin
 from defend_data.admin_rag import (
     MAX_PERMANENT_BATCH_FILES,
     MAX_PERMANENT_FILE_BYTES,

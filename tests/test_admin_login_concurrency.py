@@ -7,7 +7,7 @@ import time
 import httpx2
 from fastapi import FastAPI
 
-import admin_auth
+import defend_ai.admin_auth
 import api_admin_tt_routes
 from api_admin_tt_routes import router as admin_router
 

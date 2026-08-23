@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 
 @pytest.fixture(autouse=True)
 def _reset_admin_auth():
-    import admin_auth
+    import defend_ai.admin_auth
 
     admin_auth._IDENTITY_STORE = None
     yield
@@ -18,7 +18,7 @@ def _reset_admin_auth():
 
 
 def _build_app(monkeypatch, tmp_path, with_owner: bool):
-    import admin_auth
+    import defend_ai.admin_auth
     from defend_data.data_core import DataCore
     from defend_markets.app import build_markets_app, MarketsDependencies
     from defend_markets.config import MarketsSettings

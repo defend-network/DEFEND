@@ -23,7 +23,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 
-from admin_auth import AdminPrincipal, authenticate, require_owner, revoke, token_from_header
+from defend_ai.admin_auth import AdminPrincipal, authenticate, require_owner, revoke, token_from_header
 from defend_markets.quant.orchestrator import MarketsIntelligenceOrchestrator
 
 _OWNER_PREFIX = "/api/markets/owner"

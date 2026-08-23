@@ -12,7 +12,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from admin_auth import AdminPrincipal, require_admin
+from defend_ai.admin_auth import AdminPrincipal, require_admin
 from defend_markets.quant.orchestrator import MarketsIntelligenceOrchestrator
 
 _ALLOWED_ROLES = {"admin", "owner"}

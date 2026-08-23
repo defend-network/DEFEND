@@ -7,9 +7,9 @@ import pytest
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
-import admin_auth
-import api_identity_routes
-from admin_auth import AdminPrincipal
+import defend_ai.admin_auth
+import defend_ai.api_identity_routes
+from defend_ai.admin_auth import AdminPrincipal
 from api_admin_tt_routes import router as admin_router
 from defend_data.identity_store import IdentityStore, RoleViolation
 

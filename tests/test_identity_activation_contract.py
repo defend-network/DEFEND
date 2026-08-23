@@ -6,7 +6,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from api_identity_routes import router
+from defend_ai.api_identity_routes import router
 
 
 @pytest.fixture

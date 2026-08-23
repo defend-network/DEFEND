@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 
 def _build_owner_app():
-    import admin_auth
+    import defend_ai.admin_auth
     from defend_data.data_core import DataCore
     from defend_markets.quant.orchestrator import MarketsIntelligenceOrchestrator
     from defend_markets.quant.owner_routes import build_owner_router

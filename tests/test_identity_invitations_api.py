@@ -9,11 +9,11 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-import admin_auth
-import api_identity_routes
+import defend_ai.admin_auth
+import defend_ai.api_identity_routes
 import defend_data.identity_store as identity_store_module
-from admin_auth import AdminPrincipal
-from api_identity_routes import router
+from defend_ai.admin_auth import AdminPrincipal
+from defend_ai.api_identity_routes import router
 from defend_data.identity_mailer import DeliveryResult, GmailInvitationMailer
 
 

@@ -6,7 +6,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 
-from admin_auth import AdminPrincipal, require_admin
+from .admin_auth import AdminPrincipal, require_admin
 from defend_data.identity_store import AccountRecord, IdentityStore, RoleViolation
 from defend_data.visitor_store import VisitorStore, client_ip
 

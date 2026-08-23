@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
-from admin_auth import AdminPrincipal, require_owner
+from .admin_auth import AdminPrincipal, require_owner
 from defend_data.visitor_store import (
     client_ip,
     coarse_client_meta,

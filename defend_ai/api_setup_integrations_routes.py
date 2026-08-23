@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
-from admin_auth import AdminPrincipal, require_admin
+from .admin_auth import AdminPrincipal, require_admin
 
 
 class SecretUpdateIn(BaseModel):

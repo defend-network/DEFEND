@@ -124,7 +124,7 @@ def bootstrap_owner_auth() -> OwnerAuthBootstrap:
         os.environ[key] = credentials[key]
 
     try:
-        import admin_auth as _admin_auth
+        import defend_ai.admin_auth as _admin_auth
         from defend_data.data_core import DataCore
 
         _admin_auth.configure_identity_store(DataCore().identity)

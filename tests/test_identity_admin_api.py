@@ -7,8 +7,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-import admin_auth
-from api_identity_admin_routes import router
+import defend_ai.admin_auth
+from defend_ai.api_identity_admin_routes import router
 from defend_data.conversation_store import ConversationStore
 from defend_data.identity_store import IdentityStore
 from defend_data.visitor_store import VisitorStore

@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
-from admin_auth import (
+from defend_ai.admin_auth import (
     AdminPrincipal,
     authenticate,
     canonical_admin_login_identifier,
@@ -24,7 +24,7 @@ from admin_auth import (
     revoke,
     token_from_header,
 )
-from api_identity_routes import _admin_login_rate_keys, _limiter
+from defend_ai.api_identity_routes import _admin_login_rate_keys, _limiter
 
 _TT_ROOT = Path(__file__).resolve().parent / "legacy_stack" / "table_tennis"
 if str(_TT_ROOT) not in sys.path:
