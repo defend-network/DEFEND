@@ -1,0 +1,25 @@
+{
+  "artifact": "DEFEND_AI_M19_PROVENANCE_V1",
+  "frozen_evidence": {
+    "base_head": "352de97879560a8ebde4e91737af4e9618e3686a",
+    "evaluator_v1": "frozen (v1, overlap_threshold=0.25)",
+    "heldout_sha256": "5ee2369ea383a8590dd123fa66db8a885154a2a0bf5abc8e98c174bcdf27835a",
+    "m1_9_reported_paid_cost_usd": 4.4,
+    "m1_9_verdict": "PARTIAL",
+    "production_adapter_repo": "Defend-network/defend-identity-lora-v002",
+    "production_adapter_revision": "46ade1686870210ef0ab4603c32fecb0e563330f",
+    "production_base_repo": "Qwen/Qwen2.5-32B-Instruct",
+    "production_base_revision": "5ede1c97bbab6ce5cda5812749b4c0bdf79b18dd",
+    "qwen3_base_repo": "Qwen/Qwen3-32B",
+    "qwen3_base_revision": "9216db5781bf21249d130ec9da846c4624c16137",
+    "training_dataset_sha256": "26a715e07f4c9fb0e0fd90bce0c04ac200894337b8f959196939e6762251274c"
+  },
+  "instance_roles": {
+    "EVALUATION_EXECUTION_INSTANCE": 48423466,
+    "FAILED_M1_9_HOST": "ssh3.vast.ai",
+    "FAILED_M1_9_OFFER": 21050987,
+    "PRODUCTION_RETAINED_INSTANCE": 48416143,
+    "TRAINING_INSTANCE": 48423466
+  },
+  "note": "M1.9 'baseline_instance' was the EVALUATION EXECUTION instance, not the retained production instance."
+}
