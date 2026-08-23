@@ -110,9 +110,14 @@ def main() -> None:
 
     # Concrete product-owned runtime manager (production authority; never the
     # test fake). Fails closed: NEXT is ABSENT/STOPPED until provisioned.
-    from defend_coder.runtime_manager import CoderRuntimeManager
+    from defend_coder.runtime.factory import build_runtime_manager
 
-    runtime_manager = CoderRuntimeManager()
+    runtime_manager = build_runtime_manager(
+        secret_source=_secret_store_loader(),
+        state_directory=(
+            str(Path(os.environ.get("LOCALAPPDATA", ".")) / "DEFEND" / "coder-lifecycle")
+        ),
+    )
 
     def _runtime_status() -> dict[str, object]:
         return coder_runtime_status(
