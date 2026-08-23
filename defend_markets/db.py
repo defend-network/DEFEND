@@ -31,6 +31,7 @@ _MIGRATIONS = (
     (22, Path(__file__).with_name("migrations") / "0022_markets_quant_settlement_revision_unique.sql"),
     (23, Path(__file__).with_name("migrations") / "0023_markets_quant_settlement_fingerprint.sql"),
     (24, Path(__file__).with_name("migrations") / "0024_markets_hardrock_data_lane.sql"),
+    (25, Path(__file__).with_name("migrations") / "0025_markets_sports_pipeline.sql"),
 )
 
 

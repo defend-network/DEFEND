@@ -26,7 +26,15 @@ def _selection(selection_key: str, odds: str, source: str = "book-a") -> dict[st
 
 
 def _legacy_tt_engine():
-    path = Path(__file__).resolve().parents[1] / "TableTennis" / "tt_engine.py"
+    # M4.8.2D: the legacy TT engine was quarantined into legacy_stack by the
+    # platform excision (P0.3R). This parity test loads it read-only to assert
+    # Markets arb math still matches; it does not import it as a dependency.
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "legacy_stack"
+        / "table_tennis"
+        / "tt_engine.py"
+    )
     spec = importlib.util.spec_from_file_location("tt_engine_legacy", path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module

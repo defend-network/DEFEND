@@ -78,9 +78,8 @@ def demo_b(database: MarketsDatabase, store: PostgresMarketsStore) -> None:
         return
     from defend_markets.journal import DecisionJournal
     from defend_markets.sports_adapter import PostgresSportsDataReader
-    from legacy_stack.defend_sports.db import SportsDatabase
 
-    reader = PostgresSportsDataReader(SportsDatabase(sports_url))
+    reader = PostgresSportsDataReader(database)
     journal = DecisionJournal(database, MarketsRepository())
     events = reader.tt_events()
     if not events:
@@ -177,15 +176,13 @@ def demo_e(database: MarketsDatabase, store: PostgresMarketsStore) -> None:
         print("odds feed: SPORTS_DATABASE_URL not configured; skipping the odds side.")
         print("results above still persist tt_match_results for the Elo model.")
         return
-    from legacy_stack.defend_sports.db import SportsDatabase
-    from legacy_stack.defend_sports.ingestion import IngestionService
-    from legacy_stack.defend_sports.providers.the_odds_api import (
+    from defend_markets.sports_ingest import IngestionService
+    from defend_markets.sports_provider import (
         OddsApiProviderError,
         TheOddsApiSportsProvider,
     )
 
-    sports_db = SportsDatabase(sports_url)
-    sports_db.migrate()
+    sports_db = database
     try:
         batch = TheOddsApiSportsProvider(api_key=api_key).poll()
     except OddsApiProviderError as error:

@@ -10,7 +10,7 @@ from defend_markets.collector import (
     TtCollectorRun,
     tt_collector_config_from_env,
 )
-from legacy_stack.defend_sports.providers.the_odds_api import OddsApiProviderError
+from defend_markets.sports_provider import OddsApiProviderError
 
 from tests.fakes_markets import InMemoryForecastStore
 
