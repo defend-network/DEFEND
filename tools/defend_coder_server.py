@@ -169,14 +169,46 @@ def main() -> None:
 
     credentials = CredentialStore(store_loader=_secret_store_loader)
 
+    # Durable authority: hydrate identity/prompt-core/technical profiles from
+    # the immutable store (postgres in production, memory fallback otherwise).
+    from defend_coder.authority_store import (
+        MemoryAuthorityStore,
+        PostgresAuthorityStore,
+        hydrate_authority,
+    )
+
+    try:
+        authority_store = PostgresAuthorityStore(database)
+        hydrated = hydrate_authority(authority_store)
+    except Exception:  # noqa: BLE001
+        authority_store = MemoryAuthorityStore()
+        hydrated = hydrate_authority(authority_store)
+
     identity_registry = IdentityRegistry()
-    identity_registry.activate(default_identity_profile())
+    for profile in hydrated.identity_profiles.values():
+        identity_registry.register(profile)
+    if hydrated.active_identity is not None:
+        identity_registry.activate(
+            hydrated.identity_profiles[hydrated.active_identity]
+        )
+
     prompt_authority = PromptAuthorityComposer()
     prompt_registry = PromptBundleRegistry()
-    prompt_registry.activate(
-        build_prompt_core_bundle(identity_registry.active(), prompt_authority)
-    )
+    for bundle in hydrated.prompt_cores.values():
+        prompt_registry.register(bundle)
+    if hydrated.active_prompt_core is not None:
+        prompt_registry.activate(
+            hydrated.prompt_cores[hydrated.active_prompt_core]
+        )
+    else:
+        prompt_registry.activate(
+            build_prompt_core_bundle(identity_registry.active(), prompt_authority)
+        )
+
     technical_registry = ProviderTechnicalRegistry()
+    for profile in hydrated.technical_profiles.values():
+        technical_registry.register(profile)
+
     authority_resolver = RunAuthorityResolver(
         identity_registry=identity_registry,
         prompt_registry=prompt_registry,
