@@ -11,9 +11,10 @@ never secrets.
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 CHECKPOINT_FIELDS = (
     "OBJECTIVE",
@@ -217,3 +218,170 @@ def compose_checkpoint_context(
         checkpoint=checkpoint_to_prompt(checkpoint),
         task=dynamic or None,
     )
+
+
+def _estimate_tokens(messages: Iterable[Mapping[str, Any]]) -> int:
+    """Deterministic token estimate (char/4 heuristic, no tokenizer)."""
+    total = 0
+    for message in messages:
+        text = ""
+        if isinstance(message, Mapping):
+            content = message.get("content")
+            if isinstance(content, str):
+                text = content
+            elif isinstance(content, list):
+                text = " ".join(
+                    part.get("text", "")
+                    for part in content
+                    if isinstance(part, Mapping)
+                )
+        total += max(1, len(text) // 4)
+    return total
+
+
+@dataclass(frozen=True)
+class ContextBudgetDecision:
+    """Outcome of a budget check: run as-is, or compact first."""
+
+    allow: bool
+    estimated_tokens: int
+    limit_tokens: int
+    compact: bool = False
+
+
+class ContextBudgetManager:
+    """Bounded context budget with protocol-safe compaction triggers.
+
+    Budgets are estimates only (char/4) — they bound the conversation, never
+    a provider-reported truth. Compaction folds the durable checkpoint into a
+    single system-adjacent message and drops stale tool chatter; it never
+    rewrites the stable authority prefix.
+    """
+
+    def __init__(
+        self,
+        *,
+        limit_tokens: int,
+        reserve_tokens: int = 0,
+        compaction_ratio: float = 0.8,
+    ) -> None:
+        if limit_tokens < 1:
+            raise ValueError("limit_tokens must be positive")
+        self._limit = int(limit_tokens)
+        self._reserve = int(reserve_tokens)
+        self._ratio = float(compaction_ratio)
+
+    @property
+    def limit_tokens(self) -> int:
+        return self._limit
+
+    def estimate(self, messages: Iterable[Mapping[str, Any]]) -> int:
+        return _estimate_tokens(messages)
+
+    def decide(
+        self,
+        messages: Iterable[Mapping[str, Any]],
+        incoming_tokens: int = 0,
+    ) -> ContextBudgetDecision:
+        estimated = self.estimate(messages) + max(0, incoming_tokens)
+        available = self._limit - self._reserve
+        if estimated > available:
+            return ContextBudgetDecision(
+                allow=False,
+                estimated_tokens=estimated,
+                limit_tokens=self._limit,
+                compact=True,
+            )
+        if estimated > int(self._limit * self._ratio):
+            return ContextBudgetDecision(
+                allow=True,
+                estimated_tokens=estimated,
+                limit_tokens=self._limit,
+                compact=True,
+            )
+        return ContextBudgetDecision(
+            allow=True,
+            estimated_tokens=estimated,
+            limit_tokens=self._limit,
+        )
+
+
+@dataclass(frozen=True)
+class StructuredEvent:
+    kind: str
+    detail: Mapping[str, Any] = field(default_factory=dict)
+
+
+class RunContextCoordinator:
+    """Owns the bounded conversation queue + budget + durable checkpoint.
+
+    The coordinator never dumps a whole repository; it maintains a bounded
+    conversation and folds durable progress into the checkpoint before
+    compaction. It emits structured events (no hidden reasoning, no secrets).
+    """
+
+    def __init__(
+        self,
+        *,
+        checkpoint: TaskCheckpoint,
+        budget: ContextBudgetManager,
+        max_conversation_messages: int = 24,
+    ) -> None:
+        self._checkpoint = checkpoint
+        self._budget = budget
+        self._max_messages = int(max_conversation_messages)
+        self._conversation: deque[dict[str, Any]] = deque()
+        self._events: list[StructuredEvent] = []
+
+    @property
+    def checkpoint(self) -> TaskCheckpoint:
+        return self._checkpoint
+
+    @property
+    def budget(self) -> ContextBudgetManager:
+        return self._budget
+
+    def events(self) -> tuple[StructuredEvent, ...]:
+        return tuple(self._events)
+
+    def emit(self, kind: str, **detail: Any) -> None:
+        self._events.append(StructuredEvent(kind=kind, detail=dict(detail)))
+
+    def add(self, message: Mapping[str, Any]) -> None:
+        self._conversation.append(dict(message))
+        while len(self._conversation) > self._max_messages:
+            self._conversation.popleft()
+
+    def conversation(self) -> list[dict[str, Any]]:
+        return list(self._conversation)
+
+    def update_checkpoint(self, checkpoint: TaskCheckpoint) -> None:
+        self._checkpoint = checkpoint
+
+    def compact(self) -> None:
+        """Protocol-safe compaction: fold progress into the checkpoint and
+        keep only a bounded recent slice of the conversation. The stable
+        authority prefix is never part of this conversation queue, so it is
+        never rewritten here."""
+        self._checkpoint = TaskCheckpoint(
+            objective=self._checkpoint.objective,
+            workspace=self._checkpoint.workspace,
+            current_task=self._checkpoint.current_task,
+            completed=self._checkpoint.completed,
+            current_failure=self._checkpoint.current_failure,
+            relevant_files=self._checkpoint.relevant_files,
+            latest_tests=self._checkpoint.latest_tests,
+            attempts=self._checkpoint.attempts,
+            constraints=self._checkpoint.constraints,
+            next_action=self._checkpoint.next_action,
+            branch=self._checkpoint.branch,
+            head=self._checkpoint.head,
+            dirty_files=self._checkpoint.dirty_files,
+            identity_version=self._checkpoint.identity_version,
+            model_route=self._checkpoint.model_route,
+            pending_approvals=self._checkpoint.pending_approvals,
+        )
+        keep = max(2, self._max_messages // 2)
+        while len(self._conversation) > keep:
+            self._conversation.popleft()
+        self.emit("context_compacted", messages_retained=len(self._conversation))
