@@ -116,6 +116,9 @@ class ProviderConfigStore:
             last_latency_ms=integer("last_latency_ms"),
             remaining_quota=integer("remaining_quota"),
             quota_reset_at=text("quota_reset_at"),
+            last_error_class=text("last_error_class"),
+            coverage_state=text("coverage_state") or "UNKNOWN",
+            coverage_detail=text("coverage_detail"),
         )
 
     def get(self, provider_id: str, *, default_enabled: bool = True) -> ProviderConfiguration:
@@ -137,6 +140,9 @@ class ProviderConfigStore:
             last_latency_ms=current.last_latency_ms if current else None,
             remaining_quota=current.remaining_quota if current else None,
             quota_reset_at=current.quota_reset_at if current else None,
+            last_error_class=current.last_error_class if current else None,
+            coverage_state=current.coverage_state if current else "UNKNOWN",
+            coverage_detail=current.coverage_detail if current else None,
         )
         self.save()
 
@@ -153,6 +159,9 @@ class ProviderConfigStore:
             last_latency_ms=current.last_latency_ms if current else None,
             remaining_quota=current.remaining_quota if current else None,
             quota_reset_at=current.quota_reset_at if current else None,
+            last_error_class=current.last_error_class if current else None,
+            coverage_state=current.coverage_state if current else "UNKNOWN",
+            coverage_detail=current.coverage_detail if current else None,
         )
         self.save()
 
@@ -169,6 +178,9 @@ class ProviderConfigStore:
         remaining_quota: int | None,
         quota_reset_at: str | None,
         default_enabled: bool = True,
+        last_error_class: str | None = None,
+        coverage_state: str = "UNKNOWN",
+        coverage_detail: str | None = None,
     ) -> None:
         current = self._configs.get(provider_id)
         self._configs[provider_id] = ProviderConfiguration(
@@ -182,6 +194,9 @@ class ProviderConfigStore:
             last_latency_ms=latency_ms,
             remaining_quota=remaining_quota,
             quota_reset_at=quota_reset_at,
+            last_error_class=last_error_class,
+            coverage_state=coverage_state,
+            coverage_detail=coverage_detail,
         )
         self.save()
 
@@ -199,6 +214,9 @@ class ProviderConfigStore:
             last_latency_ms=None,
             remaining_quota=None,
             quota_reset_at=None,
+            last_error_class=None,
+            coverage_state="UNKNOWN",
+            coverage_detail=None,
         )
         self.save()
 

@@ -10,7 +10,9 @@ from typing import Protocol
 import webbrowser
 
 from .health import JsonResult, fetch_http_json
+from .model_registry import ADAPTER_REPO, ADAPTER_REVISION, LOCAL_ALIAS, SERVING_ALIAS
 from .processes import LogBuffer, LogEntry, ProcessSpec
+from .product_runtime import ProductRuntimeRegistry, PRODUCT_API_PORTS, PRODUCT_FORWARD_PORTS
 from .coder_control_plane import (
     CoderNoQualifyingOffer,
     CoderProvisionBlocked,
@@ -18,6 +20,7 @@ from .coder_control_plane import (
 from .coder_m0 import (
     CODER_MAX_HOURLY_UPPER_USD,
     parse_max_hourly_budget,
+    resolve_alias,
 )
 from .coder_provisioning import (
     CoderProvisionFailure,
@@ -73,6 +76,22 @@ class SmokeResult:
     detail: str
 
 
+def parse_cuda_floor_env(raw: str | None) -> Decimal | None:
+    """Parse CODER_MIN_CUDA_MAX_GOOD; None/'none'/empty disables the filter."""
+    if raw is None or not raw.strip():
+        return Decimal("13.0")
+    value = raw.strip().casefold()
+    if value in ("none", "0", "off", "disabled"):
+        return None
+    try:
+        parsed = Decimal(value)
+    except (ValueError, TypeError, ArithmeticError):
+        return Decimal("13.0")
+    if parsed <= 0:
+        return None
+    return parsed
+
+
 @dataclass(frozen=True)
 class ProductsSettings:
     sports_api_port: int = 8200
@@ -82,6 +101,7 @@ class ProductsSettings:
     scs_api_port: int = 8100
     scs_web_port: int = 3100
     scs_public_origin: str = "https://ai.sunshineclimatesolutions.com"
+    scs_data_root: Path = Path(r"C:\SCS_DATA")
 
     scs_ai_api_port: int = 8300
     scs_ai_web_port: int = 3300
@@ -102,6 +122,11 @@ class ProductsSettings:
     coder_workspace_root: Path = Path(r"C:\DEFEND_CODER_DATA")
     coder_database_url: str | None = field(default=None, repr=False)
     coder_max_hourly_usd: Decimal = Decimal("4.50")
+    # Acquisition-side CUDA capability floor (provider cuda_max_good): the
+    # pinned serving image (vllm-openai v0.27.1, torch cu130) needs CUDA
+    # >= 13.0 (driver >= 570); incompatible A100 hosts are filtered before
+    # rental. None disables the filter. Never applies to retained instances.
+    coder_min_cuda_max_good: Decimal | None = Decimal("13.0")
     coder_config_errors: tuple[str, ...] = ()
     sports_database_url: str | None = field(default=None, repr=False)
 
@@ -160,6 +185,9 @@ class ProductsSettings:
                 "SCS_AI_PUBLIC_ORIGIN",
                 "https://ai.sunshineclimatesolutions.com",
             ),
+            scs_data_root=Path(
+                text("SCS_DATA_ROOT", str(Path(r"C:\SCS_DATA")))
+            ),
             scs_ai_model_alias=text(
                 "SCS_AI_MODEL_ALIAS", ""
             ) or None,
@@ -205,6 +233,9 @@ class ProductsSettings:
             ),
             coder_database_url=os.environ.get("CODER_DATABASE_URL"),
             coder_max_hourly_usd=coder_max_hourly_usd,
+            coder_min_cuda_max_good=parse_cuda_floor_env(
+                os.environ.get("CODER_MIN_CUDA_MAX_GOOD")
+            ),
             coder_config_errors=tuple(coder_config_errors),
             sports_database_url=os.environ.get("SPORTS_DATABASE_URL"),
         )
@@ -244,6 +275,14 @@ def coder_model_status_file() -> str:
     )
 
 
+def _canonical_model_name(alias: str) -> str:
+    """Canonical logical model name for an alias (registry repo_id)."""
+    try:
+        return resolve_alias(alias).repo_id
+    except ValueError:
+        return ""
+
+
 def build_coder_api_process_spec(
     settings: ProductsSettings,
     repository: Path,
@@ -261,7 +300,10 @@ def build_coder_api_process_spec(
             settings.coder_workspace_root
         ),
         "CODER_MODEL_ALIAS": settings.coder_model_alias,
-        "CODER_MODEL_NAME": settings.coder_model_name or "",
+        "CODER_MODEL_NAME": (
+            settings.coder_model_name
+            or _canonical_model_name(settings.coder_model_alias)
+        ),
         "CODER_MODEL_BASE_URL": (
             settings.coder_model_base_url
             or "http://127.0.0.1:8001/v1"
@@ -348,6 +390,39 @@ def prepare_standalone_web(repository: Path) -> Path:
     return server
 
 
+def build_scs_api_process_spec(
+    settings: ProductsSettings,
+    repository: Path,
+    python_executable: str,
+) -> ProcessSpec:
+    """SCS core operations API (scs_api.runtime) on the SCS lane."""
+    return ProcessSpec(
+        name="scs:api",
+        argv=(
+            str(python_executable),
+            "-m",
+            "uvicorn",
+            "scs_api.runtime:app",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(settings.scs_api_port),
+        ),
+        cwd=Path(repository),
+        env={
+            "SCS_DATA_ROOT": str(settings.scs_data_root),
+            "SCS_PUBLIC_ORIGIN": settings.scs_public_origin,
+            "SCS_SESSION_COOKIE": "scs_employee_session",
+            "SCS_API_PORT": str(settings.scs_api_port),
+            "SCS_WEB_PORT": str(settings.scs_web_port),
+        },
+        health_url=(
+            f"http://127.0.0.1:"
+            f"{settings.scs_api_port}/health"
+        ),
+    )
+
+
 def build_scs_ai_process_spec(
     settings: ProductsSettings,
     repository: Path,
@@ -422,9 +497,23 @@ class DefendService:
     application_id = "defend"
     display_name = "DEFEND AI"
 
-    def __init__(self, controller, *, public_origin: str) -> None:
+    def __init__(
+        self,
+        controller,
+        *,
+        public_origin: str,
+        api_port: int = 8401,
+        probe=fetch_http_json,
+        prepare_model_start=None,
+        runtime_registry: ProductRuntimeRegistry | None = None,
+    ) -> None:
         self._controller = controller
         self._public_origin = public_origin
+        self._api_port = int(api_port)
+        self._probe = probe
+        self._prepare_model_start = prepare_model_start
+        self._runtime_registry = runtime_registry
+        self._runtime_probe_cache: tuple[float, JsonResult] | None = None
 
     @property
     def state(self) -> str:
@@ -442,12 +531,23 @@ class DefendService:
                 last_error="No model backend selected",
             )
         try:
+            if self._prepare_model_start is not None:
+                self._prepare_model_start()
+            self._runtime_probe_cache = None
             self._controller.start(mode)
         except Exception as error:
             return self._row(
                 state="failed",
                 status_text=f"Start failed ({type(error).__name__})",
                 last_error=f"start failed ({type(error).__name__})",
+            )
+        if self._runtime_registry is not None:
+            self._runtime_registry.update(
+                "defend-ai",
+                state="starting",
+                provider=mode,
+                product_api_port=self._api_port,
+                model_forward_port=PRODUCT_FORWARD_PORTS["defend-ai"],
             )
         return self.status()
 
@@ -460,22 +560,136 @@ class DefendService:
                 status_text=f"Stop failed ({type(error).__name__})",
                 last_error=f"stop failed ({type(error).__name__})",
             )
+        if self._runtime_registry is not None:
+            self._runtime_registry.record_stopped("defend-ai")
+        return self.status()
+
+    def destroy(self, confirmed_instance_id: int | None) -> ProductStatus:
+        """Permanently destroy the retained provider instance.
+
+        Never part of normal Stop. Requires the exact retained instance ID and
+        provider-confirmed absence before the registry is cleared.
+        """
+        record = (
+            self._runtime_registry.load().get("defend-ai")
+            if self._runtime_registry is not None
+            else None
+        )
+        retained = record.instance_id if record is not None else None
+        if retained is None or isinstance(confirmed_instance_id, bool):
+            return self._row(
+                state="failed",
+                status_text="No retained instance to destroy",
+                last_error="no retained provider instance",
+            )
+        if type(confirmed_instance_id) is not int or confirmed_instance_id != retained:
+            return self._row(
+                state="failed",
+                status_text="Enter the exact retained instance ID to destroy",
+                last_error="exact instance ID confirmation required",
+            )
+        try:
+            destroy = getattr(self._controller, "stop_and_destroy_vast", None)
+            if not callable(destroy):
+                raise RuntimeError("Vast.ai destruction is not available")
+            self._controller.stop_and_destroy_vast(confirmed_instance_id)
+        except Exception as error:
+            return self._row(
+                state="failed",
+                status_text=f"Destroy failed ({type(error).__name__})",
+                last_error=f"destroy failed ({type(error).__name__})",
+            )
+        if self._runtime_registry is not None:
+            self._runtime_registry.record_destroyed(
+                "defend-ai", confirmed_instance_id
+            )
         return self.status()
 
     def status(self) -> ProductStatus:
         state = self._controller.poll_state()
+        runtime_result = self._runtime_health()
+        runtime_data = getattr(runtime_result, "data", None)
+        runtime = runtime_data if isinstance(runtime_data, dict) else {}
+        provider = str(runtime.get("provider") or "unreported")
+        model = str(runtime.get("model") or "unreported")
+        adapter = str(
+            runtime.get("adapter_repo")
+            or ("built-in local Modelfile" if provider == "ollama" else "unreported")
+        )
+        adapter_revision = str(
+            runtime.get("adapter_revision")
+            or ("not applicable" if provider == "ollama" else "unreported")
+        )
+        base_model = str(runtime.get("base_repo") or "unreported")
+        base_revision = str(runtime.get("base_revision") or "unreported")
+        serving_engine = {
+            "ollama": "Ollama",
+            "openai_compatible": "OpenAI-compatible (vLLM expected)",
+            "vllm": "vLLM",
+        }.get(provider.casefold(), provider)
         details = (
             ("Model backend", state.selected_mode or "â€”"),
             (
                 "Owned services",
                 ", ".join(state.owned_services) if state.owned_services else "â€”",
             ),
+            ("Serving alias", model),
+            ("Provider", provider),
+            ("Serving engine", serving_engine),
+            ("Adapter", adapter),
+            ("Adapter revision", adapter_revision),
+            ("Base model", base_model),
+            ("Base revision", base_revision),
         )
+        state_value = state.state
+        status_text = state.message or state.state
+        last_error = state.message
+        if state.selected_mode in ("vast", "ollama") and state.state in (
+            "starting",
+            "ready",
+            "degraded",
+        ):
+            runtime_matches = self._runtime_matches(state.selected_mode, runtime)
+            if runtime_result.ok and not runtime_matches:
+                state_value = "degraded"
+                status_text = (
+                    f"{state.selected_mode} selected but API runtime reports "
+                    f"provider={provider}, model={model}; backend not active"
+                )
+                last_error = status_text
+            elif not runtime_result.ok and state.state == "ready":
+                state_value = "degraded"
+                status_text = "Selected backend API health is unavailable"
+                last_error = status_text
         return self._row(
-            state=state.state,
-            status_text=state.message or state.state,
+            state=state_value,
+            status_text=status_text,
             details=details,
-            last_error=state.message,
+            last_error=last_error,
+        )
+
+    def _runtime_health(self) -> JsonResult:
+        now = time.monotonic()
+        if (
+            self._runtime_probe_cache is not None
+            and now - self._runtime_probe_cache[0] < 1.0
+        ):
+            return self._runtime_probe_cache[1]
+        result = self._probe(f"http://127.0.0.1:{self._api_port}/health", 2.0)
+        self._runtime_probe_cache = (now, result)
+        return result
+
+    @staticmethod
+    def _runtime_matches(mode: str, runtime: dict[str, object]) -> bool:
+        provider = str(runtime.get("provider") or "").casefold()
+        model = str(runtime.get("model") or "")
+        if mode == "ollama":
+            return provider == "ollama" and model == LOCAL_ALIAS
+        return (
+            provider in {"openai_compatible", "vllm"}
+            and model == SERVING_ALIAS
+            and runtime.get("adapter_repo") == ADAPTER_REPO
+            and runtime.get("adapter_revision") == ADAPTER_REVISION
         )
 
     def health(self) -> bool:
@@ -698,6 +912,16 @@ class ScsService:
 
         return False
 
+    def _core_api_running(self) -> bool:
+        if not self._lifecycle_enabled:
+            return False
+
+        for snapshot in self._supervisor.snapshot():
+            if snapshot.name == "scs:api":
+                return bool(snapshot.running)
+
+        return False
+
     def _web_running(self) -> bool:
         if not self._lifecycle_enabled:
             return False
@@ -732,13 +956,14 @@ class ScsService:
             return "running" if result.ok else "not configured"
 
         api = self._api_running()
+        core_api = self._core_api_running()
         web = self._web_running()
         tunnel_state = self._tunnel.status().state
 
-        if api and web and tunnel_state == "connected":
+        if api and core_api and web and tunnel_state == "connected":
             return "running"
 
-        if api or web or tunnel_state in {"starting", "connected"}:
+        if api or core_api or web or tunnel_state in {"starting", "connected"}:
             return "degraded"
 
         return "stopped"
@@ -748,6 +973,15 @@ class ScsService:
             return self.status()
 
         try:
+            if not self._core_api_running():
+                self._supervisor.start(
+                    build_scs_api_process_spec(
+                        self._settings,
+                        self._repository,
+                        self._python_executable,
+                    )
+                )
+
             if not self._api_running():
                 self._supervisor.start(
                     build_scs_ai_process_spec(
@@ -809,6 +1043,14 @@ class ScsService:
                     f"api stop failed ({type(error).__name__})"
                 )
 
+        if self._core_api_running():
+            try:
+                self._supervisor.stop("scs:api")
+            except Exception as error:
+                errors.append(
+                    f"core api stop failed ({type(error).__name__})"
+                )
+
         self._last_error = (
             "; ".join(errors)
             if errors
@@ -851,6 +1093,9 @@ class ScsService:
             )
 
         api = "running" if self._api_running() else "stopped"
+        core_api = (
+            "running" if self._core_api_running() else "stopped"
+        )
         web = "running" if self._web_running() else "stopped"
         tunnel = self._tunnel.status()
 
@@ -859,11 +1104,13 @@ class ScsService:
         if self._last_error:
             status_text = self._last_error
         elif state == "running":
-            status_text = "SCS AI API, web, and tunnel running"
+            status_text = (
+                "Core API, AI API, web, and tunnel running"
+            )
         elif state == "degraded":
-            status_text = "SCS AI partially running"
+            status_text = "SCS partially running"
         else:
-            status_text = "SCS AI stopped"
+            status_text = "SCS stopped"
 
         return ProductStatus(
             application_id=self.application_id,
@@ -871,11 +1118,14 @@ class ScsService:
             state=state,
             status_text=status_text,
             details=(
-                ("API", api),
                 ("Web", web),
+                ("Core API", core_api),
+                ("AI API", api),
+                ("AI model", self._ai_model_state()),
                 ("Tunnel", str(tunnel.state)),
-                ("API port", str(self._settings.scs_ai_api_port)),
-                ("Web port", str(self._settings.scs_ai_web_port)),
+                ("API port", str(self._settings.scs_api_port)),
+                ("AI API port", str(self._settings.scs_ai_api_port)),
+                ("Web port", str(self._settings.scs_web_port)),
                 ("Public origin", self._settings.scs_ai_public_origin),
             ),
             open_url=self._resolve_open_url(),
@@ -886,15 +1136,32 @@ class ScsService:
             last_error=self._last_error,
         )
 
-    def health(self) -> bool:
-        api_port = (
-            self._settings.scs_ai_api_port
-            if self._lifecycle_enabled
-            else self._settings.scs_api_port
-        )
+    def _ai_model_state(self) -> str:
+        """Report the AI API's configured model gateway state."""
+        if not self._api_running():
+            return "stopped"
+        try:
+            health = self._probe(
+                (
+                    f"http://127.0.0.1:"
+                    f"{self._settings.scs_ai_api_port}/health"
+                ),
+                2.0,
+            )
+            if not health.ok:
+                return "unreachable"
+            payload = getattr(health, "payload", None) or {}
+            gateway = payload.get("model_gateway") or {}
+            return str(gateway.get("state", "unknown"))
+        except Exception:
+            return "unknown"
 
+    def health(self) -> bool:
         result = self._probe(
-            f"http://127.0.0.1:{api_port}/health",
+            (
+                f"http://127.0.0.1:"
+                f"{self._settings.scs_api_port}/health"
+            ),
             2.0,
         )
 
@@ -1967,7 +2234,10 @@ def build_products(
     public_origin: str,
     settings: ProductsSettings | None = None,
     scs_tunnel=None,
-    coder_plane=None,
+coder_plane=None,
+    api_port: int = 8401,
+    prepare_model_start=None,
+    runtime_registry: ProductRuntimeRegistry | None = None,
     probe=fetch_http_json,
     clock=time.monotonic,
 ) -> tuple[ProductService, ...]:
@@ -1987,7 +2257,14 @@ def build_products(
             coder_service.lifecycle_emit,
         )
     return (
-        DefendService(controller, public_origin=public_origin),
+DefendService(
+            controller,
+            public_origin=public_origin,
+            api_port=api_port,
+            probe=probe,
+            prepare_model_start=prepare_model_start,
+            runtime_registry=runtime_registry,
+        ),
         SportsService(
             supervisor=supervisor,
             repository=repository,

@@ -123,6 +123,8 @@ def _run_dict(run: RunRecord) -> dict[str, object]:
         "owner_account_id": str(run.owner_account_id),
         "prompt": run.prompt,
         "status": run.status,
+        "phase": run.phase,
+        "reason": run.reason,
         "error": run.error,
         "created_at": (
             run.created_at.isoformat()
@@ -556,6 +558,41 @@ def build_coder_app(
 
         return {"run": _run_dict(run)}
 
+    @app.post("/v1/workspaces/{workspace_id}/runs/{run_id}/cancel")
+    def cancel_run(
+        workspace_id: str,
+        run_id: str,
+        request: Request,
+    ) -> dict[str, object]:
+        account = current_account(request)
+        require_csrf(request)
+        workspace = owned_workspace(account, workspace_id)
+        parsed_run_id = UUID(run_id)
+        detail = runs_repository.get_run(parsed_run_id)
+        if detail is None or detail.workspace_id != workspace.workspace_id:
+            raise HTTPException(status_code=404, detail="run not found")
+        if detail.status not in ("queued", "running"):
+            raise HTTPException(
+                status_code=409,
+                detail=f"run is already {detail.status}",
+            )
+        if runner is None:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "agent execution is not connected; the model runtime "
+                    "must be started first"
+                ),
+            )
+        try:
+            runner.cancel(parsed_run_id)
+        except KeyError as error:
+            raise HTTPException(
+                status_code=409,
+                detail=str(error),
+            ) from None
+        return {"cancelled": True}
+
     @app.get("/v1/workspaces/{workspace_id}/runs")
     def list_runs(
         workspace_id: str,
@@ -573,6 +610,23 @@ def build_coder_app(
         return {
             "runs": [_run_dict(run) for run in runs]
         }
+
+    @app.get("/v1/agent/policy")
+    def agent_policy(request: Request) -> dict[str, object]:
+        """Effective step/finalization/wall-clock/model policy (P3).
+
+        Session-authenticated; contains no secrets. Useful for
+        benchmarks and runtime diagnostics."""
+        current_account(request)
+        if runner is None:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "agent execution is not connected; the model runtime "
+                    "must be started first"
+                ),
+            )
+        return {"policy": runner.policy}
 
     @app.get("/v1/workspaces/{workspace_id}/runs/{run_id}")
     def get_run(

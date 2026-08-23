@@ -222,6 +222,60 @@ class SportsRepository:
                 (source_id, status, Jsonb(detail), observed_at, received_at),
             )
 
+    def record_discovery(
+        self,
+        connection: Any,
+        *,
+        source_id: UUID,
+        provider: str,
+        payload: list[dict[str, object]],
+        observed_at: datetime,
+        received_at: datetime,
+    ) -> None:
+        """Append a provider discovery snapshot (free endpoints, cached)."""
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO provider_discovery (source_id, provider, payload, observed_at, received_at)
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                (source_id, provider, Jsonb(payload), observed_at, received_at),
+            )
+
+    def record_quota(
+        self,
+        connection: Any,
+        *,
+        source_id: UUID,
+        provider: str,
+        requests_remaining: int | None,
+        requests_used: int | None,
+        requests_last: str | None,
+        status: str,
+        observed_at: datetime,
+        received_at: datetime,
+    ) -> None:
+        """Append a provider quota observation read from response headers."""
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO provider_quota
+                    (source_id, provider, requests_remaining, requests_used, requests_last,
+                     status, observed_at, received_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    source_id,
+                    provider,
+                    requests_remaining,
+                    requests_used,
+                    requests_last,
+                    status,
+                    observed_at,
+                    received_at,
+                ),
+            )
+
     def _upsert_sport(self, connection: Any, sport_key: str) -> UUID:
         with connection.cursor() as cursor:
             cursor.execute(

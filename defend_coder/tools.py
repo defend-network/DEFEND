@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import tempfile
 from typing import Any, Callable
 from uuid import UUID
 
@@ -27,6 +28,54 @@ _SKIPPED_DIRS = frozenset({
 
 _MAX_TOOL_OUTPUT_CHARS = 8000
 _MAX_TREE_DEPTH = 3
+
+
+def _atomic_write(target: Path, content: str) -> None:
+    """Write atomically in the target directory, preserving newlines exactly.
+
+    Writes to a same-directory temp file then os.replace()s it into place so
+    a crash never leaves a partially-written file. newline="" keeps the
+    content byte-for-byte (no Windows CRLF translation), so a model-written
+    file round-trips exactly.
+
+    Also drops any matching bytecode cache: Python's pyc freshness check
+    compares source mtimes in whole seconds, so a rewrite landing in the
+    same second as an earlier compile would otherwise leave a stale .pyc
+    that subprocesses (e.g. pytest) import instead of the new source.
+    """
+    descriptor, temp_path = tempfile.mkstemp(
+        dir=str(target.parent),
+        prefix=f".{target.name}.",
+        suffix=".tmp",
+    )
+    try:
+        with os.fdopen(
+            descriptor, "w", encoding="utf-8", newline=""
+        ) as handle:
+            handle.write(content)
+        os.replace(temp_path, target)
+    except BaseException:
+        try:
+            os.unlink(temp_path)
+        except OSError:
+            pass
+        raise
+    _drop_bytecode_cache(target)
+
+
+def _drop_bytecode_cache(target: Path) -> None:
+    cache_dir = target.parent / "__pycache__"
+    try:
+        entries = tuple(
+            cache_dir.glob(f"{target.stem}.*.pyc")
+        )
+    except OSError:
+        return
+    for entry in entries:
+        try:
+            entry.unlink()
+        except OSError:
+            pass
 
 
 @dataclass(frozen=True)
@@ -122,7 +171,14 @@ class CoderToolkit:
                     "name": "write_file",
                     "description": (
                         "Create a new file or overwrite an existing file "
-                        "inside the workspace with the given content."
+                        "inside the workspace with the given content. For "
+                        "very large content, write it in chunks: call once "
+                        "with the first part (append false or omitted), "
+                        "then call again with append=true for each "
+                        "following part. Each call is applied atomically "
+                        "and reports the file's byte size, so an "
+                        "interrupted chunk can be resumed instead of "
+                        "re-emitting the whole file."
                     ),
                     "parameters": {
                         "type": "object",
@@ -136,8 +192,19 @@ class CoderToolkit:
                             "content": {
                                 "type": "string",
                                 "description": (
-                                    "Full file content to write."
+                                    "File content to write (the first part "
+                                    "of the file, or the next chunk when "
+                                    "append is true)."
                                 ),
+                            },
+                            "append": {
+                                "type": "boolean",
+                                "description": (
+                                    "If true, append content to the end of "
+                                    "the existing file instead of "
+                                    "overwriting it."
+                                ),
+                                "default": False,
                             },
                         },
                         "required": ["path", "content"],
@@ -410,9 +477,26 @@ class CoderToolkit:
         target.parent.mkdir(parents=True, exist_ok=True)
         if target.is_dir():
             raise ToolExecutionError(f"{target} is a directory")
-        target.write_text(content, encoding="utf-8")
+        prior_bytes = 0
+        if bool(arguments.get("append")):
+            if target.exists():
+                if not target.is_file():
+                    raise ToolExecutionError(f"{target} is not a file")
+                prior_bytes = target.stat().st_size
+                with target.open(
+                    "r", encoding="utf-8", errors="replace", newline=""
+                ) as handle:
+                    content = handle.read() + content
+        _atomic_write(target, content)
+        total_bytes = len(content.encode("utf-8"))
+        if prior_bytes:
+            return ToolResult(
+                f"appended {total_bytes - prior_bytes} bytes to {target.name} "
+                f"(file is now {total_bytes} bytes)",
+                kind="file",
+            )
         return ToolResult(
-            f"wrote {len(content.encode('utf-8'))} bytes to {target.name}",
+            f"wrote {total_bytes} bytes to {target.name}",
             kind="file",
         )
 
@@ -435,7 +519,10 @@ class CoderToolkit:
             raise ToolExecutionError("new_text is required")
         if not target.is_file():
             raise ToolExecutionError(f"{target} is not a file")
-        raw = target.read_text(encoding="utf-8", errors="replace")
+        with target.open(
+            "r", encoding="utf-8", errors="replace", newline=""
+        ) as handle:
+            raw = handle.read()
         index = raw.find(old_text)
         if index < 0:
             raise ToolExecutionError(
@@ -443,7 +530,7 @@ class CoderToolkit:
                 "and match the exact existing text"
             )
         updated = raw[:index] + new_text + raw[index + len(old_text):]
-        target.write_text(updated, encoding="utf-8")
+        _atomic_write(target, updated)
         return ToolResult(
             f"replaced first occurrence in {target.name} "
             f"({len(old_text)} -> {len(new_text)} chars)",

@@ -1,0 +1,50 @@
+{
+  "schema": "TT_LIVE_SOAK",
+  "run_id": 1,
+  "started_at": "2026-08-20T19:42:55.524157Z",
+  "finished_at": "2026-08-20T19:43:27.848434Z",
+  "status": "COMPLETED",
+  "duration_seconds": 32.3,
+  "EVENTS_DISCOVERED": 0,
+  "EVENTS_MATCHED": 0,
+  "CANONICAL_MATCH_RATE": null,
+  "AMBIGUOUS_MATCH_RATE": null,
+  "EVENTS_WITH_M5": 0,
+  "EVENTS_WITH_ODDS": 0,
+  "PREMATCH_OBSERVATIONS": 0,
+  "POSTCOMMENCE_REJECTED": 0,
+  "BOOKMAKERS": [],
+  "API_REQUESTS": 1,
+  "API_ERRORS": 0,
+  "RATE_LIMIT_EVENTS": 0,
+  "TRUNCATED_RESPONSES": 1,
+  "STALE_QUOTES": 0,
+  "SETTLED_EVENTS": 0,
+  "MARKET_SAMPLE_N": 0,
+  "COST_USD": 0.0,
+  "evaluation_report": {
+    "n": 0,
+    "thresholds": {
+      "30": null,
+      "100": null,
+      "250": null,
+      "500": null,
+      "1000": null
+    },
+    "market_edge_status": "INSUFFICIENT_SAMPLE",
+    "pooled": {
+      "n": 0
+    },
+    "per_class": {
+      "OPEN": {
+        "n": 0
+      },
+      "INTERMEDIATE": {
+        "n": 0
+      },
+      "LAST_VALID_PREMATCH": {
+        "n": 0
+      }
+    }
+  }
+}

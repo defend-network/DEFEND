@@ -9,6 +9,10 @@ from defend_coder.model_config import (
     CODER_MODEL_API_KEY_ENV,
     CODER_MODEL_BASE_URL_ENV,
     CODER_MODEL_NAME_ENV,
+    CODER_MODEL_TIMEOUT_SECONDS_ENV,
+    CODER_MODEL_CONNECT_TIMEOUT_SECONDS_ENV,
+    DEFAULT_MODEL_TIMEOUT_SECONDS,
+    DEFAULT_MODEL_CONNECT_TIMEOUT_SECONDS,
     CoderModelConfig,
     load_model_config,
 )
@@ -20,6 +24,8 @@ def _clear():
         CODER_MODEL_NAME_ENV,
         CODER_MODEL_BASE_URL_ENV,
         CODER_MODEL_API_KEY_ENV,
+        CODER_MODEL_TIMEOUT_SECONDS_ENV,
+        CODER_MODEL_CONNECT_TIMEOUT_SECONDS_ENV,
         "CODER_MODEL_API_KEY_FILE",
     ):
         os.environ.pop(name, None)
@@ -136,3 +142,59 @@ def test_empty_alias_is_rejected():
 def test_empty_model_name_is_rejected():
     with pytest.raises(ValueError, match="model_name"):
         CoderModelConfig(model_name="")
+
+
+def test_timeout_defaults_are_sane_for_measured_model_speed():
+    _clear()
+    config = load_model_config()
+
+    assert config.timeout_seconds == DEFAULT_MODEL_TIMEOUT_SECONDS
+    assert (
+        config.connect_timeout_seconds
+        == DEFAULT_MODEL_CONNECT_TIMEOUT_SECONDS
+    )
+    assert DEFAULT_MODEL_TIMEOUT_SECONDS == 600.0
+
+
+def test_timeout_env_values_are_honored():
+    _clear()
+    os.environ[CODER_MODEL_TIMEOUT_SECONDS_ENV] = "420"
+    os.environ[CODER_MODEL_CONNECT_TIMEOUT_SECONDS_ENV] = "25"
+
+    config = load_model_config()
+
+    assert config.timeout_seconds == 420.0
+    assert config.connect_timeout_seconds == 25.0
+
+
+@pytest.mark.parametrize(
+    ("env_name", "value", "match"),
+    [
+        (CODER_MODEL_TIMEOUT_SECONDS_ENV, "5", "TIMEOUT_SECONDS"),
+        (CODER_MODEL_TIMEOUT_SECONDS_ENV, "99999", "TIMEOUT_SECONDS"),
+        (CODER_MODEL_TIMEOUT_SECONDS_ENV, "abc", "not a number"),
+        (CODER_MODEL_CONNECT_TIMEOUT_SECONDS_ENV, "0.5",
+         "CONNECT_TIMEOUT_SECONDS"),
+        (CODER_MODEL_CONNECT_TIMEOUT_SECONDS_ENV, "999",
+         "CONNECT_TIMEOUT_SECONDS"),
+        (CODER_MODEL_CONNECT_TIMEOUT_SECONDS_ENV, "nope", "not a number"),
+    ],
+)
+def test_invalid_timeout_config_fails_safely(monkeypatch, env_name, value, match):
+    """E: invalid timeout configuration fails safely at load time."""
+    _clear()
+    os.environ[env_name] = value
+
+    with pytest.raises(ValueError, match=match):
+        load_model_config()
+
+
+def test_invalid_timeout_on_config_object_is_rejected():
+    for bad in (0, -1, True, "600", 5000.0):
+        with pytest.raises(ValueError, match="TIMEOUT"):
+            CoderModelConfig(base_url="http://127.0.0.1:8001/v1",
+                             timeout_seconds=bad)
+    for bad in (0, -1, True, "15", 500.0):
+        with pytest.raises(ValueError, match="CONNECT_TIMEOUT"):
+            CoderModelConfig(base_url="http://127.0.0.1:8001/v1",
+                             connect_timeout_seconds=bad)

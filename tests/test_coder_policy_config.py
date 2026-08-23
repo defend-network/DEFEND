@@ -20,6 +20,7 @@ from defend_control.coder_m0 import (
 from defend_control.products import (
     ProductsSettings,
     coder_plan_rows,
+    parse_cuda_floor_env,
 )
 from defend_control.types import VastOffer
 
@@ -255,3 +256,34 @@ class TestDialogAndBudget:
         status = service.status()
         details = dict(status.details)
         assert details["Max $/hr (ceiling)"] == "$4.50"
+
+
+class TestCudaFloorEnv:
+    def test_unset_env_defaults_to_pinned_cu130_floor(self):
+        assert parse_cuda_floor_env(None) == Decimal("13.0")
+        assert parse_cuda_floor_env("") == Decimal("13.0")
+        assert parse_cuda_floor_env("   ") == Decimal("13.0")
+
+    def test_explicit_cuda_floor_is_parsed(self):
+        assert parse_cuda_floor_env("12.2") == Decimal("12.2")
+        assert parse_cuda_floor_env(" 13.0 ") == Decimal("13.0")
+
+    def test_disable_words_turn_off_the_filter(self):
+        for raw in ("none", "0", "off", "disabled", "OFF"):
+            assert parse_cuda_floor_env(raw) is None
+
+    def test_malformed_env_falls_back_to_pinned_cu130_floor(self):
+        assert parse_cuda_floor_env("garbage") == Decimal("13.0")
+        assert parse_cuda_floor_env("12.x") == Decimal("13.0")
+
+    def test_products_settings_wire_env_into_default_floor(self, monkeypatch):
+        monkeypatch.setenv("CODER_MIN_CUDA_MAX_GOOD", "13.0")
+        settings = ProductsSettings.from_env()
+        assert settings.coder_min_cuda_max_good == Decimal("13.0")
+
+        monkeypatch.setenv("CODER_MIN_CUDA_MAX_GOOD", "none")
+        settings = ProductsSettings.from_env()
+        assert settings.coder_min_cuda_max_good is None
+
+    def test_products_settings_default_floor_matches_pinned_cu130(self):
+        assert ProductsSettings().coder_min_cuda_max_good == Decimal("13.0")

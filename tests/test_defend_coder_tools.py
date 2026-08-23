@@ -135,6 +135,78 @@ def test_write_file_creates_nested_files(tmp_path):
     assert target.read_text(encoding="utf-8") == "console.log(1);"
 
 
+def test_write_file_append_builds_a_file_in_chunks(tmp_path):
+    toolkit, ws, _root = _toolkit(tmp_path)
+    target = tmp_path / "configured" / "ws" / "big.py"
+
+    first = _run(
+        toolkit,
+        ws,
+        "write_file",
+        {"path": "big.py", "content": "def a():\n    pass\n"},
+    )
+    second = _run(
+        toolkit,
+        ws,
+        "write_file",
+        {"path": "big.py", "content": "\ndef b():\n    pass\n", "append": True},
+    )
+
+    assert first.ok
+    assert second.ok
+    assert target.read_text(encoding="utf-8") == (
+        "def a():\n    pass\n\ndef b():\n    pass\n"
+    )
+    assert "appended" in second.content
+
+
+def test_write_file_append_to_missing_file_creates_it(tmp_path):
+    toolkit, ws, _root = _toolkit(tmp_path)
+    target = tmp_path / "configured" / "ws" / "new.txt"
+
+    result = _run(
+        toolkit,
+        ws,
+        "write_file",
+        {"path": "new.txt", "content": "first\n", "append": True},
+    )
+
+    assert result.ok
+    assert target.read_text(encoding="utf-8") == "first\n"
+
+
+def test_write_file_without_append_overwrites(tmp_path):
+    toolkit, ws, _root = _toolkit(tmp_path)
+    target = tmp_path / "configured" / "ws" / "data.txt"
+    target.write_text("old content\n", encoding="utf-8")
+
+    result = _run(
+        toolkit,
+        ws,
+        "write_file",
+        {"path": "data.txt", "content": "new content\n"},
+    )
+
+    assert result.ok
+    assert target.read_text(encoding="utf-8") == "new content\n"
+
+
+def test_write_file_append_rejects_directory_target(tmp_path):
+    toolkit, ws, _root = _toolkit(tmp_path)
+    target = tmp_path / "configured" / "ws" / "adir"
+    target.mkdir()
+
+    result = _run(
+        toolkit,
+        ws,
+        "write_file",
+        {"path": "adir", "content": "x", "append": True},
+    )
+
+    assert not result.ok
+    assert "directory" in result.content
+
+
 def test_edit_file_replaces_first_occurrence(tmp_path):
     toolkit, ws, _root = _toolkit(tmp_path)
     target = tmp_path / "configured" / "ws" / "app.js"
@@ -149,6 +221,48 @@ def test_edit_file_replaces_first_occurrence(tmp_path):
 
     assert result.ok
     assert target.read_text(encoding="utf-8") == "A\nb\na\n"
+
+
+def test_write_file_drops_stale_bytecode_cache(tmp_path):
+    toolkit, ws, _root = _toolkit(tmp_path)
+    target = tmp_path / "configured" / "ws" / "app.py"
+    target.write_text("x = 1\n", encoding="utf-8")
+    cache_dir = target.parent / "__pycache__"
+    cache_dir.mkdir()
+    stale = cache_dir / "app.cpython-314.pyc"
+    stale.write_bytes(b"stale")
+
+    result = _run(
+        toolkit,
+        ws,
+        "write_file",
+        {"path": "app.py", "content": "x = 2\n"},
+    )
+
+    assert result.ok
+    assert not stale.exists()
+    assert target.read_text(encoding="utf-8") == "x = 2\n"
+
+
+def test_edit_file_drops_stale_bytecode_cache(tmp_path):
+    toolkit, ws, _root = _toolkit(tmp_path)
+    target = tmp_path / "configured" / "ws" / "app.py"
+    target.write_text("def f():\n    return 1\n", encoding="utf-8")
+    cache_dir = target.parent / "__pycache__"
+    cache_dir.mkdir()
+    stale = cache_dir / "app.cpython-314.pyc"
+    stale.write_bytes(b"stale")
+
+    result = _run(
+        toolkit,
+        ws,
+        "edit_file",
+        {"path": "app.py", "old_text": "return 1", "new_text": "return 2"},
+    )
+
+    assert result.ok
+    assert not stale.exists()
+    assert target.read_text(encoding="utf-8") == "def f():\n    return 2\n"
 
 
 def test_edit_file_missing_text_is_an_error(tmp_path):
@@ -414,3 +528,110 @@ def test_workspace_root_outside_configured_root_is_denied(tmp_path):
 
     assert not result.ok
     assert "escapes configured root" in result.content
+
+
+def test_write_file_large_payload_roundtrips_exactly(tmp_path):
+    """P6: a large (4k+ char) payload with unicode, LF and CRLF line
+    endings must round-trip byte-for-byte (no truncation, no Windows
+    newline translation)."""
+    lines = [
+        '<!-- DEFENDcoder ops dashboard v1.0 -->',
+        'let status = "строки ünïcodé ✓";',
+        f"const pad = {'x' * 4000};",
+        'line one\r\nline two with crlf\r\nfinal line',
+    ]
+    content = "\n".join(lines) + "\n"
+    toolkit, ws, _root = _toolkit(tmp_path)
+
+    result = _run(
+        toolkit,
+        ws,
+        "write_file",
+        {"path": "dashboard.js", "content": content},
+    )
+
+    assert result.ok
+    target = tmp_path / "configured" / "ws" / "dashboard.js"
+    raw = target.read_bytes()
+    assert raw.decode("utf-8") == content
+    assert raw.count(b"\r\n") == 2
+    assert raw.count(b"\n") == 6
+    assert len(raw) == len(content.encode("utf-8"))
+
+
+def test_write_file_is_atomic_and_leaves_no_temp_files(tmp_path):
+    toolkit, ws, _root = _toolkit(tmp_path)
+    target = tmp_path / "configured" / "ws" / "app.py"
+    payload = "value = 1\n" * 200
+
+    _run(
+        toolkit,
+        ws,
+        "write_file",
+        {"path": "app.py", "content": payload},
+    )
+    _run(
+        toolkit,
+        ws,
+        "write_file",
+        {"path": "app.py", "content": payload + "value = 2\n"},
+    )
+
+    leftovers = [
+        entry.name
+        for entry in target.parent.iterdir()
+        if entry.name.endswith(".tmp") or entry.name.startswith(".app.py.")
+    ]
+    assert leftovers == []
+    assert target.read_text(encoding="utf-8").endswith("value = 2\n")
+
+
+def test_edit_file_preserves_large_unrelated_content(tmp_path):
+    target = tmp_path / "configured" / "ws" / "big.txt"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    original = ("unchanged line\n" * 300) + "needle here\n" + (
+        "tail line\n" * 300
+    )
+    target.write_bytes(original.encode("utf-8"))
+    toolkit, ws, _root = _toolkit(tmp_path)
+
+    result = _run(
+        toolkit,
+        ws,
+        "edit_file",
+        {
+            "path": "big.txt",
+            "old_text": "needle here",
+            "new_text": "replaced needle",
+        },
+    )
+
+    assert result.ok
+    updated = target.read_bytes().decode("utf-8")
+    assert "replaced needle" in updated
+    assert "needle here" not in updated
+    assert updated.count("unchanged line") == 300
+    assert updated.count("tail line") == 300
+
+
+def test_edit_file_windows_newlines_survive_edit(tmp_path):
+    target = tmp_path / "configured" / "ws" / "crlf.txt"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(b"alpha\r\nbeta\r\nneedle\r\nomega\r\n")
+    toolkit, ws, _root = _toolkit(tmp_path)
+
+    result = _run(
+        toolkit,
+        ws,
+        "edit_file",
+        {
+            "path": "crlf.txt",
+            "old_text": "needle",
+            "new_text": "replacement",
+        },
+    )
+
+    assert result.ok
+    raw = target.read_bytes()
+    assert b"replacement" in raw
+    assert raw.count(b"\r\n") == 4

@@ -1,0 +1,14 @@
+{
+  "auth_scheme": "X-RapidAPI-Key + X-RapidAPI-Host",
+  "capability_summary": "Fast live scores API; coverage described as football-first (fixtures/results/standings/statistics/live updates). TT unverified -> phase C probe.",
+  "contract_type": "official_docs",
+  "endpoint_count": null,
+  "notes": "Host allscores.p.rapidapi.com. Same family/publisher as allsportsapi2.",
+  "provider_id": "rapidapi_allscores",
+  "provider_version_if_known": null,
+  "rate_limit_notes": null,
+  "retrieved_at": "2026-08-20T14:43:32Z",
+  "schema_version": null,
+  "sha256": null,
+  "source_url_or_origin": "https://rapidapi.com/fluis.lacasse/api/allscores"
+}

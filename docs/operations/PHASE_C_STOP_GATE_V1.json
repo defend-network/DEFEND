@@ -1,0 +1,711 @@
+{
+  "schema": "Phase C STOP GATE report (P0-P8)",
+  "updated_at": "2026-08-20T18:23:43Z",
+  "SETUP_CREDENTIAL_SLOTS": [
+    {
+      "provider": "oddspapi",
+      "credential_field": "ODDSPAPI_API_KEY",
+      "state": "CREDENTIAL_PRESENT"
+    },
+    {
+      "provider": "the_odds_api",
+      "credential_field": "THE_ODDS_API_KEY",
+      "state": "CREDENTIAL_PRESENT"
+    },
+    {
+      "provider": "odds_api_io",
+      "credential_field": "ODDS_API_IO_API_KEY",
+      "state": "CREDENTIAL_PRESENT"
+    },
+    {
+      "provider": "sports_game_odds",
+      "credential_field": "SPORTS_GAME_ODDS_API_KEY",
+      "state": "CREDENTIAL_PRESENT"
+    },
+    {
+      "provider": "sportradar_tt",
+      "credential_field": "SPORTRADAR_API_KEY",
+      "state": "CREDENTIAL_PRESENT"
+    },
+    {
+      "provider": "rapidapi_tt_micro",
+      "credential_field": "RAPIDAPI_KEY",
+      "state": "CREDENTIAL_PRESENT"
+    },
+    {
+      "provider": "rapidapi_tabletennis",
+      "credential_field": "RAPIDAPI_KEY",
+      "state": "CREDENTIAL_PRESENT"
+    },
+    {
+      "provider": "rapidapi_allscores",
+      "credential_field": "RAPIDAPI_KEY",
+      "state": "CREDENTIAL_PRESENT"
+    },
+    {
+      "provider": "rapidapi_allsportsapi2",
+      "credential_field": "RAPIDAPI_KEY",
+      "state": "CREDENTIAL_PRESENT"
+    },
+    {
+      "provider": "rapidapi_tt_live",
+      "credential_field": "RAPIDAPI_KEY",
+      "state": "CREDENTIAL_PRESENT"
+    },
+    {
+      "provider": "sportdevs",
+      "credential_field": "SPORTDEVS_API_KEY",
+      "state": "NOT_CONFIGURED"
+    },
+    {
+      "provider": "betsapi",
+      "credential_field": "BETSAPI_API_KEY",
+      "state": "NOT_CONFIGURED"
+    },
+    {
+      "provider": "sportsapi_pro",
+      "credential_field": "SPORTSAPI_PRO_API_KEY",
+      "state": "NOT_CONFIGURED"
+    }
+  ],
+  "SHARED_CREDENTIALS": {
+    "RAPIDAPI_KEY": [
+      "rapidapi_tt_micro",
+      "rapidapi_tabletennis",
+      "rapidapi_allscores",
+      "rapidapi_allsportsapi2",
+      "rapidapi_tt_live"
+    ]
+  },
+  "PROVIDERS_SCAFFOLDED": [
+    "betsapi",
+    "odds_api_io",
+    "oddspapi",
+    "rapidapi_allscores",
+    "rapidapi_allsportsapi2",
+    "rapidapi_tabletennis",
+    "rapidapi_tt_live",
+    "rapidapi_tt_micro",
+    "sportdevs",
+    "sportradar_tt",
+    "sports_game_odds",
+    "sportsapi_pro",
+    "the_odds_api"
+  ],
+  "PROVIDERS_LIVE_PROBED": [
+    "odds_api_io",
+    "oddspapi",
+    "rapidapi_allscores",
+    "rapidapi_allsportsapi2",
+    "rapidapi_tabletennis",
+    "rapidapi_tt_live",
+    "rapidapi_tt_micro",
+    "sportradar_tt",
+    "sports_game_odds",
+    "the_odds_api"
+  ],
+  "PHASE_C_COMPLETE": true,
+  "CONFIGURED_PROVIDERS": 13,
+  "AUTHENTICATED_PROVIDERS": 6,
+  "TT_CAPABLE_PROVIDERS": 4,
+  "CONTRACT_MANIFESTS": 10,
+  "CONTRACT_MANIFEST_VALIDATION": "PASS",
+  "ODDSPAPI_STATUS": {
+    "ODDSPAPI_SAMPLE_EVENTS": 27,
+    "EVENTS_WITH_HISTORY": 4,
+    "EVENTS_WITH_HISTORY_RATE": 0.1481,
+    "CANONICAL_MATCH_RATE": 0.4815,
+    "AMBIGUOUS_MATCH_RATE": 0.1481,
+    "SNAPSHOTS_MIN": 28,
+    "SNAPSHOTS_MEDIAN": 81.5,
+    "SNAPSHOTS_P90": 98.0,
+    "SNAPSHOTS_MAX": 98,
+    "BOOKMAKERS_MIN": 1,
+    "BOOKMAKERS_MEDIAN": 1.0,
+    "BOOKMAKERS_MAX": 1,
+    "VALID_PREMATCH_RATE": 0.1543,
+    "POST_COMMENCE_OBSERVATION_RATE": 0.8457,
+    "LAST_VALID_PREMATCH_RATE": 1.0,
+    "EVENTS_WITH_HISTORY_AND_BREAKDOWN": {
+      "EVENTS_WITH_HISTORY": 4,
+      "EVENTS_WITH_ANY_VALID_PREMATCH": 4,
+      "EVENTS_WITH_ONLY_POSTCOMMENCE": 0,
+      "EVENTS_WITH_BOTH_PRE_AND_POST": 4
+    },
+    "TRUE_CLOSE_AVAILABLE": "NO",
+    "LAST_VALID_PREMATCH_AVAILABLE": "YES",
+    "LAST_PREMATCH_GAP_HOURS_MEDIAN": 6.54
+  },
+  "SPORTSGAMEODDS_STATUS": {
+    "status": "UNSUPPORTED_FOR_TT",
+    "TT_ODDS": "none (no TT sport in /sports)",
+    "HISTORY": "n/a",
+    "detail": "11 sports listed; Table Tennis absent (probe 2026-08-20)"
+  },
+  "SPORTRADAR_STATUS": {
+    "status": "AUTH_FAILED",
+    "detail": "403 Authentication Error with provided key; key invalid/expired",
+    "TT_COVERAGE": "unverified",
+    "PROVIDER_PREDICTIONS": "documented only (season probabilities feed)"
+  },
+  "RAPIDAPI_PROVIDER_STATUS": {
+    "rapidapi_tt_micro": "EMPIRICALLY_VERIFIED (5/6 endpoints)",
+    "rapidapi_tabletennis": "DOCUMENTED_ONLY (catalog unverified)",
+    "rapidapi_tt_live": "DOCUMENTED_ONLY (no public catalog)",
+    "rapidapi_allscores": "UNUSABLE (football-first catalog)",
+    "rapidapi_allsportsapi2": "UNUSABLE (no TT in 8-sport catalog)"
+  },
+  "BEST_RESULTS_PROVIDER": "odds_api_io (canonical corpus) + rapidapi_tt_micro (live)",
+  "BEST_IDENTITY_PROVIDER": "odds_api_io (canonical corpus; compact-token keys)",
+  "BEST_COMPETITION_METADATA_PROVIDER": "rapidapi_tt_micro (classes/leagues/tournaments) + odds_api_io (competition tags in corpus)",
+  "BEST_RANKINGS_PROVIDER": "rapidapi_tt_micro (standings verified) | sportradar_tt (documented; auth blocked)",
+  "BEST_H2H_PROVIDER": "sportradar_tt (documented H2H feed; auth blocked)",
+  "BEST_PLAYER_STATS_PROVIDER": "rapidapi_tt_micro (matches-statistics documented)",
+  "BEST_EXTERNAL_PREDICTIONS_PROVIDER": "sportradar_tt (PROVIDER_PREDICTION; not verified)",
+  "BEST_LIVE_STATE_PROVIDER": "rapidapi_tt_micro (matches-live verified) + oddspapi (live odds)",
+  "BEST_PREMATCH_ODDS_PROVIDER": "oddspapi (1xbet depth, multi-snapshot)",
+  "BEST_LIVE_ODDS_PROVIDER": "oddspapi (pregame+live) / rapidapi_tt_micro (coverage/bookmakers)",
+  "BEST_HISTORICAL_ODDS_PROVIDER": "oddspapi (only provider with any; thin)",
+  "BEST_CLOSING_REFERENCE_PROVIDER": "none (no true closing feed; use OddsPapi LAST_VALID_PREMATCH as best available)",
+  "SHARED_UPSTREAM_GROUPS": [
+    {
+      "PROVIDERS": [
+        "oddspapi",
+        "odds_api_io"
+      ],
+      "EVIDENCE": "OddsPapi fixture ids embed the same 8-digit numeric suffix as canonical oaio:<id> corpus keys (id2503634969340120 -> oaio:69340120); both cover czech-liga-pro/tt-cup/tt-elite-series; odds content not compared",
+      "CLASSIFICATION": "LIKELY_SHARED_UPSTREAM (identity-space overlap confirmed; odds-content correlation unverified)"
+    },
+    {
+      "PROVIDERS": [
+        "the_odds_api"
+      ],
+      "EVIDENCE": "no TT sport; nothing comparable",
+      "CLASSIFICATION": "UNKNOWN"
+    },
+    {
+      "PROVIDERS": [
+        "rapidapi_tt_micro",
+        "table-tennis.sportmicro.com (direct host)"
+      ],
+      "EVIDENCE": "same sportmicro Table Tennis API exposed via RapidAPI; identical data by design",
+      "CLASSIFICATION": "CONFIRMED_SHARED_UPSTREAM (single API, two gateways)"
+    },
+    {
+      "PROVIDERS": [
+        "rapidapi_tabletennis",
+        "rapidapi_allscores",
+        "rapidapi_allsportsapi2"
+      ],
+      "EVIDENCE": "same RapidAPI publisher (fluis.lacasse); no per-provider data-lineage comparison possible from catalogs",
+      "CLASSIFICATION": "LIKELY_SHARED_UPSTREAM (same publisher; lineage unverified)"
+    },
+    {
+      "PROVIDERS": [
+        "sportradar_tt"
+      ],
+      "EVIDENCE": "official Sportradar feeds with own identity space and XSD schema",
+      "CLASSIFICATION": "LIKELY_INDEPENDENT"
+    },
+    {
+      "PROVIDERS": [
+        "sports_game_odds"
+      ],
+      "EVIDENCE": "no TT coverage; not comparable",
+      "CLASSIFICATION": "UNKNOWN"
+    },
+    {
+      "PROVIDERS": [
+        "rapidapi_tt_live"
+      ],
+      "EVIDENCE": "no public catalog; not comparable",
+      "CLASSIFICATION": "UNKNOWN"
+    }
+  ],
+  "MARKET_RESEARCH_ROW_PROVEN": true,
+  "M5_MARKET_MATCHED_N": 1,
+  "M5_BRIER": 0.290844,
+  "MARKET_BRIER": 0.260928,
+  "M5_LOG_LOSS": 0.775008,
+  "MARKET_LOG_LOSS": 0.715006,
+  "M5_MINUS_MARKET_BRIER": 0.029917,
+  "MARKET_BASELINE_STATUS": "INFRASTRUCTURE_READY_INSUFFICIENT_SAMPLE",
+  "MARKET_EDGE_STATUS": "UNKNOWN_INSUFFICIENT_SAMPLE",
+  "MARKET_EDGE_INTERPRETATION_LOCK": "N=1 smoke (M5_BRIER 0.2908 / MARKET_BRIER 0.2609 / DELTA +0.0299) has ZERO decision significance. No claim that the market beats M5, M5 beats the market, M5 has positive EV, M5 lacks positive EV, or that any provider establishes profitability. The Phase C accomplishment is: the market ruler exists and runs end-to-end. It is NOT: we found an edge.",
+  "PAIRWISE_EVALUATION_POLICY": {
+    "POLICY": "once N grows beyond smoke-test size, M5 / MARKET / BASE_RATE / CONSTANT / EXTERNAL_PROVIDER_PREDICTION are compared ONLY on explicitly declared paired event sets",
+    "PAIRWISE_EVENT_SET_HASH": "required on every pairwise metric report",
+    "PAIRWISE_N": "required on every pairwise metric report",
+    "IDENTICAL_FOR_M5_VS_MARKET": [
+      "event_ids",
+      "outcomes",
+      "cutoffs",
+      "market observation policy"
+    ],
+    "NON_PAIRED_RULE": "models scored on different event sets must be labeled non-paired; never compare silently"
+  },
+  "MARKET_PROBABILITY_POLICY": {
+    "PRESERVE_FIELDS": [
+      "RAW_DECIMAL_ODDS_A",
+      "RAW_DECIMAL_ODDS_B",
+      "RAW_IMPLIED_P_A",
+      "RAW_IMPLIED_P_B",
+      "OVERROUND",
+      "NO_VIG_P_A",
+      "NO_VIG_P_B",
+      "BOOKMAKER",
+      "OBSERVATION_TS",
+      "COMMENCE_TS",
+      "SECONDS_BEFORE_COMMENCE",
+      "OBSERVATION_CLASS (OPEN | INTERMEDIATE | LAST_VALID_PREMATCH)"
+    ],
+    "NO_SILENT_CONSENSUS": "bookmakers are never silently combined into consensus; any future consensus requires a separately versioned and documented aggregation policy",
+    "TRUE_CLOSE": "not automatically true close, bookmaker official close, consensus close, or exchange close; requires separate provider evidence"
+  },
+  "MATCH_QUALITY_POLICY": {
+    "MATCH_PRECISION": "measured and reported",
+    "MATCH_RECALL_OR_COVERAGE": "measured and reported",
+    "NO_SILENT_LOOSENING": "match rate is never raised by silently loosening identity rules; held-out/manual verification samples where appropriate"
+  },
+  "INCLUSION_EXCLUSION_LEDGER": {
+    "POLICY": "every candidate event entering market evaluation receives a persistent machine-readable disposition; rows are never silently dropped",
+    "LEDGER_ARTIFACT": "docs/operations/TT_MARKET_RULER_LEDGER_V1.json",
+    "DISPOSITION_CODES": [
+      "INCLUDED",
+      "EXCLUDED_NO_CANONICAL_MATCH",
+      "EXCLUDED_AMBIGUOUS_MATCH",
+      "EXCLUDED_NO_M5_PREDICTION",
+      "EXCLUDED_NO_PREMATCH_ODDS",
+      "EXCLUDED_POSTCOMMENCE_ONLY",
+      "EXCLUDED_INVALID_MARKET",
+      "EXCLUDED_RESULT_UNAVAILABLE",
+      "EXCLUDED_IDENTITY_CONFLICT",
+      "EXCLUDED_OTHER"
+    ],
+    "LEDGER_FIELDS": [
+      "provider_event_id",
+      "canonical_event_id",
+      "disposition",
+      "reason_code",
+      "evidence_ref",
+      "evaluation_version"
+    ]
+  },
+  "CLV_RESEARCH_STATUS": "LIMITED - OddsPapi historical prematch thin; 1xbet only; TRUE_CLOSE unavailable; LAST_VALID_PREMATCH feasible per-event",
+  "TT_M5_BASELINE_V1_INTACT": "YES",
+  "MARKETS_TEST_RESULTS": {
+    "test_phase_c_probing.py": "29 passed",
+    "test_contract_manifests.py": "6 passed",
+    "test_multi_provider_setup.py": "passed (Phase A/B)",
+    "test_oddspapi_setup_surface.py": "passed",
+    "test_setup_provider_surface.py": "passed",
+    "combined Markets subset": "70 passed (2026-08-20, dedicated basetemp)"
+  },
+  "SHARED_TEST_RESULTS": "full backend suite PASS (2026-08-20, dedicated basetemp)",
+  "FULL_SUITE_RESULT": "PASS (1745 passed, 80 skipped, 0 failures; 22min)",
+  "UNRELATED_CONCURRENT_FAILURES": "none observed after SCS repair; pytest temp-root contention with concurrent sessions resolved via dedicated basetemp",
+  "CROSS_WORKSTREAM_FILES_TOUCHED": [
+    "scs_reports/vision.py (unstaged, not staged)"
+  ],
+  "SCS_EMERGENCY_REPAIR": {
+    "file": "scs_reports/vision.py",
+    "classification": "CROSS_WORKSTREAM_EMERGENCY_SYNTAX_REPAIR",
+    "changes": [
+      "line 100: 'min_confidence: float = _MIN_CONFIDENCE,' dedented from column 0 to 8 (was breaking method signature)",
+      "line 108: 'def _generate(...)' dedented from column 0 to 4 (was breaking class body)"
+    ],
+    "verification": "full backend suite collects and passes after repair",
+    "staged": false
+  },
+  "FOREIGN_UNTRACKED_FILES": [
+    "rapidapi_tt_micro-matches-live-2026-08-20T153417Z.json",
+    "rapidapi_tt_micro-matches-live-2026-08-20T153438Z.json",
+    "rapidapi_tt_micro-matches-live-2026-08-20T153940Z.json",
+    "rapidapi_tt_micro-matches-live-2026-08-20T161114Z.json",
+    "rapidapi_tt_micro-matches-live-2026-08-20T161731Z.json",
+    "(owner: concurrent session; not created by this session; left untouched)"
+  ],
+  "SECRET_SCAN": "PASS (no credential values in docs/, defend_integrations/, defend_markets/, defend_sports/, tools/, tests/; 56 REDACTED markers confirm evidence sanitization; 3 pattern hits are test fixtures with fake keys)",
+  "GIT_DIFF_CHECK": "PASS (no whitespace errors; LF/CRLF warnings only)",
+  "MARKETS_OWNED_FILES": "see MARKETS_STAGING_PLAN",
+  "MARKETS_STAGING_PLAN": {
+    "A_NEW_MARKETS_ONLY": [
+      "defend_integrations/{contracts,matching,phase_c_adapters,probing,value_matrix}.py",
+      "defend_markets/{collector,evaluation,features,forecast,forecast_store,identity,market_state,predict_service,settle_service}.py",
+      "defend_markets/migrations/0004_markets_prediction.sql",
+      "defend_markets/migrations/0005_markets_rating_history.sql",
+      "defend_sports/{backfill.py}",
+      "defend_sports/migrations/0002_quota_discovery.sql",
+      "defend_sports/migrations/0003_backfill.sql",
+      "defend_sports/migrations/0004_raw_provider_uniqueness.sql",
+      "defend_sports/providers/odds_api_io.py",
+      "tests/{test_collector,test_contract_manifests,test_multi_provider_setup,test_odds_api_io,test_oddspapi_setup_surface,test_phase_c_probing,test_predict_settle,test_setup_provider_surface,test_tt_backfill,test_tt_identity_gate,test_tt_rating_history,test_tt_repair_results,test_tt_research_suite,test_evaluation,test_features,test_forecast_identity,test_forecast_records,test_market_state}.py",
+      "tools/defend_tt_{backfill,collector,historical_eval,identity_gate,identity_merge,oddspapi_deepen,phase_c_probes,phase_c_report,repair_results,replay,research_suite,manifest_validate,market_ruler_sample}.py",
+      "docs/operations/{TT_M5_BASELINE_V1,TT_MARKET_PROBE_V1,TT_ODDSPAPI_PROBE_V1,TT_ODDSPAPI_DEEPEN_V1,TT_ODDSPAPI_DEEPEN_V1_1XBET,TT_ODDSPAPI_DEEPEN_V1_ODDS,TT_IDENTITY_MERGES_V1,PHASE_C_PROBES_V1,PROVIDER_VALUE_MATRIX_V1,PHASE_C_STOP_GATE_V1,TT_MARKET_RULER_SAMPLE_V1,MODEL-REGISTRY}.json/.md",
+      "docs/provider-contracts/**"
+    ],
+    "B_MARKETS_HUNKS_IN_SHARED_FILES": [
+      "defend_markets/{app,db,domain,feeds,repositories,sports_adapter,store,tt_rating}.py",
+      "defend_sports/{db,repositories}.py",
+      "defend_integrations/{adapters,http,models,registry,service,stores}.py",
+      "tests/{fakes_markets,test_markets_app,test_markets_db,test_markets_feeds,test_sports_app,test_sports_db,test_setup_adapters,test_setup_registry,test_setup_service}.py",
+      "tools/{defend_markets_demo,defend_markets_ingest,defend_sports_ingest,defend_markets_server}.py",
+      "(stage exact hunks only; files also contain concurrent-session changes)"
+    ],
+    "C_EXCLUDED": [
+      "scs_reports/vision.py (SCS; repair left unstaged)",
+      "scs_reports/**, scs_api/reports_routes.py, scs-ui/** (SCS lane)",
+      "defend_coder/**, defendcoder-ui/**, defend_control/**, scs_* (other lanes)",
+      "rapidapi_tt_micro-matches-live-*.json root artifacts (foreign)",
+      "UsersthomaAppDataLocalTempopencodepytest-base/ (foreign)",
+      "bench/, DELIVERY_REPORT.md, SCS_FIELD_REPORT_*.md, master_workbook_audit.py, vision_*.py tools (foreign)"
+    ]
+  },
+  "COMMIT_READY": false,
+  "SUGGESTED_COMMIT_MESSAGE": "feat(markets): add multi-provider TT data and historical market research",
+  "REQUESTS_USED_BY_PROVIDER": {
+    "odds_api_io": 1,
+    "oddspapi": 33,
+    "rapidapi_allscores": 0,
+    "rapidapi_allsportsapi2": 0,
+    "rapidapi_tabletennis": 0,
+    "rapidapi_tt_live": 0,
+    "rapidapi_tt_micro": 6,
+    "sportradar_tt": 1,
+    "sports_game_odds": 1,
+    "the_odds_api": 1
+  },
+  "TOTAL_PROBE_REQUESTS": 43,
+  "TOTAL_SPEND_USD": 0.0,
+  "DATA_QUALITY_RISKS": [
+    "OddsPapi historical odds: 85% of snapshots post-commence (in-play dominated)",
+    "OddsPapi market ids vary by bookmaker/event; 251 != universal match-winner",
+    "OddsPapi archive floor later than 2025-08; early-era coverage ~0%",
+    "SportsGameOdds schema-rich but TT absent (P7 warning confirmed)",
+    "Sportradar trial key invalid (403); contract facts unverified live",
+    "odds_api_io v4 sports 404; v3 works (version divergence)",
+    "RapidAPI micro matches-by-date requires real date substitution"
+  ],
+  "ENGINEERING_RECOMMENDATIONS": [
+    {
+      "ENGINEERING_RECOMMENDATION": "OddsPapi LAST_VALID_PREMATCH collector for 1xbet-covered fixtures",
+      "WHY_IT_MATTERS": "CLV and line-move research need prematch snapshots; only 1xbet has depth",
+      "EVIDENCE": "P4 deepen: 4/27 events with odds; prematch 15-16% of snapshots; last prematch gap 0.13-23h",
+      "EXPECTED_INFORMATION_GAIN": "high if coverage improves; enables market-baseline CLV",
+      "EFFORT": "medium (collector + matching + LAST_VALID_PREMATCH pipeline)",
+      "COST": "0 USD (trial key)",
+      "RISK": "coverage too thin to be research-grade",
+      "RECOMMENDED_ACTION": "build after STOP GATE; keep reserved OddsPapi requests"
+    },
+    {
+      "ENGINEERING_RECOMMENDATION": "Complete rapidapi_tt_micro probe (matches-by-date with real dates, odds/correct-score, matches-statistics)",
+      "WHY_IT_MATTERS": "cheapest live data + odds catalog; machine-readable OpenAPI",
+      "EVIDENCE": "5/6 endpoints live; 43-path OpenAPI archived",
+      "EXPECTED_INFORMATION_GAIN": "high (odds types, player stats, live results)",
+      "EFFORT": "small (~6 requests)",
+      "COST": "0 USD (free trial 300/day)",
+      "RISK": "trial quota",
+      "RECOMMENDED_ACTION": "next probe batch (within 40/provider cap)"
+    },
+    {
+      "ENGINEERING_RECOMMENDATION": "Correct/refresh SPORTRADAR_API_KEY to unblock PROVIDER_PREDICTION and rankings/H2H",
+      "WHY_IT_MATTERS": "only documented provider-prediction source for M5 comparison",
+      "EVIDENCE": "403 Authentication Error probe; 22 feeds documented",
+      "EXPECTED_INFORMATION_GAIN": "high (baseline M5 vs Sportradar PROVIDER_PREDICTION)",
+      "EFFORT": "low (owner action)",
+      "COST": "0 USD (trial)",
+      "RISK": "trial key expiry",
+      "RECOMMENDED_ACTION": "owner adds valid trial key via Setup UI"
+    },
+    {
+      "ENGINEERING_RECOMMENDATION": "Mark sports_game_odds and the_odds_api UNSUPPORTED_FOR_TT in registry (empirical)",
+      "WHY_IT_MATTERS": "removes dead slots from the control plane",
+      "EVIDENCE": "SGO /sports 11 sports no TT; The Odds API 175 sports no TT",
+      "EXPECTED_INFORMATION_GAIN": "clarity",
+      "EFFORT": "trivial",
+      "COST": "0",
+      "RISK": "none",
+      "RECOMMENDED_ACTION": "apply after gate"
+    }
+  ],
+  "ARCHITECTURE_CONCERNS": [
+    "odds_api_io v3/v4 divergence; health adapter uses v3, Phase C adapter initially v4 (404)",
+    "evidence directory growth is unbounded; needs pruning policy",
+    "classify_error returns 'unavailable' for 2xx statuses (cosmetic)",
+    "OddsPapi adapter needs self._key injection before probe methods (protocol run() added)"
+  ],
+  "TECH_DEBT_DISCOVERED": [
+    "TheOddsApi hardcoded table_tennis sport key would 404 (no TT)",
+    "RapidAPI micro matches-by-date params use literal {date} placeholder",
+    "Sportradar adapter assumes .json + api_key convention (unverified due to auth failure)",
+    "matching.py compact_name needed for opaque corpus tokens (table_tennis:<name>)"
+  ],
+  "HIGH_VALUE_IDEAS_NOT_IN_CURRENT_SCOPE": [
+    "Sportradar PROVIDER_PREDICTION vs M5 baseline evaluation (needs valid key)",
+    "Full OddsPapi archive crawl (needs paid tier or many requests)",
+    "SGO closing-odds research (not applicable - no TT)",
+    "RapidAPI tabletennisapi endpoint catalog recovery via live probing"
+  ],
+  "OWNER_ACTION_REQUIRED": [
+    "Provide valid SPORTRADAR_API_KEY (trial)",
+    "Confirm RAPIDAPI_KEY validity/plan for sustained probing",
+    "Add BETSAPI / SPORTDEVS / SPORTSAPI_PRO credential slots (not yet in registry)"
+  ],
+  "RESEARCH_ARTIFACTS": {
+    "POLICY": "accepted artifacts are pinned byte-identical; regeneration with changed semantics/data requires a V2 (or explicit) version bump; V1 artifacts are not silently regenerated under the same version",
+    "STOP_GATE_SELF_HASH": "computed at commit time (self-referential file excluded from its own pin list)",
+    "PINNED": [
+      {
+        "ARTIFACT_PATH": "docs/operations/TT_M5_BASELINE_V1.json",
+        "ARTIFACT_SCHEMA_VERSION": "n/a (see artifact)",
+        "ARTIFACT_VERSION": "V1",
+        "GENERATED_AT": "2026-08-18T19:53:32Z",
+        "SHA256": "aa2ef12d844cab4b3b8c1e98eee8ca8fdcbf390ce5d5040cf104206f3f4ab6b8",
+        "PROVENANCE": "frozen research baseline; immutable=YES",
+        "EVAL_MANIFEST_SHA256": "17dcf00c59b1fb9882d1bb045f0cba2f3252a1333063fc884bec120df298ba08",
+        "MODEL_VERSION": "M5_V1",
+        "FEATURE_SNAPSHOT_REF": "ae4d5e9c702a09a849294b3ddd6c41477775a946",
+        "TIMESTAMP_POLICY": "point-in-time persisted expected values from tt_rating_history"
+      },
+      {
+        "ARTIFACT_PATH": "docs/operations/TT_MARKET_PROBE_V1.json",
+        "ARTIFACT_SCHEMA_VERSION": "n/a (see artifact)",
+        "ARTIFACT_VERSION": "V1",
+        "GENERATED_AT": "n/a (see artifact)",
+        "SHA256": "14127dbef5c02fbe5f4eb3cd521a294337c9209ad1639db658efa57a999a17bc"
+      },
+      {
+        "ARTIFACT_PATH": "docs/operations/TT_ODDSPAPI_PROBE_V1.json",
+        "ARTIFACT_SCHEMA_VERSION": "n/a (see artifact)",
+        "ARTIFACT_VERSION": "V1",
+        "GENERATED_AT": "2026-08-18T23:43:04.053693+00:00",
+        "SHA256": "8919d47d4576c4306c586db8f9ddfef374314fa55373a4ece0add36ebafeca97",
+        "PROVENANCE": "live OddsPapi probe + canonical matching sample (120 events)",
+        "PROVIDER_IDS": [
+          "oddspapi",
+          "odds_api_io"
+        ],
+        "INCLUSION_RULES": "era-stratified fixture sample (2025-08 / 2026-03 / 2026-08)"
+      },
+      {
+        "ARTIFACT_PATH": "docs/operations/TT_ODDSPAPI_DEEPEN_V1.json",
+        "ARTIFACT_SCHEMA_VERSION": "n/a (see artifact)",
+        "ARTIFACT_VERSION": "V1",
+        "GENERATED_AT": "n/a (see artifact)",
+        "SHA256": "601d6fc6a5bfdba836d4fb7405bbb487eceb155ebdedf6eff451653028eef07d",
+        "PROVENANCE": "P4 deepen pass 1 (mixed bookmakers, 18 events)",
+        "PROVIDER_IDS": [
+          "oddspapi"
+        ],
+        "EVENT_SET_DEFINITION": "27-sample subset, see artifact"
+      },
+      {
+        "ARTIFACT_PATH": "docs/operations/TT_ODDSPAPI_DEEPEN_V1_1XBET.json",
+        "ARTIFACT_SCHEMA_VERSION": "n/a (see artifact)",
+        "ARTIFACT_VERSION": "V1",
+        "GENERATED_AT": "n/a (see artifact)",
+        "SHA256": "a0fe517795df6f0fb0735246e666b60acdc4fa4242ff82e8e7a1db91cf27150b",
+        "PROVENANCE": "P4 deepen pass 2 (1xbet only, 9 events)",
+        "PROVIDER_IDS": [
+          "oddspapi"
+        ]
+      },
+      {
+        "ARTIFACT_PATH": "docs/operations/TT_ODDSPAPI_DEEPEN_V1_ODDS.json",
+        "ARTIFACT_SCHEMA_VERSION": "n/a (see artifact)",
+        "ARTIFACT_VERSION": "V1",
+        "GENERATED_AT": "n/a (see artifact)",
+        "SHA256": "44973324f39167a72507c6c83df495c00b3e81b4d3b2ab5e88e8442d409fc486",
+        "PROVENANCE": "has-odds-only flag probe; empty sample (post-settlement fixtures carry hasOdds=false)"
+      },
+      {
+        "ARTIFACT_PATH": "docs/operations/TT_IDENTITY_MERGES_V1.json",
+        "ARTIFACT_SCHEMA_VERSION": "n/a (see artifact)",
+        "ARTIFACT_VERSION": "V1",
+        "GENERATED_AT": "n/a (see artifact)",
+        "SHA256": "abde6e837cb57ae9d3f7016de819116b395e41c9cf235ce84b9f1bc6669017d1",
+        "PROVENANCE": "BENCHMARK_V1 inputs impact measurement (read-only)"
+      },
+      {
+        "ARTIFACT_PATH": "docs/operations/PHASE_C_PROBES_V1.json",
+        "ARTIFACT_SCHEMA_VERSION": "Phase C live probe summary",
+        "ARTIFACT_VERSION": "V1",
+        "GENERATED_AT": "2026-08-20T16:10:34Z",
+        "SHA256": "0e05695f63d0fa35bd0e4c4b094d95f85b7c34cb6e7c6e11e39f6ed0d1636d9f",
+        "PROVENANCE": "live provider probes 2026-08-20; merged semantics",
+        "PROVIDER_IDS": [
+          "odds_api_io",
+          "oddspapi",
+          "rapidapi_allscores",
+          "rapidapi_allsportsapi2",
+          "rapidapi_tabletennis",
+          "rapidapi_tt_live",
+          "rapidapi_tt_micro",
+          "sportradar_tt",
+          "sports_game_odds",
+          "the_odds_api"
+        ]
+      },
+      {
+        "ARTIFACT_PATH": "docs/operations/TT_MARKET_RULER_SAMPLE_V1.json",
+        "ARTIFACT_SCHEMA_VERSION": "P3 market-ruler sample + P4 market baseline smoke",
+        "ARTIFACT_VERSION": "V1",
+        "GENERATED_AT": "2026-08-20T17:00:41Z",
+        "SHA256": "6414e2d8c1f1a3e62cc857ca1e15e101c3ac01bbba11ea9d5a027af61a6efd14",
+        "PROVENANCE": "P3 ruler sample: OddsPapi evidence -> canonical -> M5 -> result",
+        "PROVIDER_IDS": [
+          "oddspapi"
+        ],
+        "MODEL_VERSION": "M5_V1",
+        "FEATURE_SNAPSHOT_REF": "tt_rating_history.history_id=859255",
+        "INCLUSION_RULES": "market 251 (2-way match winner), prematch snapshots only, canonical match required, M5 expected required",
+        "EXCLUSION_RULES": "non-canonical, no prematch, unknown market semantics"
+      },
+      {
+        "ARTIFACT_PATH": "docs/operations/TT_MARKET_RULER_LEDGER_V1.json",
+        "ARTIFACT_SCHEMA_VERSION": "P3/P4 market-ruler inclusion/exclusion ledger",
+        "ARTIFACT_VERSION": "V1",
+        "GENERATED_AT": "2026-08-20T18:23:32Z",
+        "SHA256": "54aa975ede00a2beb9d3e25a334cb5dfbed0c3c0971242167fcdcb92692785b1",
+        "PROVENANCE": "inclusion/exclusion disposition ledger for all evaluation candidates",
+        "EVENT_SET_DEFINITION": "all candidate events entering market evaluation (P3/P4)"
+      },
+      {
+        "ARTIFACT_PATH": "docs/operations/PROVIDER_VALUE_MATRIX_V1.json",
+        "ARTIFACT_SCHEMA_VERSION": "DEFEND provider value matrix",
+        "ARTIFACT_VERSION": "V1",
+        "GENERATED_AT": "2026-08-20T18:23:42Z",
+        "SHA256": "bb1b95fe8947a4cc39b85d4f7e290bf29fcb2f73d378a8d0f6d1069217918fb3",
+        "PROVENANCE": "13-provider discovery matrix (P9 columns + P10 roles)",
+        "PROVIDER_IDS": [
+          "oddspapi",
+          "the_odds_api",
+          "odds_api_io",
+          "sports_game_odds",
+          "sportradar_tt",
+          "rapidapi_tt_micro",
+          "rapidapi_tabletennis",
+          "rapidapi_tt_live",
+          "rapidapi_allscores",
+          "rapidapi_allsportsapi2",
+          "sportdevs",
+          "betsapi",
+          "sportsapi_pro"
+        ]
+      },
+      {
+        "ARTIFACT_PATH": "docs/provider-contracts/odds_api_io.contract.json",
+        "ARTIFACT_SCHEMA_VERSION": "n/a (see artifact)",
+        "ARTIFACT_VERSION": "V1",
+        "GENERATED_AT": "2026-08-18T00:00:00Z",
+        "SHA256": "9a63e32d24790c73f0912efc7132ff32ed2c04ee4608dd551e53f0d6b25444c7"
+      },
+      {
+        "ARTIFACT_PATH": "docs/provider-contracts/oddspapi.contract.json",
+        "ARTIFACT_SCHEMA_VERSION": "n/a (see artifact)",
+        "ARTIFACT_VERSION": "V1",
+        "GENERATED_AT": "2026-08-20T14:43:32Z",
+        "SHA256": "0bbb325697757ca6cefce09274ced72eeb388ef7e0ce7f29e3b5bc3fb8e30049"
+      },
+      {
+        "ARTIFACT_PATH": "docs/provider-contracts/rapidapi_allscores.contract.json",
+        "ARTIFACT_SCHEMA_VERSION": "n/a (see artifact)",
+        "ARTIFACT_VERSION": "V1",
+        "GENERATED_AT": "2026-08-20T14:43:32Z",
+        "SHA256": "fa83d97ca787c3a9f7632e9dd2a42b1088f6bf40caa1b9bef328e16e3ff1bba7"
+      },
+      {
+        "ARTIFACT_PATH": "docs/provider-contracts/rapidapi_allsportsapi2.contract.json",
+        "ARTIFACT_SCHEMA_VERSION": "n/a (see artifact)",
+        "ARTIFACT_VERSION": "V1",
+        "GENERATED_AT": "2026-08-20T14:43:32Z",
+        "SHA256": "019694cddfc743a38a05139446fef607faf0a5b63685847ea1499bb54aa58482"
+      },
+      {
+        "ARTIFACT_PATH": "docs/provider-contracts/rapidapi_tabletennis.contract.json",
+        "ARTIFACT_SCHEMA_VERSION": "n/a (see artifact)",
+        "ARTIFACT_VERSION": "V1",
+        "GENERATED_AT": "2026-08-20T14:43:32Z",
+        "SHA256": "44d16b4cb77b1b112ff1a12fa292d6200a2a019ced642c48eba357b395875478"
+      },
+      {
+        "ARTIFACT_PATH": "docs/provider-contracts/rapidapi_tt_live.contract.json",
+        "ARTIFACT_SCHEMA_VERSION": "n/a (see artifact)",
+        "ARTIFACT_VERSION": "V1",
+        "GENERATED_AT": "2026-08-20T14:43:32Z",
+        "SHA256": "76f7af1eb2e8d76b9b215af46610461aaa78df5c5fa44cf46c61203cd0838308"
+      },
+      {
+        "ARTIFACT_PATH": "docs/provider-contracts/rapidapi_tt_micro.contract.json",
+        "ARTIFACT_SCHEMA_VERSION": "n/a (see artifact)",
+        "ARTIFACT_VERSION": "V1",
+        "GENERATED_AT": "2026-08-20T15:24:01Z",
+        "SHA256": "8e22e79ddfbffa273d2d9cf8b96fdadb1150c2386ed331cf78c98b61147632a6"
+      },
+      {
+        "ARTIFACT_PATH": "docs/provider-contracts/sportradar_tt.contract.json",
+        "ARTIFACT_SCHEMA_VERSION": "n/a (see artifact)",
+        "ARTIFACT_VERSION": "V1",
+        "GENERATED_AT": "2026-08-20T14:43:47Z",
+        "SHA256": "ac304bb2553392aa41e0ac6b9bd49c825d2ee3d94af58a29ebcc328c68e059c2"
+      },
+      {
+        "ARTIFACT_PATH": "docs/provider-contracts/sports_game_odds.contract.json",
+        "ARTIFACT_SCHEMA_VERSION": "n/a (see artifact)",
+        "ARTIFACT_VERSION": "V1",
+        "GENERATED_AT": "2026-08-20T14:43:47Z",
+        "SHA256": "d8928dc3f6e3b5bc6e0e0100854bdf3d89cbbc527e8b60c852106bfff308896a"
+      },
+      {
+        "ARTIFACT_PATH": "docs/provider-contracts/the_odds_api.contract.json",
+        "ARTIFACT_SCHEMA_VERSION": "n/a (see artifact)",
+        "ARTIFACT_VERSION": "V1",
+        "GENERATED_AT": "2026-08-20T14:43:32Z",
+        "SHA256": "8bbf8384d63ca17f839c95ac637618919e2afa0b8e8bbc4758356e2dc90db822"
+      },
+      {
+        "ARTIFACT_PATH": "docs/provider-contracts/oddspapi-empirical-2026-08-20.json",
+        "ARTIFACT_SCHEMA_VERSION": "n/a (see artifact)",
+        "ARTIFACT_VERSION": "V1",
+        "GENERATED_AT": "n/a (see artifact)",
+        "SHA256": "f4dc62cf7487223efa4b7494fe36b642c5c175ba07114dd1d96d4c2a05daab58"
+      },
+      {
+        "ARTIFACT_PATH": "docs/provider-contracts/rapidapi_tt_micro-openapi.json",
+        "ARTIFACT_SCHEMA_VERSION": "n/a (see artifact)",
+        "ARTIFACT_VERSION": "V1",
+        "GENERATED_AT": "n/a (see artifact)",
+        "SHA256": "d14b8960e8af7b8f8fb211c969b2a83c1112958574e47319d7b3c0943d76bc33"
+      },
+      {
+        "ARTIFACT_PATH": "docs/provider-contracts/sportradar_tt-schema.zip",
+        "ARTIFACT_SCHEMA_VERSION": "n/a (see artifact)",
+        "ARTIFACT_VERSION": "V1",
+        "GENERATED_AT": "n/a (see artifact)",
+        "SHA256": "5ed3b713fced591c50db63cc8f1b1ecb3161a12b8058980b52999c26a970bc7f"
+      },
+      {
+        "ARTIFACT_PATH": "docs/provider-contracts/sportradar_tt-official_docs.md",
+        "ARTIFACT_SCHEMA_VERSION": "n/a (see artifact)",
+        "ARTIFACT_VERSION": "V1",
+        "GENERATED_AT": "n/a (see artifact)",
+        "SHA256": "c1e7290f3aff28ec5595e836091c5d216309d7260bd0ec4faf61afb31fe562ed"
+      },
+      {
+        "ARTIFACT_PATH": "docs/provider-contracts/sports_game_odds-official_docs.txt",
+        "ARTIFACT_SCHEMA_VERSION": "n/a (see artifact)",
+        "ARTIFACT_VERSION": "V1",
+        "GENERATED_AT": "n/a (see artifact)",
+        "SHA256": "3a05b34f1b3f6da0e6bb227cefac303616e57a5c4c374f9f224eb4df81d9f63d"
+      },
+      {
+        "ARTIFACT_PATH": "docs/provider-contracts/sports_game_odds-sdk.md",
+        "ARTIFACT_SCHEMA_VERSION": "n/a (see artifact)",
+        "ARTIFACT_VERSION": "V1",
+        "GENERATED_AT": "n/a (see artifact)",
+        "SHA256": "210ba69b6a70bf2e78aa885a9da28e9ca7722513c70f1cd152c0634b86b8445a"
+      }
+    ]
+  },
+  "NEXT_HIGHEST_VALUE_STEP": "1) complete rapidapi_tt_micro catalog probe; 2) re-probe sportradar with valid key; 3) build OddsPapi LAST_VALID_PREMATCH collector"
+}

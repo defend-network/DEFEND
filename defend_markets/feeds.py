@@ -482,8 +482,78 @@ class BinancePublicFeedProvider:
 _TT_SPORT_KEY_HINTS = ("tabletennis", "table_tennis", "pingpong")
 
 
+def _resolve_secret_from_store(name: str) -> str | None:
+    """Read a credential from the Control Center's DPAPI secret store.
+
+    Bridges Setup & Integrations (SetupIntegrationsPanel -> the_odds_api ->
+    THE_ODDS_API_KEY) with the feed process: a key saved in the control
+    plane is picked up here without code changes. Falls back to None when
+    the integrations layer is unavailable (non-Windows or missing modules).
+    """
+    try:
+        from defend_integrations.stores import SecretRegistry, default_secret_path
+        from defend_control.secrets import DpapiSecretStore
+    except Exception:
+        return None
+    try:
+        registry = SecretRegistry(DpapiSecretStore(default_secret_path()))
+        return registry.get(name)
+    except Exception:
+        return None
+
+
+def odds_api_key() -> str:
+    """THE_ODDS_API_KEY: process env first, then the DPAPI secret store."""
+    value = os.environ.get("THE_ODDS_API_KEY", "").strip()
+    if value:
+        return value
+    return _resolve_secret_from_store("THE_ODDS_API_KEY") or ""
+
+
 def _odds_api_key() -> str:
-    return os.environ.get("THE_ODDS_API_KEY", "").strip()
+    return odds_api_key()
+
+
+def probe_odds_api_quota(api_key: str) -> dict[str, object]:
+    """Hit the free sports-list endpoint and read the quota headers.
+
+    ``x-requests-remaining`` / ``x-requests-used`` / ``x-requests-last``
+    meter The Odds API's monthly credit budget (1 req/s; 500 credits/month
+    on the free tier; an h2h x 1-region odds call costs 1 credit).
+    """
+    url = f"https://api.the-odds-api.com/v4/sports/?apiKey={urllib.parse.quote(api_key)}"
+    request = urllib.request.Request(
+        url,
+        headers={"User-Agent": _USER_AGENT, "Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20.0) as response:
+            payload = response.read(_MAX_BODY_BYTES + 1)
+            headers = {key.lower(): value for key, value in response.headers.items()}
+    except urllib.error.HTTPError as error:
+        raise FeedError(f"status {error.code}", status_code=error.code) from None
+    except (urllib.error.URLError, TimeoutError, OSError) as error:
+        raise FeedError(type(error).__name__) from None
+    try:
+        parsed = json.loads(payload)
+    except ValueError:
+        raise FeedError("invalid JSON in sports list payload") from None
+    if not isinstance(parsed, list):
+        raise FeedError("unexpected sports list payload")
+    return {
+        "status": 200,
+        "sport_count": len(parsed),
+        "tt_sport_keys": [
+            str(entry["key"])
+            for entry in parsed
+            if isinstance(entry, dict)
+            and isinstance(entry.get("key"), str)
+            and any(hint in str(entry.get("key", "")).lower() for hint in _TT_SPORT_KEY_HINTS)
+        ],
+        "requests_remaining": headers.get("x-requests-remaining"),
+        "requests_used": headers.get("x-requests-used"),
+        "requests_last": headers.get("x-requests-last"),
+    }
 
 
 def _tt_sport_keys(api_key: str) -> list[str]:
@@ -627,9 +697,12 @@ class TheOddsApiTTResultsFeedProvider:
         )
 
 
-def _participant_key(sport_key: str, name: str) -> str:
+def participant_key(sport_key: str, name: str) -> str:
     slug = "".join(ch for ch in name.lower() if ch.isalnum() or ch in "-_")
     return f"{sport_key}:{slug or 'unknown'}"
+
+
+_participant_key = participant_key
 
 
 def build_default_feed_providers() -> tuple[FeedProvider, ...]:

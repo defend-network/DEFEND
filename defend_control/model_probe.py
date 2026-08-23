@@ -104,18 +104,20 @@ class ModelProbe:
         if not isinstance(value, str):
             raise ValueError("model base URL must use loopback")
         parsed = urlsplit(value)
+        port = parsed.port
         if (
             parsed.scheme != "http"
             or parsed.hostname != "127.0.0.1"
-            or parsed.port != 8001
+            or not isinstance(port, int)
+            or not 1 <= port <= 65_535
             or parsed.path.rstrip("/") != "/v1"
             or parsed.username is not None
             or parsed.password is not None
             or parsed.query
             or parsed.fragment
         ):
-            raise ValueError("model base URL must use loopback 127.0.0.1:8001/v1")
-        return "http://127.0.0.1:8001/v1"
+            raise ValueError("model base URL must use loopback 127.0.0.1:<port>/v1")
+        return f"http://127.0.0.1:{port}/v1"
 
     def _request(
         self,

@@ -1,0 +1,11 @@
+{
+  "provider_id": "sportradar_tt",
+  "endpoint": "competitions",
+  "status_code": 403,
+  "latency_ms": 468,
+  "retrieved_at": "2026-08-20T16:05:41Z",
+  "url_sanitized": "https://api.sportradar.com/tabletennis/trial/v2/competitions.json?api_key=[REDACTED]",
+  "body": "\n      <!DOCTYPE html>\n      <html lang=\"en\">\n        <head>\n          <meta charset=\"utf-8\">\n          <title>Authentication Error</title>\n        </head>\n        <body>\n          <p>Authentication Error</p>\n        </body>\n      </html>\n      ",
+  "body_sha256": "bb8e87be88b131ca6083be36352c0801508714fad6add8d569d416228f44cdfd",
+  "headers_kept": {}
+}

@@ -1,5 +1,6 @@
 """DEFENDcoder runtime-v1 ControlPlane tests — mocked backend only, no network/billing."""
 
+import json
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -19,7 +20,7 @@ from defend_control.coder_control_plane import (
 )
 from defend_control.coder_deployment import resolve_deployment
 from defend_control.coder_m0 import CoderModelRef, resolve_alias
-from defend_control.types import ResourceProfile, VastOffer
+from defend_control.types import ResourceProfile, VastInstance, VastOffer
 
 _QUALIFYING_OFFERS = (
     VastOffer(
@@ -113,6 +114,81 @@ class RecordingBackend:
         }
 
 
+class LifecycleRecordingBackend(RecordingBackend):
+    """RecordingBackend that knows one retained labeled instance."""
+
+    def __init__(
+        self,
+        *,
+        retained_instance_id: int | None = 555002,
+        retained_rate: str = "1.10",
+        smoke_ok: bool = True,
+    ) -> None:
+        super().__init__(smoke_ok=smoke_ok)
+        self._retained_instance_id = retained_instance_id
+        self._retained_rate = Decimal(retained_rate)
+        self.retained_calls: list[tuple[object, str, Decimal]] = []
+        self.resume_starts: list[tuple[str, int, int, bool]] = []
+
+    def retained_candidate(
+        self, *, recorded_instance_id, launch_runtype, approved_ceiling
+    ):
+        self.retained_calls.append(
+            (recorded_instance_id, launch_runtype, approved_ceiling)
+        )
+        if self._retained_instance_id is None:
+            return None
+        return VastInstance(
+            self._retained_instance_id,
+            "running",
+            "ssh.example",
+            22,
+            "A100 SXM4",
+            81920,
+            self._retained_rate,
+        )
+
+    def start(
+        self,
+        model: CoderModelRef,
+        *,
+        local_port: int,
+        session_budget_usd: Decimal,
+        offer=None,
+        profile=None,
+        launch_runtype=None,
+        resume_instance=None,
+        destroy_on_failure=True,
+    ) -> dict[str, object]:
+        if resume_instance is not None:
+            self.resume_starts.append(
+                (
+                    model.alias,
+                    local_port,
+                    int(resume_instance.instance_id),
+                    bool(destroy_on_failure),
+                )
+            )
+            return {
+                "state": "ready",
+                "provider": "recording",
+                "endpoint": f"http://127.0.0.1:{local_port}/v1",
+                "instance_id": int(resume_instance.instance_id),
+                "provider_run_id": f"vast-{resume_instance.instance_id}",
+                "hourly_price": self._hourly_price,
+                "gpu_type": self._gpu_type,
+                "message": f"recording resume for {model.alias}",
+            }
+        return super().start(
+            model,
+            local_port=local_port,
+            session_budget_usd=session_budget_usd,
+            offer=offer,
+            profile=profile,
+            launch_runtype=launch_runtype,
+        )
+
+
 def _plane(
     backend: RecordingBackend,
     *,
@@ -120,6 +196,7 @@ def _plane(
     clock: list[datetime] | None = None,
     owner_user_id: str | None = None,
     owner_session_id: str | None = None,
+    state_directory: str | None = None,
 ) -> CoderControlPlane:
     return CoderControlPlane(
         backend=backend,  # type: ignore[arg-type]
@@ -129,6 +206,7 @@ def _plane(
         port_available=lambda port: True,
         owner_user_id=owner_user_id,
         owner_session_id=owner_session_id,
+        state_directory=state_directory,
     )
 
 
@@ -524,3 +602,224 @@ def test_active_endpoint_touch_updates_last_used():
     endpoint.touch(later)
     assert endpoint.last_used_at == later
     assert endpoint.instance_id == 1
+
+
+class TestLifecyclePersistence:
+    def test_restart_loads_record_as_retained_never_ready(self, tmp_path):
+        backend = LifecycleRecordingBackend()
+        plane = _plane(backend, state_directory=str(tmp_path))
+        lease = plane.acquire("defendcoder-default")
+        assert lease.instance_id == 555002
+
+        restarted = _plane(backend, state_directory=str(tmp_path))
+        endpoints = restarted.active_endpoints()
+        assert len(endpoints) == 1
+        assert endpoints[0].state == "retained"
+        assert endpoints[0].instance_id == 555002
+        assert restarted.status("defendcoder-default")["state"] == "retained"
+
+    def test_reattach_after_restart_resumes_recorded_instance(self, tmp_path):
+        backend = LifecycleRecordingBackend()
+        plane = _plane(backend, state_directory=str(tmp_path))
+        plane.acquire("defendcoder-default")
+
+        restarted = _plane(backend, state_directory=str(tmp_path))
+        lease = restarted.reattach_retained("defendcoder-default")
+
+        assert lease is not None
+        assert lease.instance_id == 555002
+        assert lease.reused is True
+        assert len(backend.starts) == 1
+        assert backend.resume_starts[0][1:] == (8004, 555002, False)
+        assert backend.retained_calls == [
+            (555002, "ssh_proxy", Decimal("4.50"))
+        ]
+        assert restarted.status("defendcoder-default")["state"] == "ready"
+
+    def test_reattach_without_record_returns_none(self, tmp_path):
+        backend = LifecycleRecordingBackend(retained_instance_id=None)
+        plane = _plane(backend, state_directory=str(tmp_path))
+        lease = plane.reattach_retained("defendcoder-default")
+        assert lease is None
+        assert backend.retained_calls == [
+            (None, "ssh_proxy", Decimal("4.50"))
+        ]
+        assert backend.starts == []
+
+    def test_reattach_reuses_warm_in_memory_endpoint_without_provider_calls(self):
+        backend = LifecycleRecordingBackend()
+        plane = _plane(backend)
+        plane.acquire("defendcoder-default")
+        lease = plane.reattach_retained("defendcoder-default")
+        assert lease is not None
+        assert lease.reused is True
+        assert backend.retained_calls == []
+        assert backend.resume_starts == []
+
+    def test_reattach_identity_gate_rejects_wrong_served_model(self, tmp_path):
+        backend = LifecycleRecordingBackend(smoke_ok=False)
+        plane = _plane(backend, state_directory=str(tmp_path))
+        plane.acquire("defendcoder-default")
+
+        restarted = _plane(backend, state_directory=str(tmp_path))
+        with pytest.raises(CoderProvisionBlocked, match="identity verification"):
+            restarted.reattach_retained("defendcoder-default")
+        assert restarted.status("defendcoder-default")["state"] == "retained"
+        assert len(backend.starts) == 1
+
+    def test_reattach_after_external_destroy_returns_none_for_fresh_provision(
+        self, tmp_path
+    ):
+        backend = LifecycleRecordingBackend(retained_instance_id=None)
+        plane = _plane(backend, state_directory=str(tmp_path))
+        plane.acquire("defendcoder-default")
+
+        restarted = _plane(backend, state_directory=str(tmp_path))
+        lease = restarted.reattach_retained("defendcoder-default")
+        assert lease is None
+        assert backend.retained_calls == [
+            (555002, "ssh_proxy", Decimal("4.50"))
+        ]
+
+    def test_release_after_restart_stops_recorded_instance_without_destroy(
+        self, tmp_path
+    ):
+        backend = LifecycleRecordingBackend()
+        plane = _plane(backend, state_directory=str(tmp_path))
+        plane.acquire("defendcoder-default")
+
+        restarted = _plane(backend, state_directory=str(tmp_path))
+        result = restarted.release("defendcoder-default", destroy=False)
+        assert result["state"] == "stopped"
+        assert backend.stops == [(555002, "vast-555002", False)]
+        payload = json.loads(
+            (tmp_path / "coder-lifecycle.json").read_text(encoding="utf-8")
+        )
+        record = payload["endpoints"]["defendcoder-default"]
+        assert record["state"] == "stopped"
+        assert record["instance_id"] == 555002
+
+    def test_release_after_restart_destroy_removes_record(self, tmp_path):
+        backend = LifecycleRecordingBackend()
+        plane = _plane(backend, state_directory=str(tmp_path))
+        plane.acquire("defendcoder-default")
+
+        restarted = _plane(backend, state_directory=str(tmp_path))
+        result = restarted.release("defendcoder-default", destroy=True)
+        assert result["state"] == "stopped"
+        assert backend.stops == [(555002, "vast-555002", True)]
+        payload = json.loads(
+            (tmp_path / "coder-lifecycle.json").read_text(encoding="utf-8")
+        )
+        assert "defendcoder-default" not in payload["endpoints"]
+
+    def test_reaper_after_restart_never_reaps_unverified_retained(self, tmp_path):
+        backend = LifecycleRecordingBackend()
+        plane = _plane(backend, state_directory=str(tmp_path))
+        plane.acquire("defendcoder-default")
+
+        restarted = _plane(backend, state_directory=str(tmp_path))
+        assert restarted.maybe_reap_idle() == ()
+        assert backend.stops == []
+
+    def test_acquire_after_restart_never_trusts_retained_record(self, tmp_path):
+        backend = LifecycleRecordingBackend()
+        plane = _plane(backend, state_directory=str(tmp_path))
+        plane.acquire("defendcoder-default")
+
+        restarted = _plane(backend, state_directory=str(tmp_path))
+        lease = restarted.acquire("defendcoder-default")
+        assert lease.reused is False
+        assert lease.instance_id == 555003
+        assert backend.retained_calls == []
+
+    def test_persisted_record_never_contains_credentials_or_ssh_material(
+        self, tmp_path
+    ):
+        backend = LifecycleRecordingBackend()
+        plane = _plane(backend, state_directory=str(tmp_path))
+        plane.acquire("defendcoder-default")
+        text = (tmp_path / "coder-lifecycle.json").read_text(encoding="utf-8")
+        assert "hf_fake_token" not in text
+        assert "ssh.example" not in text
+        assert "hf_" not in text
+        payload = json.loads(text)
+        assert payload["schema"] == 1
+        record = payload["endpoints"]["defendcoder-default"]
+        assert record["provider"] == "recording"
+        assert record["hourly_price"] == "1.10"
+
+    def test_corrupt_state_file_is_ignored(self, tmp_path):
+        (tmp_path / "coder-lifecycle.json").write_text(
+            "{not json", encoding="utf-8"
+        )
+        backend = LifecycleRecordingBackend()
+        plane = _plane(backend, state_directory=str(tmp_path))
+        assert plane.active_endpoints() == ()
+
+    def test_record_without_instance_id_is_never_rehydrated(self, tmp_path):
+        (tmp_path / "coder-lifecycle.json").write_text(
+            json.dumps(
+                {
+                    "schema": 1,
+                    "endpoints": {
+                        "defendcoder-default": {
+                            "alias": "defendcoder-default",
+                            "provider": "recording",
+                            "endpoint": "http://127.0.0.1:8003/v1",
+                            "state": "ready",
+                            "provisioned_at": "2026-08-14T00:00:00+00:00",
+                            "last_used_at": "2026-08-14T00:00:00+00:00",
+                            "model_ready_at": None,
+                            "instance_id": None,
+                            "provider_run_id": None,
+                            "gpu_type": None,
+                            "hourly_price": None,
+                            "user_id": None,
+                            "session_id": None,
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        backend = LifecycleRecordingBackend()
+        plane = _plane(backend, state_directory=str(tmp_path))
+        assert plane.active_endpoints() == ()
+
+
+class TestCudaFloorPolicy:
+    def test_default_cuda_floor_matches_pinned_cu130_serving(self):
+        policy = CoderPolicy()
+        assert policy.min_cuda_max_good == Decimal("13.0")
+        profile = resource_profile("defendcoder-default", policy)
+        assert profile.min_cuda_max_good == 13.0
+
+    def test_cuda_floor_none_disables_filter(self):
+        policy = CoderPolicy(min_cuda_max_good=None)
+        profile = resource_profile("defendcoder-default", policy)
+        assert profile.min_cuda_max_good is None
+
+    def test_cuda_floor_validation_rejects_non_positive(self):
+        with pytest.raises(ValueError, match="positive"):
+            CoderPolicy(min_cuda_max_good=Decimal("0"))
+        with pytest.raises(ValueError, match="positive"):
+            CoderPolicy(min_cuda_max_good=Decimal("-1"))
+
+    def test_live_smoke_plan_exposes_selected_offer_cuda_capability(self):
+        backend = RecordingBackend(
+            offers=(
+                VastOffer(
+                    601,
+                    "H100 SXM 80GB",
+                    81920,
+                    Decimal("1.65"),
+                    Decimal("0.99"),
+                    cuda_max_good=13.0,
+                ),
+            )
+        )
+        plane = _plane(backend)
+        plan = plane.live_smoke_plan("defendcoder-default")
+        assert plan.offer_cuda_max_good == 13.0
+        assert plan.as_public_dict()["offer_cuda_max_good"] == 13.0

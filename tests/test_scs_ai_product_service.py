@@ -7,6 +7,7 @@ from defend_control.products import (
     ProductsSettings,
     ScsService,
     build_scs_ai_process_spec,
+    build_scs_api_process_spec,
     build_scs_web_process_spec,
 )
 
@@ -157,6 +158,31 @@ def test_scs_ai_process_spec_passes_model_config_without_secrets(tmp_path):
     assert "top-secret" not in str(configured)
 
 
+def test_scs_api_process_spec_builds_core_operations_api(tmp_path):
+    spec = build_scs_api_process_spec(
+        settings(),
+        tmp_path,
+        r"C:\Python\python.exe",
+    )
+
+    assert spec.name == "scs:api"
+    assert spec.argv == (
+        r"C:\Python\python.exe",
+        "-m",
+        "uvicorn",
+        "scs_api.runtime:app",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8100",
+    )
+    assert spec.env["SCS_API_PORT"] == "8100"
+    assert spec.env["SCS_WEB_PORT"] == "3100"
+    assert spec.env["SCS_DATA_ROOT"] == r"C:\SCS_DATA"
+    assert spec.env["SCS_SESSION_COOKIE"] == "scs_employee_session"
+    assert spec.health_url == "http://127.0.0.1:8100/health"
+
+
 def test_scs_web_process_spec_serves_scs_ui_on_3100_lane(tmp_path):
     spec = build_scs_web_process_spec(settings(), tmp_path)
 
@@ -175,7 +201,7 @@ def test_scs_web_process_spec_serves_scs_ui_on_3100_lane(tmp_path):
     assert spec.health_url == "http://127.0.0.1:3100/"
 
 
-def test_start_starts_only_scs_ai_api_and_its_tunnel(tmp_path):
+def test_start_starts_core_api_ai_api_web_and_tunnel(tmp_path):
     supervisor = FakeSupervisor()
     tunnel = FakeTunnel()
 
@@ -191,6 +217,7 @@ def test_start_starts_only_scs_ai_api_and_its_tunnel(tmp_path):
     result = service.start()
 
     assert [spec.name for spec in supervisor.started] == [
+        "scs:api",
         "scs-ai:api",
         "scs:web",
     ]
@@ -216,13 +243,14 @@ def test_start_is_idempotent(tmp_path):
     service.start()
 
     assert [spec.name for spec in supervisor.started] == [
+        "scs:api",
         "scs-ai:api",
         "scs:web",
     ]
     assert tunnel.started == 1
 
 
-def test_stop_stops_only_scs_ai_owned_resources(tmp_path):
+def test_stop_stops_only_scs_owned_resources(tmp_path):
     supervisor = FakeSupervisor()
     tunnel = FakeTunnel()
 
@@ -238,11 +266,11 @@ def test_stop_stops_only_scs_ai_owned_resources(tmp_path):
     service.start()
     service.stop()
 
-    assert supervisor.stopped == ["scs:web", "scs-ai:api"]
+    assert supervisor.stopped == ["scs:web", "scs-ai:api", "scs:api"]
     assert tunnel.stopped == 1
 
 
-def test_status_reports_api_web_and_tunnel_truthfully(tmp_path):
+def test_status_reports_web_core_api_ai_api_and_tunnel_truthfully(tmp_path):
     supervisor = FakeSupervisor()
     tunnel = FakeTunnel()
 
@@ -259,12 +287,63 @@ def test_status_reports_api_web_and_tunnel_truthfully(tmp_path):
     status = service.status()
     details = dict(status.details)
 
-    assert details["API"] == "running"
     assert details["Web"] == "running"
+    assert details["Core API"] == "running"
+    assert details["AI API"] == "running"
+    assert details["AI model"] == "unknown"
     assert details["Tunnel"] == "connected"
-    assert details["API port"] == "8300"
-    assert details["Web port"] == "3300"
+    assert details["API port"] == "8100"
+    assert details["AI API port"] == "8300"
+    assert details["Web port"] == "3100"
     assert status.state == "running"
+
+
+def test_web_running_with_dead_core_api_is_never_healthy(tmp_path):
+    supervisor = FakeSupervisor()
+    tunnel = FakeTunnel()
+
+    service = ScsService(
+        settings(),
+        supervisor=supervisor,
+        repository=tmp_path,
+        python_executable=r"C:\Python\python.exe",
+        tunnel=tunnel,
+        probe=ReadyProbe(),
+    )
+
+    service.start()
+    supervisor.stop("scs:api")
+
+    status = service.status()
+    details = dict(status.details)
+
+    assert details["Web"] == "running"
+    assert details["Core API"] == "stopped"
+    assert status.state == "degraded"
+    assert status.state != "running"
+    assert status.status_text == "SCS partially running"
+
+
+def test_core_api_alone_is_not_a_healthy_launched_product(tmp_path):
+    supervisor = FakeSupervisor()
+    tunnel = FakeTunnel()
+
+    service = ScsService(
+        settings(),
+        supervisor=supervisor,
+        repository=tmp_path,
+        python_executable=r"C:\Python\python.exe",
+        tunnel=tunnel,
+        probe=ReadyProbe(),
+    )
+
+    supervisor.start(build_scs_api_process_spec(settings(), tmp_path, r"C:\Python\python.exe"))
+
+    status = service.status()
+
+    assert dict(status.details)["Core API"] == "running"
+    assert dict(status.details)["Web"] == "stopped"
+    assert status.state == "degraded"
 
 
 def test_open_url_prefers_public_origin_only_when_tunnel_connected(tmp_path):

@@ -17,19 +17,37 @@ const BADGE_LABEL: Record<string, string> = {
   RATE_LIMITED: "Rate limited",
   UNAVAILABLE: "Unavailable",
   AUTH_FAILED: "Auth failed",
+  PLAN_REQUIRED: "Plan required",
 };
 
 const STATE_LABEL: Record<string, string> = {
   DISABLED: "Disabled",
   PLANNED: "Planned",
   NEEDS_CREDENTIAL: "Needs credential",
+  NOT_CONFIGURED: "Not configured",
+  CREDENTIAL_PRESENT: "Credential present",
+  ADAPTER_NOT_IMPLEMENTED: "Adapter not implemented",
   READY_TO_TEST: "Ready to test",
   HEALTHY: "Healthy",
   DEGRADED: "Degraded",
   RATE_LIMITED: "Rate limited",
   AUTH_FAILED: "Auth failed",
+  PLAN_REQUIRED: "Plan required",
   UNAVAILABLE: "Unavailable",
+  UNSUPPORTED_FOR_TT: "Unsupported for table tennis",
+  CONTRACT_DRIFT: "Contract drift",
+  UNKNOWN: "Unknown",
 };
+
+function ttCapabilityLabel(value: string | undefined): string {
+  if (!value || value === "unknown") return "Unverified";
+  if (value === "not_available") return "NO — not available on current plan";
+  if (value === "plan_required") return "PLAN REQUIRED";
+  if (value === "no" || value.startsWith("no (")) return "NO";
+  if (value === "yes" || value.startsWith("yes (")) return "YES";
+  if (value === "partial" || value.startsWith("partial (")) return "PARTIAL";
+  return value;
+}
 
 type Props = {
   provider: ProviderView;
@@ -230,6 +248,107 @@ export default function ProviderCard({ provider, token, onChanged }: Props) {
         </section>
       )}
 
+      {(provider.category === "table_tennis" ||
+        provider.capabilities?.tt_results !== undefined) && (
+        <section className="setup-card-creds">
+          <h4 className="setup-card-label">Capabilities — Table Tennis</h4>
+          <dl className="setup-cap-dl">
+            <div>
+              <dt>TT results</dt>
+              <dd>{ttCapabilityLabel(provider.capabilities?.tt_results)}</dd>
+            </div>
+            <div>
+              <dt>TT live scores</dt>
+              <dd>{ttCapabilityLabel(provider.capabilities?.tt_live_scores)}</dd>
+            </div>
+            <div>
+              <dt>TT live odds</dt>
+              <dd>{ttCapabilityLabel(provider.capabilities?.tt_live_odds)}</dd>
+            </div>
+            <div>
+              <dt>TT historical odds</dt>
+              <dd>{ttCapabilityLabel(provider.capabilities?.tt_historical_odds)}</dd>
+            </div>
+            <div>
+              <dt>TT historical results</dt>
+              <dd>{ttCapabilityLabel(provider.capabilities?.historical_results)}</dd>
+            </div>
+            <div>
+              <dt>Bookmaker level</dt>
+              <dd>{ttCapabilityLabel(provider.capabilities?.bookmaker_detail)}</dd>
+            </div>
+            <div>
+              <dt>Multi-snapshot</dt>
+              <dd>{ttCapabilityLabel(provider.capabilities?.multi_snapshot)}</dd>
+            </div>
+            <div>
+              <dt>Timestamped odds</dt>
+              <dd>{ttCapabilityLabel(provider.capabilities?.timestamped_odds)}</dd>
+            </div>
+            <div>
+              <dt>TT fixtures</dt>
+              <dd>{ttCapabilityLabel(provider.capabilities?.tt_fixtures)}</dd>
+            </div>
+            <div>
+              <dt>TT player data</dt>
+              <dd>{ttCapabilityLabel(provider.capabilities?.tt_player_data)}</dd>
+            </div>
+            <div>
+              <dt>TT rankings</dt>
+              <dd>{ttCapabilityLabel(provider.capabilities?.tt_rankings)}</dd>
+            </div>
+            <div>
+              <dt>TT stats</dt>
+              <dd>{ttCapabilityLabel(provider.capabilities?.tt_stats)}</dd>
+            </div>
+            <div>
+              <dt>TT form / H2H</dt>
+              <dd>{ttCapabilityLabel(provider.capabilities?.tt_form_h2h)}</dd>
+            </div>
+            <div>
+              <dt>TT live state</dt>
+              <dd>{ttCapabilityLabel(provider.capabilities?.tt_live_state)}</dd>
+            </div>
+            <div>
+              <dt>TT bookmakers</dt>
+              <dd>{ttCapabilityLabel(provider.capabilities?.tt_bookmakers)}</dd>
+            </div>
+            <div>
+              <dt>TT probabilities</dt>
+              <dd>{ttCapabilityLabel(provider.capabilities?.tt_probabilities)}</dd>
+            </div>
+            <div>
+              <dt>TT opening line</dt>
+              <dd>{ttCapabilityLabel(provider.capabilities?.tt_opening_line)}</dd>
+            </div>
+            <div>
+              <dt>TT closing line</dt>
+              <dd>{ttCapabilityLabel(provider.capabilities?.tt_closing_line)}</dd>
+            </div>
+            {provider.capabilities?.historical_odds_plan_requirement && (
+              <div>
+                <dt>Historical odds plan</dt>
+                <dd>{provider.capabilities.historical_odds_plan_requirement}</dd>
+              </div>
+            )}
+            {provider.capabilities?.earliest_history && (
+              <div>
+                <dt>Earliest verified history</dt>
+                <dd>{provider.capabilities.earliest_history}</dd>
+              </div>
+            )}
+            <div>
+              <dt>Adapter status</dt>
+              <dd>
+                {provider.adapter_kind === "real"
+                  ? "IMPLEMENTED"
+                  : "ADAPTER NOT IMPLEMENTED"}
+              </dd>
+            </div>
+          </dl>
+        </section>
+      )}
+
       {provider.optional_config.length > 0 && (
         <section className="setup-card-creds">
           <h4 className="setup-card-label">Configured override</h4>
@@ -272,6 +391,34 @@ export default function ProviderCard({ provider, token, onChanged }: Props) {
             Save config
           </button>
         </section>
+      )}
+
+      {(provider.host != null ||
+        provider.contract_version != null ||
+        provider.capabilities?.contract_drift != null) && (
+        <details className="setup-card-details">
+          <summary>Provider contract</summary>
+          <dl className="setup-dl">
+            {provider.host && (
+              <div>
+                <dt>Host</dt>
+                <dd>{provider.host}</dd>
+              </div>
+            )}
+            {provider.contract_version && (
+              <div>
+                <dt>Contract version</dt>
+                <dd>{provider.contract_version}</dd>
+              </div>
+            )}
+            {provider.capabilities?.contract_drift && (
+              <div>
+                <dt>Contract drift</dt>
+                <dd>{provider.capabilities.contract_drift}</dd>
+              </div>
+            )}
+          </dl>
+        </details>
       )}
 
       {(hasQuota || hasLicense) && (
@@ -365,6 +512,9 @@ export default function ProviderCard({ provider, token, onChanged }: Props) {
             <span className="setup-meta">
               last ok {provider.last_success_at}
             </span>
+          )}
+          {provider.last_error_class != null && (
+            <span className="setup-meta">last error: {provider.last_error_class}</span>
           )}
         </div>
         <button

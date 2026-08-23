@@ -154,10 +154,17 @@ def main() -> None:
                 configured_root=settings.workspace_root,
                 log_reader=log_reader,
             ),
+            max_steps=settings.max_steps,
+            max_loop_seconds=settings.max_run_seconds,
+            finalization_enabled=settings.finalization_enabled,
+            finalization_timeout_seconds=settings.finalization_timeout_seconds,
         )
         print(
             f"DEFENDcoder agent: model={model_config.model_name} "
-            f"alias={model_config.alias}",
+            f"alias={model_config.alias} "
+            f"max_steps={settings.max_steps} "
+            f"max_run_seconds={settings.max_run_seconds:.0f} "
+            f"finalization_enabled={settings.finalization_enabled}",
             file=sys.stderr,
         )
     else:

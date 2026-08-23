@@ -9,6 +9,7 @@ import pytest
 
 from defend_control.huggingface import HuggingFaceClient
 from defend_control.huggingface import HuggingFaceError
+from defend_control.model_registry import ADAPTER_REPO
 from defend_control.types import LaunchSpec, ResourceProfile, VastInstance, VastOffer
 from defend_control.vast import (
     VastClient,
@@ -20,7 +21,6 @@ from defend_control.vast import (
 
 ADAPTER_SHA = "a" * 40
 BASE_SHA = "b" * 64
-ADAPTER_REPO = "Defend-network/defend-qwen-32b-lora"
 
 # New policy defaults
 _HIGH_VRAM = 141000  # representative of H200-class

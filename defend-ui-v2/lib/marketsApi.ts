@@ -62,6 +62,40 @@ export type ProviderRecordsResponse = {
   }[];
 };
 
+export type TTDataStatusResponse = {
+  as_of?: string;
+  key: {
+    configured: boolean;
+    source?: string | null;
+    entry_point: string;
+  };
+  results_feed: {
+    provider_id: string;
+    configured: boolean;
+    status?: string | null;
+    last_attempt_at?: string | null;
+    last_success_at?: string | null;
+    last_error?: string | null;
+    records_ingested?: number | null;
+  };
+  odds_feed: {
+    provider_id: string;
+    configured: boolean;
+    status?: string | null;
+    last_success_at?: string | null;
+    live_events?: number | null;
+  };
+  model_history: {
+    completed_matches: number;
+    players_with_history: number;
+    min_games_per_player: number;
+    players_over_threshold: number;
+    ready: boolean;
+    top_players: { participant_key: string; games: number }[];
+  };
+  note?: string;
+};
+
 export type TTModelDetail = {
   model?: string;
   version?: string;
@@ -288,6 +322,96 @@ export function fetchProviderRecords(
 
 export function fetchTableTennisBoard(): Promise<TableTennisBoardResponse> {
   return json<TableTennisBoardResponse>("/v1/sports/table-tennis");
+}
+
+export function fetchTTDataStatus(): Promise<TTDataStatusResponse> {
+  return json<TTDataStatusResponse>("/v1/sports/tt/data-status");
+}
+
+export type ShadowAggregate = {
+  n: number;
+  m5_brier?: number | null;
+  m5_log_loss?: number | null;
+  market_brier?: number | null;
+  market_log_loss?: number | null;
+  m5_minus_market_brier?: number | null;
+  market_rows?: number;
+};
+
+export type ShadowEvaluation = {
+  n: number;
+  thresholds: Record<string, { n: number } | null>;
+  market_edge_status: string;
+  pooled: ShadowAggregate;
+  per_class: Record<string, ShadowAggregate>;
+};
+
+export type ShadowOverviewResponse = {
+  as_of: string;
+  collector: {
+    events_discovered: number;
+    events_matched: number;
+    events_ambiguous: number;
+    events_unmatched: number;
+    prematch_observations: number;
+    postcommence_rejected: number;
+    bookmakers: string[];
+    stale_events: number;
+  };
+  m5: { available: number; insufficient_history: number };
+  evaluation: ShadowEvaluation;
+};
+
+export type ShadowEventRow = {
+  forward_event_id: number;
+  provider?: string | null;
+  provider_event_id?: string | null;
+  canonical_event_id?: string | null;
+  match_level?: string | null;
+  competition?: string | null;
+  player_a?: string | null;
+  player_b?: string | null;
+  scheduled_commence?: string | null;
+  status: string;
+  last_odds_poll_at?: string | null;
+  observation_count: number;
+  last_valid_prematch_at?: string | null;
+  m5_p_a?: number | null;
+  m5_availability?: string | null;
+  model_market_disagreement?: number | null;
+};
+
+export type ShadowEventsResponse = {
+  as_of: string;
+  events: ShadowEventRow[];
+};
+
+export type ShadowEvaluationResponse = {
+  as_of: string;
+  evaluation: ShadowEvaluation;
+  recent: {
+    canonical_event_id: string;
+    result_id: number;
+    reference_class: string;
+    settled_at: string;
+    m5_p_a: number;
+    market_no_vig_p_a?: number | null;
+    actual: number;
+  }[];
+};
+
+export function fetchShadowOverview(): Promise<ShadowOverviewResponse> {
+  return json<ShadowOverviewResponse>("/v1/sports/tt/shadow/overview");
+}
+
+export function fetchShadowEvents(
+  limit: number = 100
+): Promise<ShadowEventsResponse> {
+  return json<ShadowEventsResponse>(`/v1/sports/tt/shadow/events?limit=${limit}`);
+}
+
+export function fetchShadowEvaluation(): Promise<ShadowEvaluationResponse> {
+  return json<ShadowEvaluationResponse>("/v1/sports/tt/shadow/evaluation");
 }
 
 export function fetchPerformance(): Promise<PerformanceResponse> {

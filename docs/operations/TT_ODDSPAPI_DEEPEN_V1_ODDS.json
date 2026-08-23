@@ -1,0 +1,39 @@
+{
+  "SAMPLE_EVENTS": 0,
+  "EVENTS_WITH_ODDS": 0,
+  "EVENTS_WITH_ODDS_RATE": null,
+  "EVENT_MATCH_RATE": null,
+  "AMBIGUOUS_MATCH_RATE": null,
+  "UNMATCHED_RATE": null,
+  "SNAPSHOTS_PER_EVENT": {
+    "min": null,
+    "median": null,
+    "p90": null,
+    "max": null
+  },
+  "BOOKMAKERS_PER_EVENT": {
+    "min": null,
+    "median": null,
+    "max": null
+  },
+  "VALID_PREMATCH_RATE": null,
+  "VALID_CLOSE_RATE": null,
+  "LAST_PREMATCH_GAP_HOURS": {
+    "min": null,
+    "median": null,
+    "p90": null,
+    "max": null
+  },
+  "POST_COMMENCE_CONTAMINATION_RATE": 1.0,
+  "MARKET_WINNER_COVERAGE": null,
+  "OTHER_MARKETS_AVAILABLE": [],
+  "PRICE_CHANGE_COUNT": {
+    "min": null,
+    "median": null,
+    "max": null
+  },
+  "MEDIAN_LINE_MOVES_PER_EVENT": null,
+  "REQUESTS_USED_THIS_RUN": 0,
+  "REQUESTS_USED_SPRINT_TOTAL": 4,
+  "per_event": []
+}

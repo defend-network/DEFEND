@@ -1,0 +1,13 @@
+{
+  "provider_id": "odds_api_io",
+  "endpoint": "sports",
+  "status_code": 200,
+  "latency_ms": 474,
+  "retrieved_at": "2026-08-20T16:10:10Z",
+  "url_sanitized": "https://api.odds-api.io/v3/sports?apiKey=[REDACTED]",
+  "body": "[{\"name\":\"Football\",\"slug\":\"football\"},{\"name\":\"Basketball\",\"slug\":\"basketball\"},{\"name\":\"Tennis\",\"slug\":\"tennis\"},{\"name\":\"Baseball\",\"slug\":\"baseball\"},{\"name\":\"American Football\",\"slug\":\"american-football\"},{\"name\":\"Ice Hockey\",\"slug\":\"ice-hockey\"},{\"name\":\"Esports\",\"slug\":\"esports\"},{\"name\":\"Darts\",\"slug\":\"darts\"},{\"name\":\"MMA\",\"slug\":\"mixed-martial-arts\"},{\"name\":\"Boxing\",\"slug\":\"boxing\"},{\"name\":\"Handball\",\"slug\":\"handball\"},{\"name\":\"Volleyball\",\"slug\":\"volleyball\"},{\"name\":\"Snooker\",\"slug\":\"snooker\"},{\"name\":\"Table Tennis\",\"slug\":\"table-tennis\"},{\"name\":\"Rugby\",\"slug\":\"rugby\"},{\"name\":\"Cricket\",\"slug\":\"cricket\"},{\"name\":\"Waterpolo\",\"slug\":\"water-polo\"},{\"name\":\"Futsal\",\"slug\":\"futsal\"},{\"name\":\"Beach Volley\",\"slug\":\"beach-volleyball\"},{\"name\":\"Aussie Rules\",\"slug\":\"aussie-rules\"},{\"name\":\"Floorball\",\"slug\":\"floorball\"},{\"name\":\"Squash\",\"slug\":\"squash\"},{\"name\":\"Beach Soccer\",\"slug\":\"beach-soccer\"},{\"name\":\"Lacrosse\",\"slug\":\"lacrosse\"},{\"name\":\"Curling\",\"slug\":\"curling\"},{\"name\":\"Padel\",\"slug\":\"padel\"},{\"name\":\"Bandy\",\"slug\":\"bandy\"},{\"name\":\"Gaelic Football\",\"slug\":\"gaelic-football\"},{\"name\":\"Beach Handball\",\"slug\":\"beach-handball\"},{\"name\":\"Athletics\",\"slug\":\"athletics\"},{\"name\":\"Badminton\",\"slug\":\"badminton\"},{\"name\":\"Cross-Country\",\"slug\":\"cross-country\"},{\"name\":\"Golf\",\"slug\":\"golf\"},{\"name\":\"Cycling\",\"slug\":\"cycling\"}]",
+  "body_sha256": "a0576ec7ace28aaa94336bb9c454973c9ffc480f7ecba68c632c3d9af3e9008d",
+  "headers_kept": {
+    "Content-Type": "application/json; charset=utf-8"
+  }
+}

@@ -31,6 +31,11 @@ _REQUIRED_TABLES = {
     "raw_provider_events",
     "audit_events",
 }
+_ALL_MIGRATED_TABLES = _REQUIRED_TABLES | {
+    "provider_discovery",
+    "provider_quota",
+    "backfill_checkpoints",
+}
 _SHARED_MARKET_TABLES = {
     "sportsbooks",
     "sports",
@@ -45,6 +50,54 @@ _SHARED_MARKET_TABLES = {
     "provider_health",
     "raw_provider_events",
 }
+_MIGRATION_V2_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "defend_sports"
+    / "migrations"
+    / "0002_quota_discovery.sql"
+)
+_MIGRATION_V3_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "defend_sports"
+    / "migrations"
+    / "0003_backfill.sql"
+)
+_MIGRATION_V4_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "defend_sports"
+    / "migrations"
+    / "0004_raw_provider_uniqueness.sql"
+)
+_RAW_PROVIDER_UNIQUENESS_INDEX = "raw_provider_events_sport_key_unique"
+
+
+def test_raw_provider_uniqueness_migration_defines_the_approved_invariant():
+    migration = _MIGRATION_V4_PATH.read_text(encoding="utf-8")
+    assert "CREATE UNIQUE INDEX IF NOT EXISTS" in migration
+    assert _RAW_PROVIDER_UNIQUENESS_INDEX in migration
+    assert "source_id, COALESCE(payload->'sport'->>'slug', ''), provider_event_id" in migration
+    assert "DROP" not in migration.casefold()
+    assert "DELETE" not in migration.casefold()
+    assert "TRUNCATE" not in migration.casefold()
+
+
+def test_backfill_migration_defines_expected_schema():
+    migration = _MIGRATION_V3_PATH.read_text(encoding="utf-8")
+    assert "CREATE TABLE IF NOT EXISTS backfill_checkpoints" in migration
+    assert "UNIQUE (provider, sport, league, window_from, window_to)" in migration
+    assert "cursor_value TEXT NOT NULL DEFAULT ''" in migration
+    assert "status TEXT NOT NULL DEFAULT 'RUNNING'" in migration
+    assert "requests_used BIGINT NOT NULL DEFAULT 0" in migration
+
+
+def test_quota_discovery_migration_defines_expected_schema():
+    migration = _MIGRATION_V2_PATH.read_text(encoding="utf-8")
+    assert "CREATE TABLE IF NOT EXISTS provider_discovery" in migration
+    assert "CREATE TABLE IF NOT EXISTS provider_quota" in migration
+    assert "source_id UUID NOT NULL REFERENCES provider_sources(source_id)" in migration
+    assert "requests_remaining BIGINT" in migration
+    assert "status TEXT NOT NULL" in migration
+    assert "observed_at TIMESTAMPTZ NOT NULL" in migration
 
 
 def test_foundation_migration_defines_the_required_neutral_schema():
@@ -83,17 +136,60 @@ def test_database_representation_never_exposes_its_connection_url():
     not os.environ.get("SPORTS_TEST_DATABASE_URL"),
     reason="SPORTS_TEST_DATABASE_URL is required for PostgreSQL integration tests",
 )
-def test_migration_is_idempotent_and_health_reports_version_one():
+def test_migration_is_idempotent_and_health_reports_version_four():
     database = SportsDatabase(os.environ["SPORTS_TEST_DATABASE_URL"])
 
-    assert database.migrate() == 1
-    assert database.migrate() == 1
+    assert database.migrate() == 4
+    assert database.migrate() == 4
     assert database.health() == {
         "ok": True,
         "application_id": "sports",
-        "schema_version": 1,
+        "schema_version": 4,
         "database": "ready",
     }
+
+
+@pytest.mark.skipif(
+    not os.environ.get("SPORTS_TEST_DATABASE_URL"),
+    reason="SPORTS_TEST_DATABASE_URL is required for PostgreSQL integration tests",
+)
+def test_raw_provider_uniqueness_index_is_applied_and_enforces_the_invariant():
+    database = SportsDatabase(os.environ["SPORTS_TEST_DATABASE_URL"])
+
+    assert database.migrate() == 4
+    assert database.migrate() == 4
+
+    with database.connect() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT indexdef FROM pg_indexes
+                WHERE schemaname = current_schema()
+                  AND indexname = %s
+                """,
+                (_RAW_PROVIDER_UNIQUENESS_INDEX,),
+            )
+            indexdef = cursor.fetchone()
+            assert indexdef is not None
+            assert "COALESCE" in indexdef[0]
+            assert "source_id" in indexdef[0]
+            assert "provider_event_id" in indexdef[0]
+            assert "payload -> 'sport'" in indexdef[0]
+
+            cursor.execute(
+                """
+                SELECT COUNT(*) FROM (
+                    SELECT source_id,
+                           COALESCE(payload->'sport'->>'slug', ''),
+                           provider_event_id,
+                           COUNT(*)
+                    FROM raw_provider_events
+                    GROUP BY 1, 2, 3
+                    HAVING COUNT(*) > 1
+                ) violations
+                """
+            )
+            assert cursor.fetchone()[0] == 0
 
     with database.connect() as connection:
         with connection.cursor() as cursor:
@@ -104,12 +200,12 @@ def test_migration_is_idempotent_and_health_reports_version_one():
                 WHERE table_schema = current_schema()
                   AND table_name = ANY(%s)
                 """,
-                (list(_REQUIRED_TABLES),),
+                (list(_ALL_MIGRATED_TABLES),),
             )
             columns_by_table: dict[str, set[str]] = {}
             for table_name, column_name in cursor.fetchall():
                 columns_by_table.setdefault(table_name, set()).add(column_name)
 
-    assert set(columns_by_table) == _REQUIRED_TABLES
+    assert set(columns_by_table) == _ALL_MIGRATED_TABLES
     for table in _SHARED_MARKET_TABLES:
         assert "user_id" not in columns_by_table[table]

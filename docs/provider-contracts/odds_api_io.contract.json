@@ -1,0 +1,14 @@
+{
+  "provider_id": "odds_api_io",
+  "contract_type": "official_docs",
+  "source_url_or_origin": "https://docs.odds-api.io",
+  "retrieved_at": "2026-08-18T00:00:00Z",
+  "provider_version_if_known": "v3/v4",
+  "sha256": null,
+  "endpoint_count": null,
+  "schema_version": null,
+  "auth_scheme": "query",
+  "rate_limit_notes": "per-plan quota; unknown exact limits",
+  "capability_summary": "tt results/fixtures; odds; sport list; sportId 25 / slug table-tennis; canonical tt_match_results corpus is sourced from this provider (event_key oaio:<id>)",
+  "notes": "Documented in README prior session; manifest written 2026-08-20. Empirical (Phase C probe 2026-08-20): /v4/sports -> 404 '404 page not found'; /v3/sports -> 200 with TT sport entry {name: 'Table Tennis', slug: 'table-tennis'}; TT presence EMPIRICALLY_VERIFIED on v3. Health adapter (defend_integrations/adapters.py) already uses /v3/sports."
+}

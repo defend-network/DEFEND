@@ -42,7 +42,9 @@ class MarketsStore(Protocol):
 
     def catalog_quality(self, limit: int = 50) -> list[dict[str, object]]: ...
 
-    def catalog_tt_results(self, limit: int = 2000) -> list[dict[str, object]]: ...
+    def catalog_tt_results(
+        self, limit: int = 2000, offset: int = 0
+    ) -> list[dict[str, object]]: ...
 
     def counts(self) -> dict[str, int]: ...
 
@@ -151,9 +153,11 @@ class PostgresMarketsStore:
                     for row in cursor.fetchall()
                 ]
 
-    def catalog_tt_results(self, limit: int = 2000) -> list[dict[str, object]]:
+    def catalog_tt_results(
+        self, limit: int = 2000, offset: int = 0
+    ) -> list[dict[str, object]]:
         with self._database.connect() as connection:
-            return self._repository.list_tt_results(connection, limit=limit)
+            return self._repository.list_tt_results(connection, limit=limit, offset=offset)
 
     def upsert_feed(self, definition: Any) -> None:
         with self._database.connect() as connection:

@@ -4,6 +4,7 @@ from pathlib import Path
 import sqlite3
 
 import defend_control.preflight as preflight_module
+from defend_control.model_registry import ADAPTER_REPO
 from defend_control.preflight import CheckResult, PreflightRunner
 from defend_control.settings import ControlSettings
 
@@ -16,7 +17,7 @@ def settings(tmp_path: Path) -> ControlSettings:
         cloudflared_exe=tmp_path / "cloudflared.exe",
         cloudflared_config=tmp_path / "cloudflared.yml",
         cloudflared_tunnel="defend-ai",
-        adapter_repo="Defend-network/defend-qwen-32b-lora",
+        adapter_repo=ADAPTER_REPO,
         local_model="defend-ai:latest",
         vast_max_hourly=Decimal("3.00"),
     )
@@ -71,7 +72,7 @@ def test_preflight_uses_exact_service_ports_and_aggregates_checks(tmp_path):
 
     results = runner.run("vast", settings(tmp_path), complete_secrets())
 
-    assert observed_ports == [3000, 8000, 8001]
+    assert observed_ports == [3000, 8000, 8402]
     assert {result.name for result in results} >= {
         "python-version",
         "node-version",
@@ -85,7 +86,7 @@ def test_preflight_uses_exact_service_ports_and_aggregates_checks(tmp_path):
         "logs",
         "port:3000",
         "port:8000",
-        "port:8001",
+        "port:8402",
         "secrets",
         "next-build",
         "invitations",

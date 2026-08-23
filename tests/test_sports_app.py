@@ -223,7 +223,7 @@ class TestPostgreSqlIntegration:
         assert response.json() == {
             "ok": True,
             "application_id": "sports",
-            "schema_version": 1,
+            "schema_version": 3,
             "database": "ready",
         }
         assert "postgresql://" not in response.text

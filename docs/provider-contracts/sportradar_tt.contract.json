@@ -1,0 +1,14 @@
+{
+  "auth_scheme": "api-key (trial env: https://api.sportradar.com/tabletennis/trial/v2)",
+  "capability_summary": "XSD full API: competitions, seasons (max 3), daily/live summaries, live timelines+delta, season probabilities (2-way win prob), rankings, competitor profiles/H2H, events created/updated/removed.",
+  "contract_type": "schema",
+  "endpoint_count": 22,
+  "notes": "Secondary artifact sportradar_tt-official_docs.md sha256=c1e7290f3aff28ec5595e836091c5d216309d7260bd0ec4faf61afb31fe562ed (developer.sportradar.com/table-tennis/reference/overview.md). OpenAPI swagger 403 without trial key; retrieve in Phase C.",
+  "provider_id": "sportradar_tt",
+  "provider_version_if_known": "v2",
+  "rate_limit_notes": null,
+  "retrieved_at": "2026-08-20T14:43:47Z",
+  "schema_version": null,
+  "sha256": "5ed3b713fced591c50db63cc8f1b1ecb3161a12b8058980b52999c26a970bc7f",
+  "source_url_or_origin": "https://api-docs.sportradar.us/tabletennis/Table_Tennis_v2.zip"
+}

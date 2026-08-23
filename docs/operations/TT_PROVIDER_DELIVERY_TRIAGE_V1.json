@@ -1,0 +1,95 @@
+{
+  "schema": "DEFENDMARKETS_PROVIDER_DELIVERY_TRIAGE",
+  "version": 1,
+  "base_checkpoint": "3aa3f97612d5f9726be887eb994b9d7869033b86",
+  "provider": {
+    "auth": "PASS",
+    "selected_books": ["Sbobet", "SingBet"],
+    "tt_events_raw_tested": ["73859912", "73853632", "73850316"],
+    "tt_raw_prices": {"Sbobet": 0, "SingBet": 0},
+    "control_sport": "football",
+    "control_event": "71805368",
+    "control_prices": {"Sbobet": "PRESENT", "SingBet": "PRESENT"},
+    "classification": "TT_FEED_EMPTY",
+    "adapter_casing_bug": false,
+    "account_auth_and_entitlement": "GOOD"
+  },
+  "canonical_matching": {
+    "prior_cycle": {
+      "discovered": 83,
+      "matched": 19,
+      "ambiguous": 0,
+      "unmatched": 64,
+      "rate": 0.228916
+    },
+    "post_identity_key_repair_cycle": {
+      "discovered": 85,
+      "matched": 85,
+      "ambiguous": 0,
+      "unmatched": 0,
+      "rate": 1.0,
+      "matched_exact_provider_id": 9,
+      "matched_identity_map": 76,
+      "matched_normalized": 0
+    },
+    "unmatched_reason_counts": {
+      "COMMENCE_TIME_WINDOW": 58,
+      "COMPETITION_ALIAS": 3,
+      "MISSING_RESULT_CORPUS": 3,
+      "DUPLICATE_CANDIDATES": 0,
+      "PLAYER_ALIAS": 0,
+      "NEW_PLAYER": 0,
+      "SCHEMA_MAPPING": 0,
+      "OTHER": 0
+    },
+    "unmatched_reason_percentages": {
+      "COMMENCE_TIME_WINDOW": 90.625,
+      "COMPETITION_ALIAS": 4.6875,
+      "MISSING_RESULT_CORPUS": 4.6875
+    },
+    "interpretation": "Current pending events are new event identities. Known players do not justify matching them to older result events outside the bounded commence window. No fuzzy threshold was loosened.",
+    "normalized_path": "PASS on sanitized real provider sample 73850316 names Chmelicek, Martin vs Hruby, Radek"
+  },
+  "model_readiness": {
+    "matched_settled_events_analyzed": 17,
+    "required_history_threshold": 5,
+    "historical_feature_eligible_events": 17,
+    "historical_insufficient_history_events": 0,
+    "live_forward_model_eligible_events": 50,
+    "available_prediction_rows": 50,
+    "reason_live_forward_zero": "Resolved: deterministic identity mapping now binds known-player new event IDs; 50 current pre-commence events have available M5 predictions. Market observations remain blocked by empty provider odds.",
+    "post_prediction_results_used": false,
+    "identity_key_defect_fixed": true,
+    "m5_threshold_lowered": false
+  },
+  "history_linkage": {
+    "refresh_rows_at_or_after_owner_cutoff": 1523,
+    "strict_post_cutoff_rows_added": 1519,
+    "backfilled_unique_players": 187,
+    "current_event_players": 80,
+    "current_players_present_in_history": 80,
+    "current_players_missing_history": 0,
+    "current_players_with_sufficient_history": 80,
+    "unmatched_events_with_both_players_in_history_before_identity_map": 64,
+    "unmatched_events_with_both_players_sufficient_before_identity_map": 64,
+    "history_consumption_result": "Backfilled result rows are consumed correctly after retaining table_tennis:<player> keys; the remaining blocker is event-level canonical metadata for new pending events."
+  },
+  "m5_cutoff": {
+    "artifact_literal_value": "2026-08-15T20:00:00Z",
+    "artifact_timezone_marker": "Z",
+    "owner_cutoff": "2026-08-16T00:00:00Z",
+    "true_training_cutoff": "2026-08-16T00:00:00Z",
+    "training_source_timezone": "America/New_York",
+    "root_cause": "Aware local cutoff was relabeled UTC with replace(tzinfo=UTC) instead of converted with astimezone(UTC).",
+    "metadata_correction_sidecar": "docs/operations/TT_M5_LIVE_WEIGHTS_V1_METADATA_CORRECTION.json",
+    "weights_changed": false,
+    "artifact_bytes_changed": false,
+    "retrained": false
+  },
+  "provider_support_packet": "docs/operations/TT_ODDS_API_IO_SUPPORT_PACKET_V1.json",
+  "next_gate": {
+    "required": ["SBOBET_OR_SINGBET_TT_PRICES>0", "EVENTS_MATCHED>0", "MODEL_ELIGIBLE_EVENTS>0"],
+    "long_soak_authorized": false,
+    "next_highest_value_step": "Persist current forward event metadata in the existing Sports canonical event graph, with deterministic provider IDs and full participant provenance, then rerun readiness diagnostics when selected-book TT odds appear."
+  }
+}

@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 import json
+import sys
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from .processes import ProcessSpec
@@ -115,10 +116,11 @@ def build_local_process_specs(
         if name in _API_ENV_NAMES and isinstance(value, str) and value
     }
     api_env = {
+        "DEFEND_API_MODE": "defend_ai",
         "DEFEND_MODEL_BACKEND": "ollama",
         "DEFEND_MODEL": model_ready.model,
         "OLLAMA_HOST": model_ready.endpoint,
-        "DEFEND_API_PORT": "8000",
+        "DEFEND_API_PORT": str(settings.defend_ai_api_port),
         "DEFEND_OWNER_USER": "MASSA",
         "DEFEND_OWNER_EMAIL": "chairman@defend-network.org",
         "DEFEND_ADMIN_SESSION_HOURS": "12",
@@ -138,13 +140,15 @@ def build_local_process_specs(
         **secret_env,
     }
     repo = settings.repo_root
+    api_port = settings.defend_ai_api_port
+    python = sys.executable
     return LocalProcessSpecs(
         api=ProcessSpec(
             "api",
-            (str(repo / ".venv" / "Scripts" / "python.exe"), "api_server.py"),
+            (python, "api_server.py"),
             repo,
             api_env,
-            "http://127.0.0.1:8000/health",
+            f"http://127.0.0.1:{api_port}/health",
         ),
         web=ProcessSpec(
             "web",

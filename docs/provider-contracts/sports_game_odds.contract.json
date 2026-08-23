@@ -1,0 +1,14 @@
+{
+  "auth_scheme": "header x-api-key (or apiKey query)",
+  "capability_summary": "v2 base https://api.sportsgameodds.com/v2. Events = game + odds; oddID = statID+statEntityID+periodID+betTypeID+sideID; byBookmaker snapshots under Event.odds.<oddID>.byBookmaker.<bookmakerID>; filters oddsAvailable/leagueID/oddID/includeAltLines; response {success,data,error,nextCursor}. Endpoints: events, markets, teams, players, leagues, sports, stats, account/usage.",
+  "contract_type": "official_docs",
+  "endpoint_count": 8,
+  "notes": "Secondary artifacts: sports_game_odds-sdk.md sha256=210ba69b6a70bf2e78aa885a9da28e9ca7722513c70f1cd152c0634b86b8445a (SDK api.md); official docs claim free pregame/live/closing odds; historical claims conflict (free closing vs Enterprise history) - resolve empirically.",
+  "provider_id": "sports_game_odds",
+  "provider_version_if_known": "v2",
+  "rate_limit_notes": "Cursor pagination (nextCursor); /account/usage/ exposes quota+limits.",
+  "retrieved_at": "2026-08-20T14:43:47Z",
+  "schema_version": null,
+  "sha256": "3a05b34f1b3f6da0e6bb227cefac303616e57a5c4c374f9f224eb4df81d9f63d",
+  "source_url_or_origin": "https://sportsgameodds.com/llms.txt"
+}

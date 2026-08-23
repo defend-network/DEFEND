@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from datetime import timedelta
 import os
 from pathlib import Path
+import threading
+from datetime import timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -10,6 +11,7 @@ from fastapi.testclient import TestClient
 from defend_coder.agent_client import (
     AgentChatClient,
     AgentChatResponse,
+    ModelTimeoutError,
     ToolCall,
 )
 from defend_coder.app import build_coder_app
@@ -45,6 +47,9 @@ class FakeAgentClient(AgentChatClient):
         )
 
     def chat(self, messages, tools=None, **kwargs):
+        on_request_started = kwargs.get("on_request_started")
+        if on_request_started is not None:
+            on_request_started()
         if self._delay:
             self._time.sleep(self._delay)
         step = sum(
@@ -76,6 +81,37 @@ class FakeAgentClient(AgentChatClient):
             "empty workspace; verified the file was written.",
             tool_calls=(),
         )
+
+
+class TimeoutAgentClient(AgentChatClient):
+    """Model that always times out on the first request."""
+
+    def __init__(self, message: str):
+        super().__init__(
+            CoderModelConfig(
+                alias="defendcoder-heavy",
+                model_name="Qwen/Qwen3-Coder-Next",
+                base_url="http://127.0.0.1:8001/v1",
+            )
+        )
+        self._message = message
+
+    def chat(self, messages, tools=None, **kwargs):
+        raise ModelTimeoutError(self._message)
+
+
+class BlockingAgentClient(FakeAgentClient):
+    """Model whose second request blocks until released (for cancel tests)."""
+
+    def __init__(self, gate: threading.Event):
+        super().__init__()
+        self._gate = gate
+
+    def chat(self, messages, tools=None, **kwargs):
+        step = sum(1 for message in messages if message["role"] == "tool")
+        if step >= 1:
+            self._gate.wait(timeout=15)
+        return super().chat(messages, tools=tools, **kwargs)
 
 
 @pytest.fixture
@@ -274,6 +310,7 @@ def test_session_endpoint_rejects_cookieless_ssr_fetch(client):
     )
     assert login.status_code == 200
 
+    client.cookies.clear()
     assert client.get("/v1/auth/session").status_code == 401
     assert client.get("/v1/workspaces").status_code == 401
 
@@ -508,13 +545,13 @@ def _login_with_csrf(client, username="consumer", password="consumer-password", 
     return login.json()["csrf_token"]
 
 
-def _create_workspace(client, csrf, name="project", root=None):
+def _create_workspace(client, csrf, settings, name="project", root="consumer/project"):
     response = client.post(
         "/v1/workspaces",
         headers={"X-CSRF-Token": csrf},
         json={
             "name": name,
-            "workspace_root": root or "consumer/project",
+            "workspace_root": str(Path(settings.workspace_root) / root),
         },
     )
     assert response.status_code == 201
@@ -531,15 +568,20 @@ def _wait_for_run(client, workspace_id, run_id, timeout_seconds=15):
         )
         assert response.status_code == 200
         run = response.json()["run"]
-        if run["status"] in ("succeeded", "failed"):
+        if run["status"] in (
+            "succeeded",
+            "partial_success",
+            "failed",
+            "cancelled",
+        ):
             return response.json()
         time.sleep(0.05)
     raise AssertionError("run did not finish in time")
 
 
-def test_create_run_requires_csrf(client):
+def test_create_run_requires_csrf(client, settings):
     csrf = _login_with_csrf(client)
-    workspace_id = _create_workspace(client, csrf, root="consumer/project")
+    workspace_id = _create_workspace(client, csrf, settings)
 
     response = client.post(
         f"/v1/workspaces/{workspace_id}/runs",
@@ -558,7 +600,7 @@ def test_run_without_agent_is_503(client, db, auth, settings):
     )
     bare = TestClient(app, base_url='https://testserver')
     csrf = _login_with_csrf(bare)
-    workspace_id = _create_workspace(bare, csrf, root='consumer/project')
+    workspace_id = _create_workspace(bare, csrf, settings)
 
     response = bare.post(
         f'/v1/workspaces/{workspace_id}/runs',
@@ -572,7 +614,7 @@ def test_run_without_agent_is_503(client, db, auth, settings):
 
 def test_run_end_to_end_with_fake_agent(client, settings):
     csrf = _login_with_csrf(client)
-    workspace_id = _create_workspace(client, csrf, root='consumer/project')
+    workspace_id = _create_workspace(client, csrf, settings)
 
     response = client.post(
         f'/v1/workspaces/{workspace_id}/runs',
@@ -611,9 +653,9 @@ def test_run_end_to_end_with_fake_agent(client, settings):
     assert 'Dashboard built' in (final['content'] or '')
 
 
-def test_run_list_is_owner_scoped_and_recent_first(client):
+def test_run_list_is_owner_scoped_and_recent_first(client, settings):
     csrf = _login_with_csrf(client)
-    workspace_id = _create_workspace(client, csrf, root='consumer/project')
+    workspace_id = _create_workspace(client, csrf, settings)
 
     for _index in range(3):
         response = client.post(
@@ -622,6 +664,9 @@ def test_run_list_is_owner_scoped_and_recent_first(client):
             json={'prompt': 'Task.'},
         )
         assert response.status_code == 201
+        run = response.json()['run']
+        detail = _wait_for_run(client, workspace_id, run['run_id'])
+        assert detail['run']['status'] in ('succeeded', 'failed')
 
     response = client.get(f'/v1/workspaces/{workspace_id}/runs')
 
@@ -632,9 +677,9 @@ def test_run_list_is_owner_scoped_and_recent_first(client):
     assert created == sorted(created, reverse=True)
 
 
-def test_run_access_from_other_account_is_404(client):
+def test_run_access_from_other_account_is_404(client, settings):
     csrf = _login_with_csrf(client)
-    workspace_id = _create_workspace(client, csrf, root='consumer/project')
+    workspace_id = _create_workspace(client, csrf, settings)
 
     response = client.post(
         f'/v1/workspaces/{workspace_id}/runs',
@@ -657,10 +702,13 @@ def test_run_access_from_other_account_is_404(client):
     )
     assert response.status_code == 404
 
+    _login_with_csrf(client)
+    _wait_for_run(client, workspace_id, run_id)
+
 
 def test_concurrent_run_on_same_workspace_is_409(client, runner, db, auth, settings):
     slow_runner = RunRunner(
-        repository=runs_repository(db),
+        repository=RunsRepository(db),
         client=FakeAgentClient(delay_seconds=0.3),
         toolkit_factory=lambda log_reader: CoderToolkit(
             repository=CoderRepository(db),
@@ -678,7 +726,7 @@ def test_concurrent_run_on_same_workspace_is_409(client, runner, db, auth, setti
     )
     slow = TestClient(app, base_url='https://testserver')
     csrf = _login_with_csrf(slow)
-    workspace_id = _create_workspace(slow, csrf, root='consumer/project')
+    workspace_id = _create_workspace(slow, csrf, settings)
 
     first = slow.post(
         f'/v1/workspaces/{workspace_id}/runs',
@@ -696,6 +744,211 @@ def test_concurrent_run_on_same_workspace_is_409(client, runner, db, auth, setti
     assert second.status_code == 409
     assert 'already active' in second.json()['detail']
 
+    _wait_for_run(slow, workspace_id, first.json()['run']['run_id'])
+
+
+def _app_for(db, auth, settings, client, runner=None):
+    from defend_coder.app import build_coder_app
+    from defend_coder.runs import RunsRepository, RunRunner
+
+    if runner is None:
+        runner = RunRunner(
+            repository=RunsRepository(db),
+            client=client,
+            toolkit_factory=lambda log_reader: CoderToolkit(
+                repository=CoderRepository(db),
+                configured_root=settings.workspace_root,
+                log_reader=log_reader,
+            ),
+        )
+    app = build_coder_app(
+        settings=settings,
+        db=db,
+        auth=auth,
+        runtime_status=lambda: {'state': 'ready'},
+        runner=runner,
+        configured_root=settings.workspace_root,
+    )
+    return TestClient(app, base_url='https://testserver')
+
+
+def test_run_phase_is_exposed_during_and_after_run(client, db, auth, settings):
+    import time
+
+    app = _app_for(db, auth, settings, FakeAgentClient(delay_seconds=0.3))
+    csrf = _login_with_csrf(app)
+    workspace_id = _create_workspace(app, csrf, settings)
+
+    response = app.post(
+        f'/v1/workspaces/{workspace_id}/runs',
+        headers={'X-CSRF-Token': csrf},
+        json={'prompt': 'Build an ops dashboard.'},
+    )
+    assert response.status_code == 201
+    run = response.json()['run']
+    run_id = run['run_id']
+
+    observed_phases: set[str] = set()
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        detail = app.get(
+            f'/v1/workspaces/{workspace_id}/runs/{run_id}'
+        )
+        assert detail.status_code == 200
+        body = detail.json()['run']
+        observed_phases.add(body['phase'])
+        if body['status'] in ('succeeded', 'failed'):
+            break
+        time.sleep(0.05)
+
+    assert 'completed' in observed_phases
+    assert observed_phases & {
+        'waiting_for_model',
+        'model_generating',
+        'executing_tool',
+    }, observed_phases
+
+
+def test_model_timeout_run_fails_honestly_and_persists(
+    client, db, auth, settings
+):
+    timeout_client = TimeoutAgentClient(
+        'model request timed out after 600s: simulated slow decode'
+    )
+    app = _app_for(db, auth, settings, timeout_client)
+    csrf = _login_with_csrf(app)
+    workspace_id = _create_workspace(app, csrf, settings)
+
+    response = app.post(
+        f'/v1/workspaces/{workspace_id}/runs',
+        headers={'X-CSRF-Token': csrf},
+        json={'prompt': 'Do the thing.'},
+    )
+    assert response.status_code == 201
+    run_id = response.json()['run']['run_id']
+
+    detail = _wait_for_run(app, workspace_id, run_id)
+    assert detail['run']['status'] == 'failed'
+    assert detail['run']['phase'] == 'failed'
+    assert detail['run']['reason'] == 'model_timeout'
+    assert 'timed out' in (detail['run']['error'] or '')
+    assert any(
+        'timed out' in (message.get('content') or '')
+        for message in detail['messages']
+    )
+
+
+def test_policy_endpoint_requires_session(client):
+    response = client.get("/v1/agent/policy")
+
+    assert response.status_code == 401
+
+
+def test_policy_endpoint_reports_effective_agent_policy(
+    client, db, auth, settings
+):
+    runs_repository = RunsRepository(db)
+    repository = CoderRepository(db)
+    custom_runner = RunRunner(
+        repository=runs_repository,
+        client=FakeAgentClient(),
+        toolkit_factory=lambda log_reader: CoderToolkit(
+            repository=repository,
+            configured_root=settings.workspace_root,
+            log_reader=log_reader,
+        ),
+        max_steps=7,
+        max_loop_seconds=1800.0,
+        finalization_enabled=False,
+        finalization_timeout_seconds=120.0,
+    )
+    app = build_coder_app(
+        settings=settings,
+        db=db,
+        auth=auth,
+        runtime_status=lambda: {"state": "ready"},
+        runner=custom_runner,
+        configured_root=settings.workspace_root,
+    )
+    test_client = TestClient(app, base_url="https://testserver")
+    csrf = _login_with_csrf(test_client)
+
+    response = test_client.get(
+        "/v1/agent/policy",
+        headers={"X-CSRF-Token": csrf},
+    )
+
+    assert response.status_code == 200
+    policy = response.json()["policy"]
+    assert policy["max_steps"] == 7
+    assert policy["max_loop_seconds"] == 1800.0
+    assert policy["finalization_enabled"] is False
+    assert policy["finalization_timeout_seconds"] == 120.0
+    assert policy["model_timeout_seconds"] > 0
+    assert policy["connect_timeout_seconds"] > 0
+
+
+def test_cancel_endpoint_requires_csrf(client, settings):
+    csrf = _login_with_csrf(client)
+    workspace_id = _create_workspace(client, csrf, settings)
+
+    response = client.post(
+        f'/v1/workspaces/{workspace_id}/runs/00000000-0000-0000-0000-000000000000/cancel'
+    )
+
+    assert response.status_code == 403
+
+
+def test_cancel_running_run_is_honest_and_persists(client, db, auth, settings):
+    gate = threading.Event()
+    app = _app_for(db, auth, settings, BlockingAgentClient(gate))
+    csrf = _login_with_csrf(app)
+    workspace_id = _create_workspace(app, csrf, settings)
+
+    response = app.post(
+        f'/v1/workspaces/{workspace_id}/runs',
+        headers={'X-CSRF-Token': csrf},
+        json={'prompt': 'Build an ops dashboard.'},
+    )
+    assert response.status_code == 201
+    run_id = response.json()['run']['run_id']
+
+    cancel = app.post(
+        f'/v1/workspaces/{workspace_id}/runs/{run_id}/cancel',
+        headers={'X-CSRF-Token': csrf},
+    )
+    assert cancel.status_code == 200
+    assert cancel.json() == {'cancelled': True}
+
+    gate.set()
+    detail = _wait_for_run(app, workspace_id, run_id)
+    assert detail['run']['status'] == 'cancelled'
+    assert detail['run']['phase'] == 'cancelled'
+    assert detail['run']['reason'] == 'user_cancel'
+    assert detail['run']['error'] == 'cancelled by user'
+
+
+def test_cancel_finished_run_is_409(client, settings):
+    csrf = _login_with_csrf(client)
+    workspace_id = _create_workspace(client, csrf, settings)
+
+    response = client.post(
+        f'/v1/workspaces/{workspace_id}/runs',
+        headers={'X-CSRF-Token': csrf},
+        json={'prompt': 'Build an ops dashboard.'},
+    )
+    assert response.status_code == 201
+    run_id = response.json()['run']['run_id']
+    _wait_for_run(client, workspace_id, run_id)
+
+    cancel = client.post(
+        f'/v1/workspaces/{workspace_id}/runs/{run_id}/cancel',
+        headers={'X-CSRF-Token': csrf},
+    )
+
+    assert cancel.status_code == 409
+    assert 'already' in cancel.json()['detail']
+
 
 def test_files_listing_requires_session(client):
     response = client.get('/v1/workspaces/00000000-0000-0000-0000-000000000000/files')
@@ -705,7 +958,7 @@ def test_files_listing_requires_session(client):
 
 def test_files_listing_shows_workspace_tree(client, settings):
     csrf = _login_with_csrf(client)
-    workspace_id = _create_workspace(client, csrf, root='consumer/project')
+    workspace_id = _create_workspace(client, csrf, settings)
     root = Path(settings.workspace_root) / 'consumer' / 'project'
     (root / 'src').mkdir(parents=True)
     (root / 'src' / 'app.js').write_text('// x', encoding='utf-8')
@@ -726,7 +979,7 @@ def test_files_listing_shows_workspace_tree(client, settings):
 
 def test_files_listing_rejects_path_escape(client, settings):
     csrf = _login_with_csrf(client)
-    workspace_id = _create_workspace(client, csrf, root='consumer/project')
+    workspace_id = _create_workspace(client, csrf, settings)
 
     response = client.get(
         f'/v1/workspaces/{workspace_id}/files',

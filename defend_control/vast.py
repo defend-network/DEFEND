@@ -57,6 +57,7 @@ OFFER_REJECTION_CATEGORIES = (
     "insufficient_disk",
     "wrong_gpu_family",
     "below_reliability",
+    "below_cuda_max",
     "over_price",
     "malformed_numeric_field",
 )
@@ -480,6 +481,12 @@ class VastClient:
             "order": [["dph_total", "asc"]],
             "limit": 20,
         }
+        if policy.min_cuda_max_good is not None:
+            # Acquisition-side capability filter: hosts whose driver cannot
+            # run the pinned serving image (e.g. torch cu130 needs CUDA
+            # >= 13.0 / driver >= 570) are excluded BEFORE the provider
+            # prices them, so incompatible A100 hosts never reach rental.
+            document["cuda_max_good"] = {"gte": float(policy.min_cuda_max_good)}
         if require_direct_ports:
             document["direct_port_count"] = {"gte": 1}
         raw_offers = self._offer_search_documents((document,))[0]
@@ -1438,6 +1445,23 @@ class VastClient:
             )
         except ValueError:
             direct_port_count = None
+        if "cuda_max_good" in raw:
+            try:
+                cuda_max_good = float(raw.get("cuda_max_good"))
+            except (TypeError, ValueError):
+                reject("malformed_numeric_field")
+                return None
+            if cuda_max_good < 0:
+                reject("malformed_numeric_field")
+                return None
+            if (
+                profile.min_cuda_max_good is not None
+                and cuda_max_good < profile.min_cuda_max_good
+            ):
+                reject("below_cuda_max")
+                return None
+        else:
+            cuda_max_good = None
         return VastOffer(
             offer_id,
             gpu_name,
@@ -1447,6 +1471,7 @@ class VastClient:
             storage_cost,
             storage_total,
             direct_port_count,
+            cuda_max_good,
         )
 
     @staticmethod

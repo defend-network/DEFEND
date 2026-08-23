@@ -48,6 +48,14 @@ from production_policy import ProductionPolicy
 API_TOKEN = os.getenv("DEFEND_API_TOKEN", "").strip()
 MODEL_NAME = os.getenv("DEFEND_MODEL", "defend-ai:latest")
 
+# Product-independent admin mode: the shared Control Center API serves
+# identity/setup/admin routes without instantiating a product model client or
+# ControlPlane. The DEFEND AI product API is a separate on-demand process.
+ADMIN_MODE = os.getenv("DEFEND_API_MODE", "").strip().lower() == "admin"
+DEFEND_AI_PRODUCT_API_BASE = os.getenv(
+    "DEFEND_AI_PRODUCT_API_BASE", "http://127.0.0.1:8401"
+).rstrip("/")
+
 def _default_data_root() -> Path:
     configured = os.getenv("DEFEND_DATA_ROOT", "").strip()
     if configured:
@@ -99,6 +107,49 @@ class ChatOut(BaseModel):
 
 
 
+def _execution_summary(execution) -> dict[str, Any] | None:
+    """Non-sensitive execution trace: tool names, statuses, error codes, latency.
+
+    Tool arguments and result payloads are intentionally omitted (redacted).
+    """
+    if execution is None:
+        return None
+    try:
+        steps: list[dict[str, Any]] = []
+        for step_id, step in (execution.steps or {}).items():
+            latency_ms: float | None = None
+            if step.started_at is not None and step.finished_at is not None:
+                latency_ms = round(
+                    (step.finished_at - step.started_at).total_seconds() * 1000, 1
+                )
+            error_code = None
+            ok = None
+            if step.tool_result is not None:
+                ok = bool(step.tool_result.ok)
+                err = step.tool_result.error
+                if err is not None:
+                    error_code = getattr(getattr(err, "code", None), "value", None)
+            steps.append(
+                {
+                    "step_id": step_id,
+                    "tool_name": step.tool_name,
+                    "status": getattr(step.status, "value", str(step.status)),
+                    "attempts": step.attempts,
+                    "ok": ok,
+                    "error_code": error_code,
+                    "latency_ms": latency_ms,
+                }
+            )
+        return {
+            "plan_status": getattr(execution.status, "value", str(execution.status)),
+            "tool_calls": execution.tool_calls,
+            "cost_usd": round(float(execution.cost_usd or 0.0), 6),
+            "steps": steps,
+        }
+    except Exception:
+        return None
+
+
 def _pack_response(resp) -> dict[str, Any]:
     meta = resp.metadata or {}
     sources: list[dict[str, Any]] = []
@@ -122,6 +173,7 @@ def _pack_response(resp) -> dict[str, Any]:
         "recovery_attempts": meta.get("recovery_attempts"),
         "sources": sources,
         "metadata": meta,
+        "execution": _execution_summary(getattr(resp, "plan_execution", None)),
         "status": "done",
         "job_id": None,
     }
@@ -323,35 +375,38 @@ async def lifespan(app: FastAPI):
         except Exception as error:
             _log_connection_cleanup_failure(error)
         configure_identity_store(data.identity)
-        embedding_settings = EmbeddingSettings.from_env(os.environ)
-        embedding_client = build_embedding_client(embedding_settings)
-        admin_rag_service.embedding_client = embedding_client
-        admin_rag_service.provider_label = embedding_settings.provider_label
-        registry = build_default_registry(
-            memory_manager=data.memory,
-            embedding_client=embedding_client,
-        )
-        model = build_model_client()
-        if hasattr(model, "__aenter__"):
-            await model.__aenter__()
-            model_needs_exit = hasattr(model, "__aexit__")
-        elif hasattr(model, "__aexit__"):
-            model_needs_exit = True
+        if not ADMIN_MODE:
+            embedding_settings = EmbeddingSettings.from_env(os.environ)
+            embedding_client = build_embedding_client(embedding_settings)
+            admin_rag_service.embedding_client = embedding_client
+            admin_rag_service.provider_label = embedding_settings.provider_label
+            registry = build_default_registry(
+                memory_manager=data.memory,
+                embedding_client=embedding_client,
+            )
+            model = build_model_client()
+            if hasattr(model, "__aenter__"):
+                await model.__aenter__()
+                model_needs_exit = hasattr(model, "__aexit__")
+            elif hasattr(model, "__aexit__"):
+                model_needs_exit = True
+            state.cp = ControlPlane(
+                tool_registry=registry,
+                model_client=model,
+                memory_manager=data.memory,
+                conversation_store=data.conversations,
+                policy_engine=ProductionPolicy(),
+                parallel_tool_limit=int(os.getenv("DEFEND_PARALLEL_TOOLS", "3")),
+            )
         state.data = data
         app.state.defend_data = data
         state.model = model
-        state.cp = ControlPlane(
-            tool_registry=registry,
-            model_client=model,
-            memory_manager=data.memory,
-            conversation_store=data.conversations,
-            policy_engine=ProductionPolicy(),
-            parallel_tool_limit=int(os.getenv("DEFEND_PARALLEL_TOOLS", "3")),
-        )
         backend = os.getenv("DEFEND_MODEL_BACKEND", "ollama")
         print(
-            f"[DEFEND API] backend={backend} model={MODEL_NAME} "
-            f"data_root={data.paths.root} tools={list(registry.keys())}"
+            f"[DEFEND API] mode={'admin' if ADMIN_MODE else 'defend-ai'} "
+            f"backend={backend} model={MODEL_NAME} "
+            f"data_root={data.paths.root} "
+            f"tools={list(state.cp.tools.keys()) if state.cp else []}"
         )
         yield
     finally:
@@ -475,6 +530,22 @@ app.include_router(build_setup_integrations_router(setup_integrations_service))
 
 
 async def _health_payload() -> dict[str, Any]:
+    if ADMIN_MODE:
+        # Product-independent admin surface: healthy when DataCore is up; no
+        # product model, ControlPlane, or adapter metadata is expected here.
+        return {
+            "ok": state.data is not None,
+            "application_id": "defend",
+            "mode": "admin",
+            "model": None,
+            "model_state": "not_loaded (admin)",
+            "provider": None,
+            "adapter_repo": None,
+            "adapter_revision": None,
+            "base_repo": None,
+            "base_revision": None,
+            "tools": [],
+        }
     ok = state.cp is not None and state.model is not None
     model_ok = True
     if state.model is not None and hasattr(state.model, "healthcheck"):
@@ -482,9 +553,23 @@ async def _health_payload() -> dict[str, Any]:
             model_ok = bool(await state.model.healthcheck())
         except Exception:
             model_ok = False
+    backend = os.getenv("DEFEND_MODEL_BACKEND", "ollama").strip().lower()
+    if ok and model_ok:
+        model_state = "ready"
+    elif state.model is not None:
+        model_state = "offline"
+    else:
+        model_state = "failed"
     return {
         "ok": ok and model_ok,
+        "application_id": "defend",
         "model": MODEL_NAME,
+        "model_state": model_state,
+        "provider": backend,
+        "adapter_repo": os.getenv("DEFEND_MODEL_ADAPTER_REPO") or None,
+        "adapter_revision": os.getenv("DEFEND_MODEL_ADAPTER_REVISION") or None,
+        "base_repo": os.getenv("DEFEND_MODEL_BASE_REPO") or None,
+        "base_revision": os.getenv("DEFEND_MODEL_BASE_REVISION") or None,
         "tools": list(state.cp.tools.keys()) if state.cp else [],
     }
 
@@ -513,6 +598,40 @@ async def admin_memory_stats(_admin: AdminPrincipal = Depends(require_admin)):
     return state.data.memory_store.stats()
 
 
+async def _admin_proxy_chat(request: Request, response: Response) -> dict[str, Any]:
+    """Admin mode: forward chat traffic to the on-demand DEFEND AI product API."""
+    try:
+        import httpx
+
+        target = f"{DEFEND_AI_PRODUCT_API_BASE}/api/chat"
+        headers = {
+            name: value
+            for name, value in request.headers.items()
+            if name.lower() not in {"host", "content-length"}
+        }
+        body = await request.body()
+        async with httpx.AsyncClient(timeout=420.0) as client:
+            upstream = await client.request(
+                request.method,
+                target,
+                content=body,
+                headers=headers,
+            )
+        response.status_code = upstream.status_code
+        for name, value in upstream.headers.items():
+            if name.lower() in {"content-type", "set-cookie"}:
+                response.headers[name] = value
+        return upstream.json()
+    except Exception as error:
+        response.status_code = 503
+        return {
+            "detail": (
+                "DEFEND AI runtime is not running. Start DEFEND AI from the "
+                f"Control Center first. ({type(error).__name__})"
+            )
+        }
+
+
 @app.post("/api/chat")
 @app.post("/v1/chat")
 async def chat(
@@ -521,6 +640,8 @@ async def chat(
     authorization: str | None = Header(default=None),
 ):
     _auth(authorization)
+    if ADMIN_MODE:
+        return await _admin_proxy_chat(request, response)
     if state.cp is None:
         raise HTTPException(status_code=503, detail="Agent not ready")
 
@@ -619,6 +740,26 @@ async def chat_status(
     authorization: str | None = Header(default=None),
 ):
     _auth(authorization)
+    if ADMIN_MODE:
+        try:
+            import httpx
+
+            target = f"{DEFEND_AI_PRODUCT_API_BASE}/api/chat/status/{job_id}"
+            headers = {
+                name: value
+                for name, value in request.headers.items()
+                if name.lower() not in {"host", "content-length"}
+            }
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                upstream = await client.get(target, headers=headers)
+            response.status_code = upstream.status_code
+            for name, value in upstream.headers.items():
+                if name.lower() in {"content-type", "set-cookie"}:
+                    response.headers[name] = value
+            return upstream.json()
+        except Exception as error:
+            response.status_code = 503
+            return {"detail": f"DEFEND AI runtime is not running ({type(error).__name__})"}
     visitor_id, _ = ensure_visitor_session(request, response)
     job = _JOBS.get(job_id)
     if not job or job.get("visitor_id") != visitor_id:

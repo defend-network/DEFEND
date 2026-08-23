@@ -307,6 +307,7 @@ class StepStatus(str, Enum):
 class StepExecution(BaseModel):
     step_id: str
     call_id: str
+    tool_name: str | None = None
     status: StepStatus
     started_at: datetime | None = None
     finished_at: datetime | None = None

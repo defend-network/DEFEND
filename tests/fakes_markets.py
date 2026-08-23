@@ -42,6 +42,10 @@ class FakeSportsReader:
 
     def __init__(self, quotes: Mapping[str, list[SportsSelectionQuote]] | None = None) -> None:
         self._quotes = dict(quotes or {})
+        self._history: dict[tuple[str, str], list[SportsSelectionQuote]] = {}
+        self._participants: dict[str, list[str]] = {
+            "tt-live-001": ["Player A", "Player B"],
+        }
         self._live: dict[str, dict[str, object]] = {}
         self._health: dict[str, Mapping[str, object]] = {
             "book-a": {"status": "HEALTHY", "observed_at": _aware()},
@@ -56,7 +60,16 @@ class FakeSportsReader:
         return list(self.venues_list)
 
     def tt_events(self) -> list[dict[str, object]]:
-        return [{"event_key": "tt-live-001", "display_name": "Player A vs Player B"}]
+        return [
+            {"event_key": "tt-live-001", "display_name": "Player A vs Player B",
+             "league_key": "table_tennis"},
+        ]
+
+    def tt_event_participants(self, event_key: str) -> list[str]:
+        return list(self._participants.get(event_key, []))
+
+    def set_tt_event_participants(self, event_key: str, names: list[str]) -> None:
+        self._participants[event_key] = list(names)
 
     def latest_live_state(self, event_key: str) -> dict[str, object] | None:
         live = self._live.get(event_key)
@@ -76,6 +89,14 @@ class FakeSportsReader:
 
     def latest_odds(self, event_key: str, market_key: str) -> list[SportsSelectionQuote]:
         return self._quotes.get((event_key, market_key), [])
+
+    def set_odds_history(self, event_key: str, market_key: str, quotes: list[SportsSelectionQuote]) -> None:
+        self._history[(event_key, market_key)] = list(quotes)
+
+    def odds_history(
+        self, event_key: str, market_key: str, before: object | None = None
+    ) -> list[SportsSelectionQuote]:
+        return list(self._history.get((event_key, market_key), []))
 
     def provider_health(self) -> dict[str, Mapping[str, object]]:
         return dict(self._health)
@@ -145,8 +166,8 @@ class InMemoryStore:
         self._feeds: dict[str, dict[str, object]] = {}
         self._feed_records: dict[str, list[dict[str, object]]] = {}
 
-    def catalog_tt_results(self, limit: int = 2000) -> list[dict[str, object]]:
-        return list(self._tt_results[-limit:])
+    def catalog_tt_results(self, limit: int = 2000, offset: int = 0) -> list[dict[str, object]]:
+        return list(self._tt_results[-(limit + offset):-offset or None] if offset else self._tt_results[-limit:])
 
     def upsert_feed(self, definition: object) -> None:
         self._feeds[definition.provider_id] = {"provider_id": definition.provider_id}
@@ -161,6 +182,10 @@ class InMemoryStore:
 
     def record_tt_results(self, results: object) -> int:
         return len(results)
+
+    def seed_tt_results(self, rows: list[dict[str, object]]) -> int:
+        self._tt_results.extend(rows)
+        return len(rows)
 
     def list_feeds(self) -> list[dict[str, object]]:
         return list(self._feeds.values())
@@ -347,3 +372,179 @@ def default_policies() -> dict[str, RiskPolicy]:
     from defend_markets.risk import default_risk_policies
 
     return {policy.policy_key: policy for policy in default_risk_policies()}
+
+
+class InMemoryForecastStore:
+    """In-memory fake for PostgresForecastStore (identity/snapshots/predictions)."""
+
+    def __init__(self) -> None:
+        self._participants: dict[int, dict[str, object]] = {}
+        self._participant_seq = 0
+        self._aliases: dict[tuple[int, str, str], dict[str, object]] = {}
+        self._collector_state: dict[str, dict[str, object]] = {}
+        self._snapshots: dict[int, dict[str, object]] = {}
+        self._snapshot_seq = 0
+        self._predictions: dict[UUID, dict[str, object]] = {}
+        self._settlements: list[dict[str, object]] = []
+        self._shadows: list[dict[str, object]] = []
+        self._ledger: list[dict[str, object]] = []
+
+    def participant_by_normalized(self, normalized_name: str) -> list[dict[str, object]]:
+        direct = [
+            dict(row)
+            for row in self._participants.values()
+            if row["normalized_name"] == normalized_name
+        ]
+        if direct:
+            return direct
+        ids = sorted(
+            {pid for (pid, alias_normalized, _provider), _ in self._aliases.items()
+             if alias_normalized == normalized_name}
+        )
+        return [dict(self._participants[pid]) for pid in ids]
+
+    def participant_by_id(self, participant_id: int) -> dict[str, object] | None:
+        row = self._participants.get(participant_id)
+        return dict(row) if row is not None else None
+
+    def insert_participant(self, *, canonical_name, normalized_name, state, seen_at) -> dict[str, object]:
+        self._participant_seq += 1
+        row = {
+            "participant_id": self._participant_seq,
+            "canonical_name": canonical_name,
+            "normalized_name": normalized_name,
+            "identity_state": state,
+            "first_seen": seen_at,
+            "last_seen": seen_at,
+        }
+        self._participants[self._participant_seq] = row
+        return dict(row)
+
+    def touch_participant(self, participant_id: int, seen_at) -> None:
+        self._participants[participant_id]["last_seen"] = seen_at
+
+    def set_participant_state(self, participant_id: int, state: str) -> None:
+        self._participants[participant_id]["identity_state"] = state
+
+    def add_alias(self, *, participant_id: int, alias_name: str, normalized_name: str,
+                  provider: str, raw_ref, seen_at) -> None:
+        self._aliases[(participant_id, normalized_name, provider)] = {
+            "participant_id": participant_id,
+            "alias_name": alias_name,
+            "normalized_name": normalized_name,
+            "provider": provider,
+            "raw_ref": raw_ref,
+            "first_seen": seen_at,
+            "last_seen": seen_at,
+        }
+
+    def get_collector_state(self, collector_key: str = "tt_collector") -> dict[str, object] | None:
+        row = self._collector_state.get(collector_key)
+        return dict(row) if row is not None else None
+
+    def set_collector_state(
+        self,
+        *,
+        collector_key: str = "tt_collector",
+        last_cycle_at=None,
+        last_scores_poll_at=None,
+        last_odds_poll_at=None,
+        next_odds_poll_at=None,
+        odds_interval_seconds=None,
+        quota_status: str | None = None,
+        last_quota_remaining=None,
+        last_quota_used=None,
+        last_quota_last=None,
+        last_error=None,
+    ) -> None:
+        row = self._collector_state.setdefault(collector_key, {})
+        row.update(
+            {
+                "collector_key": collector_key,
+                "status": quota_status,
+                "last_cycle_at": last_cycle_at,
+                "last_quota_remaining": last_quota_remaining,
+                "last_quota_used": last_quota_used,
+                "last_quota_last": last_quota_last,
+                "detail": last_error,
+                "last_error": last_error,
+            }
+        )
+
+    def insert_feature_snapshot(self, *, event_key, prediction_ts, feature_schema_version,
+                                feature_code_version, source_observation_ids, payload) -> int:
+        self._snapshot_seq += 1
+        self._snapshots[self._snapshot_seq] = {
+            "snapshot_id": self._snapshot_seq, "event_key": event_key,
+            "prediction_ts": prediction_ts,
+            "feature_schema_version": feature_schema_version,
+            "feature_code_version": feature_code_version,
+            "source_observation_ids": list(source_observation_ids or []),
+            "payload": payload,
+        }
+        return self._snapshot_seq
+
+    def feature_snapshot_by_id(self, snapshot_id: int) -> dict[str, object] | None:
+        row = self._snapshots.get(snapshot_id)
+        return dict(row) if row is not None else None
+
+    def insert_prediction(self, record) -> UUID:
+        self._predictions[record.prediction_id] = _asdict(record)
+        return record.prediction_id
+
+    def prediction_by_id(self, prediction_id: UUID) -> dict[str, object] | None:
+        row = self._predictions.get(prediction_id)
+        return dict(row) if row is not None else None
+
+    def predictions_for_event(self, event_key: str, limit: int = 100) -> list[dict[str, object]]:
+        rows = [dict(row) for row in self._predictions.values() if row["event_key"] == event_key]
+        return list(reversed(rows[-limit:]))
+
+    def catalog_predictions(self, limit: int = 200) -> list[dict[str, object]]:
+        rows = list(self._predictions.values())
+        return [dict(row) for row in reversed(rows[-limit:])]
+
+    def open_predictions(self) -> list[dict[str, object]]:
+        settled = {row["prediction_id"] for row in self._settlements}
+        return [
+            {"prediction_id": key, "event_key": row["event_key"], "decision": row["decision"]}
+            for key, row in self._predictions.items()
+            if key not in settled
+        ]
+
+    def insert_amendment(self, prediction_id: UUID, reason: str, payload) -> None:
+        pass
+
+    def insert_settlement(self, record) -> bool:
+        key = (record.prediction_id, record.source_raw_ref)
+        if any((row["prediction_id"], row["source_raw_ref"]) == key for row in self._settlements):
+            return False
+        self._settlements.append({**_asdict(record), "settlement_id": len(self._settlements) + 1})
+        return True
+
+    def settlements_for_prediction(self, prediction_id: UUID) -> list[dict[str, object]]:
+        return [dict(row) for row in self._settlements if row["prediction_id"] == prediction_id]
+
+    def catalog_settlements(self, limit: int = 500) -> list[dict[str, object]]:
+        rows = list(self._settlements)
+        return [dict(row) for row in reversed(rows[-limit:])]
+
+    def insert_shadow(self, record) -> None:
+        self._shadows.append({**_asdict(record), "shadow_id": len(self._shadows) + 1})
+
+    def shadows_for_event(self, event_key: str) -> list[dict[str, object]]:
+        return [dict(row) for row in self._shadows if row["event_key"] == event_key]
+
+    def insert_research_entry(self, entry) -> int:
+        self._ledger.append({**_asdict(entry), "entry_id": len(self._ledger) + 1})
+        return len(self._ledger)
+
+    def catalog_ledger(self, limit: int = 200) -> list[dict[str, object]]:
+        rows = list(self._ledger)
+        return [dict(row) for row in reversed(rows[-limit:])]
+
+
+def _asdict(record) -> dict[str, object]:
+    from dataclasses import asdict
+
+    return asdict(record)

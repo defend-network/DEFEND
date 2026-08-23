@@ -20,7 +20,7 @@ from .settings import ControlSettings
 from .types import ModelMode
 
 
-_SERVICE_PORTS = (3000, 8000, 8001)
+_SERVICE_PORTS = (3000, 8000, 8402)
 _COMMON_REQUIRED_SECRETS = frozenset(
     {
         "DEFEND_OWNER_PASS",
@@ -485,14 +485,14 @@ class PreflightRunner:
                     settings.model_port,
                 )
                 == _SERVICE_PORTS,
-                "Service ports are 3000/8000/8001"
+                "Service ports are 3000/8000/8402"
                 if (
                     settings.web_port,
                     settings.api_port,
                     settings.model_port,
                 )
                 == _SERVICE_PORTS
-                else "Service ports must be 3000/8000/8001",
+                else "Service ports must be 3000/8000/8402",
                 None
                 if (
                     settings.web_port,

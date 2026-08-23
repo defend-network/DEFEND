@@ -1,0 +1,14 @@
+{
+  "auth_scheme": "X-RapidAPI-Key + X-RapidAPI-Host",
+  "capability_summary": "Daily/live events, schedules, scorelines, incidents, historical form, H2H, streaks, win probability, odds snapshots, TV listings. Host tabletennisapi.p.rapidapi.com.",
+  "contract_type": "official_docs",
+  "endpoint_count": null,
+  "notes": "AllSports family (fluis.lacasse); shares path/models with allsportsapi2/allscores listings.",
+  "provider_id": "rapidapi_tabletennis",
+  "provider_version_if_known": "v1",
+  "rate_limit_notes": null,
+  "retrieved_at": "2026-08-20T14:43:32Z",
+  "schema_version": null,
+  "sha256": null,
+  "source_url_or_origin": "https://rapidapi.com/fluis.lacasse/api/tabletennisapi"
+}

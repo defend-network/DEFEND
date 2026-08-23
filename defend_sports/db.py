@@ -8,6 +8,9 @@ from typing import Any, Iterator
 
 _MIGRATIONS = (
     (1, Path(__file__).with_name("migrations") / "0001_foundation.sql"),
+    (2, Path(__file__).with_name("migrations") / "0002_quota_discovery.sql"),
+    (3, Path(__file__).with_name("migrations") / "0003_backfill.sql"),
+    (4, Path(__file__).with_name("migrations") / "0004_raw_provider_uniqueness.sql"),
 )
 
 

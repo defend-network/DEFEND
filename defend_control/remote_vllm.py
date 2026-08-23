@@ -6,8 +6,10 @@ from dataclasses import dataclass
 from pathlib import Path
 import re
 import shlex
+import sys
 from typing import Protocol
 
+from .model_registry import ADAPTER_REPO
 from .processes import ProcessSpec
 from .settings import ControlSettings
 from .ssh_tunnel import CommandResult, run_command
@@ -75,7 +77,7 @@ def _validate_adapter(adapter: AdapterSpec) -> None:
     if not isinstance(adapter, AdapterSpec):
         raise ValueError("adapter must be an AdapterSpec")
     if (
-        adapter.adapter_repo != "Defend-network/defend-qwen-32b-lora"
+        adapter.adapter_repo != ADAPTER_REPO
         or adapter.peft_type != "LORA"
         or not _REPOSITORY.fullmatch(adapter.base_repo)
         or not _REVISION.fullmatch(adapter.adapter_revision)
@@ -274,9 +276,11 @@ def build_remote_process_specs(
     settings: ControlSettings,
     secrets: Mapping[str, str],
     model_ready: ModelReady,
+    adapter: AdapterSpec | None = None,
 ) -> RemoteProcessSpecs:
+    model_forward = f"http://127.0.0.1:{settings.model_port}/v1"
     if model_ready != ModelReady(
-        "defend-ai", "openai_compatible", "http://127.0.0.1:8001/v1"
+        "defend-ai", "openai_compatible", model_forward
     ):
         raise ValueError("remote process specs require verified loopback vLLM")
     vllm_key = secrets.get("VLLM_API_KEY")
@@ -287,12 +291,22 @@ def build_remote_process_specs(
         for name, value in secrets.items()
         if name in _API_ENV_NAMES and isinstance(value, str) and value
     }
+    adapter_env: dict[str, str] = {}
+    if adapter is not None:
+        _validate_adapter(adapter)
+        adapter_env = {
+            "DEFEND_MODEL_ADAPTER_REPO": adapter.adapter_repo,
+            "DEFEND_MODEL_ADAPTER_REVISION": adapter.adapter_revision,
+            "DEFEND_MODEL_BASE_REPO": adapter.base_repo,
+            "DEFEND_MODEL_BASE_REVISION": adapter.base_revision,
+        }
     api_env = {
+        "DEFEND_API_MODE": "defend_ai",
         "DEFEND_MODEL_BACKEND": "openai_compatible",
         "DEFEND_MODEL": "defend-ai",
         "DEFEND_MODEL_BASE_URL": model_ready.endpoint,
         "DEFEND_MODEL_API_KEY": vllm_key,
-        "DEFEND_API_PORT": "8000",
+        "DEFEND_API_PORT": str(settings.defend_ai_api_port),
         "DEFEND_OWNER_USER": "MASSA",
         "DEFEND_OWNER_EMAIL": "chairman@defend-network.org",
         "DEFEND_ADMIN_SESSION_HOURS": "12",
@@ -309,16 +323,19 @@ def build_remote_process_specs(
         "DEFEND_CORS_ORIGINS": settings.public_web_origin,
         "DEFEND_TRUST_CLOUDFLARE": "true",
         "DEFEND_COOKIE_SECURE": "true",
+        **adapter_env,
         **secret_env,
     }
     repo = settings.repo_root
+    api_port = settings.defend_ai_api_port
+    python = sys.executable
     return RemoteProcessSpecs(
         api=ProcessSpec(
             "api",
-            (str(repo / ".venv" / "Scripts" / "python.exe"), "api_server.py"),
+            (python, "api_server.py"),
             repo,
             api_env,
-            "http://127.0.0.1:8000/health",
+            f"http://127.0.0.1:{api_port}/health",
         ),
         web=ProcessSpec(
             "web",

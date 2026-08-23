@@ -394,31 +394,24 @@ class StackOrchestrator:
         self._adopt_shared_surface = bool(adopt_shared_surface)
 
     def _shared_surface_ports(self) -> frozenset[int]:
-        """Ports already served by a healthy shared admin surface.
+        """Ports owned by the healthy shared admin surface.
 
-        The Control Center owns the web/admin surface (api + web); when both
-        are healthy the DEFEND AI stack adopts them instead of starting
-        duplicates and instead of failing the port-availability preflight.
+        The Control Center owns the admin API (:8000) and the shared web UI
+        (:3000). DEFEND AI is a product runtime: it starts its own product API
+        on the product port (:8401) and only adopts the shared web frontend so
+        it never duplicates it.
         """
         if not self._adopt_shared_surface:
             return frozenset()
         probe_timeout = min(2.0, self._health_timeout_seconds)
-        api_ok = bool(
-            self._health_probe(
-                f"http://127.0.0.1:{self._settings.api_port}/health",
-                probe_timeout,
-            ).ok
-        )
         web_ok = bool(
             self._health_probe(
                 f"http://127.0.0.1:{self._settings.web_port}/",
                 probe_timeout,
             ).ok
         )
-        if api_ok and web_ok:
-            return frozenset(
-                {self._settings.api_port, self._settings.web_port}
-            )
+        if web_ok:
+            return frozenset({self._settings.web_port, self._settings.api_port})
         return frozenset()
 
     def _clear_replacement(self) -> None:
@@ -567,6 +560,17 @@ class StackOrchestrator:
             self._vast_adapter = self._huggingface_client.resolve_adapter(
                 self._settings.adapter_repo, secrets["HF_TOKEN"]
             )
+        # Fail closed on adapter/runtime base mismatch before any provisioning.
+        verify = getattr(
+            self._huggingface_client, "verify_deployment_compatibility", None
+        )
+        if callable(verify):
+            try:
+                verify(self._vast_adapter, secrets["HF_TOKEN"])
+            except Exception as error:
+                raise StartFailed(
+                    "model", f"adapter/runtime base mismatch: {error}"
+                ) from None
         self._check_cancelled(cancellation)
         if not self._ssh_key_registered:
             public_key = self._ssh_tunnel.ensure_identity()
@@ -704,7 +708,7 @@ class StackOrchestrator:
         self._check_cancelled(cancellation)
         try:
             ready = self._model_probe.wait_ready(
-                "http://127.0.0.1:8001/v1",
+                f"http://127.0.0.1:{self._settings.model_port}/v1",
                 secrets["VLLM_API_KEY"],
                 model="defend-ai",
                 cancelled=cancellation.is_cancelled,
@@ -717,7 +721,9 @@ class StackOrchestrator:
             raise
         self._check_cancelled(cancellation)
         self._set_component("model", "ready")
-        return build_remote_process_specs(self._settings, secrets, ready)
+        return build_remote_process_specs(
+            self._settings, secrets, ready, adapter=self._vast_adapter
+        )
 
     def _wait_healthy(
         self,
@@ -864,7 +870,7 @@ class StackOrchestrator:
 
             self._set_state("starting")
 
-            if self._settings.api_port in adopted:
+            if self._settings.defend_ai_api_port in adopted:
                 self._set_component("api", "ready (shared)")
             else:
                 self._set_component("api", "starting")

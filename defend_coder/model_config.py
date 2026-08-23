@@ -10,9 +10,23 @@ CODER_MODEL_NAME_ENV = "CODER_MODEL_NAME"
 CODER_MODEL_BASE_URL_ENV = "CODER_MODEL_BASE_URL"
 CODER_MODEL_API_KEY_ENV = "CODER_MODEL_API_KEY"
 CODER_MODEL_API_KEY_FILE_ENV = "CODER_MODEL_API_KEY_FILE"
+CODER_MODEL_TIMEOUT_SECONDS_ENV = "CODER_MODEL_TIMEOUT_SECONDS"
+CODER_MODEL_CONNECT_TIMEOUT_SECONDS_ENV = "CODER_MODEL_CONNECT_TIMEOUT_SECONDS"
 
 DEFAULT_MODEL_ALIAS = "defendcoder-heavy"
 DEFAULT_MODEL_NAME = "Qwen/Qwen3-Coder-Next"
+
+#: One authoritative inference-timeout policy. Measured Qwen3-Coder-Next
+#: decode is ~9-10 tok/s; a full 4,096-token tool generation needs ~400s,
+#: so the default budget comfortably covers a 3,500-4,096-token call. The
+#: connection budget is separate: a slow healthy decode is not the same as
+#: an unreachable endpoint, and each gets its own bound.
+DEFAULT_MODEL_TIMEOUT_SECONDS = 600.0
+DEFAULT_MODEL_CONNECT_TIMEOUT_SECONDS = 15.0
+MODEL_TIMEOUT_MIN_SECONDS = 10.0
+MODEL_TIMEOUT_MAX_SECONDS = 3600.0
+CONNECT_TIMEOUT_MIN_SECONDS = 1.0
+CONNECT_TIMEOUT_MAX_SECONDS = 120.0
 
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 
@@ -43,12 +57,38 @@ class CoderModelConfig:
     base_url: str | None = None
     api_key: str | None = field(default=None, repr=False)
     requires_api_key: bool = False
+    timeout_seconds: float = DEFAULT_MODEL_TIMEOUT_SECONDS
+    connect_timeout_seconds: float = DEFAULT_MODEL_CONNECT_TIMEOUT_SECONDS
 
     def __post_init__(self) -> None:
         if not isinstance(self.alias, str) or not self.alias.strip():
             raise ValueError("model alias must not be empty")
         if not isinstance(self.model_name, str) or not self.model_name.strip():
             raise ValueError("model_name must not be empty")
+        if (
+            isinstance(self.timeout_seconds, bool)
+            or not isinstance(self.timeout_seconds, (int, float))
+            or not MODEL_TIMEOUT_MIN_SECONDS
+            <= float(self.timeout_seconds)
+            <= MODEL_TIMEOUT_MAX_SECONDS
+        ):
+            raise ValueError(
+                f"CODER_MODEL_TIMEOUT_SECONDS must be between "
+                f"{MODEL_TIMEOUT_MIN_SECONDS:.0f} and "
+                f"{MODEL_TIMEOUT_MAX_SECONDS:.0f} seconds"
+            )
+        if (
+            isinstance(self.connect_timeout_seconds, bool)
+            or not isinstance(self.connect_timeout_seconds, (int, float))
+            or not CONNECT_TIMEOUT_MIN_SECONDS
+            <= float(self.connect_timeout_seconds)
+            <= CONNECT_TIMEOUT_MAX_SECONDS
+        ):
+            raise ValueError(
+                f"CODER_MODEL_CONNECT_TIMEOUT_SECONDS must be between "
+                f"{CONNECT_TIMEOUT_MIN_SECONDS:.0f} and "
+                f"{CONNECT_TIMEOUT_MAX_SECONDS:.0f} seconds"
+            )
         if self.base_url is not None:
             if not isinstance(self.base_url, str) or not self.base_url.strip():
                 raise ValueError("model base_url must not be empty")
@@ -91,10 +131,33 @@ def load_model_config() -> CoderModelConfig:
     requires = api_key is not None or bool(
         os.environ.get(CODER_MODEL_API_KEY_ENV)
     )
+    timeout_seconds = os.environ.get(CODER_MODEL_TIMEOUT_SECONDS_ENV)
+    connect_timeout_seconds = os.environ.get(
+        CODER_MODEL_CONNECT_TIMEOUT_SECONDS_ENV
+    )
+
+    def _parse(value: str | None, default: float, name: str) -> float:
+        if value is None or not value.strip():
+            return default
+        try:
+            return float(value)
+        except ValueError:
+            raise ValueError(f"{name} is not a number") from None
+
     return CoderModelConfig(
         alias=alias,
         model_name=model_name,
         base_url=base_url,
         api_key=api_key,
         requires_api_key=requires,
+        timeout_seconds=_parse(
+            timeout_seconds,
+            DEFAULT_MODEL_TIMEOUT_SECONDS,
+            CODER_MODEL_TIMEOUT_SECONDS_ENV,
+        ),
+        connect_timeout_seconds=_parse(
+            connect_timeout_seconds,
+            DEFAULT_MODEL_CONNECT_TIMEOUT_SECONDS,
+            CODER_MODEL_CONNECT_TIMEOUT_SECONDS_ENV,
+        ),
     )

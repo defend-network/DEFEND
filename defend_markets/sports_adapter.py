@@ -60,6 +60,10 @@ class SportsDataReader(Protocol):
         self, event_key: str, market_key: str
     ) -> list[SportsSelectionQuote]: ...
 
+    def odds_history(
+        self, event_key: str, market_key: str, before: datetime | None = None
+    ) -> list[SportsSelectionQuote]: ...
+
     def provider_health(self) -> dict[str, Mapping[str, object]]: ...
 
     def pit_availability(self) -> PitAvailability: ...
@@ -124,6 +128,36 @@ class PostgresSportsDataReader:
                     }
                     for row in cursor.fetchall()
                 ]
+
+    def tt_event_participants(self, event_key: str) -> list[str]:
+        """Real participant display names for an event, from the provider's raw payload.
+
+        The Odds API odds payloads carry ``home_team`` / ``away_team`` names;
+        they are read from the latest raw event for the provider root source
+        and returned verbatim. Empty when no raw payload exists.
+        """
+        with self._database.connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT r.payload
+                    FROM raw_provider_events r
+                    JOIN sport_events e ON e.event_key = %s
+                    WHERE r.payload->>'id' = %s OR r.payload->>'match_id' = %s
+                    ORDER BY r.received_at DESC
+                    LIMIT 1
+                    """,
+                    (event_key, event_key, event_key),
+                )
+                row = cursor.fetchone()
+        if row is None or not isinstance(row[0], dict):
+            return []
+        names: list[str] = []
+        for key in ("home_team", "away_team"):
+            value = row[0].get(key)
+            if isinstance(value, str) and value.strip():
+                names.append(value.strip())
+        return names
 
     def latest_live_state(self, event_key: str) -> dict[str, object] | None:
         """Latest raw live observation for an event, passed through untouched.
@@ -218,6 +252,67 @@ class PostgresSportsDataReader:
                     for row in cursor.fetchall()
                 ]
 
+    def odds_history(
+        self, event_key: str, market_key: str, before: datetime | None = None
+    ) -> list[SportsSelectionQuote]:
+        """All append-only odds snapshots for an event/market, newest first.
+
+        ``before`` bounds the rows to observations strictly older than it
+        (point-in-time firewall and closing-line capture).
+        """
+        with self._database.connect() as connection:
+            with connection.cursor() as cursor:
+                if before is not None:
+                    cursor.execute(
+                        """
+                        SELECT sel.selection_key, sel.display_name, sel.selection_id,
+                               o.decimal_odds, o.observed_at, o.received_at, ps.source_key,
+                               rp.provider_event_id
+                        FROM odds_snapshots o
+                        JOIN selections sel ON sel.selection_id = o.selection_id
+                        JOIN markets m ON m.market_id = sel.market_id
+                        JOIN sport_events e ON e.event_id = m.event_id
+                        JOIN provider_sources ps ON ps.source_id = o.source_id
+                        JOIN raw_provider_events rp ON rp.raw_event_id = o.raw_event_id
+                        WHERE e.event_key = %s AND m.market_key = %s AND o.observed_at < %s
+                        ORDER BY o.observed_at DESC, o.odds_snapshot_id DESC
+                        """,
+                        (event_key, market_key, before),
+                    )
+                else:
+                    cursor.execute(
+                        """
+                        SELECT sel.selection_key, sel.display_name, sel.selection_id,
+                               o.decimal_odds, o.observed_at, o.received_at, ps.source_key,
+                               rp.provider_event_id
+                        FROM odds_snapshots o
+                        JOIN selections sel ON sel.selection_id = o.selection_id
+                        JOIN markets m ON m.market_id = sel.market_id
+                        JOIN sport_events e ON e.event_id = m.event_id
+                        JOIN provider_sources ps ON ps.source_id = o.source_id
+                        JOIN raw_provider_events rp ON rp.raw_event_id = o.raw_event_id
+                        WHERE e.event_key = %s AND m.market_key = %s
+                        ORDER BY o.observed_at DESC, o.odds_snapshot_id DESC
+                        """,
+                        (event_key, market_key),
+                    )
+                return [
+                    SportsSelectionQuote(
+                        selection_key=row[0],
+                        display_name=row[1],
+                        selection_id=str(row[2]),
+                        decimal_odds=row[3],
+                        provenance=ProvenanceStamp(
+                            source_key=row[6],
+                            observed_at=row[4],
+                            received_at=row[5],
+                            raw_ref=row[7],
+                            normalization_version=None,
+                        ),
+                    )
+                    for row in cursor.fetchall()
+                ]
+
     def provider_health(self) -> dict[str, Mapping[str, object]]:
         with self._database.connect() as connection:
             with connection.cursor() as cursor:
@@ -234,6 +329,54 @@ class PostgresSportsDataReader:
                     row[0]: {"status": row[1], "observed_at": row[2]}
                     for row in cursor.fetchall()
                 }
+
+    def quota_status(self, provider: str = "the_odds_api") -> dict[str, object] | None:
+        """Latest persisted provider quota observation (from response headers)."""
+        with self._database.connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT q.requests_remaining, q.requests_used, q.requests_last,
+                           q.status, q.observed_at, q.received_at
+                    FROM provider_quota q
+                    JOIN provider_sources ps ON ps.source_id = q.source_id
+                    WHERE ps.provider_name = %s
+                    ORDER BY q.quota_id DESC
+                    LIMIT 1
+                    """,
+                    (provider,),
+                )
+                row = cursor.fetchone()
+        if row is None:
+            return None
+        return {
+            "requests_remaining": row[0],
+            "requests_used": row[1],
+            "requests_last": row[2],
+            "status": row[3],
+            "observed_at": row[4],
+            "received_at": row[5],
+        }
+
+    def latest_discovery(self, provider: str = "the_odds_api") -> dict[str, object] | None:
+        """Latest persisted sport discovery snapshot (free endpoint, cached)."""
+        with self._database.connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT d.payload, d.observed_at, d.received_at
+                    FROM provider_discovery d
+                    JOIN provider_sources ps ON ps.source_id = d.source_id
+                    WHERE ps.provider_name = %s
+                    ORDER BY d.discovery_id DESC
+                    LIMIT 1
+                    """,
+                    (provider,),
+                )
+                row = cursor.fetchone()
+        if row is None or not isinstance(row[0], list):
+            return None
+        return {"payload": row[0], "observed_at": row[1], "received_at": row[2]}
 
     def pit_availability(self) -> PitAvailability:
         return _SPORTS_PIT_AVAILABILITY

@@ -1,0 +1,1162 @@
+{
+ "artifact": "TT_ODDSPAPI_PROBE_V1",
+ "run_at": "2026-08-18T23:43:04.053693+00:00",
+ "host": "api.oddspapi.io/v4 (the host the configured key authenticates on)",
+ "caps": {
+  "MAX_PROBE_REQUESTS": 150
+ },
+ "note_v5": "v5.oddspapi.io rejects the configured key (HTTP 401 invalid_api_key, verified 2026-08-18); v5 is the documented host with /fixtures/odds/historical + CLV endpoints",
+ "sport_id": {
+  "sportId": 25,
+  "slug": "table-tennis",
+  "sportName": "Table Tennis"
+ },
+ "tt_available": true,
+ "scores_sample": {
+  "czech-liga-pro|early_2025_08": {
+   "fixtureId": "id2503634962453688",
+   "tournament": "Czech Liga Pro",
+   "participants": [
+    "Svacha, Ondrej",
+    "Ruzicka, Jiri"
+   ],
+   "startTime": "2025-08-01T00:00:00.000Z",
+   "trueStartTime": "2025-08-01T00:00:23.000Z",
+   "trueEndTime": "2025-08-01T00:14:07.000Z",
+   "statusId": 2,
+   "periods": [
+    "fulltime",
+    "p1",
+    "p2",
+    "p3",
+    "p4",
+    "result"
+   ],
+   "result": {
+    "participant1Score": 1,
+    "participant2Score": 3,
+    "updatedAt": "2025-09-03T02:01:05.103096+00:00",
+    "startedAt": "2025-08-01T00:00:23+00:00"
+   },
+   "has_updatedAt": true
+  },
+  "czech-liga-pro|late_2025_12": {
+   "fixtureId": "id2503634966225722",
+   "tournament": "Czech Liga Pro",
+   "participants": [
+    "Regner, Michal",
+    "Hofman, Denis"
+   ],
+   "startTime": "2025-12-01T00:00:00.000Z",
+   "trueStartTime": "2025-12-01T00:01:16.339Z",
+   "trueEndTime": "2025-12-01T00:26:04.862Z",
+   "statusId": 2,
+   "periods": [
+    "fulltime",
+    "p1",
+    "p2",
+    "p3",
+    "p4",
+    "p5",
+    "result"
+   ],
+   "result": {
+    "participant1Score": 2,
+    "participant2Score": 3,
+    "updatedAt": "2025-12-01T00:26:04.829978+00:00",
+    "startedAt": "2025-12-01T00:00:14+00:00"
+   },
+   "has_updatedAt": true
+  },
+  "czech-liga-pro|mid_2026_03": {
+   "fixtureId": "id2503634969340120",
+   "tournament": "Czech Liga Pro",
+   "participants": [
+    "Hasmanda, Rostislav",
+    "Dolezal, Vaclav"
+   ],
+   "startTime": "2026-03-01T00:00:00.000Z",
+   "trueStartTime": "2026-02-28T23:59:47.469Z",
+   "trueEndTime": "2026-03-01T00:18:06.499Z",
+   "statusId": 2,
+   "periods": [
+    "fulltime",
+    "p1",
+    "p2",
+    "p3",
+    "p4",
+    "result"
+   ],
+   "result": {
+    "participant1Score": 3,
+    "participant2Score": 1,
+    "updatedAt": "2026-03-01T00:18:06.467576+00:00",
+    "startedAt": "2026-03-01T00:00:03+00:00"
+   },
+   "has_updatedAt": true
+  },
+  "czech-liga-pro|recent_2026_08": {
+   "fixtureId": "id2503634973488400",
+   "tournament": "Czech Liga Pro",
+   "participants": [
+    "Sobisek, Martin",
+    "Chlebecek, Marek"
+   ],
+   "startTime": "2026-08-08T00:00:00.000Z",
+   "trueStartTime": "2026-08-08T00:00:13.000Z",
+   "trueEndTime": "2026-08-08T00:30:21.000Z",
+   "statusId": 2,
+   "periods": [
+    "fulltime",
+    "p1",
+    "p2",
+    "p3",
+    "p4",
+    "p5",
+    "result"
+   ],
+   "result": {
+    "participant1Score": 3,
+    "participant2Score": 2,
+    "updatedAt": "2026-08-08T00:32:55.953623+00:00",
+    "startedAt": "2026-08-08T00:00:13+00:00"
+   },
+   "has_updatedAt": true
+  },
+  "tt-cup|early_2025_08": {
+   "fixtureId": "id2503212962494566",
+   "tournament": "TT Cup",
+   "participants": [
+    "Domagala, Pawel",
+    "Wiekiera, Arkadiusz"
+   ],
+   "startTime": "2025-08-01T00:00:00.000Z",
+   "trueStartTime": "2025-08-01T00:00:41.000Z",
+   "trueEndTime": "2025-08-01T00:17:37.000Z",
+   "statusId": 2,
+   "periods": [
+    "fulltime",
+    "p1",
+    "p2",
+    "p3",
+    "p4",
+    "result"
+   ],
+   "result": {
+    "participant1Score": 3,
+    "participant2Score": 1,
+    "updatedAt": "2025-09-03T02:08:35.375967+00:00",
+    "startedAt": "2025-08-01T00:00:41+00:00"
+   },
+   "has_updatedAt": true
+  },
+  "tt-cup|late_2025_12": {
+   "fixtureId": "id2503212966276620",
+   "tournament": "TT Cup",
+   "participants": [
+    "Stojek, Karol",
+    "Caban, Jakub"
+   ],
+   "startTime": "2025-12-01T00:00:00.000Z",
+   "trueStartTime": "2025-12-01T00:01:15.449Z",
+   "trueEndTime": "2025-12-01T00:24:04.289Z",
+   "statusId": 2,
+   "periods": [
+    "fulltime",
+    "p1",
+    "p2",
+    "p3",
+    "p4",
+    "p5",
+    "result"
+   ],
+   "result": {
+    "participant1Score": 3,
+    "participant2Score": 2,
+    "updatedAt": "2025-12-01T00:24:04.258054+00:00",
+    "startedAt": "2025-12-01T00:00:25+00:00"
+   },
+   "has_updatedAt": true
+  },
+  "tt-cup|mid_2026_03": {
+   "fixtureId": "id2503212969411678",
+   "tournament": "TT Cup",
+   "participants": [
+    "Guzy, Karol",
+    "Bilski, Bartosz"
+   ],
+   "startTime": "2026-03-01T00:05:00.000Z",
+   "trueStartTime": "2026-03-01T00:06:20.007Z",
+   "trueEndTime": "2026-03-01T00:24:31.313Z",
+   "statusId": 2,
+   "periods": [
+    "fulltime",
+    "p1",
+    "p2",
+    "p3",
+    "p4",
+    "p5",
+    "result"
+   ],
+   "result": {
+    "participant1Score": 3,
+    "participant2Score": 2,
+    "updatedAt": "2026-03-01T00:24:31.282274+00:00",
+    "startedAt": "2026-03-01T00:05:20+00:00"
+   },
+   "has_updatedAt": true
+  },
+  "tt-cup|recent_2026_08": {
+   "fixtureId": "id2503212973530802",
+   "tournament": "TT Cup",
+   "participants": [
+    "Chaloupka, Frantisek",
+    "Kleprlik, Kamil"
+   ],
+   "startTime": "2026-08-08T05:40:00.000Z",
+   "trueStartTime": "2026-08-08T05:41:34.000Z",
+   "trueEndTime": "2026-08-08T06:01:17.000Z",
+   "statusId": 2,
+   "periods": [
+    "fulltime",
+    "p1",
+    "p2",
+    "p3",
+    "p4",
+    "result"
+   ],
+   "result": {
+    "participant1Score": 1,
+    "participant2Score": 3,
+    "updatedAt": "2026-08-08T06:16:20.201783+00:00",
+    "startedAt": "2026-08-08T05:41:34+00:00"
+   },
+   "has_updatedAt": true
+  },
+  "tt-elite-series|early_2025_08": {
+   "fixtureId": "id2503637762452506",
+   "tournament": "TT Elite Series",
+   "participants": [
+    "Slosarczyk, Pawel",
+    "Nowak, Jakub"
+   ],
+   "startTime": "2025-08-01T00:00:00.000Z",
+   "trueStartTime": "2025-08-01T00:00:57.000Z",
+   "trueEndTime": "2025-08-01T00:19:36.000Z",
+   "statusId": 2,
+   "periods": [
+    "fulltime",
+    "p1",
+    "p2",
+    "p3",
+    "p4",
+    "p5",
+    "result"
+   ],
+   "result": {
+    "participant1Score": 3,
+    "participant2Score": 2,
+    "updatedAt": "2025-09-03T02:00:50.064911+00:00",
+    "startedAt": "2025-08-01T00:00:57+00:00"
+   },
+   "has_updatedAt": true
+  },
+  "tt-elite-series|late_2025_12": {
+   "fixtureId": "id2503637766236472",
+   "tournament": "TT Elite Series",
+   "participants": [
+    "Blocho, Przemyslaw",
+    "Kotwica, Dawid"
+   ],
+   "startTime": "2025-12-01T00:00:00.000Z",
+   "trueStartTime": "2025-12-01T00:02:13.701Z",
+   "trueEndTime": "2025-12-01T00:10:04.336Z",
+   "statusId": 2,
+   "periods": [
+    "fulltime",
+    "p1",
+    "p2",
+    "p3",
+    "result"
+   ],
+   "result": {
+    "participant1Score": 0,
+    "participant2Score": 3,
+    "updatedAt": "2025-12-01T00:10:04.304119+00:00",
+    "startedAt": "2025-12-01T00:01:25+00:00"
+   },
+   "has_updatedAt": true
+  },
+  "tt-elite-series|mid_2026_03": {
+   "fixtureId": "id2503637769331292",
+   "tournament": "TT Elite Series",
+   "participants": [
+    "Fabis, Adrian",
+    "Warpas, Blazej"
+   ],
+   "startTime": "2026-03-01T00:00:00.000Z",
+   "trueStartTime": "2026-02-28T23:59:52.178Z",
+   "trueEndTime": "2026-03-01T00:18:10.081Z",
+   "statusId": 2,
+   "periods": [
+    "fulltime",
+    "p1",
+    "p2",
+    "p3",
+    "p4",
+    "result"
+   ],
+   "result": {
+    "participant1Score": 3,
+    "participant2Score": 1,
+    "updatedAt": "2026-03-01T00:18:06.000746+00:00",
+    "startedAt": "2026-03-01T00:02:17+00:00"
+   },
+   "has_updatedAt": true
+  },
+  "tt-elite-series|recent_2026_08": {
+   "fixtureId": "id2503637773493654",
+   "tournament": "TT Elite Series",
+   "participants": [
+    "Krutak, Michal",
+    "Pyrek, Dawid"
+   ],
+   "startTime": "2026-08-08T00:00:00.000Z",
+   "trueStartTime": "2026-08-08T00:01:18.000Z",
+   "trueEndTime": "2026-08-08T00:16:15.000Z",
+   "statusId": 2,
+   "periods": [
+    "fulltime",
+    "p1",
+    "p2",
+    "p3",
+    "result"
+   ],
+   "result": {
+    "participant1Score": 3,
+    "participant2Score": 0,
+    "updatedAt": "2026-08-08T00:22:26.369555+00:00",
+    "startedAt": "2026-08-08T00:01:18+00:00"
+   },
+   "has_updatedAt": true
+  }
+ },
+ "odds_sample": [
+  {
+   "fixtureId": "id2503212973818554",
+   "tournamentSlug": "tt-cup",
+   "statusId": 0,
+   "startTime": "2026-08-18T20:25:00.000Z",
+   "status": 200,
+   "bookmakers": []
+  },
+  {
+   "fixtureId": "id2503637773795126",
+   "tournamentSlug": "tt-elite-series",
+   "statusId": 0,
+   "startTime": "2026-08-18T21:50:00.000Z",
+   "status": 200,
+   "bookmakers": []
+  },
+  {
+   "fixtureId": "id2503637773795130",
+   "tournamentSlug": "tt-elite-series",
+   "statusId": 0,
+   "startTime": "2026-08-18T21:55:00.000Z",
+   "status": 200,
+   "bookmakers": []
+  },
+  {
+   "fixtureId": "id2503637773805498",
+   "tournamentSlug": "tt-elite-series",
+   "statusId": 0,
+   "startTime": "2026-08-18T21:55:00.000Z",
+   "status": 200,
+   "bookmakers": []
+  },
+  {
+   "fixtureId": "id2503634973792478",
+   "tournamentSlug": "czech-liga-pro",
+   "statusId": 0,
+   "startTime": "2026-08-18T22:00:00.000Z",
+   "status": 200,
+   "bookmakers": []
+  },
+  {
+   "fixtureId": "id2503634973792758",
+   "tournamentSlug": "czech-liga-pro",
+   "statusId": 0,
+   "startTime": "2026-08-18T22:00:00.000Z",
+   "status": 200,
+   "bookmakers": []
+  },
+  {
+   "fixtureId": "id2503634973792792",
+   "tournamentSlug": "czech-liga-pro",
+   "statusId": 0,
+   "startTime": "2026-08-18T22:00:00.000Z",
+   "status": 200,
+   "bookmakers": []
+  },
+  {
+   "fixtureId": "id2503637773795132",
+   "tournamentSlug": "tt-elite-series",
+   "statusId": 0,
+   "startTime": "2026-08-18T22:00:00.000Z",
+   "status": 200,
+   "bookmakers": []
+  },
+  {
+   "fixtureId": "id2503637773795134",
+   "tournamentSlug": "tt-elite-series",
+   "statusId": 0,
+   "startTime": "2026-08-18T22:10:00.000Z",
+   "status": 200,
+   "bookmakers": []
+  },
+  {
+   "fixtureId": "id2503637773795136",
+   "tournamentSlug": "tt-elite-series",
+   "statusId": 0,
+   "startTime": "2026-08-18T22:10:00.000Z",
+   "status": 200,
+   "bookmakers": []
+  },
+  {
+   "fixtureId": "id2503637773795138",
+   "tournamentSlug": "tt-elite-series",
+   "statusId": 0,
+   "startTime": "2026-08-18T22:15:00.000Z",
+   "status": 200,
+   "bookmakers": []
+  },
+  {
+   "fixtureId": "id2503637773795140",
+   "tournamentSlug": "tt-elite-series",
+   "statusId": 0,
+   "startTime": "2026-08-18T22:20:00.000Z",
+   "status": 200,
+   "bookmakers": []
+  },
+  {
+   "fixtureId": "id2503637773795142",
+   "tournamentSlug": "tt-elite-series",
+   "statusId": 0,
+   "startTime": "2026-08-18T22:25:00.000Z",
+   "status": 200,
+   "bookmakers": []
+  },
+  {
+   "fixtureId": "id2503634973792620",
+   "tournamentSlug": "czech-liga-pro",
+   "statusId": 0,
+   "startTime": "2026-08-18T22:30:00.000Z",
+   "status": 200,
+   "bookmakers": []
+  },
+  {
+   "fixtureId": "id2503634973792790",
+   "tournamentSlug": "czech-liga-pro",
+   "statusId": 0,
+   "startTime": "2026-08-18T22:30:00.000Z",
+   "status": 200,
+   "bookmakers": []
+  },
+  {
+   "fixtureId": "id2503634973792822",
+   "tournamentSlug": "czech-liga-pro",
+   "statusId": 0,
+   "startTime": "2026-08-18T22:30:00.000Z",
+   "status": 200,
+   "bookmakers": []
+  },
+  {
+   "fixtureId": "id2503637773795146",
+   "tournamentSlug": "tt-elite-series",
+   "statusId": 0,
+   "startTime": "2026-08-18T22:35:00.000Z",
+   "status": 200,
+   "bookmakers": []
+  },
+  {
+   "fixtureId": "id2503637773795148",
+   "tournamentSlug": "tt-elite-series",
+   "statusId": 0,
+   "startTime": "2026-08-18T22:35:00.000Z",
+   "status": 200,
+   "bookmakers": []
+  },
+  {
+   "fixtureId": "id2503637773805500",
+   "tournamentSlug": "tt-elite-series",
+   "statusId": 0,
+   "startTime": "2026-08-18T22:35:00.000Z",
+   "status": 200,
+   "bookmakers": []
+  }
+ ],
+ "odds_changed_at": {
+  "present": 0,
+  "total_quotes": 0
+ },
+ "odds_price_range": {
+  "min": null,
+  "max": null
+ },
+ "tt_market_catalog": {
+  "total_markets_all_sports": 32815,
+  "tt_markets": 161,
+  "sample": [
+   {
+    "marketId": 251,
+    "name": "Winner",
+    "type": "moneyline",
+    "period": "result"
+   },
+   {
+    "marketId": 253,
+    "name": "Total Points",
+    "type": "totals-points",
+    "period": "result"
+   },
+   {
+    "marketId": 255,
+    "name": "Total Points",
+    "type": "totals-points",
+    "period": "result"
+   },
+   {
+    "marketId": 257,
+    "name": "Total Points",
+    "type": "totals-points",
+    "period": "result"
+   },
+   {
+    "marketId": 259,
+    "name": "Total Points",
+    "type": "totals-points",
+    "period": "result"
+   },
+   {
+    "marketId": 2511,
+    "name": "Total Points",
+    "type": "totals-points",
+    "period": "result"
+   },
+   {
+    "marketId": 2513,
+    "name": "Total Points",
+    "type": "totals-points",
+    "period": "result"
+   },
+   {
+    "marketId": 2515,
+    "name": "Total Points",
+    "type": "totals-points",
+    "period": "result"
+   },
+   {
+    "marketId": 2517,
+    "name": "Total Points",
+    "type": "totals-points",
+    "period": "result"
+   },
+   {
+    "marketId": 2519,
+    "name": "Total Points",
+    "type": "totals-points",
+    "period": "result"
+   },
+   {
+    "marketId": 2521,
+    "name": "Total Points",
+    "type": "totals-points",
+    "period": "result"
+   },
+   {
+    "marketId": 2523,
+    "name": "Total Points",
+    "type": "totals-points",
+    "period": "result"
+   },
+   {
+    "marketId": 2525,
+    "name": "Total Points",
+    "type": "totals-points",
+    "period": "result"
+   },
+   {
+    "marketId": 2527,
+    "name": "Total Points",
+    "type": "totals-points",
+    "period": "result"
+   },
+   {
+    "marketId": 2529,
+    "name": "Total Points",
+    "type": "totals-points",
+    "period": "result"
+   },
+   {
+    "marketId": 2531,
+    "name": "Total Points",
+    "type": "totals-points",
+    "period": "result"
+   },
+   {
+    "marketId": 2533,
+    "name": "Total Points",
+    "type": "totals-points",
+    "period": "result"
+   },
+   {
+    "marketId": 2535,
+    "name": "Total Points",
+    "type": "totals-points",
+    "period": "result"
+   },
+   {
+    "marketId": 2537,
+    "name": "Total Points",
+    "type": "totals-points",
+    "period": "result"
+   },
+   {
+    "marketId": 2539,
+    "name": "Total Points",
+    "type": "totals-points",
+    "period": "result"
+   }
+  ]
+ },
+ "bookmaker_catalog": {
+  "total": 351,
+  "live_odds": 281
+ },
+ "windows": {
+  "early_2025_08": {
+   "fixtures": 6612,
+   "finished": 6508,
+   "with_odds": 0
+  },
+  "late_2025_12": {
+   "fixtures": 6799,
+   "finished": 6583,
+   "with_odds": 0
+  },
+  "mid_2026_03": {
+   "fixtures": 7281,
+   "finished": 7191,
+   "with_odds": 0
+  },
+  "recent_2026_08": {
+   "fixtures": 7227,
+   "finished": 7093,
+   "with_odds": 0
+  },
+  "upcoming": {
+   "fixtures": 267,
+   "finished": 146,
+   "with_odds": 105
+  }
+ },
+ "competitions": {
+  "challenger-series": {
+   "finished": 289,
+   "with_odds": 0
+  },
+  "czech-liga-pro": {
+   "finished": 7156,
+   "with_odds": 0
+  },
+  "europe-smash-sweden-md": {
+   "finished": 23,
+   "with_odds": 0
+  },
+  "europe-smash-sweden-ms": {
+   "finished": 119,
+   "with_odds": 0
+  },
+  "europe-smash-sweden-wd": {
+   "finished": 23,
+   "with_odds": 0
+  },
+  "europe-smash-sweden-ws": {
+   "finished": 119,
+   "with_odds": 0
+  },
+  "europe-smash-sweden-xd": {
+   "finished": 23,
+   "with_odds": 0
+  },
+  "tt-cup": {
+   "finished": 6943,
+   "with_odds": 0
+  },
+  "tt-elite-series": {
+   "finished": 12145,
+   "with_odds": 0
+  },
+  "wtt-champions-chongqing-ms": {
+   "finished": 7,
+   "with_odds": 0
+  },
+  "wtt-champions-chongqing-ws": {
+   "finished": 6,
+   "with_odds": 0
+  },
+  "wtt-champions-yokohama-ms": {
+   "finished": 19,
+   "with_odds": 0
+  },
+  "wtt-champions-yokohama-ws": {
+   "finished": 19,
+   "with_odds": 0
+  },
+  "wtt-feeder-dusseldorf-md": {
+   "finished": 23,
+   "with_odds": 0
+  },
+  "wtt-feeder-dusseldorf-ms": {
+   "finished": 106,
+   "with_odds": 0
+  },
+  "wtt-feeder-dusseldorf-wd": {
+   "finished": 16,
+   "with_odds": 0
+  },
+  "wtt-feeder-dusseldorf-ws": {
+   "finished": 71,
+   "with_odds": 0
+  },
+  "wtt-feeder-dusseldorf-xd": {
+   "finished": 21,
+   "with_odds": 0
+  },
+  "wtt-feeder-otocec-md": {
+   "finished": 17,
+   "with_odds": 0
+  },
+  "wtt-feeder-otocec-ms": {
+   "finished": 71,
+   "with_odds": 0
+  },
+  "wtt-feeder-otocec-wd": {
+   "finished": 13,
+   "with_odds": 0
+  },
+  "wtt-feeder-otocec-ws": {
+   "finished": 42,
+   "with_odds": 0
+  },
+  "wtt-feeder-otocec-xd": {
+   "finished": 15,
+   "with_odds": 0
+  },
+  "wtt-feeder-spokane-ms": {
+   "finished": 62,
+   "with_odds": 0
+  },
+  "wtt-feeder-vientiane-md": {
+   "finished": 1,
+   "with_odds": 0
+  },
+  "wtt-feeder-vientiane-ms": {
+   "finished": 3,
+   "with_odds": 0
+  },
+  "wtt-feeder-vientiane-wd": {
+   "finished": 1,
+   "with_odds": 0
+  },
+  "wtt-feeder-vientiane-ws": {
+   "finished": 3,
+   "with_odds": 0
+  },
+  "wtt-feeder-vientiane-xd": {
+   "finished": 1,
+   "with_odds": 0
+  },
+  "wtt-finals-hong-kong-ms": {
+   "finished": 4,
+   "with_odds": 0
+  },
+  "wtt-finals-hong-kong-ws": {
+   "finished": 4,
+   "with_odds": 0
+  },
+  "wtt-finals-hong-kong-xd": {
+   "finished": 4,
+   "with_odds": 0
+  },
+  "wtt-singapore-smash": {
+   "finished": 3,
+   "with_odds": 0
+  },
+  "wtt-singapore-smash-women": {
+   "finished": 3,
+   "with_odds": 0
+  }
+ },
+ "historical_summary": {
+  "finished_fixtures_examined": 27375,
+  "finished_fixtures_with_odds": 0,
+  "odds_available_for_finished": "NO"
+ },
+ "live_odds_summary": {
+  "events_sampled": 19,
+  "events_with_odds": 0,
+  "median_bookmakers_per_event": null,
+  "min_bookmakers": null,
+  "max_bookmakers": null,
+  "single_snapshot": true,
+  "multi_snapshot": false
+ },
+ "timestamps": {
+  "fixture.startTime": "scheduled commence (ISO 8601) - COMMENCE_TIME (scheduled)",
+  "fixture.trueStartTime": "actual start (ISO) - COMMENCE_TIME (actual)",
+  "fixture.trueEndTime": "actual end (ISO)",
+  "fixture.updatedAt": "last update (ISO) - API_UPDATE_TIME",
+  "odds.outcome.changedAt": "gateway change timestamp (ISO) - OBSERVATION_TIME (per outcome, present on live odds)",
+  "scores.result.updatedAt": "settlement timestamp (ISO) - API_UPDATE_TIME",
+  "scores.result.startedAt": "actual start (ISO)",
+  "historical_odds_timestamps": "N/A - no historical odds exist on v4"
+ },
+ "rate_limit": {
+  "observed": "429 RATE_LIMITED after ~5 rapid requests; 2.5s spacing stable (no 429s)",
+  "quota_headers": "none returned on v4 responses"
+ },
+ "classification": {
+  "provider_classification": "LIVE_ONLY",
+  "MARKET_BASELINE_FEASIBLE": "NO - zero historical odds rows; no odds exist for finished fixtures",
+  "CLV_FEASIBLE": "NO (historical) - no pre-event snapshots exist; TRUE_CLOSE unattainable retrospectively; forward-only closing capture possible only via live polling",
+  "HISTORICAL_RESULTS": "YES - fixture lists (statusId=2, ISO commence/trueStart/trueEnd) + /v4/scores (result + period scores, settlement timestamps)",
+  "rationale": "Empirical: 13,839+ finished TT fixtures across 4 windows (2025-08/2025-12/2026-03/2026-08) all hasOdds=false; /v4/odds returns fixture meta only (no bookmakerOdds) for finished fixtures; odds removed at completion. Live pregame 82/90 and live 7/12 fixtures have full multi-bookmaker odds with per-outcome changedAt. No historical/multi-snapshot/CLV endpoints exist on v4 (404 verified).",
+  "v5_key_gate": "The configured key is v4-scoped; v5.oddspapi.io (the documented host with /fixtures/odds/historical + CLV) returns 401 invalid_api_key. Historical-odds capability may exist on v5 but is NOT reachable with the current key."
+ },
+ "owner_action_required": "1) If historical TT odds / CLV matter: obtain a v5-scoped OddsPapi key (v5 host serves /fixtures/odds/historical + CLV per docs) and re-run probe. 2) Otherwise: v4 supports LIVE_ONLY forward collection (pregame odds, multi-bookmaker, changedAt timestamps, results via /v4/scores) - does not unlock MARKET_BASELINE (needs historical odds vs frozen M5 outputs).",
+ "requests_used": 34,
+ "files_changed": [
+  "defend_integrations/adapters.py (OddsPapiAdapter: v4 URLs, UA headers, /v4/odds reachability call)",
+  "tests/test_oddspapi_setup_surface.py (URL assertions)"
+ ],
+ "canonical_matching": {
+  "SAMPLE_EVENTS": 120,
+  "MATCHED_EVENTS": 55,
+  "MATCH_RATE": 0.4583,
+  "AMBIGUOUS_MATCHES": 8,
+  "AMBIGUOUS_MATCH_RATE": 0.0667,
+  "UNMATCHED_EVENTS": 57,
+  "unmatched_reasons": {
+   "UNMATCHED_NO_CANONICAL_EVENT": 57
+  },
+  "by_era": {
+   "early_2025_08": {
+    "matched": 0,
+    "ambiguous": 0,
+    "unmatched": 40
+   },
+   "mid_2026_03": {
+    "matched": 27,
+    "ambiguous": 6,
+    "unmatched": 7
+   },
+   "recent_2026_08": {
+    "matched": 28,
+    "ambiguous": 2,
+    "unmatched": 10
+   }
+  },
+  "matched_examples": [
+   {
+    "provider_event_id": "id2503634969340120",
+    "participants": [
+     "Hasmanda, Rostislav",
+     "Dolezal, Vaclav"
+    ],
+    "competition": "czech-liga-pro",
+    "provider_commence_ts": "2026-03-01T00:00:00.000Z",
+    "canonical_event_id": "oaio:69340120",
+    "canonical_scores": [
+     3,
+     1
+    ],
+    "canonical_completed_at": "2026-02-28T19:00:00-05:00",
+    "match_method": "EXACT_NAMES+COMPETITION+COMMENCE_WINDOW",
+    "match_confidence": "HIGH"
+   },
+   {
+    "provider_event_id": "id2503634969389868",
+    "participants": [
+     "Kubat, Vladimir",
+     "Martinek, Jaroslav"
+    ],
+    "competition": "czech-liga-pro",
+    "provider_commence_ts": "2026-03-01T08:30:00.000Z",
+    "canonical_event_id": "oaio:69389868",
+    "canonical_scores": [
+     0,
+     3
+    ],
+    "canonical_completed_at": "2026-03-01T03:30:00-05:00",
+    "match_method": "EXACT_NAMES+COMPETITION+COMMENCE_WINDOW",
+    "match_confidence": "HIGH"
+   },
+   {
+    "provider_event_id": "id2503634969389814",
+    "participants": [
+     "Kulhanek, Pavel",
+     "Hruska, Vaclav Senior"
+    ],
+    "competition": "czech-liga-pro",
+    "provider_commence_ts": "2026-03-01T13:30:00.000Z",
+    "canonical_event_id": "oaio:69389814",
+    "canonical_scores": [
+     3,
+     2
+    ],
+    "canonical_completed_at": "2026-03-01T08:30:00-05:00",
+    "match_method": "EXACT_NAMES+COMPETITION+COMMENCE_WINDOW",
+    "match_confidence": "HIGH"
+   },
+   {
+    "provider_event_id": "id2503212969462514",
+    "participants": [
+     "Koutnik, Vojtech",
+     "Holik, Simon"
+    ],
+    "competition": "tt-cup",
+    "provider_commence_ts": "2026-03-02T13:25:00.000Z",
+    "canonical_event_id": "oaio:69462514",
+    "canonical_scores": [
+     1,
+     3
+    ],
+    "canonical_completed_at": "2026-03-02T08:25:00-05:00",
+    "match_method": "EXACT_NAMES+COMPETITION+COMMENCE_WINDOW",
+    "match_confidence": "HIGH"
+   },
+   {
+    "provider_event_id": "id2503634969490374",
+    "participants": [
+     "Mareda, Stanislav",
+     "Matysek, Vlastimil"
+    ],
+    "competition": "czech-liga-pro",
+    "provider_commence_ts": "2026-03-03T08:00:00.000Z",
+    "canonical_event_id": "oaio:69490374",
+    "canonical_scores": [
+     1,
+     3
+    ],
+    "canonical_completed_at": "2026-03-03T03:00:00-05:00",
+    "match_method": "EXACT_NAMES+COMPETITION+COMMENCE_WINDOW",
+    "match_confidence": "HIGH"
+   },
+   {
+    "provider_event_id": "id2503637769498222",
+    "participants": [
+     "Rus, Maksymilian",
+     "Adamus, Kacper"
+    ],
+    "competition": "tt-elite-series",
+    "provider_commence_ts": "2026-03-03T13:20:00.000Z",
+    "canonical_event_id": "oaio:69498222",
+    "canonical_scores": [
+     3,
+     2
+    ],
+    "canonical_completed_at": "2026-03-03T08:20:00-05:00",
+    "match_method": "EXACT_NAMES+COMPETITION+COMMENCE_WINDOW",
+    "match_confidence": "HIGH"
+   },
+   {
+    "provider_event_id": "id2503637769498566",
+    "participants": [
+     "Madej, Boguslaw",
+     "Juzek, Sebastian"
+    ],
+    "competition": "tt-elite-series",
+    "provider_commence_ts": "2026-03-03T18:05:00.000Z",
+    "canonical_event_id": "oaio:69498566",
+    "canonical_scores": [
+     3,
+     1
+    ],
+    "canonical_completed_at": "2026-03-03T13:05:00-05:00",
+    "match_method": "EXACT_NAMES+COMPETITION+COMMENCE_WINDOW",
+    "match_confidence": "HIGH"
+   },
+   {
+    "provider_event_id": "id2503634969540114",
+    "participants": [
+     "Pavelka, Radim",
+     "Nguyen, BA Hoang Tai"
+    ],
+    "competition": "czech-liga-pro",
+    "provider_commence_ts": "2026-03-04T08:00:00.000Z",
+    "canonical_event_id": "oaio:69540114",
+    "canonical_scores": [
+     3,
+     1
+    ],
+    "canonical_completed_at": "2026-03-04T03:00:00-05:00",
+    "match_method": "EXACT_NAMES+COMPETITION+COMMENCE_WINDOW",
+    "match_confidence": "HIGH"
+   }
+  ],
+  "canonical_coverage_start": "2025-12-08 (all three target leagues)",
+  "notes": "Identity coverage 38/40 (95%) for recent-era pairs; 0/40 in 2025-08 because canonical DB coverage starts 2025-12-08 (OddsPapi results history is DEEPER than canonical). Window-miss causes: same-pair rematches within tolerance (ambiguous, fail-closed) and settlement-lag (completed_at vs scheduled start)."
+ },
+ "phases": {
+  "phase_2_capability": {
+   "ODDSPAPI_AUTH": "OK (v4 host; v5 host 401)",
+   "TT_AVAILABLE": "YES (sportId 25, slug table-tennis)",
+   "SPORT_ID": 25,
+   "HISTORICAL_TT_ODDS": "NO",
+   "LIVE_TT_ODDS": "YES",
+   "HISTORICAL_RESULTS": "YES",
+   "BOOKMAKER_LEVEL_DATA": "YES (per-bookmaker odds + meta; 351 bookmakers, 281 liveOdds)",
+   "MULTIPLE_BOOKMAKERS": "YES (23-83 per pregame event)",
+   "MULTIPLE_SNAPSHOTS": "NO (single current state per request; no timeline endpoint)",
+   "OBSERVATION_TIMESTAMP_AVAILABLE": "YES (changedAt on 2,686/2,686 live quotes)",
+   "COMMENCE_TIMESTAMP_AVAILABLE": "YES (startTime ISO scheduled; trueStartTime actual)",
+   "EARLIEST_HISTORY": "results: 2025-08-01 (probed); odds: NONE",
+   "LATEST_HISTORY": "results: continuous to present; odds: NONE",
+   "RATE_LIMIT": "429 after ~5 rapid calls; 2.5s spacing stable",
+   "QUOTA_REMAINING": "UNKNOWN (no quota headers on v4)",
+   "REQUEST_COST": "free (no spend; key plan unknown)"
+  },
+  "phase_3_sample": {
+   "SAMPLE_EVENTS": 120,
+   "ODDS_ROWS": 0,
+   "BOOKMAKERS": "351 total, 281 with liveOdds",
+   "MEDIAN_BOOKMAKERS_PER_EVENT": 41.5,
+   "SINGLE_SNAPSHOT_EVENTS": "all (live odds single-snapshot only)",
+   "MULTI_SNAPSHOT_EVENTS": 0,
+   "MULTI_SNAPSHOT_RATE": 0.0
+  },
+  "phase_4_matching": "see canonical_matching",
+  "phase_5_timestamps": {
+   "TIMESTAMP_SEMANTICS": {
+    "startTime": "COMMENCE_TIME (scheduled, ISO)",
+    "trueStartTime": "COMMENCE_TIME (actual, ISO)",
+    "trueEndTime": "COMMENCE_TIME (end, ISO)",
+    "odds.changedAt": "OBSERVATION_TIME (gateway, ISO) - 100% present on live quotes",
+    "odds.bookmakerChangedAt": "OBSERVATION_TIME (bookmaker) - null in sample",
+    "scores.updatedAt": "API_UPDATE_TIME (settlement, ISO)",
+    "scores.startedAt": "COMMENCE_TIME (actual, ISO)"
+   },
+   "TIMESTAMP_COMPLETENESS": "results: 12/12 scores with updatedAt+startedAt; fixtures 100% startTime/trueStartTime/trueEndTime",
+   "POST_COMMENCE_CONTAMINATION": "N/A - no historical odds observations exist"
+  },
+  "phase_6_prematch_close": {
+   "VALID_PREMATCH_COVERAGE": "N/A (no historical odds)",
+   "VALID_CLOSE_COVERAGE": "N/A (no historical snapshots; TRUE_CLOSE requires evidence - unavailable)",
+   "LAST_VERIFIED_PREMATCH": "forward-only: poll pregame until start (T-24h/T-6h/T-1h/T-15m feasible with live collection)"
+  },
+  "phase_7_normalization": "N/A - no odds rows to normalize; decimal prices with priceFractional/priceAmerican in live payload",
+  "phase_8_classification": "see classification",
+  "phase_9_backfill": {
+   "AVAILABLE_HISTORY_RANGE": "odds: NONE; results: >=2025-08-01 (probed) to present",
+   "APPROX_EVENTS": "results-only: ~6,600-7,300 TT fixtures per 10 days across all competitions; target comps ~5,300/10d",
+   "REQUESTS_NEEDED": "odds: 0 (nothing to backfill); results: ~2,000-3,500 to cover 2025-08..present in target comps",
+   "MONTHLY_QUOTA": "UNKNOWN (no v4 quota headers)",
+   "MONTHS_OR_CYCLES_REQUIRED": "N/A",
+   "ESTIMATED_COST": "$0.00 (no odds rows exist to purchase)",
+   "EXPECTED_ODDS_ROWS": 0,
+   "EXPECTED_STORAGE": "0 odds rows; results-only marginal",
+   "FREE_TIER_SUFFICIENT": "N/A for odds (none exist)"
+  },
+  "phase_10_live_collection": {
+   "LIVE_COLLECTION_FEASIBLE": "YES - pregame odds served with 23-83 bookmakers/event and 100% changedAt",
+   "ESTIMATED_LIVE_COLLECTION_REQUESTS_DAY": "~1,000-1,500 (700-1,200 odds calls at 30-60min poll + 24-48 fixture-window polls)",
+   "ESTIMATED_LIVE_COLLECTION_COST": "$0.00 (unknown plan; no quota headers)",
+   "SMALLEST_LIVE_LOOP": [
+    "1. GET /v4/fixtures?sportId=25&from=now-2h&to=now+8h (ISO) every 30min -> pregame + hasOdds",
+    "2. GET /v4/odds?fixtureId=<id> per pregame fixture (2.5s spacing)",
+    "3. Store per-outcome changedAt (observation), price, bookmaker slug, fixture startTime (commence)",
+    "4. On statusId=2: GET /v4/scores?fixtureId=<id> -> settle; drop odds",
+    "5. Append-only, idempotent (fixtureId+outcome+changedAt unique), no betting"
+   ],
+   "NOTE": "In-play odds may 403 RESTRICTED_ACCESS for this key (prematch unaffected). Quota unknown on v4 - verify with owner's plan before sustained collection."
+  }
+ },
+ "test_results": {
+  "framework_test": "HEALTHY (badge HEALTHY; TT present=True; odds endpoint param contract enforced HTTP 400 on fixtureId=0)",
+  "backend": "69/69 setup+adapter tests passed (2026-08-18)",
+  "frontend": "118 passed (no UI changes this session)"
+ },
+ "correction_probe_2026_08_18": {
+  "directive": "URGENT CORRECTION from owner: official v4 docs list GET /v4/historical-odds (fixtureId required, bookmaker filter max 3, snapshots with createdAt + price, ETag on finished, data since January 2026, FREE/no quota increment)",
+  "result": {
+   "endpoint_exists_on_v4": true,
+   "auth_status": "OK (200 on other v4 calls; structured business 404 on query, not 401/endpoint-404)",
+   "valid_calls": 1,
+   "valid_call_detail": {
+    "fixtureId": "id2503637773493654",
+    "bookmakers": "pinnacle",
+    "http": 404,
+    "body": {
+     "error": {
+      "message": "No historical odds found.",
+      "code": "NOT_FOUND",
+      "details": "Please check the provided filters and try again."
+     }
+    }
+   },
+   "rate_limited_calls": 4,
+   "rate_limit_note": "429 RATE_LIMITED (wait ~4.5s) when fired in burst; script sleep bug (no spacing); retries need >=6s spacing",
+   "structured_404_semantics": "NOT the endpoint-does-not-exist 404; business 404 = endpoint exists and authenticated",
+   "raw_saved_sanitized": "C:/Users/thoma/AppData/Local/Temp/opencode/oddspapi_hist_correct_raw.json (no apiKey token, no key value)",
+   "prior_claim_invalidated": "previous 'no historical/multi-snapshot/CLV endpoints exist on v4 (404 verified)' is INVALIDATED",
+   "hasOdds_flag_caveat": "0/27,375 finished fixtures had hasOdds=true reflects /v4/odds current-odds storage ONLY; does not cover /v4/historical-odds archive",
+   "official_contract_blog": "oddspapi.io blog (2026-04-11 tested): /historical-odds?fixtureId=X&bookmakers=a,b,c (max 3) returns bookmakers dict with FULL line-move price history (recorded_at/createdAt timestamps); free tier; per-minute rate limits; archive from ingestion start",
+   "true_historical_tt_odds": "UNRESOLVED - needs 2-4 valid calls at >=6s spacing (elite+bet365, czech+1xbet, cup+bet365, elite no-bookmaker) - owner authorization required (5-request cap consumed)"
+  },
+  "provider_probe_the_odds_api_2026_08_18": {
+   "key_configured": true,
+   "result": {
+    "sports_all": {
+     "http": 200,
+     "sport_count": 175,
+     "table_tennis_key_present": false,
+     "tt_related_keys": "none (only tennis_atp_*/tennis_wta_* tournament keys)"
+    },
+    "table_tennis_odds": {
+     "http": 404,
+     "body": {
+      "message": "Unknown sport",
+      "error_code": "UNKNOWN_SPORT"
+     }
+    },
+    "table_tennis_scores": {
+     "http": 404,
+     "body": {
+      "message": "Unknown sport",
+      "error_code": "UNKNOWN_SPORT"
+     }
+    },
+    "quota_headers": {
+     "x-requests-remaining": "500",
+     "x-requests-used": "0",
+     "x-requests-last": "0"
+    },
+    "conclusion": "The Odds API has NO table tennis coverage (not even current odds). Existing the_odds_api integration (table_tennis sport key) would 404 against the real API. Historical = paid add-on anyway.",
+    "subscribe": "NO (per directive)",
+    "raw_saved_sanitized": "C:/Users/thoma/AppData/Local/Temp/opencode/the_odds_api_probe_raw.json"
+   }
+  },
+  "provider_probe_sportsgameodds_2026_08_18": {
+   "key_configured": false,
+   "code_integration": "none",
+   "status": "BLOCKED - owner must provide free key (sportsgameodds.com/pricing, no credit card)",
+   "public_docs_findings": {
+    "free_tier": "permanent free tier with pregame, live, closing odds (sportsapis.dev); key via header SPORTS_ODDS_API_KEY_HEADER; Python SDK sports-odds-api; REST + WebSocket",
+    "table_tennis": "documented page sportsgameodds.com/sports/table-tennis-odds-api exists",
+    "historical": "conflicting sources: review says historical data exists but not exhaustive; oddspapi blog claims SGO walls historical behind Enterprise plan; closing odds claimed on free tier",
+    "open_close_history_accessible": "UNKNOWN - needs key probe"
+   }
+  }
+ }
+}
