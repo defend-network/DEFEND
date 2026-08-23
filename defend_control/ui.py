@@ -1207,7 +1207,6 @@ class ControlCenterUI:
     def _product_tab_title(application_id: str, display_name: str) -> str:
         names = {
             "defend": "DEFEND AI",
-            "markets": "DEFENDmarkets",
             "sports": "DEFEND Sports",
             "scs": "SCS AI",
             "coder": "DEFENDcoder",

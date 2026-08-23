@@ -639,17 +639,13 @@ def build_markets_app(dependencies: MarketsDependencies) -> FastAPI:
         description="Cross-market research, ranking, and decision engine. Real data only.",
     )
 
-    # M4.8.1 owner login: reuse the shared admin_auth identity store so the owner
-    # can log into the Markets workstation with the same DEFEND_OWNER_* creds.
-    try:
-        import admin_auth as _admin_auth
-        from defend_data.data_core import DataCore
+    # M4.8.2C-R: owner-auth bootstrap is explicit and observable. It reuses the
+    # shared legacy owner identity store, resolves credentials from env -> shared
+    # DPAPI store -> NOT_CONFIGURED, and NEVER swallows failure silently. Owner
+    # login stays mounted regardless; a non-READY state yields a truthful 503.
+    from defend_markets.auth_bootstrap import OwnerAuthBootstrap, bootstrap_owner_auth
 
-        _admin_auth.configure_identity_store(DataCore().identity)
-    except Exception:
-        # identity store unavailable (e.g. missing owner env) — owner routes will
-        # return 503 from the shared admin_auth dependency, not crash startup.
-        pass
+    owner_auth: OwnerAuthBootstrap = bootstrap_owner_auth()
 
     # M4.8.2C: owner AUTH mounts unconditionally so login/logout remain available
     # even if quant/model initialization fails. Data routes mount only when the
@@ -661,8 +657,25 @@ def build_markets_app(dependencies: MarketsDependencies) -> FastAPI:
     @app.get("/health")
     def health() -> dict[str, object]:
         if deps.database is None:
-            return {"ok": False, "application_id": "markets", "database": "unavailable"}
-        return deps.database.health()
+            return {
+                "ok": False,
+                "application_id": "markets",
+                "database": "unavailable",
+                "owner_auth": _owner_auth_status(),
+            }
+        result = dict(deps.database.health())
+        result["owner_auth"] = _owner_auth_status()
+        return result
+
+    def _owner_auth_status() -> dict[str, object]:
+        # Sanitized: no password, no token, no secret value.
+        return {
+            "state": owner_auth.state,
+            "identity_store": owner_auth.identity_store,
+            "credentials_configured": owner_auth.credentials_configured,
+            "detail": owner_auth.detail,
+            "error_class": owner_auth.error_class,
+        }
 
     @app.get("/v1/desks")
     def desks() -> dict[str, object]:

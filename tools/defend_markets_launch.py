@@ -35,12 +35,18 @@ import urllib.request
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-FRONTEND_DIR = REPO_ROOT / "defendmarkets-ui"
-API_PORT = 8500
-UI_PORT = 3500
-API_HEALTH = f"http://127.0.0.1:{API_PORT}/health"
-UI_HEALTH = f"http://127.0.0.1:{UI_PORT}/markets-health"
-WORKSTATION_URL = f"http://127.0.0.1:{UI_PORT}/markets"
+
+# Product-owned launch contract: ports/URLs derive from MarketsSettings via
+# defend_markets.launch, not from launcher-local constants (single authority).
+from defend_markets.launch import build_manifest
+
+_MANIFEST = build_manifest(REPO_ROOT)
+FRONTEND_DIR = _MANIFEST.ui_working_directory
+API_PORT = _MANIFEST.api_port
+UI_PORT = _MANIFEST.ui_port
+API_HEALTH = _MANIFEST.api_health_url
+UI_HEALTH = _MANIFEST.ui_health_url
+WORKSTATION_URL = _MANIFEST.open_url
 
 _STATE_FILE = REPO_ROOT / "defend_markets" / "runtime" / "launch_state.json"
 
@@ -150,6 +156,22 @@ def _http_get(url: str, timeout: float = 3.0) -> int | None:
         return None
 
 
+def _owner_auth_state() -> dict | None:
+    """Read the sanitized owner_auth block from the API health endpoint.
+
+    Returns None when the API is unreachable or the field is absent.
+    """
+    try:
+        req = urllib.request.Request(
+            API_HEALTH, headers={"User-Agent": "DEFENDmarkets-launcher"}
+        )
+        with urllib.request.urlopen(req, timeout=3.0) as r:
+            data = json.loads(r.read().decode("utf-8"))
+        return data.get("owner_auth")
+    except Exception:
+        return None
+
+
 def _read_launch_state() -> dict:
     try:
         if _STATE_FILE.exists():
@@ -218,6 +240,9 @@ def status() -> dict:
         and _http_get(UI_HEALTH) == 200
     )
 
+    owner_auth = _owner_auth_state()
+    auth_ready = bool(owner_auth and owner_auth.get("state") == "READY")
+
     return {
         "repo_root": str(REPO_ROOT),
         "repo_head": repo_head,
@@ -229,9 +254,12 @@ def status() -> dict:
         "ui_proxy_health": _http_get(UI_HEALTH),
         "api": api,
         "ui": ui,
+        "owner_auth": owner_auth,
         "api_ready": api_ready,
         "ui_ready": ui_ready,
+        "auth_ready": auth_ready,
         "ready": api_ready and ui_ready,
+        "owner_workstation_ready": api_ready and ui_ready and auth_ready,
         "workstation_url": WORKSTATION_URL,
     }
 

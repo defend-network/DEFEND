@@ -45,7 +45,19 @@ def build_owner_auth_router() -> APIRouter:
 
     @router.post("/login")
     async def login(body: OwnerLoginRequest) -> dict:
-        username, role, token, ttl = authenticate(body.username, body.password)
+        try:
+            username, role, token, ttl = authenticate(body.username, body.password)
+        except HTTPException as exc:
+            if exc.status_code == 503:
+                # Auth backend unavailable is NOT an invalid-credential result.
+                raise HTTPException(
+                    status_code=503,
+                    detail={
+                        "error": "AUTH_BACKEND_UNAVAILABLE",
+                        "detail": exc.detail,
+                    },
+                ) from exc
+            raise
         return {"username": username, "role": role, "token": token, "expires_in": ttl}
 
     @router.post("/logout")

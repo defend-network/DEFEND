@@ -339,13 +339,12 @@ def test_build_products_returns_four_products_in_order():
     assert [product.application_id for product in products] == [
         "defend",
         "sports",
-        "markets",
         "scs",
         "coder",
     ]
 
 
-def test_product_rows_returns_five_rows_in_order():
+def test_product_rows_returns_four_rows_in_order():
     products = build_products(
         controller=FakeController(),
         supervisor=RecordingSupervisor(),
@@ -358,11 +357,10 @@ def test_product_rows_returns_five_rows_in_order():
 
     rows = product_rows(products)
 
-    assert len(rows) == 5
+    assert len(rows) == 4
     assert [row.application_id for row in rows] == [
         "defend",
         "sports",
-        "markets",
         "scs",
         "coder",
     ]
