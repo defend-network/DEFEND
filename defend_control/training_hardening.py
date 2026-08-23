@@ -637,6 +637,13 @@ class MaskValidationError(ValueError):
     pass
 
 
+#: Roles the assistant-only masking pipeline must handle. ``assistant`` is the
+#: sole trainable role; every other role (including tool results) must be masked.
+TRAINABLE_ROLES = ("assistant",)
+NON_TRAINABLE_ROLES = ("system", "user", "tool")
+SUPPORTED_MASKING_ROLES = TRAINABLE_ROLES + NON_TRAINABLE_ROLES
+
+
 def validate_assistant_masking(labels: list[int], role_spans: list[tuple[str, int, int]]) -> tuple[bool, list[str]]:
     if not isinstance(labels, list) or not labels:
         raise MaskValidationError("labels must be a non-empty list")
@@ -646,7 +653,7 @@ def validate_assistant_masking(labels: list[int], role_spans: list[tuple[str, in
     covered: set[int] = set()
     assistant_trainable = 0
     for role, start, end in role_spans:
-        if role not in ("system", "user", "assistant"):
+        if role not in SUPPORTED_MASKING_ROLES:
             raise MaskValidationError(f"unsupported role {role!r}")
         if not (isinstance(start, int) and isinstance(end, int) and 0 <= start < end <= len(labels)):
             raise MaskValidationError(f"span {role}[{start}:{end}] out of bounds for labels length {len(labels)}")

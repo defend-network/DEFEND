@@ -578,6 +578,26 @@ def test_masking_good_fixture_passes():
     assert ok
 
 
+def test_masking_tool_role_masked_passes():
+    labels = [-100, -100, -100, -100, -100, 7, 8]
+    ok, failures = validate_assistant_masking(
+        labels,
+        [("system", 0, 1), ("user", 1, 3), ("tool", 3, 5), ("assistant", 5, 7)],
+    )
+    assert ok
+    assert failures == []
+
+
+def test_masking_tool_role_unmasked_fails():
+    labels = [-100, -100, -100, -100, 5, 7, 8]
+    ok, failures = validate_assistant_masking(
+        labels,
+        [("system", 0, 1), ("user", 1, 3), ("tool", 3, 5), ("assistant", 5, 7)],
+    )
+    assert not ok
+    assert any("tool token 4 unmasked" in f for f in failures)
+
+
 # ─────────────────────────────────────────────────────────────
 # QLoRA + readiness (gated)
 # ─────────────────────────────────────────────────────────────
