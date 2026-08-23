@@ -22,6 +22,7 @@ REAL_IDS = (
     "the_odds_api",
     "odds_api_io",
     "oddspapi",
+    "owls_insight",
     "sec_edgar",
     "world_bank",
     "polymarket",
@@ -30,7 +31,7 @@ REAL_IDS = (
 
 def fake_fetch(result: FetchResult):
     def _fake(url, *, timeout_seconds=10.0, headers=None, retries=2,
-              backoff_seconds=1.0, known_secrets=()):
+              backoff_seconds=1.0, known_secrets=(), capture_error_body=False):
         return result
 
     adapters_module.fetch = _fake
@@ -68,6 +69,7 @@ SECRETS_BY_PROVIDER = {
     "the_odds_api": {"THE_ODDS_API_KEY": "odds-key-value"},
     "odds_api_io": {"ODDS_API_IO_API_KEY": "oaio-key-value"},
     "oddspapi": {"ODDSPAPI_API_KEY": "oddspapi-key-value"},
+    "owls_insight": {"OWLS_INSIGHT_API_KEY": "owls-key-value"},
     "sec_edgar": {},
     "world_bank": {},
     "polymarket": {},
@@ -90,6 +92,7 @@ def test_all_real_adapters_resolve_and_report_healthy_on_200():
         "the_odds_api": [],
         "odds_api_io": [{"id": 1, "name": "Table Tennis", "sportKey": "table-tennis"}],
         "oddspapi": [{"id": 25, "name": "Table Tennis", "slug": "table-tennis"}],
+        "owls_insight": {"sport": "TABLE_TENNIS", "events": []},
         "sec_edgar": {"html": "ok"},
         "world_bank": [{"page": 1}, [{"id": "USA"}]],
         "polymarket": [],
