@@ -19,12 +19,21 @@ from pathlib import Path
 CANARY_BASE_REPO = "Qwen/Qwen3-32B"
 CANARY_BASE_REVISION = "9216db5781bf21249d130ec9da846c4624c16137"
 
+RESULT_MARKER = "DEFEND_CANARY_RESULT="
+RESULT_PROTOCOL_V2 = "DEFEND_CANARY_RESULT_V2"
+
+
+def _emit_result(run_id: str, status: str) -> None:
+    record = {"protocol_version": RESULT_PROTOCOL_V2, "run_id": run_id, "stage": "FRESH_RELOAD", "status": status}
+    print(RESULT_MARKER + json.dumps(record), flush=True)
+
 PEFT_FILES = ("adapter_config.json", "adapter_model.safetensors")
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Qwen3 canary adapter reload sanity")
     parser.add_argument("--adapter-dir", required=True)
+    parser.add_argument("--run-id", required=True)
     parser.add_argument("--sanity-prompt", default="Reply with the single word: ready.")
     parser.add_argument("--base-repo", default=CANARY_BASE_REPO)
     parser.add_argument("--base-revision", default=CANARY_BASE_REVISION)
@@ -95,7 +104,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"SANITY_COMPLETION_NONEMPTY={'YES' if generated_nonempty else 'NO'}", flush=True)
     print(f"CUDA_DEVICE={model.device}", flush=True)
     print(f"RELOAD_SANITY={'PASS' if generated_nonempty else 'FAIL'}", flush=True)
-    print('DEFEND_CANARY_RESULT={"status": "' + ("PASS" if generated_nonempty else "FAIL") + '"}', flush=True)
+    _emit_result(args.run_id, "PASS" if generated_nonempty else "FAIL")
     return 0 if generated_nonempty else 4
 
 

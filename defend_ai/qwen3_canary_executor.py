@@ -377,30 +377,45 @@ class RemoteStageResult:
 
 
 RESULT_MARKER = "DEFEND_CANARY_RESULT="
+RESULT_PROTOCOL_V2 = "DEFEND_CANARY_RESULT_V2"
 
 
-def parse_canary_result(stdout: str, returncode: int, stage: str) -> RemoteStageResult:
-    """Production semantic parser: machine-readable result record only.
-
-    Only an explicit PASS with all stage-required fields may advance. Unknown
-    status, malformed record, missing record, or nonzero return code all FAIL.
-    """
+def parse_canary_result(
+    stdout: str,
+    returncode: int,
+    stage: str,
+    *,
+    expected_run_id: str,
+    expected_protocol: str = RESULT_PROTOCOL_V2,
+) -> RemoteStageResult:
+    """Production semantic parser (protocol V2): exactly ONE machine-readable
+    record, bound to protocol + run + stage. Unknown/missing/multiple/mismatched
+    records all FAIL."""
     if returncode != 0:
         return RemoteStageResult(status="FAIL", detail="nonzero return code")
-    record = None
+    records: list[dict] = []
     for line in stdout.splitlines():
         stripped = line.strip()
         if stripped.startswith(RESULT_MARKER):
             payload = stripped[len(RESULT_MARKER):]
             try:
-                record = json.loads(payload)
+                parsed = json.loads(payload)
             except json.JSONDecodeError:
                 return RemoteStageResult(status="FAIL", detail="malformed result record")
-            break
-    if record is None:
+            if not isinstance(parsed, dict):
+                return RemoteStageResult(status="FAIL", detail="result record not an object")
+            records.append(parsed)
+    if len(records) == 0:
         return RemoteStageResult(status="FAIL", detail="no structured result record")
-    if not isinstance(record, dict):
-        return RemoteStageResult(status="FAIL", detail="result record not an object")
+    if len(records) > 1:
+        return RemoteStageResult(status="FAIL", detail="multiple result records")
+    record = records[0]
+    if record.get("protocol_version") != expected_protocol:
+        return RemoteStageResult(status="FAIL", detail=f"wrong protocol {record.get('protocol_version')!r}")
+    if record.get("run_id") != expected_run_id:
+        return RemoteStageResult(status="FAIL", detail="wrong run_id")
+    if record.get("stage") != stage:
+        return RemoteStageResult(status="FAIL", detail=f"wrong stage {record.get('stage')!r}")
     status = record.get("status")
     if status not in ("PASS", "FAIL"):
         return RemoteStageResult(status="FAIL", detail=f"unknown status {status!r}")
@@ -562,7 +577,7 @@ class Qwen3CanaryExecutor:
                 remaining = budget_deadline - now
                 timeout = max(1.0, remaining - self.policy.teardown_reserve_seconds)
                 raw = self.remote.run_stage(stage, canary_id, adapter_dir, timeout)
-                result = parse_canary_result(raw.get("stdout", ""), int(raw.get("returncode", 1)), stage)
+                result = parse_canary_result(raw.get("stdout", ""), int(raw.get("returncode", 1)), stage, expected_run_id=self.run_id)
                 evidence.append(PhaseEvidence(stage, result.status, False, True, result.detail))
                 if result.status == "FAIL":
                     raise RuntimeError(f"{stage} failed: {result.detail}")

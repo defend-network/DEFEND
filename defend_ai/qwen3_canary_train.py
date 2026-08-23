@@ -23,6 +23,16 @@ from .qwen3_canary_runner import EXPECTED_CONVERTED_SHA, CANARY_MAX_STEPS
 CANARY_BASE_REPO = "Qwen/Qwen3-32B"
 CANARY_BASE_REVISION = "9216db5781bf21249d130ec9da846c4624c16137"
 
+RESULT_MARKER = "DEFEND_CANARY_RESULT="
+RESULT_PROTOCOL_V2 = "DEFEND_CANARY_RESULT_V2"
+
+
+def _emit_result(run_id: str, status: str, steps_completed: int | None = None) -> None:
+    record = {"protocol_version": RESULT_PROTOCOL_V2, "run_id": run_id, "stage": "TRAIN_5_STEPS", "status": status}
+    if steps_completed is not None:
+        record["steps_completed"] = steps_completed
+    print(RESULT_MARKER + json.dumps(record), flush=True)
+
 _FORBIDDEN_FLAGS = ("--full-train", "--publish", "--epochs", "--promote")
 
 
@@ -30,6 +40,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Qwen3 five-step canary training")
     parser.add_argument("--data-file", required=True)
     parser.add_argument("--adapter-dir", required=True)
+    parser.add_argument("--run-id", required=True)
     parser.add_argument("--steps", type=int, default=CANARY_MAX_STEPS)
     parser.add_argument("--base-repo", default=CANARY_BASE_REPO)
     parser.add_argument("--base-revision", default=CANARY_BASE_REVISION)
@@ -127,14 +138,14 @@ def main(argv: list[str] | None = None) -> int:
     actual_steps = trainer.state.global_step
     print(f"OPTIMIZER_STEPS_COMPLETED={actual_steps}", flush=True)
     if actual_steps != CANARY_MAX_STEPS:
-        print('DEFEND_CANARY_RESULT={"status": "FAIL", "steps_completed": ' + str(actual_steps) + '}', flush=True)
+        _emit_result(args.run_id, "FAIL", actual_steps)
         return 1
 
     # Save the trained PEFT-wrapped model (adapter), never the original base.
     trainer.model.save_pretrained(args.adapter_dir)
     tokenizer.save_pretrained(args.adapter_dir)
     print("ADAPTER_SAVED=" + str(Path(args.adapter_dir).resolve()), flush=True)
-    print('DEFEND_CANARY_RESULT={"status": "PASS", "steps_completed": 5}', flush=True)
+    _emit_result(args.run_id, "PASS", CANARY_MAX_STEPS)
     return 0
 
 

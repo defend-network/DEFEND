@@ -183,20 +183,29 @@ class ConcreteRemoteHost:
     def _build_ssh_command(target: CanaryRemoteTarget, remote_command: str) -> list[str]:
         return ["ssh", "-p", str(target.port), f"{target.user}@{target.host}", remote_command]
 
+    @staticmethod
+    def _run_id_from_adapter_dir(adapter_dir: str) -> str:
+        parts = adapter_dir.replace("\\", "/").rstrip("/").split("/")
+        # canary-artifacts/<run_id>/adapter
+        if len(parts) >= 2 and parts[0] == "canary-artifacts":
+            return parts[1]
+        return ""
+
     def _stage_command(self, stage: str, adapter_dir: str, git_head: str) -> str:
+        run_id = self._run_id_from_adapter_dir(adapter_dir)
         if stage == "HOST_PREFLIGHT":
             head = git_head or self._git_head
             return (
                 f"python -m defend_ai.qwen3_canary_preflight "
-                f"--repo-head {head} --train-file {self._train_remote_path}"
+                f"--repo-head {head} --train-file {self._train_remote_path} --run-id {run_id} --paid-host"
             )
         if stage == "TRAIN_5_STEPS":
             return (
                 f"python -m defend_ai.qwen3_canary_train --data-file {self._train_remote_path} "
-                f"--adapter-dir {adapter_dir} --steps 5"
+                f"--adapter-dir {adapter_dir} --run-id {run_id} --steps 5"
             )
         if stage == "FRESH_RELOAD":
-            return f"python -m defend_ai.qwen3_canary_reload --adapter-dir {adapter_dir}"
+            return f"python -m defend_ai.qwen3_canary_reload --adapter-dir {adapter_dir} --run-id {run_id}"
         raise ValueError(f"unknown canary stage {stage!r}")
 
     def run_stage(self, stage: str, instance_id: int, adapter_dir: str, timeout_seconds: float) -> dict:

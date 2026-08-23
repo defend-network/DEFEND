@@ -47,6 +47,18 @@ def _inst(*items):
     return [dict(i) for i in items]
 
 
+
+def _v2(stage, status, steps=None, run_id="RUN", adapter_dir=None):
+    import json as _json
+    if adapter_dir:
+        parts = adapter_dir.replace("\\", "/").rstrip("/").split("/")
+        if len(parts) >= 2 and parts[0] == "canary-artifacts":
+            run_id = parts[1]
+    r = {"protocol_version": "DEFEND_CANARY_RESULT_V2", "run_id": run_id, "stage": stage, "status": status}
+    if steps is not None:
+        r["steps_completed"] = steps
+    return "DEFEND_CANARY_RESULT=" + _json.dumps(r)
+
 def test_inventory_zero_instances_absent():
     inv = classify_production_inventory([])
     assert inv.status == INVENTORY_NONE_FOUND
@@ -235,8 +247,8 @@ class FakeRemote:
         if stage == self.fail_stage:
             return {"returncode": 1, "stdout": "", "stderr": f"injected {stage}"}
         if stage == "TRAIN_5_STEPS":
-            return {"returncode": 0, "stdout": 'DEFEND_CANARY_RESULT={"status": "PASS", "steps_completed": 5}', "stderr": ""}
-        return {"returncode": 0, "stdout": 'DEFEND_CANARY_RESULT={"status": "PASS"}', "stderr": ""}
+            return {"returncode": 0, "stdout": _v2('TRAIN_5_STEPS', 'PASS', steps=5, adapter_dir=adapter_dir), "stderr": ""}
+        return {"returncode": 0, "stdout": _v2(stage, 'PASS', adapter_dir=adapter_dir), "stderr": ""}
 
 
 EXPECTED_STAGES = [
@@ -383,7 +395,7 @@ def test_training_parser_rejects_wrong_base_revision():
 
 def test_reload_rejects_wrong_base_revision(capsys):
     from defend_control.qwen3_canary_reload import main as reload_main
-    assert reload_main(["--adapter-dir", "x", "--base-revision", "deadbeef"]) == 5
+    assert reload_main(["--adapter-dir", "x", "--run-id", "RUN", "--base-revision", "deadbeef"]) == 5
 
 
 def test_reload_parser_and_peft_validation(tmp_path):

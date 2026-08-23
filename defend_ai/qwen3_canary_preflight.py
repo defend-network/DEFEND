@@ -17,11 +17,20 @@ from .qwen3_candidate import convert_sft_to_qwen3
 from .qwen3_canary_runner import EXPECTED_CONVERTED_SHA, run_real_tokenizer_proof
 from .qwen3_canary_train import CANARY_BASE_REVISION
 
+RESULT_MARKER = "DEFEND_CANARY_RESULT="
+RESULT_PROTOCOL_V2 = "DEFEND_CANARY_RESULT_V2"
+
+
+def _emit_result(run_id: str, status: str) -> None:
+    record = {"protocol_version": RESULT_PROTOCOL_V2, "run_id": run_id, "stage": "HOST_PREFLIGHT", "status": status}
+    print(RESULT_MARKER + json.dumps(record), flush=True)
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Qwen3 canary remote preflight")
     parser.add_argument("--repo-head", required=True)
     parser.add_argument("--train-file", required=True)
+    parser.add_argument("--run-id", required=True)
     parser.add_argument("--base-revision", default=CANARY_BASE_REVISION)
     parser.add_argument("--paid-host", action="store_true", help="paid-host mode: hardware facts are hard failures")
     return parser
@@ -101,7 +110,7 @@ def main(argv: list[str] | None = None) -> int:
         if not isinstance(value, (dict, list)):
             print(f"{key.upper()}={value}", flush=True)
     print(f"PREFLIGHT={'PASS' if ok else 'FAIL'}", flush=True)
-    print('DEFEND_CANARY_RESULT={"status": "' + ("PASS" if ok else "FAIL") + '"}', flush=True)
+    _emit_result(args.run_id, "PASS" if ok else "FAIL")
     return 0 if ok else 1
 
 

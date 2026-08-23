@@ -21,6 +21,18 @@ from defend_control.qwen3_canary_hosts import (
 # P1-P2 — target label == input_ids (never positional index)
 # ─────────────────────────────────────────────────────────────
 
+
+def _v2(stage, status, steps=None, run_id="RUN", adapter_dir=None):
+    import json as _json
+    if adapter_dir:
+        parts = adapter_dir.replace("\\", "/").rstrip("/").split("/")
+        if len(parts) >= 2 and parts[0] == "canary-artifacts":
+            run_id = parts[1]
+    r = {"protocol_version": "DEFEND_CANARY_RESULT_V2", "run_id": run_id, "stage": stage, "status": status}
+    if steps is not None:
+        r["steps_completed"] = steps
+    return "DEFEND_CANARY_RESULT=" + _json.dumps(r)
+
 def test_assistant_labels_equal_input_ids():
     try:
         from transformers import AutoTokenizer
@@ -167,44 +179,44 @@ def test_target_binds_once():
 
 def test_parse_remote_result_steps():
     from defend_control.qwen3_canary_executor import parse_canary_result
-    r = parse_canary_result('DEFEND_CANARY_RESULT={"status": "PASS", "steps_completed": 5}', 0, "TRAIN_5_STEPS")
+    r = parse_canary_result(_v2('TRAIN_5_STEPS', 'PASS', steps=5), 0, "TRAIN_5_STEPS", expected_run_id="RUN")
     assert r.status == "PASS"
     assert r.steps_completed == 5
-    missing = parse_canary_result('DEFEND_CANARY_RESULT={"status": "PASS"}', 0, "TRAIN_5_STEPS")
+    missing = parse_canary_result(_v2('HOST_PREFLIGHT', 'PASS'), 0, "TRAIN_5_STEPS", expected_run_id="RUN")
     assert missing.steps_completed is None
     # steps=4 fails (status FAIL only via missing? no — 4 must be a hard FAIL at executor level)
-    four = parse_canary_result('DEFEND_CANARY_RESULT={"status": "PASS", "steps_completed": 4}', 0, "TRAIN_5_STEPS")
+    four = parse_canary_result(_v2('TRAIN_5_STEPS', 'PASS', steps=4), 0, "TRAIN_5_STEPS", expected_run_id="RUN")
     assert four.steps_completed == 4
 
 
 def test_parse_unknown_status_fails():
     from defend_control.qwen3_canary_executor import parse_canary_result
-    r = parse_canary_result('DEFEND_CANARY_RESULT={"status": "SUCCESSISH"}', 0, "HOST_PREFLIGHT")
+    r = parse_canary_result('DEFEND_CANARY_RESULT={"status": "SUCCESSISH"}', 0, "HOST_PREFLIGHT", expected_run_id="RUN")
     assert r.status == "FAIL"
 
 
 def test_parse_malformed_record_fails():
     from defend_control.qwen3_canary_executor import parse_canary_result
-    r = parse_canary_result('DEFEND_CANARY_RESULT=not-json', 0, "HOST_PREFLIGHT")
+    r = parse_canary_result('DEFEND_CANARY_RESULT=not-json', 0, "HOST_PREFLIGHT", expected_run_id="RUN")
     assert r.status == "FAIL"
 
 
 def test_parse_missing_record_fails():
     from defend_control.qwen3_canary_executor import parse_canary_result
-    r = parse_canary_result('some random stdout', 0, "HOST_PREFLIGHT")
+    r = parse_canary_result('some random stdout', 0, "HOST_PREFLIGHT", expected_run_id="RUN")
     assert r.status == "FAIL"
 
 
 def test_parse_nonzero_returncode_fails():
     from defend_control.qwen3_canary_executor import parse_canary_result
-    r = parse_canary_result('DEFEND_CANARY_RESULT={"status": "PASS"}', 1, "HOST_PREFLIGHT")
+    r = parse_canary_result(_v2('HOST_PREFLIGHT', 'PASS'), 1, "HOST_PREFLIGHT", expected_run_id="RUN")
     assert r.status == "FAIL"
 
 
 def test_production_parser_derives_five_steps_from_stdout():
     from defend_control.qwen3_canary_executor import parse_canary_result
-    simulated = "OPTIMIZER_STEPS_COMPLETED=5\nADAPTER_SAVED=/x\nDEFEND_CANARY_RESULT={\"status\": \"PASS\", \"steps_completed\": 5}"
-    r = parse_canary_result(simulated, 0, "TRAIN_5_STEPS")
+    simulated = "OPTIMIZER_STEPS_COMPLETED=5\nADAPTER_SAVED=/x\n" + _v2("TRAIN_5_STEPS", "PASS", steps=5)
+    r = parse_canary_result(simulated, 0, "TRAIN_5_STEPS", expected_run_id="RUN")
     assert r.status == "PASS"
     assert r.steps_completed == 5
 
@@ -272,10 +284,10 @@ def test_reload_failure_is_not_success():
         def run_stage(self, stage, iid, ad, to):
             self.calls.append(stage)
             if stage == "TRAIN_5_STEPS":
-                return {"returncode": 0, "stdout": 'DEFEND_CANARY_RESULT={"status": "PASS", "steps_completed": 5}', "stderr": ""}
+                return {"returncode": 0, "stdout": _v2('TRAIN_5_STEPS', 'PASS', steps=5, adapter_dir=ad), "stderr": ""}
             if stage == "FRESH_RELOAD":
-                return {"returncode": 1, "stdout": 'DEFEND_CANARY_RESULT={"status": "FAIL"}', "stderr": "reload failed"}
-            return {"returncode": 0, "stdout": 'DEFEND_CANARY_RESULT={"status": "PASS"}', "stderr": ""}
+                return {"returncode": 1, "stdout": _v2('FRESH_RELOAD', 'FAIL', adapter_dir=ad), "stderr": "reload failed"}
+            return {"returncode": 0, "stdout": _v2(stage, 'PASS', adapter_dir=ad), "stderr": ""}
 
     vast = Vast()
     remote = Remote()
@@ -320,8 +332,8 @@ def test_train_steps_4_fails_before_reload():
         def run_stage(self, stage, iid, ad, to):
             self.calls.append(stage)
             if stage == "TRAIN_5_STEPS":
-                return {"returncode": 0, "stdout": 'DEFEND_CANARY_RESULT={"status": "PASS", "steps_completed": 4}', "stderr": ""}
-            return {"returncode": 0, "stdout": 'DEFEND_CANARY_RESULT={"status": "PASS"}', "stderr": ""}
+                return {"returncode": 0, "stdout": _v2('TRAIN_5_STEPS', 'PASS', steps=4, adapter_dir=ad), "stderr": ""}
+            return {"returncode": 0, "stdout": _v2(stage, 'PASS', adapter_dir=ad), "stderr": ""}
 
     vast = Vast()
     remote = Remote()
@@ -363,8 +375,8 @@ def test_teardown_eventual_absent():
             self._t = t
         def run_stage(self, stage, iid, ad, to):
             if stage == "TRAIN_5_STEPS":
-                return {"returncode": 0, "stdout": 'DEFEND_CANARY_RESULT={"status": "PASS", "steps_completed": 5}', "stderr": ""}
-            return {"returncode": 0, "stdout": 'DEFEND_CANARY_RESULT={"status": "PASS"}', "stderr": ""}
+                return {"returncode": 0, "stdout": _v2('TRAIN_5_STEPS', 'PASS', steps=5, adapter_dir=ad), "stderr": ""}
+            return {"returncode": 0, "stdout": _v2(stage, 'PASS', adapter_dir=ad), "stderr": ""}
 
     vast = StatefulVast()
     ex = Qwen3CanaryExecutor(policy=CanaryPolicy(), vast=vast, remote=Remote(), clock=lambda: 0.0, sleep=lambda s: None)
