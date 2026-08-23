@@ -9,12 +9,16 @@ import {
   denyEscalation,
   EscalationProposal,
   fetchEscalations,
+  fetchFileContent,
+  fetchGitStatus,
   fetchRunDetail,
+  fetchRunToolExecutions,
   fetchRouting,
   FileEntry,
   listFiles,
   listRuns,
   ModelTargetPublic,
+  resumeRun,
   RunDetail,
   RunMessage,
   RunRecord,
@@ -22,9 +26,12 @@ import {
   RuntimeStatus,
   selectModel,
   sendChat,
+  ToolExecution,
 } from "@/app/workspace/load-workspace";
 import EscalationModal from "./EscalationModal";
+import FileViewer from "./FileViewer";
 import ModelSelector, { ModelMode } from "./ModelSelector";
+import RecoveryCard from "./RecoveryCard";
 
 type Account = {
   username: string;
@@ -243,6 +250,11 @@ export default function WorkspaceShell({
   const [filesPath, setFilesPath] = useState(".");
   const [filesError, setFilesError] = useState<string | null>(null);
   const [tab, setTab] = useState<ExecutionTab>("terminal");
+  const [viewingFile, setViewingFile] = useState<string | null>(null);
+  const [toolExecutions, setToolExecutions] = useState<ToolExecution[]>([]);
+  const [gitStatus, setGitStatus] = useState<string | null>(null);
+  const [gitDirty, setGitDirty] = useState(false);
+  const [resumeBusy, setResumeBusy] = useState(false);
 
   const [modelMode, setModelMode] = useState<ModelMode>("AUTO");
   const [currentModel, setCurrentModel] = useState<string | null>(
@@ -322,6 +334,73 @@ export default function WorkspaceShell({
     return () => window.clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runActive, activeWorkspace?.workspace_id, activeRun?.run.run_id]);
+
+  useEffect(() => {
+    if (!activeWorkspace) {
+      setGitStatus(null);
+      setGitDirty(false);
+      return;
+    }
+    void fetchGitStatus(fetch, "/v1", activeWorkspace.workspace_id)
+      .then((g) => {
+        setGitStatus(g.is_repo ? g.status : null);
+        setGitDirty(g.dirty);
+      })
+      .catch(() => {
+        setGitStatus(null);
+        setGitDirty(false);
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeWorkspace?.workspace_id]);
+
+  useEffect(() => {
+    if (!activeWorkspace || !activeRun) {
+      setToolExecutions([]);
+      return;
+    }
+    void fetchRunToolExecutions(
+      fetch,
+      "/v1",
+      activeWorkspace.workspace_id,
+      activeRun.run.run_id
+    )
+      .then((list) => setToolExecutions(Array.isArray(list) ? list : []))
+      .catch(() => setToolExecutions([]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeWorkspace?.workspace_id, activeRun?.run.run_id, activeRun?.run.status]);
+
+  function openFile(workspaceId: string, path: string) {
+    setViewingFile(path);
+    void fetchFileContent(fetch, "/v1", workspaceId, path)
+      .then(() => {
+        // content is loaded inside FileViewer via load callback
+      })
+      .catch(() => setError("Unable to read file."));
+  }
+
+  async function onResume() {
+    if (!activeWorkspace || !activeRun) return;
+    setResumeBusy(true);
+    try {
+      const csrf = window.sessionStorage.getItem("defendcoder_csrf");
+      await resumeRun(
+        fetch,
+        "/v1",
+        activeWorkspace.workspace_id,
+        activeRun.run.run_id,
+        csrf
+      );
+      setError(null);
+    } catch (cause) {
+      setError(
+        cause instanceof ApiError
+          ? cause.message
+          : "Unable to resume the run."
+      );
+    } finally {
+      setResumeBusy(false);
+    }
+  }
 
   async function refreshFiles(workspaceId: string, path: string) {
     try {
@@ -1112,7 +1191,22 @@ export default function WorkspaceShell({
                         {runReasonLabel(activeRun.run.reason)}
                       </span>
                     )}
+                  {!runActive &&
+                    ["succeeded", "partial_success", "failed", "cancelled"].includes(
+                      activeRun.run.status
+                    ) && (
+                      <button
+                        type="button"
+                        className="resume-run"
+                        onClick={() => void onResume()}
+                        disabled={resumeBusy}
+                      >
+                        {resumeBusy ? "Resuming…" : "Resume"}
+                      </button>
+                    )}
                 </div>
+
+                <RecoveryCard executions={toolExecutions} />
 
                 {conversation.length === 0 ? (
                   <div className="empty-agent-state">
@@ -1238,6 +1332,21 @@ export default function WorkspaceShell({
             ) : null}
           </div>
 
+          {viewingFile && activeWorkspace ? (
+            <FileViewer
+              path={viewingFile}
+              load={() =>
+                fetchFileContent(
+                  fetch,
+                  "/v1",
+                  activeWorkspace.workspace_id,
+                  viewingFile
+                )
+              }
+              onClose={() => setViewingFile(null)}
+            />
+          ) : null}
+
           <div className="changed-files">
             {!activeWorkspace ? (
               <p className="muted">
@@ -1284,7 +1393,18 @@ export default function WorkspaceShell({
                             {entry.name}/
                           </button>
                         ) : (
-                          <span className="file-entry">{entry.name}</span>
+                          <button
+                            type="button"
+                            className="file-entry"
+                            onClick={() =>
+                              openFile(
+                                activeWorkspace.workspace_id,
+                                joinPath(filesPath, entry.name)
+                              )
+                            }
+                          >
+                            {entry.name}
+                          </button>
                         )}
                       </li>
                     ))
@@ -1336,6 +1456,8 @@ export default function WorkspaceShell({
               logMessages={logMessages}
               run={activeRun?.run ?? null}
               changedFiles={changedFiles}
+              gitStatus={gitStatus}
+              gitDirty={gitDirty}
             />
           </div>
         </section>
@@ -1368,6 +1490,8 @@ function OutputPane({
   logMessages,
   run,
   changedFiles,
+  gitStatus,
+  gitDirty,
 }: {
   tab: ExecutionTab;
   terminalMessages: RunMessage[];
@@ -1376,6 +1500,8 @@ function OutputPane({
   logMessages: RunMessage[];
   run: RunRecord | null;
   changedFiles: string[];
+  gitStatus: string | null;
+  gitDirty: boolean;
 }) {
   if (tab === "terminal") {
     return <MessageList messages={terminalMessages} empty="No terminal output yet." />;
@@ -1386,6 +1512,17 @@ function OutputPane({
   if (tab === "diff") {
     if (diffMessages.length > 0) {
       return <MessageList messages={diffMessages} empty="No diff output yet." />;
+    }
+    if (gitStatus) {
+      return (
+        <pre>
+          git status:
+          {"\n" + gitStatus}
+        </pre>
+      );
+    }
+    if (gitDirty === false && changedFiles.length === 0) {
+      return <pre>Working tree is clean; no uncommitted changes.</pre>;
     }
     if (changedFiles.length > 0) {
       return (

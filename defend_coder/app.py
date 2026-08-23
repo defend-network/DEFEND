@@ -891,6 +891,58 @@ def build_coder_app(
             ) from None
         return {"cancelled": True}
 
+    @app.post("/v1/workspaces/{workspace_id}/runs/{run_id}/resume")
+    def resume_run(
+        workspace_id: str,
+        run_id: str,
+        request: Request,
+    ) -> dict[str, object]:
+        account = current_account(request)
+        require_csrf(request)
+        workspace = owned_workspace(account, workspace_id)
+        parsed_run_id = UUID(run_id)
+        run = runs_repository.get_run(parsed_run_id)
+        if run is None or run.workspace_id != workspace.workspace_id:
+            raise HTTPException(status_code=404, detail="run not found")
+        if run.status in ("queued", "running"):
+            raise HTTPException(
+                status_code=409,
+                detail="run is already active",
+            )
+        if runner is None:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "agent execution is not connected; the model runtime "
+                    "must be started first"
+                ),
+            )
+        # Recovery gate: an UNKNOWN_AFTER_INTERRUPTION mutation blocks
+        # automatic progress until the owner acknowledges it.
+        if _tool_ledger is not None:
+            executions = _tool_ledger.list_for_run(parsed_run_id)
+            unknown = [
+                e
+                for e in executions
+                if e.state == "UNKNOWN_AFTER_INTERRUPTION"
+                and e.mutation_class == "mutating"
+            ]
+            if unknown:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "recovery required: an interrupted mutation is "
+                        "UNKNOWN_AFTER_INTERRUPTION and will not be "
+                        "automatically repeated"
+                    ),
+                )
+        runner.start_existing(
+            run_id=parsed_run_id,
+            workspace=workspace,
+            prompt=run.prompt,
+        )
+        return {"run": _run_dict(run), "resumed": True}
+
     @app.get("/v1/workspaces/{workspace_id}/runs/{run_id}/routing")
     def get_run_routing(
         workspace_id: str,
