@@ -1,149 +1,59 @@
-from dataclasses import dataclass
+"""Compatibility shim: re-exports neutral compute/provider datatypes and
+re-attaches the legacy product launch factory methods for old callers.
+
+Canonical DEFEND AI code does NOT import this module; it uses
+``defend_ai.launch`` and ``shared_platform.compute_types`` directly.
+"""
+
+from __future__ import annotations
+
 from decimal import Decimal
-from typing import Literal
+
+from shared_platform.compute_types import (  # noqa: F401
+    AdapterSpec,
+    LaunchSpec,
+    ModelMode,
+    ModelReady,
+    ResourceProfile,
+    ServiceState,
+    VastInstance,
+    VastOffer,
+)
 
 
-ModelMode = Literal["vast", "ollama"]
-ServiceState = Literal[
-    "stopped",
-    "validating",
-    "provisioning",
-    "starting",
-    "ready",
-    "degraded",
-    "stopping",
-    "failed",
-]
+def _production_default(cls):
+    from defend_ai.launch import production_serving_launch
+
+    return production_serving_launch()
 
 
-@dataclass(frozen=True)
-class ModelReady:
-    model: str
-    backend: str
-    endpoint: str
+def _candidate_canary(cls):
+    from defend_ai.launch import candidate_canary_launch
+
+    return candidate_canary_launch()
 
 
-@dataclass(frozen=True)
-class AdapterSpec:
-    adapter_repo: str
-    adapter_revision: str
-    base_repo: str
-    base_revision: str
-    peft_type: str
-    lora_rank: int
-    base_architecture: str | None = None
+def _coder_default(cls):
+    return cls("vllm/vllm-openai:v0.10.0", 160, "ssh_proxy", "defendcoder-vllm")
 
 
-@dataclass(frozen=True)
-class LaunchSpec:
-    image: str
-    disk_gb: int
-    runtype: str
-    label: str
-
-    @classmethod
-    def default(cls) -> "LaunchSpec":
-        return cls(
-            "vllm/vllm-openai:v0.10.0",
-            160,
-            "ssh_proxy",
-            "defend-vllm",
-        )
-
-    @classmethod
-    def coder_default(cls) -> "LaunchSpec":
-        """DEFENDcoder M0.1 launch — separate label from identity chat."""
-        return cls(
-            "vllm/vllm-openai:v0.10.0",
-            160,
-            "ssh_proxy",
-            "defendcoder-vllm",
-        )
-
-    @classmethod
-    def coder_heavy_direct(cls) -> "LaunchSpec":
-        """DEFENDcoder Heavy diagnostic launch — documented direct SSH
-        runtype (ssh_direct) requested at creation; no proxy hop.
-        """
-        return cls(
-            "vllm/vllm-openai:v0.10.0",
-            160,
-            "ssh_direct",
-            "defendcoder-vllm",
-        )
-
-    @classmethod
-    def candidate_canary(cls) -> "LaunchSpec":
-        """DEFEND AI Qwen3 QLoRA training canary — isolated, non-production
-        label. Never confusable with ``defend-vllm`` (production) or
-        ``defendcoder-vllm`` (coder)."""
-        return cls(
-            "pytorch/pytorch:2.7.1-cuda12.8-cudnn9-devel",
-            200,
-            "ssh_proxy",
-            "defend-ai-qwen3-candidate-canary",
-        )
+def _coder_heavy_direct(cls):
+    return cls("vllm/vllm-openai:v0.10.0", 160, "ssh_direct", "defendcoder-vllm")
 
 
-@dataclass(frozen=True)
-class ResourceProfile:
-    """Configurable resource policy for Vast.ai instance selection.
-
-    Defaults are intentionally higher than the original 80 GB A100/H100 floor
-    so that H200 / B200-class cards are preferred while still accepting strong
-    single-GPU offers. Single-GPU remains the default path.
-    """
-
-    min_gpu_ram_mb: int = 140_000
-    allowed_gpu_families: tuple[str, ...] = ("A100", "H100", "H200", "B200")
-    num_gpus: int = 1
-    min_reliability: Decimal = Decimal("0.98")
-    min_disk_gb: int = 160
-    max_model_len: int = 8192
-    # Minimum CUDA major.minor the host driver must support (provider's
-    # cuda_max_good), e.g. 13.0 for torch cu130 images. None means the
-    # caller does not constrain by CUDA capability (absent offer fields
-    # never alone reject — the provider-side filter is the enforcement).
-    min_cuda_max_good: float | None = None
-
-    @classmethod
-    def coder_default(cls) -> "ResourceProfile":
-        """Coder lane: single A100 80GB-class is acceptable (not 140GB chat floor)."""
-        return cls(
-            min_gpu_ram_mb=80_000,
-            allowed_gpu_families=("A100", "H100", "H200", "B200"),
-            num_gpus=1,
-            min_reliability=Decimal("0.98"),
-            min_disk_gb=160,
-            max_model_len=8192,
-        )
+def _coder_resource_default(cls):
+    return cls(
+        min_gpu_ram_mb=80_000,
+        allowed_gpu_families=("A100", "H100", "H200", "B200"),
+        num_gpus=1,
+        min_reliability=Decimal("0.98"),
+        min_disk_gb=160,
+        max_model_len=8192,
+    )
 
 
-@dataclass(frozen=True)
-class VastOffer:
-    offer_id: int
-    gpu_name: str
-    gpu_ram_mb: int
-    dph_total: Decimal
-    reliability: Decimal
-    storage_cost_per_gb_month: Decimal | None = None
-    storage_total_hourly: Decimal | None = None
-    direct_port_count: int | None = None
-    # Provider-reported CUDA capability of the host driver (major.minor),
-    # e.g. 13.0. None when the provider did not echo the field.
-    cuda_max_good: float | None = None
-
-
-@dataclass(frozen=True)
-class VastInstance:
-    instance_id: int
-    actual_status: str | None
-    ssh_host: str | None
-    ssh_port: int | None
-    gpu_name: str
-    gpu_ram_mb: int
-    dph_total: Decimal
-    machine_id: int | None = None
-    direct_ssh_host: str | None = None
-    direct_ssh_port: int | None = None
-    image_runtype: str | None = None
+LaunchSpec.default = classmethod(_production_default)
+LaunchSpec.candidate_canary = classmethod(_candidate_canary)
+LaunchSpec.coder_default = classmethod(_coder_default)
+LaunchSpec.coder_heavy_direct = classmethod(_coder_heavy_direct)
+ResourceProfile.coder_default = classmethod(_coder_resource_default)

@@ -299,7 +299,7 @@ def test_full_resolver_not_claimed_and_host_install_required():
 
 
 def test_cuda_runtime_checked(monkeypatch):
-    from defend_control import training_hardening as th
+    from defend_ai import training_hardening as th
     monkeypatch.setattr(th, "_installed_version", lambda dist: "2.7.1+cu124" if dist == "torch" else "1.0.0")
     ok, reason = torch_cuda_build_validated(TrainingEnvironmentSpec())
     assert not ok

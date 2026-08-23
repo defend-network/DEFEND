@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from defend_control.redaction import redact_text
+from shared_platform.redaction import redact_text
 
 from .http import FetchResult, fetch
 
