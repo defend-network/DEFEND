@@ -49,7 +49,7 @@ class RequestQuotaGovernor:
     def ensure_budget(self, request_class: str) -> None:
         budget = DEFAULT_BUDGETS.get(request_class, 50)
         reserved = RESERVED_FLOOR.get(request_class, 0)
-        self._store.reserve_quota(request_class, self._period_iso(), reserved)
+        self._store.upsert_quota_budget(request_class, self._period_iso(), budget, reserved)
 
     def check(self, request_class: str, *, amount: int = 1) -> tuple[bool, dict[str, Any]]:
         self.ensure_budget(request_class)

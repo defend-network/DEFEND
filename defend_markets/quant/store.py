@@ -1640,13 +1640,25 @@ class PostgresQuantStore(QuantStore):
                 return {"used": 0, "budget": 0, "reserved": 0}
             return {"used": int(row[0]), "budget": int(row[1]), "reserved": int(row[2])}
 
+    def upsert_quota_budget(self, request_class, period_start, budget, reserved=0):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO quant_request_quota (period_start, request_class, reserved, used, budget) "
+                "VALUES (%s, %s, %s, 0, %s) "
+                "ON CONFLICT (period_start, request_class) DO UPDATE SET budget = GREATEST(quant_request_quota.budget, EXCLUDED.budget), "
+                "reserved = GREATEST(quant_request_quota.reserved, EXCLUDED.reserved), updated_at = now() "
+                "RETURNING quota_id",
+                (period_start, request_class, reserved, budget),
+            )
+            return cursor.fetchone() is not None
+
     def reserve_quota(self, request_class, period_start, budget):
         with self._database.connect() as connection, connection.cursor() as cursor:
             cursor.execute(
                 "INSERT INTO quant_request_quota (period_start, request_class, reserved, used, budget) "
                 "VALUES (%s, %s, %s, 0, %s) "
-                "ON CONFLICT (period_start, request_class) DO UPDATE SET budget = EXCLUDED.budget, "
-                "reserved = quant_request_quota.reserved + EXCLUDED.reserved, updated_at = now() "
+                "ON CONFLICT (period_start, request_class) DO UPDATE SET budget = GREATEST(quant_request_quota.budget, EXCLUDED.budget), "
+                "reserved = GREATEST(quant_request_quota.reserved, EXCLUDED.reserved), updated_at = now() "
                 "RETURNING quota_id",
                 (period_start, request_class, budget, budget),
             )
@@ -2450,6 +2462,18 @@ class InMemoryQuantStore(QuantStore):
             return {"used": 0, "budget": 0, "reserved": 0}
         return {"used": row["used"], "budget": row["budget"], "reserved": row["reserved"]}
 
+    def upsert_quota_budget(self, request_class, period_start, budget, reserved=0):
+        key = (request_class, period_start)
+        existing = self.request_quota.get(key, {"used": 0, "reserved": 0, "budget": 0})
+        self.request_quota[key] = {
+            "period_start": period_start,
+            "request_class": request_class,
+            "used": existing["used"],
+            "reserved": max(int(existing["reserved"]), int(reserved)),
+            "budget": max(int(existing["budget"]), int(budget)),
+        }
+        return True
+
     def reserve_quota(self, request_class, period_start, budget):
         key = (request_class, period_start)
         existing = self.request_quota.get(key, {"used": 0, "reserved": 0, "budget": 0})
@@ -2457,8 +2481,8 @@ class InMemoryQuantStore(QuantStore):
             "period_start": period_start,
             "request_class": request_class,
             "used": existing["used"],
-            "reserved": existing["reserved"] + budget,
-            "budget": budget,
+            "reserved": max(int(existing["reserved"]), int(budget)),
+            "budget": max(int(existing["budget"]), int(budget)),
         }
         return True
 
