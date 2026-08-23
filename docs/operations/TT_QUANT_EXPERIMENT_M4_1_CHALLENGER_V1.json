@@ -1,0 +1,567 @@
+{
+  "experiment_id": "exp-m4-challenger-recent-form20",
+  "dataset_snapshot_id": "a4054243bf37a3d492eaa9bfea8d91acad25f69fff8ac3bb87ebd5464d16db63",
+  "created_at": "2026-08-22T19:33:13Z",
+  "rows_used": 148474,
+  "n_windows": 3,
+  "challenger_metrics": {
+    "n_windows": 3,
+    "val_rows": 89084,
+    "weighted_brier": 0.242352,
+    "weighted_log_loss": 0.677269,
+    "mean_brier": 0.242352,
+    "brier_std": 0.000791,
+    "best_window_brier": 0.241308,
+    "worst_window_brier": 0.24322
+  },
+  "baseline_metrics": {
+    "n_windows": 3,
+    "val_rows": 89084,
+    "weighted_brier": 0.242471,
+    "weighted_log_loss": 0.677523,
+    "mean_brier": 0.242471,
+    "brier_std": 0.000673,
+    "best_window_brier": 0.241573,
+    "worst_window_brier": 0.243191
+  },
+  "challenger_metrics_raw": {
+    "brier": 0.24235252,
+    "log_loss": 0.67726904
+  },
+  "baseline_metrics_raw": {
+    "brier": 0.24247131,
+    "log_loss": 0.67752332
+  },
+  "metric_deltas": {
+    "n": 89084,
+    "delta_brier": 0.00011879,
+    "delta_brier_ci_low": 8.097e-05,
+    "delta_brier_ci_high": 0.00015429,
+    "delta_logloss": 0.00025428,
+    "delta_logloss_ci_low": 0.00017583,
+    "delta_logloss_ci_high": 0.00032884,
+    "positive_lift": true
+  },
+  "feature_diagnostics": {
+    "added_features": [
+      "recent_form20_winrate_diff"
+    ],
+    "recent_form20_winrate_diff": {
+      "row_count": 148474,
+      "non_null_count": 148474,
+      "nonzero_count": 133099,
+      "zero_count": 15375,
+      "mean": 0.01554022,
+      "stddev": 0.40337056,
+      "min": -2.0,
+      "max": 2.0,
+      "unique_value_count": 2346,
+      "correlation_with": {
+        "form5_diff": 0.6006,
+        "recency_elo_diff": 0.604,
+        "elo_diff": 0.7291
+      }
+    },
+    "prediction_delta_vs_baseline": {
+      "max_abs": 0.05691276,
+      "mean_abs": 0.0036421841,
+      "p95_abs": 0.0123091175
+    },
+    "learned_coefficient": {
+      "recent_form20_winrate_diff": -0.2139996693
+    }
+  },
+  "calibration": [
+    {
+      "bin_start": 0.0,
+      "bin_end": 0.10000673521620045,
+      "predicted_mean": 0.336449,
+      "observed_rate": 0.332248,
+      "count": 8909.0,
+      "abs_calibration_error": 0.004201
+    },
+    {
+      "bin_start": 0.10000673521620045,
+      "bin_end": 0.2000134704324009,
+      "predicted_mean": 0.418518,
+      "observed_rate": 0.441464,
+      "count": 8909.0,
+      "abs_calibration_error": 0.022945
+    },
+    {
+      "bin_start": 0.2000134704324009,
+      "bin_end": 0.3000202056486013,
+      "predicted_mean": 0.452042,
+      "observed_rate": 0.459984,
+      "count": 8909.0,
+      "abs_calibration_error": 0.007942
+    },
+    {
+      "bin_start": 0.3000202056486013,
+      "bin_end": 0.4000269408648018,
+      "predicted_mean": 0.475511,
+      "observed_rate": 0.487709,
+      "count": 8909.0,
+      "abs_calibration_error": 0.012198
+    },
+    {
+      "bin_start": 0.4000269408648018,
+      "bin_end": 0.5000336760810022,
+      "predicted_mean": 0.495393,
+      "observed_rate": 0.504546,
+      "count": 8909.0,
+      "abs_calibration_error": 0.009153
+    },
+    {
+      "bin_start": 0.5000336760810022,
+      "bin_end": 0.6000404112972026,
+      "predicted_mean": 0.514556,
+      "observed_rate": 0.511056,
+      "count": 8909.0,
+      "abs_calibration_error": 0.0035
+    },
+    {
+      "bin_start": 0.6000404112972026,
+      "bin_end": 0.700047146513403,
+      "predicted_mean": 0.534639,
+      "observed_rate": 0.514873,
+      "count": 8909.0,
+      "abs_calibration_error": 0.019767
+    },
+    {
+      "bin_start": 0.700047146513403,
+      "bin_end": 0.8000538817296036,
+      "predicted_mean": 0.558313,
+      "observed_rate": 0.529801,
+      "count": 8909.0,
+      "abs_calibration_error": 0.028512
+    },
+    {
+      "bin_start": 0.8000538817296036,
+      "bin_end": 0.900060616945804,
+      "predicted_mean": 0.592341,
+      "observed_rate": 0.57571,
+      "count": 8909.0,
+      "abs_calibration_error": 0.016631
+    },
+    {
+      "bin_start": 0.900060616945804,
+      "bin_end": 1.0,
+      "predicted_mean": 0.675567,
+      "observed_rate": 0.670448,
+      "count": 8903.0,
+      "abs_calibration_error": 0.005119
+    }
+  ],
+  "ece": 0.012997,
+  "leakage": {
+    "accepted_rows_after_cutoff": 0,
+    "excluded_rows_after_cutoff": 1523,
+    "leakage_detected": false
+  },
+  "runtime_ms": 57851,
+  "artifact_hash": "7ce2880565d1787d53ea8c958d3498b8a48e3400e245cd10e61c6feec8a68244",
+  "decision": "PROMOTION_ALLOWED",
+  "promotion_policy_version": 2,
+  "folds": [
+    {
+      "index": 0,
+      "train_start": "2025-12-08 11:35:00-05:00",
+      "train_end": "2026-02-06 14:55:00-05:00",
+      "val_start": "2026-02-06 15:00:00-05:00",
+      "val_end": "2026-03-27 13:30:00-04:00",
+      "train_rows": 29695,
+      "val_rows": 29695,
+      "brier": 0.24322,
+      "log_loss": 0.679025,
+      "calibration_error": 0.016728,
+      "metrics": {
+        "n": 29695,
+        "brier": 0.24322,
+        "log_loss": 0.679025,
+        "accuracy": 0.554639,
+        "ece": 0.016728,
+        "calibration": [
+          {
+            "bin_start": 0.0,
+            "bin_end": 0.10001683785149015,
+            "predicted_mean": 0.338433,
+            "observed_rate": 0.341414,
+            "count": 2970.0,
+            "abs_calibration_error": 0.002982
+          },
+          {
+            "bin_start": 0.10001683785149015,
+            "bin_end": 0.2000336757029803,
+            "predicted_mean": 0.418393,
+            "observed_rate": 0.439731,
+            "count": 2970.0,
+            "abs_calibration_error": 0.021338
+          },
+          {
+            "bin_start": 0.2000336757029803,
+            "bin_end": 0.30005051355447043,
+            "predicted_mean": 0.451634,
+            "observed_rate": 0.466667,
+            "count": 2970.0,
+            "abs_calibration_error": 0.015032
+          },
+          {
+            "bin_start": 0.30005051355447043,
+            "bin_end": 0.4000673514059606,
+            "predicted_mean": 0.475979,
+            "observed_rate": 0.484512,
+            "count": 2970.0,
+            "abs_calibration_error": 0.008533
+          },
+          {
+            "bin_start": 0.4000673514059606,
+            "bin_end": 0.5000841892574508,
+            "predicted_mean": 0.496123,
+            "observed_rate": 0.506734,
+            "count": 2970.0,
+            "abs_calibration_error": 0.010611
+          },
+          {
+            "bin_start": 0.5000841892574508,
+            "bin_end": 0.6001010271089409,
+            "predicted_mean": 0.515789,
+            "observed_rate": 0.49899,
+            "count": 2970.0,
+            "abs_calibration_error": 0.016799
+          },
+          {
+            "bin_start": 0.6001010271089409,
+            "bin_end": 0.700117864960431,
+            "predicted_mean": 0.536545,
+            "observed_rate": 0.514478,
+            "count": 2970.0,
+            "abs_calibration_error": 0.022067
+          },
+          {
+            "bin_start": 0.700117864960431,
+            "bin_end": 0.8001347028119212,
+            "predicted_mean": 0.560734,
+            "observed_rate": 0.540741,
+            "count": 2970.0,
+            "abs_calibration_error": 0.019993
+          },
+          {
+            "bin_start": 0.8001347028119212,
+            "bin_end": 0.9001515406634113,
+            "predicted_mean": 0.594597,
+            "observed_rate": 0.564983,
+            "count": 2970.0,
+            "abs_calibration_error": 0.029614
+          },
+          {
+            "bin_start": 0.9001515406634113,
+            "bin_end": 1.0,
+            "predicted_mean": 0.67698,
+            "observed_rate": 0.656661,
+            "count": 2965.0,
+            "abs_calibration_error": 0.020319
+          }
+        ]
+      }
+    },
+    {
+      "index": 1,
+      "train_start": "2025-12-08 11:35:00-05:00",
+      "train_end": "2026-03-27 13:30:00-04:00",
+      "val_start": "2026-03-27 13:30:00-04:00",
+      "val_end": "2026-05-14 11:30:00-04:00",
+      "train_rows": 59390,
+      "val_rows": 29694,
+      "brier": 0.242529,
+      "log_loss": 0.677638,
+      "calibration_error": 0.015636,
+      "metrics": {
+        "n": 29694,
+        "brier": 0.242529,
+        "log_loss": 0.677638,
+        "accuracy": 0.556779,
+        "ece": 0.015636,
+        "calibration": [
+          {
+            "bin_start": 0.0,
+            "bin_end": 0.10002020610224288,
+            "predicted_mean": 0.331372,
+            "observed_rate": 0.336364,
+            "count": 2970.0,
+            "abs_calibration_error": 0.004991
+          },
+          {
+            "bin_start": 0.10002020610224288,
+            "bin_end": 0.20004041220448576,
+            "predicted_mean": 0.415483,
+            "observed_rate": 0.455892,
+            "count": 2970.0,
+            "abs_calibration_error": 0.04041
+          },
+          {
+            "bin_start": 0.20004041220448576,
+            "bin_end": 0.30006061830672864,
+            "predicted_mean": 0.450216,
+            "observed_rate": 0.456566,
+            "count": 2970.0,
+            "abs_calibration_error": 0.006349
+          },
+          {
+            "bin_start": 0.30006061830672864,
+            "bin_end": 0.4000808244089715,
+            "predicted_mean": 0.473904,
+            "observed_rate": 0.488552,
+            "count": 2970.0,
+            "abs_calibration_error": 0.014648
+          },
+          {
+            "bin_start": 0.4000808244089715,
+            "bin_end": 0.5001010305112144,
+            "predicted_mean": 0.493647,
+            "observed_rate": 0.508754,
+            "count": 2970.0,
+            "abs_calibration_error": 0.015107
+          },
+          {
+            "bin_start": 0.5001010305112144,
+            "bin_end": 0.6001212366134573,
+            "predicted_mean": 0.513235,
+            "observed_rate": 0.518519,
+            "count": 2970.0,
+            "abs_calibration_error": 0.005284
+          },
+          {
+            "bin_start": 0.6001212366134573,
+            "bin_end": 0.7001414427157001,
+            "predicted_mean": 0.533908,
+            "observed_rate": 0.519192,
+            "count": 2970.0,
+            "abs_calibration_error": 0.014716
+          },
+          {
+            "bin_start": 0.7001414427157001,
+            "bin_end": 0.800161648817943,
+            "predicted_mean": 0.55785,
+            "observed_rate": 0.521886,
+            "count": 2970.0,
+            "abs_calibration_error": 0.035965
+          },
+          {
+            "bin_start": 0.800161648817943,
+            "bin_end": 0.9001818549201859,
+            "predicted_mean": 0.592615,
+            "observed_rate": 0.574747,
+            "count": 2970.0,
+            "abs_calibration_error": 0.017868
+          },
+          {
+            "bin_start": 0.9001818549201859,
+            "bin_end": 1.0,
+            "predicted_mean": 0.676467,
+            "observed_rate": 0.677463,
+            "count": 2964.0,
+            "abs_calibration_error": 0.000996
+          }
+        ]
+      }
+    },
+    {
+      "index": 2,
+      "train_start": "2025-12-08 11:35:00-05:00",
+      "train_end": "2026-05-14 11:30:00-04:00",
+      "val_start": "2026-05-14 11:30:00-04:00",
+      "val_end": "2026-06-30 06:30:00-04:00",
+      "train_rows": 89084,
+      "val_rows": 29695,
+      "brier": 0.241308,
+      "log_loss": 0.675144,
+      "calibration_error": 0.011727,
+      "metrics": {
+        "n": 29695,
+        "brier": 0.241308,
+        "log_loss": 0.675144,
+        "accuracy": 0.562654,
+        "ece": 0.011727,
+        "calibration": [
+          {
+            "bin_start": 0.0,
+            "bin_end": 0.10001683785149015,
+            "predicted_mean": 0.339719,
+            "observed_rate": 0.319865,
+            "count": 2970.0,
+            "abs_calibration_error": 0.019854
+          },
+          {
+            "bin_start": 0.10001683785149015,
+            "bin_end": 0.2000336757029803,
+            "predicted_mean": 0.421769,
+            "observed_rate": 0.433333,
+            "count": 2970.0,
+            "abs_calibration_error": 0.011565
+          },
+          {
+            "bin_start": 0.2000336757029803,
+            "bin_end": 0.30005051355447043,
+            "predicted_mean": 0.454161,
+            "observed_rate": 0.451515,
+            "count": 2970.0,
+            "abs_calibration_error": 0.002646
+          },
+          {
+            "bin_start": 0.30005051355447043,
+            "bin_end": 0.4000673514059606,
+            "predicted_mean": 0.476727,
+            "observed_rate": 0.484175,
+            "count": 2970.0,
+            "abs_calibration_error": 0.007448
+          },
+          {
+            "bin_start": 0.4000673514059606,
+            "bin_end": 0.5000841892574508,
+            "predicted_mean": 0.496395,
+            "observed_rate": 0.507071,
+            "count": 2970.0,
+            "abs_calibration_error": 0.010675
+          },
+          {
+            "bin_start": 0.5000841892574508,
+            "bin_end": 0.6001010271089409,
+            "predicted_mean": 0.514684,
+            "observed_rate": 0.506397,
+            "count": 2970.0,
+            "abs_calibration_error": 0.008287
+          },
+          {
+            "bin_start": 0.6001010271089409,
+            "bin_end": 0.700117864960431,
+            "predicted_mean": 0.533579,
+            "observed_rate": 0.508418,
+            "count": 2970.0,
+            "abs_calibration_error": 0.025162
+          },
+          {
+            "bin_start": 0.700117864960431,
+            "bin_end": 0.8001347028119212,
+            "predicted_mean": 0.55645,
+            "observed_rate": 0.539394,
+            "count": 2970.0,
+            "abs_calibration_error": 0.017056
+          },
+          {
+            "bin_start": 0.8001347028119212,
+            "bin_end": 0.9001515406634113,
+            "predicted_mean": 0.589815,
+            "observed_rate": 0.581481,
+            "count": 2970.0,
+            "abs_calibration_error": 0.008334
+          },
+          {
+            "bin_start": 0.9001515406634113,
+            "bin_end": 1.0,
+            "predicted_mean": 0.673359,
+            "observed_rate": 0.679595,
+            "count": 2965.0,
+            "abs_calibration_error": 0.006237
+          }
+        ]
+      }
+    }
+  ],
+  "gates": {
+    "promotion": "PROMOTION_ALLOWED",
+    "promotion_policy_version": 2,
+    "gates": [
+      {
+        "gate": "LEAKAGE",
+        "status": "PASS",
+        "metric": "future_leakage",
+        "threshold": null,
+        "observed": 0.0,
+        "reason": "no future rows or state used"
+      },
+      {
+        "gate": "SAMPLE",
+        "status": "PASS",
+        "metric": "validation_rows",
+        "threshold": 100.0,
+        "observed": 89084.0,
+        "reason": "89084 >= 100"
+      },
+      {
+        "gate": "BRIER",
+        "status": "PASS",
+        "metric": "weighted_brier",
+        "threshold": 0.252291,
+        "observed": 0.2423525243663603,
+        "reason": "challenger brier within tolerance"
+      },
+      {
+        "gate": "LOGLOSS",
+        "status": "PASS",
+        "metric": "weighted_log_loss",
+        "threshold": 0.6971740000000001,
+        "observed": 0.6772690439297657,
+        "reason": "challenger log loss within tolerance"
+      },
+      {
+        "gate": "CALIBRATION",
+        "status": "PASS",
+        "metric": "ece",
+        "threshold": 0.05,
+        "observed": 0.012997,
+        "reason": "calibration within tolerance"
+      },
+      {
+        "gate": "STABILITY",
+        "status": "PASS",
+        "metric": "brier_std_across_windows",
+        "threshold": 0.03,
+        "observed": 0.000791,
+        "reason": "stable across windows"
+      },
+      {
+        "gate": "FEATURE_USEFULNESS",
+        "status": "PASS",
+        "metric": "delta_brier",
+        "threshold": 0.0001,
+        "observed": 0.00011879,
+        "reason": "paired out-of-sample positive lift measured"
+      },
+      {
+        "gate": "PARSIMONY",
+        "status": "PASS",
+        "metric": "delta_brier",
+        "threshold": 0.0001,
+        "observed": 0.00011879,
+        "reason": "added feature demonstrates benefit over baseline"
+      },
+      {
+        "gate": "DATA_QUALITY",
+        "status": "PASS",
+        "metric": "data_quality",
+        "threshold": null,
+        "observed": null,
+        "reason": "data quality ok"
+      },
+      {
+        "gate": "MARKET_METRIC",
+        "status": "NOT_AVAILABLE",
+        "metric": "model_market_metrics",
+        "threshold": null,
+        "observed": null,
+        "reason": "no valid market observations; market-beating claims not supported"
+      }
+    ],
+    "blockers": [],
+    "market_metrics": "NOT_AVAILABLE",
+    "metric_deltas": {
+      "delta_brier": 0.00011879,
+      "delta_brier_ci_low": 8.097e-05,
+      "delta_brier_ci_high": 0.00015429,
+      "delta_logloss": 0.00025428,
+      "delta_logloss_ci_low": 0.00017583,
+      "delta_logloss_ci_high": 0.00032884
+    }
+  }
+}

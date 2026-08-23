@@ -14,6 +14,23 @@ _MIGRATIONS = (
     (5, Path(__file__).with_name("migrations") / "0005_markets_rating_history.sql"),
     (6, Path(__file__).with_name("migrations") / "0006_forward_market.sql"),
     (7, Path(__file__).with_name("migrations") / "0007_shadow_evaluation.sql"),
+    (8, Path(__file__).with_name("migrations") / "0008_markets_quant_director.sql"),
+    (9, Path(__file__).with_name("migrations") / "0009_markets_quant_research.sql"),
+    (10, Path(__file__).with_name("migrations") / "0010_markets_quant_reviews.sql"),
+    (11, Path(__file__).with_name("migrations") / "0011_markets_quant_operational.sql"),
+    (12, Path(__file__).with_name("migrations") / "0012_markets_quant_stage_audit.sql"),
+    (13, Path(__file__).with_name("migrations") / "0013_markets_quant_forward.sql"),
+    (14, Path(__file__).with_name("migrations") / "0014_markets_quant_improve.sql"),
+    (15, Path(__file__).with_name("migrations") / "0015_markets_quant_market_truth.sql"),
+    (16, Path(__file__).with_name("migrations") / "0016_markets_quant_forward_evidence.sql"),
+    (17, Path(__file__).with_name("migrations") / "0017_markets_quant_action_status.sql"),
+    (18, Path(__file__).with_name("migrations") / "0018_markets_quant_result_acquisition.sql"),
+    (19, Path(__file__).with_name("migrations") / "0019_markets_quant_arb.sql"),
+    (20, Path(__file__).with_name("migrations") / "0020_markets_quant_result_certification.sql"),
+    (21, Path(__file__).with_name("migrations") / "0021_markets_quant_truth_convergence.sql"),
+    (22, Path(__file__).with_name("migrations") / "0022_markets_quant_settlement_revision_unique.sql"),
+    (23, Path(__file__).with_name("migrations") / "0023_markets_quant_settlement_fingerprint.sql"),
+    (24, Path(__file__).with_name("migrations") / "0024_markets_hardrock_data_lane.sql"),
 )
 
 

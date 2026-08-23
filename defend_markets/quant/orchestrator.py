@@ -1,0 +1,1077 @@
+"""MarketsIntelligenceOrchestrator: supervised Quant Director boundary.
+
+Owns chat orchestration, governed tool access, research journal interaction,
+budget enforcement, and the deterministic mock model backend used when no
+runtime AI credential is configured. It never writes production weights,
+bypasses evaluation, places bets, or mutates settlements.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any, Protocol
+
+from defend_markets.quant.config import (
+    MARKETS_RUNTIME_STATE_DEFAULT,
+    MarketsRuntimeState,
+    QuantDirectorSettings,
+)
+from defend_markets.quant.explanation import explain_m5_prediction
+from defend_markets.quant.health import QuantDirectorHealth, detect_health
+from defend_markets.quant.intelligence import QuantIntelligence, collect_monitor_data
+from defend_markets.quant.model_aliases import (
+    DEEP_RESEARCH_ALIAS,
+    SOL_ALIAS,
+    RUNTIME_ALIAS,
+    resolve_runtime_profile,
+    runtime_credentials_present,
+)
+from defend_markets.quant.reviews import DailyReview, WeeklyReview
+from defend_markets.quant.research.experiment import (
+    ExperimentResult,
+    ExperimentRunner,
+    ExperimentSpec,
+    build_spec,
+)
+from defend_markets.quant.research.promotion import PromotionGateSet
+from defend_markets.quant.research.snapshot import DatasetSnapshot, build_snapshot
+from defend_markets.quant.triggers import TriggerLedger
+from defend_markets.quant.scheduler import Scheduler, SchedulerJob
+from defend_markets.quant.champion import ChampionConflictError, ensure_champion
+from defend_markets.quant.evaluation import EvaluationService
+from defend_markets.quant.prioritization import (
+    SEED_HYPOTHESES,
+    ResearchPrioritizer,
+    seed_hypotheses,
+)
+from defend_markets.quant.budget import estimate_call_cost
+
+
+class DirectorModel(Protocol):
+    def answer(self, context: dict[str, Any]) -> str: ...
+
+
+@dataclass(frozen=True)
+class PromotionVerdict:
+    allowed: bool
+    reasons: list[str]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "decision": "PROMOTION_ALLOWED" if self.allowed else "PROMOTION_BLOCKED",
+            "reasons": self.reasons,
+        }
+
+
+class MockDirectorModel:
+    """Deterministic, tool-grounded backend (no fabrication, no hidden CoT)."""
+
+    def answer(self, context: dict[str, Any]) -> str:
+        blocking = context.get("blocking_layers", {})
+        prices = context.get("prices", {})
+        provider = context.get("provider_state", {})
+        evidence_lines = [
+            f"events_discovered={provider.get('events_discovered', 0)}",
+            f"events_matched={provider.get('events_matched', 0)}",
+            f"available_m5_predictions={provider.get('available_predictions', 0)}",
+            f"market_observations={prices.get('observations', 0)}",
+            f"bookmakers_with_prices={prices.get('bookmakers_with_prices', 0)}",
+        ]
+        primary = blocking.get("primary", "unknown")
+        if primary == "provider_tt_price_coverage":
+            decision = "provider TT price coverage is the blocking layer for paper betting."
+        elif primary == "provider_health":
+            decision = "Provider health is the blocking layer for paper betting."
+        elif primary == "event_discovery":
+            decision = "Event discovery is the blocking layer for paper betting."
+        else:
+            decision = "No deterministic blocking layer was detected."
+        return "\n".join(
+            [
+                "EVIDENCE: " + "; ".join(evidence_lines),
+                "CALCULATION: deterministic tool state, no AI-prose override",
+                "MAIN DRIVERS: " + str(blocking.get("primary")),
+                "UNCERTAINTY: tool state reflects only persisted, current data",
+                "COUNTER_THESIS: none detected in tool state",
+                "DECISION: " + decision,
+                "NEXT_ACTION: recheck provider bookmaker TT coverage when new prices arrive",
+                "PROVENANCE: governed read-only tools",
+            ]
+        )
+
+
+class MarketsIntelligenceOrchestrator:
+    def __init__(
+        self,
+        *,
+        store: Any,
+        tools: Any,
+        settings: QuantDirectorSettings | None = None,
+        model: DirectorModel | None = None,
+        clock: Any | None = None,
+        weights_doc: dict[str, Any] | None = None,
+        artifact_dir: Any = None,
+    ) -> None:
+        self._store = store
+        self._tools = tools
+        self._settings = settings or QuantDirectorSettings.from_env()
+        self._model = model if model is not None else MockDirectorModel()
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self._weights_doc = weights_doc
+        self._last_trigger_at: datetime | None = None
+        self._trigger_ledger = TriggerLedger(
+            store, clock=self._clock,
+            cooldown_seconds=self._settings.trigger_cooldown_seconds,
+        )
+        self._intelligence = QuantIntelligence(weights_doc=weights_doc)
+        self._daily_review = DailyReview()
+        self._weekly_review = WeeklyReview(artifact_dir=artifact_dir)
+        self._scheduler = Scheduler(store, owner="markets-quant-director", clock=self._clock)
+        self._approved_expensive = False
+        self._health = detect_health(
+            initialized=True,
+            runtime_model=resolve_runtime_profile(RUNTIME_ALIAS).model,
+        )
+
+    def health(self) -> QuantDirectorHealth:
+        return self._health
+
+    def health_state(self) -> dict[str, Any]:
+        return self._health.to_dict()
+
+    def runtime_profile(self, *, deep: bool = False, sol: bool = False) -> dict[str, str]:
+        if sol:
+            return resolve_runtime_profile(SOL_ALIAS).to_dict()
+        if deep and not self._settings.deep_research_allowed:
+            return resolve_runtime_profile(RUNTIME_ALIAS).to_dict()
+        alias = DEEP_RESEARCH_ALIAS if deep else RUNTIME_ALIAS
+        return resolve_runtime_profile(alias).to_dict()
+
+    def live_ai_configured(self) -> bool:
+        return runtime_credentials_present()
+
+    def markets_state(self) -> str:
+        return self._settings.runtime_state
+
+    def _budget_state(self) -> dict[str, Any]:
+        provider = resolve_runtime_profile(RUNTIME_ALIAS).provider
+        row = self._store.budget_row(
+            day=datetime.now(timezone.utc).date().isoformat(),
+            provider=provider,
+            model=resolve_runtime_profile(RUNTIME_ALIAS).model,
+        )
+        calls = int(row["call_count"]) if row else 0
+        cost = float(row["cost_usd"]) if row else 0.0
+        return {
+            "calls_today": calls,
+            "cost_today": round(cost, 6),
+            "max_daily_calls": self._settings.max_daily_calls,
+            "daily_cost_soft_limit": self._settings.daily_cost_soft_limit,
+            "daily_cost_hard_limit": self._settings.daily_cost_hard_limit,
+            "blocked": (
+                calls >= self._settings.max_daily_calls
+                or cost >= self._settings.daily_cost_hard_limit
+            ),
+        }
+
+    def chat(self, *, thread_id: int | None, message: str, deep: bool = False, sol: bool = False) -> dict[str, Any]:
+        if not self._settings.enabled:
+            raise RuntimeError("MARKETS_AI_ENABLED is false")
+        profile = self.runtime_profile(deep=deep, sol=sol)
+        if profile.get("requires_approval") == "true" and not self._approved_expensive:
+            raise RuntimeError("owner approval required for expensive Sol profile")
+        budget = self._budget_state()
+        if budget["blocked"]:
+            raise RuntimeError("AI budget hard limit reached")
+        if thread_id is None:
+            thread_id = self._store.create_thread(admin_account_id="owner")
+        context = self._tools.all_tool_state()
+        self._store.record_ai_call(
+            provider=profile["provider"], model=profile["model"], cost=0.0
+        )
+        response = self._model.answer(context)
+        self._store.append_message(
+            thread_id=thread_id, role="user", content=message,
+            provenance={"profile": profile, "grounded": True, "hidden_cot": False},
+        )
+        self._store.append_message(
+            thread_id=thread_id, role="assistant", content=response,
+            provenance={"profile": profile, "grounded": True, "hidden_cot": False},
+        )
+        return {
+            "thread_id": thread_id,
+            "response": response,
+            "profile": profile,
+            "budget": self._budget_state(),
+        }
+
+    def approve_expensive(self) -> bool:
+        self._approved_expensive = True
+        return True
+
+    def maybe_run_scheduled_review(self) -> dict[str, Any]:
+        if not self._settings.markets_ready:
+            return {"ran": False, "reason": f"runtime state is {self.markets_state()}; no AI spend"}
+        now = self._clock()
+        if self._last_trigger_at is not None:
+            cooldown = self._settings.trigger_cooldown_seconds
+            if (now - self._last_trigger_at).total_seconds() < cooldown:
+                return {"ran": False, "reason": "cooldown"}
+        budget = self._budget_state()
+        if budget["blocked"]:
+            return {"ran": False, "reason": "budget hard limit"}
+        self._last_trigger_at = now
+        profile = self.runtime_profile()
+        self._store.record_ai_call(
+            provider=profile["provider"], model=profile["model"], cost=0.0
+        )
+        return {"ran": True, "reason": "scheduled review", "profile": profile}
+
+    def budget_policy(self) -> dict[str, Any]:
+        return {
+            "max_daily_calls": self._settings.max_daily_calls,
+            "daily_cost_soft_limit": self._settings.daily_cost_soft_limit,
+            "daily_cost_hard_limit": self._settings.daily_cost_hard_limit,
+            "trigger_cooldown_seconds": self._settings.trigger_cooldown_seconds,
+            "deep_research_allowed": self._settings.deep_research_allowed,
+        }
+
+    def create_snapshot(
+        self,
+        *,
+        rows: list[dict[str, Any]],
+        cutoff: str,
+        target_definition: str,
+        provenance: dict[str, Any] | None = None,
+    ) -> DatasetSnapshot:
+        snapshot = build_snapshot(
+            rows,
+            cutoff=cutoff,
+            target_definition=target_definition,
+            feature_schema_version=1,
+            provenance=provenance,
+        )
+        self._store.create_snapshot(snapshot)
+        return snapshot
+
+    def _stage_from_decision(self, result: ExperimentResult) -> tuple[str, str]:
+        if result.decision == "PROMOTION_ALLOWED":
+            return "SHADOW", "PROMOTED_TO_SHADOW"
+        blockers = (result.gates or {}).get("blockers") or []
+        if any("no measurable lift" in reason or "simpler model" in reason for reason in blockers):
+            return "REJECTED", "REJECTED_NO_LIFT"
+        if any("regression" in reason for reason in blockers):
+            return "REJECTED", "REJECTED_REGRESSION"
+        return "WALK_FORWARD", "WALK_FORWARD_COMPLETE"
+
+    def evaluate_and_record_challenger(
+        self,
+        *,
+        hypothesis_id: str,
+        challenger_name: str,
+        feature_set: list[str],
+        snapshot: DatasetSnapshot,
+        champion_version: str,
+        n_windows: int = 4,
+        champion_brier: float | None = None,
+        champion_log_loss: float | None = None,
+        market_metrics_available: bool = False,
+        actor: str = "SYSTEM",
+    ) -> dict[str, Any]:
+        experiment_id = f"exp-{hypothesis_id}-{challenger_name}"
+        spec = build_spec(
+            experiment_id=experiment_id,
+            hypothesis_id=hypothesis_id,
+            snapshot=snapshot,
+            champion_version=champion_version,
+            challenger_name=challenger_name,
+            feature_set=feature_set,
+        )
+        runner = ExperimentRunner(snapshot=snapshot, n_windows=n_windows)
+        result = runner.run(
+            spec,
+            champion_brier=champion_brier,
+            champion_log_loss=champion_log_loss,
+            market_metrics_available=market_metrics_available,
+        )
+        self._store.save_experiment(spec=spec, result=result)
+
+        model_id = f"challenger-{challenger_name}"
+        current = [entry for entry in self._store.list_models() if entry.get("model_id") == model_id and entry.get("model_version") == experiment_id]
+        from_stage = current[0].get("stage") if current else "RESEARCH"
+        to_stage, conclusion = self._stage_from_decision(result)
+
+        self._store.register_model(
+            model_id=model_id,
+            model_version=experiment_id,
+            role="CHALLENGER",
+            stage=to_stage,
+            feature_schema_version=1,
+        )
+        self._store.record_stage_transition(
+            {
+                "model_id": model_id,
+                "model_version": experiment_id,
+                "from_stage": from_stage,
+                "to_stage": to_stage,
+                "experiment_id": experiment_id,
+                "gate_version": result.promotion_policy_version,
+                "gate_results": result.gates or {},
+                "metric_deltas": result.metric_deltas,
+                "actor": actor,
+                "reason": conclusion,
+                "code_commit": spec.code_commit,
+            }
+        )
+        entry_id = self._store.create_research_entry(
+            hypothesis=f"{hypothesis_id}: {challenger_name}",
+            rationale=conclusion,
+            data_needed=", ".join(feature_set),
+        )
+        self._store.transition_research_entry(
+            entry_id,
+            status="COMPLETED",
+            result_summary=conclusion,
+            evidence={"decision": result.decision, "stage": to_stage, "metric_deltas": result.metric_deltas},
+        )
+        return {
+            "experiment": result.to_dict(),
+            "model_id": model_id,
+            "stage": to_stage,
+            "conclusion": conclusion,
+            "entry_id": entry_id,
+        }
+
+    def run_experiment(
+        self,
+        *,
+        hypothesis_id: str,
+        challenger_name: str,
+        feature_set: list[str],
+        snapshot: DatasetSnapshot,
+        champion_version: str,
+        n_windows: int = 4,
+        champion_brier: float | None = None,
+        champion_log_loss: float | None = None,
+        market_metrics_available: bool = False,
+    ) -> dict[str, Any]:
+        return self.evaluate_and_record_challenger(
+            hypothesis_id=hypothesis_id,
+            challenger_name=challenger_name,
+            feature_set=feature_set,
+            snapshot=snapshot,
+            champion_version=champion_version,
+            n_windows=n_windows,
+            champion_brier=champion_brier,
+            champion_log_loss=champion_log_loss,
+            market_metrics_available=market_metrics_available,
+        )
+
+    def advance_stage(self, *, model_id: str, model_version: str, to_stage: str) -> dict[str, Any]:
+        allowed = {"RESEARCH", "BACKTEST", "WALK_FORWARD", "SHADOW", "PAPER"}
+        if to_stage not in allowed:
+            return {"allowed": False, "reason": f"stage {to_stage} requires owner authority"}
+        self._store.register_model(
+            model_id=model_id,
+            model_version=model_version,
+            role="CHALLENGER",
+            stage=to_stage,
+        )
+        return {"allowed": True, "stage": to_stage}
+
+    def monitor_m5(self) -> dict[str, Any]:
+        data = collect_monitor_data(self._tools)
+        return self._intelligence.monitor(data)
+
+    def analyze_weaknesses(self) -> list[dict[str, Any]]:
+        data = collect_monitor_data(self._tools)
+        return [finding.to_dict() for finding in self._intelligence.find_weaknesses(data)]
+
+    def generate_hypotheses(self, *, limit: int = 10) -> list[dict[str, Any]]:
+        data = collect_monitor_data(self._tools)
+        return self._intelligence.generate_hypotheses(data, limit=limit)
+
+    def research_report(self) -> dict[str, Any]:
+        data = collect_monitor_data(self._tools)
+        return self._intelligence.research_report(data)
+
+    def create_proposal(
+        self,
+        *,
+        title: str,
+        reason: str,
+        supporting_data: str | None = None,
+        expected_effect: str | None = None,
+        risk: str | None = None,
+        required_features: list[str] | None = None,
+        evaluation_plan: str | None = None,
+    ) -> int:
+        payload = {
+            "title": title,
+            "reason": reason,
+            "supporting_data": supporting_data,
+            "expected_effect": expected_effect,
+            "risk": risk,
+            "required_features": required_features or [],
+            "evaluation_plan": evaluation_plan,
+        }
+        entry_id = self._store.create_research_entry(
+            hypothesis=f"{title} :: {reason}",
+            rationale=supporting_data,
+            data_needed="; ".join(required_features or []),
+        )
+        self._store.transition_research_entry(
+            entry_id,
+            status="PROPOSED",
+            evidence={"proposal": payload},
+        )
+        return entry_id
+
+    def list_proposals(self) -> list[dict[str, Any]]:
+        return [
+            entry for entry in self._store.list_research_entries()
+            if entry.get("status") == "PROPOSED"
+        ]
+
+    def _review_gate(self) -> dict[str, Any] | None:
+        if not self._settings.markets_ready:
+            return {"ran": False, "reason": f"runtime state is {self.markets_state()}; no AI spend"}
+        budget = self._budget_state()
+        if budget["blocked"]:
+            return {"ran": False, "reason": "budget hard limit"}
+        now = self._clock()
+        if self._last_trigger_at is not None:
+            cooldown = self._settings.trigger_cooldown_seconds
+            if (now - self._last_trigger_at).total_seconds() < cooldown:
+                return {"ran": False, "reason": "cooldown"}
+        self._last_trigger_at = now
+        return None
+
+    def run_daily_review(self) -> dict[str, Any]:
+        blocked = self._review_gate()
+        if blocked is not None:
+            return blocked
+        data = collect_monitor_data(self._tools)
+        outcome = self._daily_review.run(tools=self._tools, intelligence=self._intelligence, data=data)
+        self._store.save_review(outcome)
+        return outcome.to_dict()
+
+    def run_weekly_review(self) -> dict[str, Any]:
+        blocked = self._review_gate()
+        if blocked is not None:
+            return blocked
+        data = collect_monitor_data(self._tools)
+        outcome = self._weekly_review.run(tools=self._tools, intelligence=self._intelligence, data=data)
+        self._store.save_review(outcome)
+        return outcome.to_dict()
+
+    def list_reviews(self) -> list[dict[str, Any]]:
+        return self._store.list_reviews()
+
+    def explain_prediction(self, features: dict[str, float]) -> dict[str, Any] | None:
+        if self._weights_doc is None:
+            return None
+        version = self._weights_doc.get("model_id", "")
+        sha = self._weights_doc.get("sha256", "")
+        if sha:
+            version = f"{version}:{sha[:12]}"
+        return explain_m5_prediction(features, self._weights_doc, model_version=version)
+
+    def evaluate_promotion(
+        self,
+        *,
+        model_version: str,
+        brier: float | None,
+        log_loss: float | None,
+        calibration_error: float | None,
+        sample_n: int,
+        champion_brier: float | None = None,
+        champion_log_loss: float | None = None,
+        leakage_detected: bool = False,
+        min_sample: int = 100,
+        metric_tolerance: float = 0.05,
+    ) -> dict[str, Any]:
+        reasons: list[str] = []
+        allowed = True
+        if leakage_detected:
+            allowed = False
+            reasons.append("future leakage detected")
+        if sample_n < min_sample:
+            allowed = False
+            reasons.append(f"insufficient evidence sample {sample_n} < {min_sample}")
+        if brier is None or log_loss is None or calibration_error is None:
+            allowed = False
+            reasons.append("metrics missing")
+        if allowed and champion_brier is not None and brier > champion_brier + metric_tolerance:
+            allowed = False
+            reasons.append("candidate materially worse on Brier")
+        if allowed and champion_log_loss is not None and log_loss > champion_log_loss + metric_tolerance:
+            allowed = False
+            reasons.append("candidate materially worse on log loss")
+        if allowed and calibration_error is not None and calibration_error > metric_tolerance:
+            allowed = False
+            reasons.append("candidate calibration error exceeds tolerance")
+        verdict = PromotionVerdict(allowed=allowed, reasons=reasons)
+        return verdict.to_dict()
+
+    def create_research_entry(self, *, hypothesis: str, rationale: str | None = None, data_needed: str | None = None) -> int:
+        return self._store.create_research_entry(
+            hypothesis=hypothesis, rationale=rationale, data_needed=data_needed
+        )
+
+    def list_research(self) -> list[dict[str, Any]]:
+        return self._store.list_research_entries()
+
+    def list_experiments(self) -> list[dict[str, Any]]:
+        return self._store.list_experiments()
+
+    def list_snapshots(self) -> list[dict[str, Any]]:
+        return self._store.list_snapshots()
+
+    def ensure_champion(
+        self,
+        *,
+        artifact_path: str,
+        artifact_sha256: str,
+        feature_schema_version: int = 1,
+    ) -> dict[str, Any]:
+        if self._weights_doc is None:
+            import json
+            from pathlib import Path
+
+            self._weights_doc = json.loads(Path(artifact_path).read_text(encoding="utf-8"))
+        return ensure_champion(
+            self._store,
+            weights_doc=self._weights_doc,
+            artifact_path=artifact_path,
+            artifact_sha256=artifact_sha256,
+            feature_schema_version=feature_schema_version,
+        )
+
+    def register_scheduler_jobs(self) -> None:
+        self._scheduler.register(SchedulerJob("DAILY_LIGHT_REVIEW", 86400))
+        self._scheduler.register(SchedulerJob("WEEKLY_RESEARCH_REVIEW", 604800))
+        self._scheduler.register(SchedulerJob("RESULT_DISCOVERY", 900))
+        self._scheduler.register(SchedulerJob("SETTLEMENT", 300))
+        self._scheduler.register(SchedulerJob("FORWARD_SCORING", 300))
+        self._scheduler.register(SchedulerJob("RESULT_RECONCILIATION", 3600))
+        self._scheduler.register(SchedulerJob("HARDROCK_CAPTURE", 300))
+        self._scheduler.register(SchedulerJob("HISTORICAL_BACKFILL", 1800))
+        self._scheduler.register(SchedulerJob("ARB_SCAN", 60))
+        self._scheduler.register(SchedulerJob("ARB_EXPIRATION", 300))
+        self._scheduler.register(SchedulerJob("PAPER_ARB_SETTLEMENT", 600))
+
+    def run_scheduled_review(self, *, weekly: bool = False) -> dict[str, Any]:
+        job_name = "WEEKLY_RESEARCH_REVIEW" if weekly else "DAILY_LIGHT_REVIEW"
+
+        def handler() -> dict[str, Any]:
+            review = self.run_weekly_review() if weekly else self.run_daily_review()
+            return {"summary": f"{job_name}: {review.get('reason', 'ran')}", "result": review}
+
+        return self._scheduler.run_due(job_name, handler=handler)
+
+    def scheduler_status(self) -> dict[str, Any]:
+        return {
+            "leader": self._scheduler._owner,
+            "daily": self._scheduler.status("DAILY_LIGHT_REVIEW"),
+            "weekly": self._scheduler.status("WEEKLY_RESEARCH_REVIEW"),
+            "result_discovery": self._scheduler.status("RESULT_DISCOVERY"),
+            "settlement": self._scheduler.status("SETTLEMENT"),
+            "forward_scoring": self._scheduler.status("FORWARD_SCORING"),
+            "arb_scan": self._scheduler.status("ARB_SCAN"),
+            "arb_expiration": self._scheduler.status("ARB_EXPIRATION"),
+            "paper_arb_settlement": self._scheduler.status("PAPER_ARB_SETTLEMENT"),
+        }
+
+    def _runtime_database(self):
+        database = getattr(self._tools, "_database", None)
+        if database is not None:
+            return database
+        return None
+
+    def run_result_discovery(self) -> dict[str, Any]:
+        """P0-P4: durable RESULT_DISCOVERY job (acquisition ONLY).
+
+        Quota/circuit governed via the per-HTTP ProviderRequestExecutor. This
+        job writes NO settlements and NO forward scores.
+        """
+        database = self._runtime_database()
+        if database is None:
+            return {"ran": False, "reason": "no markets database"}
+        from defend_markets.quant.result_acquisition import OddsApiIOResultAdapter, TableTennisResultAcquisitionService
+
+        def handler() -> dict[str, Any]:
+            key = _load_odds_api_io_key()
+            if not key:
+                return {"summary": "result discovery: no provider key", "result": {"ok": False, "reason": "no provider key"}}
+            from defend_markets.quant.governance import ProviderRequestExecutor
+
+            executor = ProviderRequestExecutor(self._store)
+            feed = OddsApiIOResultAdapter(key, store=self._store, executor=executor)
+            service = TableTennisResultAcquisitionService(database, self._store, feed)
+            try:
+                outcome = service.acquire_results()
+            except Exception as error:  # noqa: BLE001
+                return {"summary": "result discovery failed", "result": {"ok": False, "error": str(error)}}
+            return {"summary": outcome.get("summary", "result discovery ran"), "result": outcome}
+
+        return self._scheduler.run_due("RESULT_DISCOVERY", handler=handler)
+
+    def run_settlement(self) -> dict[str, Any]:
+        """P1: durable SETTLEMENT job — the ONLY settlement authority.
+
+        The legacy settlement_catchup is NOT invoked here (it violates result truth).
+        """
+        from defend_markets.quant.settlement import SettlementService
+
+        def handler() -> dict[str, Any]:
+            outcome = SettlementService(self._store).settle()
+            return {"summary": outcome.get("summary", "settlement ran"), "result": outcome}
+
+        return self._scheduler.run_due("SETTLEMENT", handler=handler)
+
+    def run_forward_scoring(self) -> dict[str, Any]:
+        """P2: durable FORWARD_SCORING job — the ONLY scoring authority."""
+        from defend_markets.quant.settlement import ForwardScoringService
+
+        def handler() -> dict[str, Any]:
+            outcome = ForwardScoringService(self._store).score()
+            return {"summary": outcome.get("summary", "forward scoring ran"), "result": outcome}
+
+        return self._scheduler.run_due("FORWARD_SCORING", handler=handler)
+
+    def run_result_reconciliation(self) -> dict[str, Any]:
+        """P16: durable RESULT_RECONCILIATION job (bounded correction recheck)."""
+        from defend_markets.quant.reconciliation import ReconciliationService
+        from defend_markets.quant.settlement import SettlementService
+
+        def handler() -> dict[str, Any]:
+            due = ReconciliationService(self._store).due_events()
+            outcome = SettlementService(self._store).settle()
+            return {"summary": f"reconciliation: {len(due)} due, {outcome.get('revised', 0)} revised", "result": {"due": len(due), **outcome}}
+
+        return self._scheduler.run_due("RESULT_RECONCILIATION", handler=handler)
+
+    def run_hardrock_capture(self) -> dict[str, Any]:
+        """P19: durable HARDROCK_CAPTURE job (Owls Hard Rock FL ingestion).
+
+        Read-only: fetches board + ladder, normalizes rootIdx through the ladder
+        snapshot, persists canonical quote observations. Never settles, never
+        scores. All HTTP goes through the governed ProviderRequestExecutor.
+        """
+        from defend_markets.quant.governance import ProviderRequestExecutor
+        from defend_markets.quant.hardrock import OwlsHardRockAdapter
+
+        def handler() -> dict[str, Any]:
+            key = _load_owls_insight_key()
+            if not key:
+                return {"summary": "hardrock capture: no Owls key", "result": {"ok": False, "reason": "no owls key"}}
+            executor = ProviderRequestExecutor(self._store)
+            adapter = OwlsHardRockAdapter(key, self._store, executor=executor)
+            outcome = adapter.ingest()
+            if outcome.get("ok"):
+                self.record_event_trigger("HARDROCK_CAPTURE_COMPLETED", {"quotes": outcome.get("quotes", 0)}, invoke=False)
+            return {"summary": f"hardrock capture: {outcome.get('quotes', 0)} quotes, {outcome.get('events', 0)} events", "result": outcome}
+
+        return self._scheduler.run_due("HARDROCK_CAPTURE", handler=handler)
+
+    def run_historical_backfill(self) -> dict[str, Any]:
+        """P16: durable low-priority HISTORICAL_BACKFILL job (OddsPapi)."""
+        from defend_markets.quant.backfill import HistoricalBackfillJob
+
+        def handler() -> dict[str, Any]:
+            job = HistoricalBackfillJob(self._store)
+            outcome = job.run()
+            return {"summary": f"historical backfill ran: {outcome}", "result": outcome}
+
+        return self._scheduler.run_due("HISTORICAL_BACKFILL", handler=handler)
+
+    def run_arb_scan(self) -> dict[str, Any]:
+        """P30: durable ARB_SCAN job."""
+        database = self._runtime_database()
+        if database is None:
+            return {"ran": False, "reason": "no markets database"}
+        from defend_markets.quant.arb_feed import CanonicalOddsFeed, SportsArbScanner
+
+        def handler() -> dict[str, Any]:
+            scanner = SportsArbScanner(database, self._store, feed=CanonicalOddsFeed(database))
+            outcome = scanner.scan()
+            if outcome.get("funnel", {}).get("mathematical_arbs", 0) > 0:
+                self.record_event_trigger(
+                    "ARB_OPPORTUNITY_DETECTED",
+                    {"mathematical_arbs": outcome["funnel"]["mathematical_arbs"], "stored": outcome.get("stored", 0)},
+                    invoke=False,
+                )
+            return {"summary": outcome.get("summary", "arb scan ran"), "result": outcome}
+
+        return self._scheduler.run_due("ARB_SCAN", handler=handler)
+
+    def run_arb_expiration(self) -> dict[str, Any]:
+        """P32: durable ARB_EXPIRATION job."""
+        database = self._runtime_database()
+        if database is None:
+            return {"ran": False, "reason": "no markets database"}
+        from defend_markets.quant.arb_feed import SportsArbScanner
+
+        def handler() -> dict[str, Any]:
+            scanner = SportsArbScanner(database, self._store)
+            outcome = scanner.scan()  # re-scan expires stale ACTIVE opportunities
+            return {"summary": "arb expiration ran", "result": {"expired": outcome.get("funnel", {}).get("expired", 0)}}
+
+        return self._scheduler.run_due("ARB_EXPIRATION", handler=handler)
+
+    def run_paper_arb_settlement(self) -> dict[str, Any]:
+        """P46: settle PAPER_ARB tickets using the canonical FINAL result."""
+        database = self._runtime_database()
+        if database is None:
+            return {"ran": False, "reason": "no markets database"}
+        from defend_markets.quant.paper_arb import PaperArbStore
+
+        def handler() -> dict[str, Any]:
+            settled_any = 0
+            settlements = self._store.list_settlements(limit=100000)
+            tickets = self._store.list_paper_arb_tickets(limit=5000)
+            unsettled_events = {str(t.get("canonical_event_id")) for t in tickets if t.get("settlement_id") is None}
+            for event_id in unsettled_events:
+                settlement = next((s for s in settlements if str(s.get("canonical_event_id")) == event_id and s.get("status") == "FINAL"), None)
+                if settlement is None:
+                    continue
+                paper = PaperArbStore(self._store)
+                outcome = paper.settle_for_event(
+                    canonical_event_id=event_id,
+                    settlement_id=int(settlement["settlement_id"]),
+                    actual_winner_side=str(settlement.get("winner_side") or ""),
+                    result_status=str(settlement.get("status") or "FINAL"),
+                    settlement_revision=int(settlement.get("revision") or 1),
+                )
+                settled_any += outcome["settled"]
+            return {"summary": f"paper arb settlement: {settled_any} tickets settled", "result": {"settled": settled_any}}
+
+        return self._scheduler.run_due("PAPER_ARB_SETTLEMENT", handler=handler)
+
+    def arbitrage_status(self) -> dict[str, Any]:
+        """P37: sports arb observability — real metrics, no hard-coded nulls."""
+        opportunities = self._store.list_arb_opportunities(limit=5000)
+        active = [o for o in opportunities if o.get("status") == "ACTIVE"]
+        math = [o for o in opportunities if o.get("classification") in ("MATHEMATICAL_ARB", "EXECUTABLE_ARB")]
+        paper = self._store.list_paper_arb_tickets(limit=5000)
+        profiles = {p["bookmaker"]: p for p in self._store.list_book_access_profiles()}
+        verifications = self._store.list_arb_verifications(limit=5000)
+        # current quotes / distinct books from the canonical feed
+        quotes_current = 0
+        distinct_books: list[str] = []
+        database = self._runtime_database()
+        if database is not None:
+            from defend_markets.quant.arb_feed import CanonicalOddsFeed
+
+            feed = CanonicalOddsFeed(database)
+            quotes = feed.quotes_for_events()
+            quotes_current = len(quotes)
+            distinct_books = sorted({q.bookmaker for q in quotes})
+        two_book_events = 0
+        if database is not None:
+            from defend_markets.quant.arb_feed import CanonicalOddsFeed
+
+            feed = CanonicalOddsFeed(database)
+            quotes = feed.quotes_for_events()
+            by_event: dict[str, set[str]] = {}
+            for q in quotes:
+                by_event.setdefault(q.canonical_event_id, set()).add(q.bookmaker)
+            two_book_events = sum(1 for books in by_event.values() if len(books) >= 2)
+        # median arb lifetime from detections (first_seen -> expired)
+        lifetimes: list[float] = []
+        for opp in opportunities:
+            fs = opp.get("first_seen_at")
+            exp = opp.get("expired_at")
+            if fs and exp:
+                from defend_markets.quant.market import parse_dt
+
+                f = parse_dt(fs)
+                e = parse_dt(exp)
+                if f is not None and e is not None and e >= f:
+                    lifetimes.append((e - f).total_seconds())
+        median_lifetime = None
+        if lifetimes:
+            lifetimes.sort()
+            mid = len(lifetimes) // 2
+            median_lifetime = lifetimes[mid] if len(lifetimes) % 2 else (lifetimes[mid - 1] + lifetimes[mid]) / 2
+        return {
+            "arb_opportunities_24h": len(opportunities),
+            "current_active_arbs": len(active),
+            "current_mathematical_arbs": len(math),
+            "paper_actionable_arbs": len([o for o in math if o.get("classification") == "EXECUTABLE_ARB"]),
+            "paper_arb_tickets": len(paper),
+            "quotes_current": quotes_current,
+            "distinct_books": distinct_books,
+            "two_book_events": two_book_events,
+            "arb_verifications": len(verifications),
+            "median_arb_lifetime": round(median_lifetime, 3) if median_lifetime is not None else None,
+            "owner_access_profiles": profiles,
+            "last_arb_scan": self._scheduler.status("ARB_SCAN"),
+        }
+
+    def result_runtime_status(self) -> dict[str, Any]:
+        """P61: result pipeline observability."""
+        acquisitions = self._store.list_result_acquisition(limit=5000)
+        by_state: dict[str, int] = {}
+        for row in acquisitions:
+            by_state[str(row.get("acquisition_state"))] = by_state.get(str(row.get("acquisition_state")), 0) + 1
+        requests = self._store.list_result_requests(limit=1000)
+        returned = sum(int(r.get("events_returned", 0)) for r in requests)
+        requested = sum(int(r.get("events_requested", 0)) for r in requests)
+        ok_requests = sum(1 for r in requests if r.get("ok"))
+        yield_rate = (returned / requested) if requested else None
+        from defend_markets.quant.result_acquisition import forward_evidence_summary
+
+        scores = forward_evidence_summary(self._store)
+        pending = by_state.get("LOCAL_RESULT_MISSING_NOT_REQUESTED", 0) + by_state.get("PROVIDER_RESULT_ERROR", 0) + by_state.get("PROVIDER_RESULT_SCHEMA_UNKNOWN", 0) + by_state.get("PROVIDER_EVENT_IDENTITY_MISMATCH", 0)
+        requested_empty = by_state.get("PROVIDER_RESULT_REQUESTED_EMPTY", 0)
+        outside_retention = by_state.get("PROVIDER_RESULT_OUTSIDE_RETENTION", 0) + by_state.get("PROVIDER_EVENT_NOT_FOUND", 0)
+        settlements = self._store.list_settlements(limit=100000)
+        current_settlements = [s for s in settlements if s.get("status") == "FINAL"]
+        revisions = [s for s in settlements if int(s.get("revision", 1)) > 1]
+        last_settlement = max((s.get("created_at") for s in settlements), default=None)
+        fwd_scores = self._store.list_forward_scores(limit=100000)
+        last_forward_score = max((s.get("created_at") for s in fwd_scores), default=None)
+        from defend_markets.quant.reconciliation import ReconciliationService
+
+        reconciliation_due = len(ReconciliationService(self._store).due_events())
+        return {
+            "RESULT_PENDING_EVENTS": pending,
+            "RESULT_REQUESTED_EMPTY_EVENTS": requested_empty,
+            "RESULT_OUTSIDE_RETENTION_EVENTS": outside_retention,
+            "RESULT_RECONCILIATION_DUE": reconciliation_due,
+            "CURRENT_SETTLEMENTS": len(current_settlements),
+            "HISTORICAL_SETTLEMENT_REVISIONS": len(revisions),
+            "FORWARD_SCORES_CURRENT": len(fwd_scores),
+            "PAIRED_SHADOW_EVENTS": (scores.get("paired") or {}).get("events", 0),
+            "unsettled_past_events": pending + requested_empty + outside_retention,
+            "acquisition_states": by_state,
+            "result_requests_used": len(requests),
+            "result_requests_ok": ok_requests,
+            "result_events_requested": requested,
+            "result_events_returned": returned,
+            "result_request_yield": round(yield_rate, 4) if yield_rate is not None else None,
+            "last_result_provider_call": requests[0]["observed_at"] if requests else None,
+            "last_settlement": last_settlement,
+            "last_forward_score": last_forward_score,
+            "forward_evidence": scores,
+            "settlements": len(settlements),
+        }
+
+    def record_event_trigger(self, trigger_type: str, evidence: dict[str, Any], *, invoke: bool = False) -> dict[str, Any]:
+        return self._trigger_ledger.record(trigger_type, evidence, invoke=invoke)
+
+    def list_event_triggers(self, limit: int = 100) -> list[dict[str, Any]]:
+        return self._store.list_triggers(limit=limit)
+
+    def _evaluation_service(self) -> EvaluationService:
+        from defend_markets.quant.evaluation import PostgresOutcomeSource
+
+        source = None
+        if self._tools is not None and hasattr(self._tools, "_database"):
+            source = PostgresOutcomeSource(self._tools._database)
+        if source is None:
+
+            class _EmptySource:
+                def settled_predictions(self):
+                    return []
+
+                def prediction_counts(self):
+                    return {"total": 0, "available": 0, "settled": 0}
+
+            source = _EmptySource()
+        return EvaluationService(self._store, outcome_source=source)
+
+    def settle_and_evaluate(self) -> dict[str, Any]:
+        service = self._evaluation_service()
+        return {
+            "settle": service.settle(),
+            "metrics": service.compute_metrics(),
+        }
+
+    def evaluation_state(self) -> dict[str, Any]:
+        return self._evaluation_service().evaluation_state()
+
+    def prioritize_research(self) -> dict[str, Any]:
+        prices = self._tools.price_observations()
+        market_available = int(prices.get("observations", 0)) > 0
+        hypotheses = seed_hypotheses(self._store, market_prices_available=market_available)
+        selection = ResearchPrioritizer(market_prices_available=market_available).select_next(hypotheses)
+        return {"hypotheses": hypotheses, "selection": selection}
+
+    def record_ai_call_detailed(
+        self,
+        *,
+        profile_alias: str,
+        provider: str,
+        model: str,
+        trigger_type: str | None = None,
+        state_hash: str | None = None,
+        reason_for_route: str | None = None,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        cached_input_tokens: int = 0,
+    ) -> float:
+        from defend_markets.quant.budget import record_call
+
+        return record_call(
+            self._store,
+            profile_alias=profile_alias,
+            provider=provider,
+            model=model,
+            trigger_type=trigger_type,
+            state_hash=state_hash,
+            reason_for_route=reason_for_route,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cached_input_tokens=cached_input_tokens,
+        )
+
+    def operational_tick(self) -> dict[str, Any]:
+        if not self._settings.markets_ready:
+            return {"executed": 0, "reason": f"runtime state is {self.markets_state()}; no operational execution"}
+        executed = 0
+        review_outcomes: dict[str, Any] = {}
+        for weekly in (False, True):
+            name = "weekly" if weekly else "daily"
+            result = self.run_scheduled_review(weekly=weekly)
+            review_outcomes[name] = result
+            if result.get("ran"):
+                executed += 1
+        settle = self.settle_and_evaluate()
+        inserted = int((settle.get("settle") or {}).get("inserted", 0))
+        if inserted > 0:
+            self.record_event_trigger("SETTLEMENT_BATCH_COMPLETED", {"inserted": inserted}, invoke=False)
+        jobs = {}
+        for name, method in (
+            ("RESULT_DISCOVERY", self.run_result_discovery),
+            ("SETTLEMENT", self.run_settlement),
+            ("FORWARD_SCORING", self.run_forward_scoring),
+            ("RESULT_RECONCILIATION", self.run_result_reconciliation),
+            ("HARDROCK_CAPTURE", self.run_hardrock_capture),
+            ("HISTORICAL_BACKFILL", self.run_historical_backfill),
+            ("ARB_SCAN", self.run_arb_scan),
+            ("ARB_EXPIRATION", self.run_arb_expiration),
+            ("PAPER_ARB_SETTLEMENT", self.run_paper_arb_settlement),
+        ):
+            result = method()
+            jobs[name] = {"ran": result.get("ran", False), "reason": result.get("reason")}
+            if result.get("ran"):
+                executed += 1
+        return {"executed": executed, "reviews": review_outcomes, "settlement": settle, "jobs": jobs}
+
+    def database_identity(self) -> dict[str, Any]:
+        from urllib.parse import urlsplit
+
+        info: dict[str, Any] = {"db_server": None, "db_port": None, "db_name": None, "schema_version": None}
+        database = getattr(self._tools, "_database", None)
+        if database is not None:
+            url = getattr(database, "database_url", "")
+            try:
+                parsed = urlsplit(url)
+                info["db_server"] = parsed.hostname
+                info["db_port"] = parsed.port
+                info["db_name"] = parsed.path.strip("/")
+            except Exception:
+                pass
+            health = database.health()
+            info["schema_version"] = health.get("schema_version")
+        return info
+
+    def _improvement_orchestrator(self):
+        from defend_markets.quant.improve import ImprovementOrchestrator
+
+        database = getattr(self._tools, "_database", None)
+        return ImprovementOrchestrator(self._store, database)
+
+    def run_improvement_loop(self) -> dict[str, Any]:
+        return self._improvement_orchestrator().run_once()
+
+    def daily_learning_review(self) -> dict[str, Any]:
+        return self._improvement_orchestrator().daily_learning_review()
+
+    def active_blocker_summary(self) -> dict[str, Any]:
+        review = self.daily_learning_review()
+        top = review["top_5_weaknesses"]
+        return {
+            "primary_progress_blocker": top[0] if top else None,
+            "top_5_weaknesses": top,
+            "forward_paired_n": self._store.decision_evaluation_counts().get("total", 0),
+            "price_coverage": review["data_coverage"],
+        }
+
+    def latest_runtime_report(self) -> dict[str, Any] | None:
+        artifact_dir = getattr(self._weekly_review, "_artifact_dir", None)
+        if artifact_dir is None or not artifact_dir.is_dir():
+            return None
+        candidates = sorted(artifact_dir.glob("TT_MARKET_RESEARCH_REPORT_*.json"))
+        if not candidates:
+            return None
+        import json as _json
+
+        return _json.loads(candidates[-1].read_text(encoding="utf-8"))
+
+    def operational_status(self) -> dict[str, Any]:
+        prices = self._tools.price_observations()
+        market_available = int(prices.get("observations", 0)) > 0
+        evaluation_state = self.evaluation_state()
+        metrics = self._store.latest_metric_snapshot()
+        champions = self._store.list_champions()
+        champion = champions[0] if champions else None
+        scheduler = self.scheduler_status()
+        usage = self._store.daily_ai_usage(datetime.now(timezone.utc).date().isoformat())
+        return {
+            "markets_state": self.markets_state(),
+            "quant_director": self.health_state(),
+            "database": self.database_identity(),
+            "scheduler_leader": scheduler["leader"],
+            "daily_job": scheduler["daily"],
+            "weekly_job": scheduler["weekly"],
+            "default_profile": self.runtime_profile(),
+            "champion": {
+                "model_id": champion["model_id"] if champion else None,
+                "version": champion["model_version"] if champion else None,
+                "hash": (champion["artifact_sha256"] or "")[:12] if champion else None,
+            },
+            "evaluation_state": evaluation_state,
+            "metrics": {
+                "brier": metrics.get("brier") if metrics else None,
+                "log_loss": metrics.get("log_loss") if metrics else None,
+                "ece": metrics.get("ece") if metrics else None,
+                "drift_state": metrics.get("drift_state") if metrics else None,
+            },
+            "tt_market_coverage": "AVAILABLE" if market_available else "EMPTY",
+            "ai_daily_calls": usage["calls"],
+            "ai_daily_spend": usage["cost_usd"],
+            "ai_hard_limit": self._settings.daily_cost_hard_limit,
+            "last_triggers": self.list_event_triggers(limit=5),
+        }
+
+def _load_odds_api_io_key() -> str:
+    """Load the Odds-API.io key without ever logging it."""
+    try:
+        from defend_integrations.stores import SecretRegistry, default_secret_path
+        from defend_control.secrets import DpapiSecretStore
+    except Exception:
+        return ""
+    try:
+        key = SecretRegistry(DpapiSecretStore(default_secret_path())).get("ODDS_API_IO_API_KEY")
+    except Exception:
+        return ""
+    return str(key or "")
+
+
+def _load_owls_insight_key() -> str:
+    """Load the Owls Insight key from DPAPI without ever logging it (P1)."""
+    try:
+        from defend_integrations.stores import SecretRegistry, default_secret_path
+        from defend_control.secrets import DpapiSecretStore
+    except Exception:
+        return ""
+    try:
+        key = SecretRegistry(DpapiSecretStore(default_secret_path())).get("OWLS_INSIGHT_API_KEY")
+    except Exception:
+        return ""
+    return str(key or "")

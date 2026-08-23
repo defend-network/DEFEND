@@ -99,20 +99,45 @@ def _request_once(
     timeout_seconds: float,
     max_response_bytes: int,
 ) -> tuple[int | None, str | None, str, dict[str, str], bool]:
-    """Perform one bounded GET inside the caller's thread."""
+    """Perform one bounded GET inside the caller's thread.
+
+    Handles gzip Content-Encoding (Cloudflare fronted providers such as Owls
+    Insight return gzip-compressed chunked bodies) so the sanitized body is the
+    decoded JSON, never a corrupt byte stream.
+    """
     request = Request(url, method="GET", headers=headers or {})
     opener = build_opener(_NoRedirectHandler())
     with opener.open(request, timeout=float(timeout_seconds)) as response:
         raw_status = getattr(response, "status", None)
         status_code = int(raw_status) if raw_status is not None else None
-        raw = response.read(max_response_bytes + 1)
+        # Loop-read: urllib's HTTPResponse.read(n) can return a single chunk on
+        # chunked/streamed responses (e.g. Cloudflare-fronted APIs) long before
+        # EOF, so a single read(n) may silently truncate the body.
+        chunks: list[bytes] = []
+        remaining = max_response_bytes + 1
+        while remaining > 0:
+            chunk = response.read(min(65536, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        raw = b"".join(chunks)
         truncated = len(raw) > max_response_bytes
-        body = raw[:max_response_bytes].decode("utf-8", errors="replace")
+        raw = raw[:max_response_bytes]
         response_headers = {
             key: value
             for key, value in response.headers.items()
             if key.isascii()
         }
+        encoding = (response_headers.get("Content-Encoding") or "").casefold()
+        if "gzip" in encoding and raw[:2] == b"\x1f\x8b":
+            import gzip
+
+            try:
+                raw = gzip.decompress(raw)
+            except Exception:
+                raw = raw
+        body = raw.decode("utf-8", errors="replace")
     return status_code, None, body, response_headers, truncated
 
 
@@ -126,6 +151,7 @@ def fetch(
     known_secrets: tuple[str, ...] = (),
     capture_error_body: bool = False,
     max_response_bytes: int = _MAX_RESPONSE_BYTES,
+    max_output_bytes: int | None = None,
 ) -> FetchResult:
     """Bounded GET with centralized retry/backoff and sanitized errors.
 
@@ -215,7 +241,10 @@ def fetch(
     latency_ms = max(0, int((time.monotonic() - started) * 1000))
     sanitized = None
     if body is not None:
-        sanitized = redact_text(body, known_secrets)
+        if max_output_bytes is not None:
+            sanitized = redact_text(body, known_secrets, max_output_bytes=max_output_bytes)
+        else:
+            sanitized = redact_text(body, known_secrets)
     return FetchResult(
         ok=status_code is not None and 200 <= status_code < 300,
         status_code=status_code,

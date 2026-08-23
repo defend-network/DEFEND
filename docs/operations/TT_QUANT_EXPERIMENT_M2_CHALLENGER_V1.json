@@ -1,0 +1,510 @@
+{
+  "experiment_id": "exp-m2-challenger-elo-diff-sq",
+  "dataset_snapshot_id": "a4054243bf37a3d492eaa9bfea8d91acad25f69fff8ac3bb87ebd5464d16db63",
+  "created_at": "2026-08-22T18:00:43Z",
+  "rows_used": 148474,
+  "n_windows": 3,
+  "challenger_metrics": {
+    "n_windows": 3,
+    "val_rows": 89084,
+    "weighted_brier": 0.242473,
+    "weighted_log_loss": 0.677528,
+    "mean_brier": 0.242473,
+    "brier_std": 0.000673,
+    "best_window_brier": 0.241574,
+    "worst_window_brier": 0.243191
+  },
+  "baseline_metrics": {
+    "n_windows": 3,
+    "val_rows": 89084,
+    "weighted_brier": 0.242471,
+    "weighted_log_loss": 0.677523,
+    "mean_brier": 0.242471,
+    "brier_std": 0.000673,
+    "best_window_brier": 0.241573,
+    "worst_window_brier": 0.243191
+  },
+  "calibration": [
+    {
+      "bin_start": 0.0,
+      "bin_end": 0.10000673521620045,
+      "predicted_mean": 0.337653,
+      "observed_rate": 0.334718,
+      "count": 8909.0,
+      "abs_calibration_error": 0.002935
+    },
+    {
+      "bin_start": 0.10000673521620045,
+      "bin_end": 0.2000134704324009,
+      "predicted_mean": 0.418843,
+      "observed_rate": 0.439331,
+      "count": 8909.0,
+      "abs_calibration_error": 0.020488
+    },
+    {
+      "bin_start": 0.2000134704324009,
+      "bin_end": 0.3000202056486013,
+      "predicted_mean": 0.452125,
+      "observed_rate": 0.466046,
+      "count": 8909.0,
+      "abs_calibration_error": 0.013921
+    },
+    {
+      "bin_start": 0.3000202056486013,
+      "bin_end": 0.4000269408648018,
+      "predicted_mean": 0.475566,
+      "observed_rate": 0.485576,
+      "count": 8909.0,
+      "abs_calibration_error": 0.01001
+    },
+    {
+      "bin_start": 0.4000269408648018,
+      "bin_end": 0.5000336760810022,
+      "predicted_mean": 0.495367,
+      "observed_rate": 0.501515,
+      "count": 8909.0,
+      "abs_calibration_error": 0.006148
+    },
+    {
+      "bin_start": 0.5000336760810022,
+      "bin_end": 0.6000404112972026,
+      "predicted_mean": 0.51456,
+      "observed_rate": 0.511281,
+      "count": 8909.0,
+      "abs_calibration_error": 0.003279
+    },
+    {
+      "bin_start": 0.6000404112972026,
+      "bin_end": 0.700047146513403,
+      "predicted_mean": 0.534628,
+      "observed_rate": 0.513638,
+      "count": 8909.0,
+      "abs_calibration_error": 0.02099
+    },
+    {
+      "bin_start": 0.700047146513403,
+      "bin_end": 0.8000538817296036,
+      "predicted_mean": 0.558086,
+      "observed_rate": 0.531148,
+      "count": 8909.0,
+      "abs_calibration_error": 0.026938
+    },
+    {
+      "bin_start": 0.8000538817296036,
+      "bin_end": 0.900060616945804,
+      "predicted_mean": 0.591891,
+      "observed_rate": 0.57369,
+      "count": 8909.0,
+      "abs_calibration_error": 0.018201
+    },
+    {
+      "bin_start": 0.900060616945804,
+      "bin_end": 1.0,
+      "predicted_mean": 0.673716,
+      "observed_rate": 0.670897,
+      "count": 8903.0,
+      "abs_calibration_error": 0.002819
+    }
+  ],
+  "ece": 0.012574,
+  "ablation": {
+    "challenger_brier": 0.242473,
+    "baseline_brier": 0.242471,
+    "lift": 2e-06,
+    "kept": false
+  },
+  "leakage": {
+    "accepted_rows_after_cutoff": 0,
+    "excluded_rows_after_cutoff": 1523,
+    "leakage_detected": false
+  },
+  "runtime_ms": 69047,
+  "artifact_hash": "8d60056404383919915269c1da00b7adc88e5e0ccf0fcf5264164d50a3b7a15c",
+  "decision": "PROMOTION_BLOCKED",
+  "folds": [
+    {
+      "index": 0,
+      "train_start": "2025-12-08 11:35:00-05:00",
+      "train_end": "2026-02-06 14:55:00-05:00",
+      "val_start": "2026-02-06 15:00:00-05:00",
+      "val_end": "2026-03-27 13:30:00-04:00",
+      "train_rows": 29695,
+      "val_rows": 29695,
+      "brier": 0.243191,
+      "log_loss": 0.678962,
+      "calibration_error": 0.016633,
+      "metrics": {
+        "n": 29695,
+        "brier": 0.243191,
+        "log_loss": 0.678962,
+        "accuracy": 0.554437,
+        "ece": 0.016633,
+        "calibration": [
+          {
+            "bin_start": 0.0,
+            "bin_end": 0.10001683785149015,
+            "predicted_mean": 0.337719,
+            "observed_rate": 0.341077,
+            "count": 2970.0,
+            "abs_calibration_error": 0.003358
+          },
+          {
+            "bin_start": 0.10001683785149015,
+            "bin_end": 0.2000336757029803,
+            "predicted_mean": 0.418185,
+            "observed_rate": 0.439394,
+            "count": 2970.0,
+            "abs_calibration_error": 0.021209
+          },
+          {
+            "bin_start": 0.2000336757029803,
+            "bin_end": 0.30005051355447043,
+            "predicted_mean": 0.451507,
+            "observed_rate": 0.46633,
+            "count": 2970.0,
+            "abs_calibration_error": 0.014823
+          },
+          {
+            "bin_start": 0.30005051355447043,
+            "bin_end": 0.4000673514059606,
+            "predicted_mean": 0.47585,
+            "observed_rate": 0.486195,
+            "count": 2970.0,
+            "abs_calibration_error": 0.010345
+          },
+          {
+            "bin_start": 0.4000673514059606,
+            "bin_end": 0.5000841892574508,
+            "predicted_mean": 0.496135,
+            "observed_rate": 0.504377,
+            "count": 2970.0,
+            "abs_calibration_error": 0.008242
+          },
+          {
+            "bin_start": 0.5000841892574508,
+            "bin_end": 0.6001010271089409,
+            "predicted_mean": 0.515818,
+            "observed_rate": 0.50101,
+            "count": 2970.0,
+            "abs_calibration_error": 0.014808
+          },
+          {
+            "bin_start": 0.6001010271089409,
+            "bin_end": 0.700117864960431,
+            "predicted_mean": 0.536582,
+            "observed_rate": 0.512121,
+            "count": 2970.0,
+            "abs_calibration_error": 0.024461
+          },
+          {
+            "bin_start": 0.700117864960431,
+            "bin_end": 0.8001347028119212,
+            "predicted_mean": 0.560835,
+            "observed_rate": 0.542088,
+            "count": 2970.0,
+            "abs_calibration_error": 0.018748
+          },
+          {
+            "bin_start": 0.8001347028119212,
+            "bin_end": 0.9001515406634113,
+            "predicted_mean": 0.594865,
+            "observed_rate": 0.56431,
+            "count": 2970.0,
+            "abs_calibration_error": 0.030556
+          },
+          {
+            "bin_start": 0.9001515406634113,
+            "bin_end": 1.0,
+            "predicted_mean": 0.6778,
+            "observed_rate": 0.65801,
+            "count": 2965.0,
+            "abs_calibration_error": 0.01979
+          }
+        ]
+      }
+    },
+    {
+      "index": 1,
+      "train_start": "2025-12-08 11:35:00-05:00",
+      "train_end": "2026-03-27 13:30:00-04:00",
+      "val_start": "2026-03-27 13:30:00-04:00",
+      "val_end": "2026-05-14 11:30:00-04:00",
+      "train_rows": 59390,
+      "val_rows": 29694,
+      "brier": 0.242655,
+      "log_loss": 0.677911,
+      "calibration_error": 0.017094,
+      "metrics": {
+        "n": 29694,
+        "brier": 0.242655,
+        "log_loss": 0.677911,
+        "accuracy": 0.556981,
+        "ece": 0.017094,
+        "calibration": [
+          {
+            "bin_start": 0.0,
+            "bin_end": 0.10002020610224288,
+            "predicted_mean": 0.331339,
+            "observed_rate": 0.337374,
+            "count": 2970.0,
+            "abs_calibration_error": 0.006035
+          },
+          {
+            "bin_start": 0.10002020610224288,
+            "bin_end": 0.20004041220448576,
+            "predicted_mean": 0.415648,
+            "observed_rate": 0.456566,
+            "count": 2970.0,
+            "abs_calibration_error": 0.040917
+          },
+          {
+            "bin_start": 0.20004041220448576,
+            "bin_end": 0.30006061830672864,
+            "predicted_mean": 0.45035,
+            "observed_rate": 0.453872,
+            "count": 2970.0,
+            "abs_calibration_error": 0.003523
+          },
+          {
+            "bin_start": 0.30006061830672864,
+            "bin_end": 0.4000808244089715,
+            "predicted_mean": 0.47423,
+            "observed_rate": 0.497643,
+            "count": 2970.0,
+            "abs_calibration_error": 0.023413
+          },
+          {
+            "bin_start": 0.4000808244089715,
+            "bin_end": 0.5001010305112144,
+            "predicted_mean": 0.493904,
+            "observed_rate": 0.500673,
+            "count": 2970.0,
+            "abs_calibration_error": 0.006769
+          },
+          {
+            "bin_start": 0.5001010305112144,
+            "bin_end": 0.6001212366134573,
+            "predicted_mean": 0.513589,
+            "observed_rate": 0.523906,
+            "count": 2970.0,
+            "abs_calibration_error": 0.010317
+          },
+          {
+            "bin_start": 0.6001212366134573,
+            "bin_end": 0.7001414427157001,
+            "predicted_mean": 0.53425,
+            "observed_rate": 0.514815,
+            "count": 2970.0,
+            "abs_calibration_error": 0.019435
+          },
+          {
+            "bin_start": 0.7001414427157001,
+            "bin_end": 0.800161648817943,
+            "predicted_mean": 0.557956,
+            "observed_rate": 0.524242,
+            "count": 2970.0,
+            "abs_calibration_error": 0.033714
+          },
+          {
+            "bin_start": 0.800161648817943,
+            "bin_end": 0.9001818549201859,
+            "predicted_mean": 0.592075,
+            "observed_rate": 0.57037,
+            "count": 2970.0,
+            "abs_calibration_error": 0.021705
+          },
+          {
+            "bin_start": 0.9001818549201859,
+            "bin_end": 1.0,
+            "predicted_mean": 0.673387,
+            "observed_rate": 0.678475,
+            "count": 2964.0,
+            "abs_calibration_error": 0.005088
+          }
+        ]
+      }
+    },
+    {
+      "index": 2,
+      "train_start": "2025-12-08 11:35:00-05:00",
+      "train_end": "2026-05-14 11:30:00-04:00",
+      "val_start": "2026-05-14 11:30:00-04:00",
+      "val_end": "2026-06-30 06:30:00-04:00",
+      "train_rows": 89084,
+      "val_rows": 29695,
+      "brier": 0.241574,
+      "log_loss": 0.675711,
+      "calibration_error": 0.010783,
+      "metrics": {
+        "n": 29695,
+        "brier": 0.241574,
+        "log_loss": 0.675711,
+        "accuracy": 0.561475,
+        "ece": 0.010783,
+        "calibration": [
+          {
+            "bin_start": 0.0,
+            "bin_end": 0.10001683785149015,
+            "predicted_mean": 0.344242,
+            "observed_rate": 0.326263,
+            "count": 2970.0,
+            "abs_calibration_error": 0.017979
+          },
+          {
+            "bin_start": 0.10001683785149015,
+            "bin_end": 0.2000336757029803,
+            "predicted_mean": 0.422664,
+            "observed_rate": 0.424242,
+            "count": 2970.0,
+            "abs_calibration_error": 0.001578
+          },
+          {
+            "bin_start": 0.2000336757029803,
+            "bin_end": 0.30005051355447043,
+            "predicted_mean": 0.454373,
+            "observed_rate": 0.468013,
+            "count": 2970.0,
+            "abs_calibration_error": 0.01364
+          },
+          {
+            "bin_start": 0.30005051355447043,
+            "bin_end": 0.4000673514059606,
+            "predicted_mean": 0.476633,
+            "observed_rate": 0.480808,
+            "count": 2970.0,
+            "abs_calibration_error": 0.004175
+          },
+          {
+            "bin_start": 0.4000673514059606,
+            "bin_end": 0.5000841892574508,
+            "predicted_mean": 0.496055,
+            "observed_rate": 0.496633,
+            "count": 2970.0,
+            "abs_calibration_error": 0.000578
+          },
+          {
+            "bin_start": 0.5000841892574508,
+            "bin_end": 0.6001010271089409,
+            "predicted_mean": 0.51435,
+            "observed_rate": 0.507407,
+            "count": 2970.0,
+            "abs_calibration_error": 0.006943
+          },
+          {
+            "bin_start": 0.6001010271089409,
+            "bin_end": 0.700117864960431,
+            "predicted_mean": 0.533215,
+            "observed_rate": 0.515152,
+            "count": 2970.0,
+            "abs_calibration_error": 0.018063
+          },
+          {
+            "bin_start": 0.700117864960431,
+            "bin_end": 0.8001347028119212,
+            "predicted_mean": 0.555594,
+            "observed_rate": 0.53165,
+            "count": 2970.0,
+            "abs_calibration_error": 0.023944
+          },
+          {
+            "bin_start": 0.8001347028119212,
+            "bin_end": 0.9001515406634113,
+            "predicted_mean": 0.588745,
+            "observed_rate": 0.579461,
+            "count": 2970.0,
+            "abs_calibration_error": 0.009284
+          },
+          {
+            "bin_start": 0.9001515406634113,
+            "bin_end": 1.0,
+            "predicted_mean": 0.669974,
+            "observed_rate": 0.681619,
+            "count": 2965.0,
+            "abs_calibration_error": 0.011645
+          }
+        ]
+      }
+    }
+  ],
+  "gates": {
+    "promotion": "PROMOTION_BLOCKED",
+    "gates": [
+      {
+        "gate": "LEAKAGE",
+        "status": "PASS",
+        "metric": "future_leakage",
+        "threshold": null,
+        "observed": 0.0,
+        "reason": "no future rows or state used"
+      },
+      {
+        "gate": "SAMPLE",
+        "status": "PASS",
+        "metric": "validation_rows",
+        "threshold": 100.0,
+        "observed": 89084.0,
+        "reason": "89084 >= 100"
+      },
+      {
+        "gate": "BRIER",
+        "status": "PASS",
+        "metric": "weighted_brier",
+        "threshold": 0.252291,
+        "observed": 0.242473,
+        "reason": "challenger brier within tolerance"
+      },
+      {
+        "gate": "LOGLOSS",
+        "status": "PASS",
+        "metric": "weighted_log_loss",
+        "threshold": 0.6971740000000001,
+        "observed": 0.677528,
+        "reason": "challenger log loss within tolerance"
+      },
+      {
+        "gate": "CALIBRATION",
+        "status": "PASS",
+        "metric": "ece",
+        "threshold": 0.05,
+        "observed": 0.012574,
+        "reason": "calibration within tolerance"
+      },
+      {
+        "gate": "STABILITY",
+        "status": "PASS",
+        "metric": "brier_std_across_windows",
+        "threshold": 0.03,
+        "observed": 0.000673,
+        "reason": "stable across windows"
+      },
+      {
+        "gate": "ABLATION",
+        "status": "FAIL",
+        "metric": "feature_lift_survives_ablation",
+        "threshold": null,
+        "observed": 0.0,
+        "reason": "claimed feature lift fails ablation"
+      },
+      {
+        "gate": "DATA_QUALITY",
+        "status": "PASS",
+        "metric": "data_quality",
+        "threshold": null,
+        "observed": null,
+        "reason": "data quality ok"
+      },
+      {
+        "gate": "MARKET_METRIC",
+        "status": "NOT_AVAILABLE",
+        "metric": "model_market_metrics",
+        "threshold": null,
+        "observed": null,
+        "reason": "no valid market observations; market-beating claims not supported"
+      }
+    ],
+    "blockers": [
+      "claimed feature lift fails ablation"
+    ],
+    "market_metrics": "NOT_AVAILABLE"
+  }
+}

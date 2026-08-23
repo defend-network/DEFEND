@@ -410,6 +410,36 @@ PROVIDERS: tuple[ProviderDefinition, ...] = (
     ),
     # ------------------------------------------------------------ Table Tennis
     ProviderDefinition(
+        provider_id="owls_insight",
+        display_name="Owls Insight",
+        purpose="Hard Rock Bet Florida table-tennis source data and sports odds feed",
+        category="table_tennis",
+        auth_type=AuthType.BEARER,
+        adapter_kind=AdapterKind.REAL,
+        required_secrets=("OWLS_INSIGHT_API_KEY",),
+        docs_url="https://www.owlsinsight.com/docs",
+        host="https://api.owlsinsight.com",
+        products=("defendmarkets",),
+        license=_no_key(),
+        capabilities=ProviderCapabilities(
+            tt_fixtures="yes (documented: Hard Rock FL TABLE_TENNIS source)",
+            tt_results="unknown (not verified)",
+            tt_live_odds="unknown (not verified)",
+            tt_live_scores="unknown (not verified)",
+            tt_bookmakers="yes (documented: Hard Rock Bet)",
+            adapter_status="partial",
+        ),
+        notes=(
+            "Hard Rock Bet Florida table-tennis source via the Owls API. Auth is "
+            "Authorization: Bearer <OWLS_INSIGHT_API_KEY> (never a query/URL value). "
+            "Hard Rock prices are represented by rootIdx references that must be "
+            "resolved against /api/v2/hardrock/ladder; rootIdx normalization belongs "
+            "to the subsequent Markets ingestion milestone. Setup 'Test' performs a "
+            "read-only coverage probe: /api/v2/hardrock/fl/TABLE_TENNIS then "
+            "/api/v2/hardrock/ladder (max 2 calls).",
+        ),
+    ),
+    ProviderDefinition(
         provider_id="sportradar_tt",
         display_name="Sportradar Table Tennis v2",
         purpose="Official table tennis competitions, schedules, results, rankings and probabilities (TRIAL entitlement)",

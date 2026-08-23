@@ -238,6 +238,7 @@ def probe_get(
     quota_headers: tuple[str, ...] = (),
     timeout_seconds: float = 25.0,
     max_response_bytes: int = 64 * 1024,
+    max_output_bytes: int | None = None,
 ) -> tuple[FetchResult, RawEvidence, Any]:
     """One Phase C GET: fetch -> sanitized evidence -> parsed body (if JSON).
 
@@ -257,9 +258,12 @@ def probe_get(
         known_secrets=known_secrets,
         capture_error_body=True,
         max_response_bytes=max_response_bytes,
+        max_output_bytes=max_output_bytes,
     )
     body = result.body
-    if body is not None:
+    if body is not None and max_output_bytes is not None:
+        body = redact_text(body, known_secrets, max_output_bytes=max_output_bytes)
+    elif body is not None:
         body = redact_text(body, known_secrets)
     parsed: Any = None
     if body:

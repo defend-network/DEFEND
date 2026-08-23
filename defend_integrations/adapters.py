@@ -1,9 +1,10 @@
 """Provider health adapters.
 
-Eight providers have *real, read-only* health adapters (Vast, Hugging Face,
-FRED, Congress.gov, The Odds API, SEC EDGAR, World Bank, Polymarket). Every
-other registry entry uses the explicit placeholder adapter, which reports
-ADAPTER NOT IMPLEMENTED and never claims HEALTHY.
+Eleven providers have *real, read-only* health adapters (Vast, Hugging Face,
+FRED, Congress.gov, The Odds API, Odds-API.io, OddsPapi, Owls Insight, SEC
+EDGAR, World Bank, Polymarket). Every other registry entry uses the explicit
+placeholder adapter, which reports ADAPTER NOT IMPLEMENTED and never claims
+HEALTHY.
 
 All HTTP discipline (timeout, retry/backoff, size caps, sanitization) is
 handled by :mod:`defend_integrations.http`; adapters only declare endpoints,
@@ -362,7 +363,14 @@ class OddsApiIoAdapter(_BaseAdapter):
             backoff_seconds=1.0,
             known_secrets=(key,),
         )
-        events_body = json.loads(events_result.body) if events_result.body else None
+        from defend_markets.shadow import parse_recovered_json
+
+        events_body, _recovered = parse_recovered_json(events_result.body or "")
+        if not isinstance(events_body, list):
+            try:
+                events_body = json.loads(events_result.body) if events_result.body else None
+            except json.JSONDecodeError:
+                events_body = None
         events = events_body if isinstance(events_body, list) else []
         bookmaker_keys: list[str] = []
         market_count = 0
@@ -536,6 +544,296 @@ class OddsPapiAdapter(_BaseAdapter):
         return None
 
 
+_EVENT_ID_KEYS = frozenset(
+    {"id", "eventid", "fixtureid", "matchid", "gameid", "sporteventid"}
+)
+_EVENT_CTX_KEYS = frozenset(
+    {"participants", "competitors", "teams", "players", "opponents", "homeaway", "p1", "p2"}
+)
+_EVENT_TIME_KEYS = frozenset(
+    {"start", "starttime", "commence", "commencetime", "kickoff", "scheduled", "matchtime", "startdate"}
+)
+_EVENT_SPORT_KEYS = frozenset(
+    {"sport", "sportid", "sportname", "league", "leagueid", "competition", "competitionid", "tournament", "tournamentid", "division", "category"}
+)
+_EVENT_CONTAINER_TOKENS = ("event", "fixture", "match", "game")
+_PRICE_KEYS = frozenset(
+    {"rootidx", "american", "americanodds", "american_odds", "decimal", "decimalodds", "price", "odds"}
+)
+_INPLAY_VALUE_TOKENS = frozenset(
+    {"1", "true", "yes", "live", "inplay", "in_play", "started", "running", "progress"}
+)
+
+
+def _norm_key(key: object) -> str:
+    return str(key).casefold().replace("_", "").replace("-", "")
+
+
+def _looks_like_event(node: object) -> bool:
+    if not isinstance(node, dict):
+        return False
+    keys = {_norm_key(k) for k in node}
+    has_id = bool(keys & _EVENT_ID_KEYS)
+    has_ctx = bool(keys & _EVENT_CTX_KEYS)
+    has_time = bool(keys & _EVENT_TIME_KEYS)
+    has_sport = bool(keys & _EVENT_SPORT_KEYS)
+    return has_id and (has_ctx or has_time or has_sport)
+
+
+def _is_inplay(node: dict) -> bool:
+    for key in ("inplay", "in_play", "live", "status", "state"):
+        if key in node:
+            value = str(node[key]).strip().casefold()
+            if value in _INPLAY_VALUE_TOKENS:
+                return True
+    return False
+
+
+def _count_events(body: object) -> tuple[int, int]:
+    """Count event-like dicts and how many are in-play (tolerant scan)."""
+    total = 0
+    inplay = 0
+
+    def walk(node: object) -> None:
+        nonlocal total, inplay
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if isinstance(value, list) and value:
+                    event_like = [
+                        item
+                        for item in value
+                        if isinstance(item, dict) and _looks_like_event(item)
+                    ]
+                    if event_like and (
+                        any(token in _norm_key(key) for token in _EVENT_CONTAINER_TOKENS)
+                        or len(event_like) >= len(value) / 2
+                    ):
+                        for item in event_like:
+                            total += 1
+                            if _is_inplay(item):
+                                inplay += 1
+                walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(body)
+    if isinstance(body, list) and body:
+        event_like = [
+            item for item in body if isinstance(item, dict) and _looks_like_event(item)
+        ]
+        if len(event_like) >= len(body) / 2:
+            total += len(event_like)
+            inplay += sum(1 for item in event_like if _is_inplay(item))
+    return total, inplay
+
+
+def _scan_counts(body: object) -> dict[str, int]:
+    """Aggregate market / priced-selection / rootIdx counts (tolerant scan)."""
+    counts = {"markets": 0, "priced_selections": 0, "rootidx_values": 0}
+
+    def walk(node: object) -> None:
+        if isinstance(node, dict):
+            norm = {_norm_key(k): v for k, v in node.items()}
+            if any(token in norm for token in _PRICE_KEYS):
+                counts["priced_selections"] += 1
+            if "rootidx" in norm and not isinstance(norm["rootidx"], (dict, list)):
+                counts["rootidx_values"] += 1
+            for container in ("markets", "marketlist"):
+                if isinstance(node.get(container), list):
+                    counts["markets"] += sum(
+                        1 for item in node[container] if isinstance(item, dict)
+                    )
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(body)
+    return counts
+
+
+def _ladder_entries(body: object) -> int:
+    """Count price-bearing ladder entries (authoritative price rows)."""
+    count = 0
+
+    def walk(node: object) -> None:
+        nonlocal count
+        if isinstance(node, dict):
+            norm = {_norm_key(k): v for k, v in node.items()}
+            if any(token in norm for token in _PRICE_KEYS):
+                count += 1
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(body)
+    return count
+
+
+def _classify_tt_coverage(
+    events: int,
+    inplay_events: int,
+    counts: dict[str, int],
+    ladder_status: str,
+    ladder_entries: int,
+) -> tuple[str, str]:
+    coverage_detail = (
+        "state=fl; sport=TABLE_TENNIS; "
+        f"events={events}; inplay_events={inplay_events}; "
+        f"markets={counts['markets']}; "
+        f"priced_selections={counts['priced_selections']}; "
+        f"rootidx_values={counts['rootidx_values']}; "
+        f"ladder={ladder_status}; ladder_entries={ladder_entries}"
+    )
+    if events == 0:
+        return "EMPTY", coverage_detail
+    if counts["markets"] == 0:
+        return "UNKNOWN", coverage_detail
+    if counts["rootidx_values"] == 0:
+        return "UNKNOWN", coverage_detail
+    # M4.8 P2: a rootIdx-only payload is NOT actionable unless the corresponding
+    # Hard Rock ladder can decode it. AVAILABLE requires a healthy ladder.
+    if ladder_status != "reachable":
+        return "DEGRADED", coverage_detail
+    if ladder_entries == 0:
+        return "DEGRADED", coverage_detail
+    return "AVAILABLE", coverage_detail
+
+
+class OwlsInsightAdapter(_BaseAdapter):
+    """Owls Insight read-only health/coverage probe (Hard Rock FL table tennis).
+
+    Two read-only requests per Test click:
+      1. GET /api/v2/hardrock/fl/TABLE_TENNIS  (auth + coverage evidence)
+      2. GET /api/v2/hardrock/ladder           (authoritative price ladder)
+
+    Coverage classification:
+      AVAILABLE  auth ok + TT slate non-empty + markets + rootIdx leaves
+      EMPTY      auth ok + legitimately empty TT slate
+      LIMITED    authenticated but the subscription gates this endpoint
+      UNKNOWN    response shape cannot be safely interpreted
+
+    Hard Rock prices use rootIdx references against the ladder; full rootIdx
+    normalization is a later Markets ingestion milestone — this adapter only
+    verifies the ladder is reachable and structurally valid.
+    """
+
+    provider_id = "owls_insight"
+
+    _BASE = "https://api.owlsinsight.com/api/v2/hardrock"
+    _TT_ENDPOINT = f"{_BASE}/fl/TABLE_TENNIS"
+    _LADDER_ENDPOINT = f"{_BASE}/ladder"
+    _PLAN_MARKERS = ("plan", "upgrade", "subscription", "tier", "permission", "access")
+    # Cloudflare (Error 1010 browser_signature_banned) rejects the default
+    # Python-urllib UA; a browser UA is required for the Owls API.
+    _HEADERS = {
+        "Accept": "application/json",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+    }
+
+    def probe(self, definition, secrets, config) -> AdapterProbe:
+        key = secrets.get("OWLS_INSIGHT_API_KEY", "")
+        if not key:
+            return AdapterProbe(
+                ok=False, status_code=None, latency_ms=0,
+                detail="missing OWLS_INSIGHT_API_KEY", authenticated=None,
+            )
+        headers = {**self._HEADERS, "Authorization": f"Bearer {key}"}
+        tt_result = fetch(
+            self._TT_ENDPOINT,
+            timeout_seconds=15.0,
+            headers=headers,
+            retries=1,
+            backoff_seconds=1.0,
+            known_secrets=(key,),
+            capture_error_body=True,
+        )
+        if not tt_result.ok:
+            error_class = self._error_class(tt_result)
+            return AdapterProbe(
+                ok=False,
+                status_code=tt_result.status_code,
+                latency_ms=tt_result.latency_ms,
+                detail=self._detail_from_result(tt_result),
+                authenticated=None,
+                error_class=error_class,
+                coverage_state="LIMITED" if error_class == "plan_required" else "UNKNOWN",
+            )
+        parsed, schema_error = self._parse_json(tt_result.body)
+        if schema_error:
+            return AdapterProbe(
+                ok=False,
+                status_code=tt_result.status_code,
+                latency_ms=tt_result.latency_ms,
+                detail="SCHEMA/PROTOCOL ERROR: TT response was not valid JSON",
+                authenticated=True,
+                coverage_state="UNKNOWN",
+            )
+        events, inplay_events = _count_events(parsed)
+        counts = _scan_counts(parsed)
+        ladder_status, ladder_entries = self._probe_ladder(key)
+        coverage_state, coverage_detail = _classify_tt_coverage(
+            events, inplay_events, counts, ladder_status, ladder_entries
+        )
+        ok = coverage_state in ("AVAILABLE", "EMPTY", "DEGRADED")
+        return AdapterProbe(
+            ok=ok,
+            status_code=tt_result.status_code,
+            latency_ms=tt_result.latency_ms,
+            detail="authenticated; " + coverage_detail,
+            authenticated=True,
+            coverage_state=coverage_state,
+            coverage_detail=coverage_detail,
+        )
+
+    def _probe_ladder(self, key: str) -> tuple[str, int]:
+        headers = {**self._HEADERS, "Authorization": f"Bearer {key}"}
+        result = fetch(
+            self._LADDER_ENDPOINT,
+            timeout_seconds=15.0,
+            headers=headers,
+            retries=1,
+            backoff_seconds=1.0,
+            known_secrets=(key,),
+            capture_error_body=True,
+        )
+        if not result.ok:
+            return self._detail_from_result(result), 0
+        parsed, schema_error = self._parse_json(result.body)
+        if schema_error:
+            return "schema_error", 0
+        return "reachable", _ladder_entries(parsed)
+
+    @staticmethod
+    def _parse_json(body: str | None) -> tuple[object | None, bool]:
+        if not body:
+            return None, True
+        try:
+            parsed = json.loads(body)
+        except (ValueError, UnicodeDecodeError):
+            return None, True
+        if not isinstance(parsed, (dict, list)):
+            return None, True
+        return parsed, False
+
+    @staticmethod
+    def _error_class(result: FetchResult) -> str | None:
+        if result.status_code == 429:
+            return "rate_limited"
+        if result.status_code == 401:
+            return "auth_failed"
+        if result.status_code == 403:
+            body = (result.body or "").lower()
+            if any(marker in body for marker in OwlsInsightAdapter._PLAN_MARKERS):
+                return "plan_required"
+            return "auth_failed"
+        return None
+
+
 class SecEdgarAdapter(_BaseAdapter):
     provider_id = "sec_edgar"
 
@@ -590,6 +888,7 @@ REAL_ADAPTERS: dict[str, HealthAdapter] = {
         OddsApiAdapter(),
         OddsApiIoAdapter(),
         OddsPapiAdapter(),
+        OwlsInsightAdapter(),
         SecEdgarAdapter(),
         WorldBankAdapter(),
         PolymarketAdapter(),

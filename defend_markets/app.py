@@ -964,4 +964,74 @@ def build_markets_app(dependencies: MarketsDependencies) -> FastAPI:
         )
         return _outcome_payload(outcome)
 
+    if deps.database is not None:
+        quant_state = {
+            "state": "NOT_CONFIGURED",
+            "reason": "quant director not initialized",
+            "runtime_model": "",
+            "initialized": False,
+        }
+        try:
+            from defend_markets.quant.config import QuantDirectorSettings
+            from defend_markets.quant.orchestrator import MarketsIntelligenceOrchestrator
+            from defend_markets.quant.routes import build_quant_router
+            from defend_markets.quant.store import PostgresQuantStore
+            from defend_markets.quant.tools import PostgresMarketTools
+
+            quant_settings = QuantDirectorSettings.from_env()
+            quant_store = PostgresQuantStore(deps.database)
+            quant_tools = PostgresMarketTools(deps.database, quant_store)
+            from pathlib import Path as _Path
+            import json as _json
+
+            _weights_doc = _json.loads(
+                (
+                    _Path(__file__).resolve().parents[1]
+                    / "docs" / "operations" / "TT_M5_LIVE_WEIGHTS_V1.json"
+                ).read_text(encoding="utf-8")
+            )
+            quant_artifact_dir = _Path(deps.settings.data_root) / "quant" / "reports"
+            quant_orchestrator = MarketsIntelligenceOrchestrator(
+                store=quant_store,
+                tools=quant_tools,
+                settings=quant_settings,
+                weights_doc=_weights_doc,
+                artifact_dir=quant_artifact_dir,
+            )
+            app.include_router(build_quant_router(quant_orchestrator))
+            quant_state = quant_orchestrator.health_state()
+
+            import asyncio
+
+            _tick_seconds = float(os.environ.get("MARKETS_OPERATIONAL_TICK_SECONDS", "60"))
+
+            async def _operational_loop() -> None:
+                while True:
+                    await asyncio.sleep(_tick_seconds)
+                    try:
+                        await asyncio.to_thread(quant_orchestrator.operational_tick)
+                    except Exception:
+                        continue
+
+            @app.on_event("startup")
+            async def _start_operational_loop() -> None:
+                app.state.quant_operational_task = asyncio.create_task(_operational_loop())
+
+            @app.on_event("shutdown")
+            async def _stop_operational_loop() -> None:
+                task = getattr(app.state, "quant_operational_task", None)
+                if task is not None:
+                    task.cancel()
+        except Exception as exc:  # noqa: BLE001 - surfaced as FAILED state, never silent
+            quant_state = {
+                "state": "FAILED",
+                "reason": f"quant director initialization failed: {type(exc).__name__}",
+                "runtime_model": "",
+                "initialized": False,
+            }
+
+        @app.get("/v1/quant/state")
+        def quant_state_endpoint() -> dict[str, object]:
+            return quant_state
+
     return app

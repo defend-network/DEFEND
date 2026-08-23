@@ -21,6 +21,7 @@ REAL_PROVIDER_IDS = {
     "the_odds_api",
     "odds_api_io",
     "oddspapi",
+    "owls_insight",
     "sec_edgar",
     "world_bank",
     "polymarket",
@@ -157,6 +158,7 @@ def test_rate_limit_and_license_metadata_present_on_real_providers():
 def test_tt_provider_cards_and_capability_matrix():
     for provider_id, secret in (
         ("odds_api_io", "ODDS_API_IO_API_KEY"),
+        ("owls_insight", "OWLS_INSIGHT_API_KEY"),
         ("betsapi_tt", "BETSAPI_API_KEY"),
         ("sportsapi_pro", "SPORTSAPI_PRO_API_KEY"),
         ("sportmicro_tt", "SPORTMICRO_API_KEY"),

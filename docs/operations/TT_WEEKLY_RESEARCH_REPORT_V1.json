@@ -1,0 +1,78 @@
+{
+  "schema": "TT_WEEKLY_RESEARCH_REPORT",
+  "report_id": "weekly-20260822T185736Z",
+  "created_at": "2026-08-22T18:57:36Z",
+  "state_hash": "no-metrics",
+  "champion_hash": "fe6f18d1fb5e",
+  "champion": "M5_REGULARIZED_LOGISTIC:54affc960a34",
+  "data_cutoff": "latest DB state",
+  "research_registry_version": 1,
+  "code_commit": "a0a5453af28a2c422d164566527db92e5702314b",
+  "tt_price_state": "EMPTY",
+  "market_metrics": "NOT_AVAILABLE",
+  "model_health": {
+    "evaluation_rows": 0,
+    "as_of": "2026-08-22T18:57:36Z",
+    "brier": null,
+    "log_loss": null,
+    "ece": null,
+    "calibration": [],
+    "confidence": {
+      "available": 50,
+      "low_confidence_under_0.55": 33,
+      "mid_confidence_0.55_0.75": 17,
+      "high_confidence_over_0.75": 0
+    },
+    "missing": {
+      "unmatched_events": 197,
+      "total_events": 304
+    },
+    "disagreement": {
+      "ruler_rows_with_disagreement": 0
+    },
+    "freshness": {
+      "events_last_seen": "2026-08-21 18:52:13.999868-04:00",
+      "odds_last_seen": null,
+      "results_last_seen": "2026-08-20 19:30:00-04:00"
+    }
+  },
+  "recent_mistakes": [
+    "WeaknessFinding(id='W-001', category='evaluation', severity='high', description='No settled evaluation rows yet; M5 calibration cannot be measured.', supporting_data={'evaluation_rows': 0}, recommendation='Reach settled events with observed outcomes to enable calibration monitoring.')",
+    "WeaknessFinding(id='W-003', category='identity', severity='medium', description='Some forward events remain unmatched, so they cannot receive predictions.', supporting_data={'unmatched_events': 197, 'total_events': 304}, recommendation='Expand canonical identity coverage for unmatched events.')",
+    "WeaknessFinding(id='W-004', category='market', severity='low', description='No model-market disagreement computed; market comparison unavailable without TT prices.', supporting_data={'ruler_rows_with_disagreement': 0}, recommendation='Recompute disagreement once TT prices are delivered.')",
+    "WeaknessFinding(id='W-005', category='evidence', severity='low', description='Evidence base for calibration is still small or clean.', supporting_data={'evaluation_rows': 0}, recommendation='Continue collecting settled outcomes before acting on calibration findings.')"
+  ],
+  "possible_improvements": [
+    "Reach settled events with observed outcomes to enable calibration monitoring.",
+    "Expand canonical identity coverage for unmatched events.",
+    "Recompute disagreement once TT prices are delivered.",
+    "Continue collecting settled outcomes before acting on calibration findings."
+  ],
+  "new_experiments_proposed": [
+    "Recent 20-match weighted form may outperform lifetime rating",
+    "Opponent-strength adjustment may help identity weak opponents",
+    "Competition/surface interaction may explain league-specific calibration",
+    "Fatigue/schedule density feature may matter on same-day back-to-backs",
+    "H2H recency weighting may beat lifetime head-to-head",
+    "Rating curvature (elo_diff squared) does not help",
+    "Form volatility may identify unpredictable players",
+    "Player-history depth gate could flag low-evidence matches",
+    "Non-linear rest-days treatment may matter"
+  ],
+  "features_worth_testing": [
+    "sos_opponent_strength",
+    "market_implied_p",
+    "form_volatility",
+    "recent_form20_weighted",
+    "history_depth_gate",
+    "rest_diff_log",
+    "h2h_recency_weighted",
+    "same_day_games",
+    "competition_indicator"
+  ],
+  "rejected_ideas": [
+    "Rating curvature (elo_diff squared) does not help"
+  ],
+  "generated_at": "2026-08-22T18:57:36Z",
+  "deterministic_report_hash": "be7733d42909e95e5fb12141179618acbc2b9b19383e791b77b7d53b64e06ff3"
+}

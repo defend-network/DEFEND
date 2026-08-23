@@ -213,7 +213,7 @@ def test_test_all_configured_skips_placeholders_and_disabled(tmp_path):
         service._secrets.save({name: value})
     config_store.set_enabled("world_bank", False)
     result = service.test_all_configured()
-    assert result["tested"] == 8  # nine real adapters minus disabled world_bank
+    assert result["tested"] == 8  # real adapters minus disabled world_bank
     assert len(result["results"]) == 8
     assert all(item["badge"] == "HEALTHY" for item in result["results"])
     summary = result["summary"]
@@ -221,7 +221,7 @@ def test_test_all_configured_skips_placeholders_and_disabled(tmp_path):
     assert summary["healthy"] == 8
     assert summary["degraded"] == 0
     assert summary["failed"] == 0
-    assert summary["skipped"] == 2
+    assert summary["skipped"] == 3
     from defend_integrations.registry import PROVIDERS
 
     assert summary["planned"] == sum(
@@ -231,6 +231,7 @@ def test_test_all_configured_skips_placeholders_and_disabled(tmp_path):
     assert reasons["api_sports"] == "adapter not implemented"
     assert reasons["world_bank"] == "disabled"
     assert reasons["oddspapi"] == "missing credentials"
+    assert reasons["owls_insight"] == "missing credentials"
     assert "fred" not in reasons
     for item in result["results"]:
         assert "super-secret" not in dump_payloads(item)

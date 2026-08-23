@@ -432,7 +432,7 @@ class PostgresShadowStore(ShadowStore):
                 """,
                 (canonical_event_id,),
             )
-            cols = ["observed_at"] + [d.name for d in cursor.description]
+            cols = [d.name for d in cursor.description]
             return [dict(zip(cols, row)) for row in cursor.fetchall()]
 
     def insert_evaluation_row(self, row: dict[str, Any]) -> bool:

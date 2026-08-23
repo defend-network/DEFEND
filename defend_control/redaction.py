@@ -38,10 +38,16 @@ def _truncate_utf8(value: str, limit: int) -> str:
     return encoded[:limit].decode("utf-8", errors="ignore")
 
 
-def redact_text(value: str, known_secrets: Iterable[str]) -> str:
-    """Redact exact and secret-shaped values within strict UTF-8 byte bounds."""
+def redact_text(value: str, known_secrets: Iterable[str], *, max_output_bytes: int = _MAX_OUTPUT_BYTES) -> str:
+    """Redact exact and secret-shaped values within strict UTF-8 byte bounds.
 
-    cleaned = _truncate_utf8(value, _MAX_INPUT_BYTES)
+    ``max_output_bytes`` relaxes the final output cap for ingestion paths that
+    must parse a full provider payload (e.g. a multi-event sports board) while
+    still stripping every known secret. Secret substitution is unaffected by
+    this bound; only the length truncation changes.
+    """
+    input_limit = max(_MAX_INPUT_BYTES, max_output_bytes)
+    cleaned = _truncate_utf8(value, input_limit)
     secrets = sorted(
         {
             secret
@@ -75,4 +81,4 @@ def redact_text(value: str, known_secrets: Iterable[str]) -> str:
         if cleaned == previous:
             break
 
-    return _truncate_utf8(cleaned, _MAX_OUTPUT_BYTES)
+    return _truncate_utf8(cleaned, max_output_bytes)
