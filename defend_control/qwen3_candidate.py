@@ -94,15 +94,17 @@ def validate_sft_row(row: dict) -> tuple[bool, str]:
                         return False, f"message {index} tool_call is not an object"
                     name = call.get("name")
                     arguments = call.get("arguments")
-                    if name is not None and not isinstance(name, str):
-                        return False, f"message {index} tool_call name is not a string"
-                    if arguments is not None and not isinstance(arguments, dict):
-                        return False, f"message {index} tool_call arguments is not an object"
+                    if not isinstance(name, str) or not name.strip():
+                        return False, f"message {index} tool_call has missing/invalid name"
+                    if not isinstance(arguments, dict):
+                        return False, f"message {index} tool_call has missing/invalid arguments"
                     pending_tool_calls += 1
         elif role == "tool":
             if pending_tool_calls <= 0:
                 return False, f"message {index} tool result has no prior assistant tool request"
             pending_tool_calls -= 1
+    if pending_tool_calls != 0:
+        return False, f"row has {pending_tool_calls} unresolved assistant tool calls"
     return True, "valid"
 
 

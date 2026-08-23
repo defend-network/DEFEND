@@ -768,20 +768,81 @@ class FailedHostBlacklist:
 
 
 # ─────────────────────────────────────────────────────────────
-# Production mutation guard
+# Production mutation guard (profile/role-based, not only instance-ID)
 # ─────────────────────────────────────────────────────────────
 
-_MUTATING_OPS = {"PROVISION", "START", "RESUME", "TRAIN", "DESTROY"}
+_MUTATING_OPS = {"PROVISION", "START", "RESUME", "TRAIN", "DESTROY", "REPLACE", "PROMOTE"}
+
+PRODUCTION_PROFILE_ID = "defend-ai-production-qwen25-v002"
+CANDIDATE_TRAINING_PROFILE_ID = "defend-ai-qwen3-training-qlora-v001"
+PRODUCTION_PURPOSES = frozenset({"PRODUCTION_INFERENCE", "PRODUCTION"})
+PRODUCTION_ROLES = frozenset({"PRODUCTION", "PRODUCTION_INFERENCE"})
+HISTORICAL_PRODUCTION_INSTANCE_IDS = (48416143,)
+
+#: Production runtime-state classification (provider-truth driven).
+RUNTIME_PRESENT_STOPPED = "PRESENT_STOPPED"
+RUNTIME_PRESENT_RUNNING = "PRESENT_RUNNING"
+RUNTIME_ABSENT = "ABSENT"
+RUNTIME_UNKNOWN = "UNKNOWN"
+RUNTIME_AMBIGUOUS = "AMBIGUOUS"
+
+
+def targets_production(*, instance_id=None, operation=None, profile_id=None, purpose=None, role=None) -> bool:
+    if operation in ("PROMOTE", "REPLACE"):
+        return True
+    if instance_id is not None and instance_id in HISTORICAL_PRODUCTION_INSTANCE_IDS:
+        return True
+    if profile_id == PRODUCTION_PROFILE_ID:
+        return True
+    if purpose in PRODUCTION_PURPOSES:
+        return True
+    if role in PRODUCTION_ROLES:
+        return True
+    return False
 
 
 class ProductionMutationGuard:
-    def __init__(self, production_instance_id: int) -> None:
+    def __init__(self, production_instance_id: int | None = None) -> None:
         self.production_instance_id = production_instance_id
+        self.historical_production_instance_ids = HISTORICAL_PRODUCTION_INSTANCE_IDS
 
-    def authorize(self, *, instance_id: int, product: str, operation: str, authorized: bool) -> tuple[bool, str]:
-        if instance_id == self.production_instance_id and operation in _MUTATING_OPS and not authorized:
-            return False, "production instance mutation requires explicit owner authorization"
+    def authorize(
+        self,
+        *,
+        instance_id: int | None,
+        product: str,
+        operation: str,
+        authorized: bool,
+        profile_id: str | None = None,
+        purpose: str | None = None,
+        role: str | None = None,
+    ) -> tuple[bool, str]:
+        if (
+            operation in _MUTATING_OPS
+            and targets_production(instance_id=instance_id, operation=operation, profile_id=profile_id, purpose=purpose, role=role)
+            and not authorized
+        ):
+            return False, "production mutation requires explicit owner authorization"
         return True, "allowed"
+
+
+def authorize_candidate_lifecycle(
+    *,
+    operation: str,
+    canary_instance_id: int | None = None,
+    target_instance_id: int | None = None,
+    profile_id: str | None = None,
+    purpose: str | None = None,
+    role: str | None = None,
+) -> tuple[bool, str]:
+    """Candidate canary lifecycle must be explicit, isolated, and never touch a
+    production-role instance (even if IDs are accidentally confused)."""
+    if targets_production(instance_id=target_instance_id, operation=operation, profile_id=profile_id, purpose=purpose, role=role):
+        return False, "candidate lifecycle must not target a production instance"
+    if operation == "DESTROY":
+        if canary_instance_id is None or target_instance_id != canary_instance_id:
+            return False, "candidate destroy requires the exact canary instance ID"
+    return True, "candidate lifecycle allowed"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -814,7 +875,14 @@ class PaidCanaryReadiness:
     candidate_base_repo: str
     candidate_base_revision: str
     adapter_repo: str
-    production_instance_id: int
+    production_profile_id: str
+    production_base_repo: str
+    production_base_revision: str
+    production_adapter_repo: str
+    production_adapter_revision: str
+    production_runtime_instance_id: int | None
+    production_runtime_state: str
+    historical_production_instance_ids: tuple[int, ...]
     failed_instance_block: str
     failed_offer_block: str
     failed_host_block: str
@@ -838,6 +906,11 @@ class PaidCanaryReadiness:
             and self.candidate_base_repo
             and self.candidate_base_revision
             and self.adapter_repo
+            and self.production_profile_id
+            and self.production_base_revision
+            and self.production_adapter_revision
+            # runtime truth must be measured and not UNKNOWN/AMBIGUOUS
+            and self.production_runtime_state in (RUNTIME_PRESENT_STOPPED, RUNTIME_PRESENT_RUNNING, RUNTIME_ABSENT)
             and self.failed_instance_block
             and self.failed_offer_block
             and self.failed_host_block
@@ -856,14 +929,28 @@ def _canonical_candidate_base() -> tuple[str, str]:
     return profile.base_repo, profile.base_revision
 
 
+def _production_identity() -> tuple[str, str, str, str, str]:
+    from .deployment_profiles import default_profiles
+
+    profile = default_profiles().get(PRODUCTION_PROFILE_ID)
+    if profile is None:
+        return (PRODUCTION_PROFILE_ID, "Qwen/Qwen2.5-32B-Instruct", "5ede1c97bbab6ce5cda5812749b4c0bdf79b18dd",
+                "Defend-network/defend-identity-lora-v002", "46ade1686870210ef0ab4603c32fecb0e563330f")
+    return (profile.profile_id, profile.base_repo, profile.base_revision,
+            profile.adapter_repo, profile.adapter_revision)
+
+
 def build_paid_canary_readiness(
     clean_branch_head: str,
     metadata_compatibility: str = "PASS",
     production_mutation_guard_configured: bool = True,
+    production_runtime_state: str = RUNTIME_ABSENT,
+    production_runtime_instance_id: int | None = None,
 ) -> PaidCanaryReadiness:
     from .eval_runner_v2 import EVAL_DATASET_SHA, EVALUATOR_VERSION, evaluator_code_sha
 
     candidate_repo, candidate_revision = _canonical_candidate_base()
+    profile_id, base_repo, base_rev, adapter_repo, adapter_rev = _production_identity()
     return PaidCanaryReadiness(
         clean_branch_head=clean_branch_head,
         train_dataset_sha="d59b05ee323dc6d8bda8086c2aa3f9589acb8eae883afb173095f53117e1e854",
@@ -876,7 +963,14 @@ def build_paid_canary_readiness(
         candidate_base_repo=candidate_repo,
         candidate_base_revision=candidate_revision,
         adapter_repo="Defend-network/defend-qwen3-32b-identity-lora-v001",
-        production_instance_id=48416143,
+        production_profile_id=profile_id,
+        production_base_repo=base_repo,
+        production_base_revision=base_rev,
+        production_adapter_repo=adapter_repo,
+        production_adapter_revision=adapter_rev,
+        production_runtime_instance_id=production_runtime_instance_id,
+        production_runtime_state=production_runtime_state,
+        historical_production_instance_ids=HISTORICAL_PRODUCTION_INSTANCE_IDS,
         failed_instance_block="48423466",
         failed_offer_block="21050987",
         failed_host_block="ssh3.vast.ai",

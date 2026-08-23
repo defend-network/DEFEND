@@ -29,6 +29,12 @@ from defend_control.eval_runner_v2 import (
 from defend_control.training_hardening import (
     FULL_RESOLVER_PROOF,
     HOST_INSTALL_REQUIRED,
+    CANDIDATE_TRAINING_PROFILE_ID,
+    HISTORICAL_PRODUCTION_INSTANCE_IDS,
+    PRODUCTION_PROFILE_ID,
+    RUNTIME_ABSENT,
+    RUNTIME_AMBIGUOUS,
+    RUNTIME_UNKNOWN,
     FailedHostBlacklist,
     FailedHostRecord,
     HostPreflightRunner,
@@ -37,6 +43,7 @@ from defend_control.training_hardening import (
     PyPIMetadataCompatibility,
     TrainingEnvironmentSpec,
     _exact_eq,
+    authorize_candidate_lifecycle,
     build_paid_canary_readiness,
     env_lock_resolution,
     parse_torch_build,
@@ -46,6 +53,7 @@ from defend_control.training_hardening import (
     qlora_device_placement_valid,
     required_campaign_blocks,
     resolve_hf_cache_path,
+    targets_production,
     torch_cuda_build_validated,
     training_env_v2,
     validate_assistant_masking,
@@ -649,6 +657,87 @@ def test_readiness_false_with_missing_production_guard():
 def test_readiness_false_on_env_resolution_fail():
     r = build_paid_canary_readiness("142b1b8", metadata_compatibility="FAIL")
     assert r.ready_to_rent is False
+
+
+def test_readiness_true_when_production_runtime_absent():
+    r = build_paid_canary_readiness("142b1b8", production_runtime_state=RUNTIME_ABSENT, production_runtime_instance_id=None)
+    assert r.production_runtime_state == RUNTIME_ABSENT
+    assert r.production_runtime_instance_id is None
+    assert r.ready_to_rent is True
+
+
+def test_readiness_false_when_production_runtime_unknown():
+    r = build_paid_canary_readiness("142b1b8", production_runtime_state=RUNTIME_UNKNOWN)
+    assert r.ready_to_rent is False
+
+
+def test_readiness_false_when_production_runtime_ambiguous():
+    r = build_paid_canary_readiness("142b1b8", production_runtime_state=RUNTIME_AMBIGUOUS)
+    assert r.ready_to_rent is False
+
+
+# ─────────────────────────────────────────────────────────────
+# Profile/role-based production guard (P4 negative tests)
+# ─────────────────────────────────────────────────────────────
+
+def test_guard_blocks_historical_id_unauthorized_start():
+    guard = ProductionMutationGuard(production_instance_id=None)
+    ok, _ = guard.authorize(instance_id=48416143, product="defend-ai", operation="START", authorized=False)
+    assert not ok
+
+
+def test_guard_blocks_new_id_with_production_profile():
+    guard = ProductionMutationGuard(production_instance_id=None)
+    ok, _ = guard.authorize(instance_id=999999, product="defend-ai", operation="START", authorized=False,
+                            profile_id=PRODUCTION_PROFILE_ID)
+    assert not ok
+
+
+def test_guard_blocks_no_id_with_production_profile_provision():
+    guard = ProductionMutationGuard(production_instance_id=None)
+    ok, _ = guard.authorize(instance_id=None, product="defend-ai", operation="PROVISION", authorized=False,
+                            profile_id=PRODUCTION_PROFILE_ID, purpose="PRODUCTION_INFERENCE")
+    assert not ok
+
+
+def test_guard_allows_candidate_training_provision():
+    guard = ProductionMutationGuard(production_instance_id=None)
+    ok, _ = guard.authorize(instance_id=12345, product="defend-ai", operation="PROVISION", authorized=True,
+                            profile_id=CANDIDATE_TRAINING_PROFILE_ID, purpose="TRAINING", role="CANDIDATE_CANARY")
+    assert ok
+
+
+def test_guard_blocks_candidate_promotion_without_production_auth():
+    guard = ProductionMutationGuard(production_instance_id=None)
+    ok, _ = guard.authorize(instance_id=12345, product="defend-ai", operation="PROMOTE", authorized=False,
+                            profile_id=CANDIDATE_TRAINING_PROFILE_ID, purpose="TRAINING", role="CANDIDATE_CANARY")
+    assert not ok
+
+
+def test_candidate_destroy_requires_exact_canary_instance():
+    ok, _ = authorize_candidate_lifecycle(operation="DESTROY", canary_instance_id=777, target_instance_id=888,
+                                          profile_id=CANDIDATE_TRAINING_PROFILE_ID, purpose="TRAINING", role="CANDIDATE_CANARY")
+    assert not ok
+    ok2, _ = authorize_candidate_lifecycle(operation="DESTROY", canary_instance_id=777, target_instance_id=777,
+                                           profile_id=CANDIDATE_TRAINING_PROFILE_ID, purpose="TRAINING", role="CANDIDATE_CANARY")
+    assert ok2
+
+
+def test_candidate_lifecycle_cannot_destroy_production_role_instance():
+    ok, _ = authorize_candidate_lifecycle(operation="DESTROY", canary_instance_id=48416143, target_instance_id=48416143,
+                                          profile_id=PRODUCTION_PROFILE_ID, purpose="PRODUCTION_INFERENCE", role="PRODUCTION_INFERENCE")
+    assert not ok
+    ok2, _ = authorize_candidate_lifecycle(operation="DESTROY", canary_instance_id=48416143, target_instance_id=48416143)
+    assert not ok  # historical production ID even without profile markers
+
+
+def test_historical_instance_is_never_treated_as_current_runtime():
+    r = build_paid_canary_readiness("142b1b8", production_runtime_state=RUNTIME_ABSENT, production_runtime_instance_id=None)
+    assert r.production_runtime_instance_id is None
+    assert 48416143 in r.historical_production_instance_ids
+    assert r.production_profile_id == PRODUCTION_PROFILE_ID
+    assert r.production_base_revision == "5ede1c97bbab6ce5cda5812749b4c0bdf79b18dd"
+    assert r.production_adapter_revision == "46ade1686870210ef0ab4603c32fecb0e563330f"
 
 
 # ─────────────────────────────────────────────────────────────

@@ -293,6 +293,29 @@ def test_tool_result_without_prior_tool_call_rejected():
     assert not ok
 
 
+def test_tool_call_missing_name_rejected():
+    ok, _ = validate_sft_row({"messages": [
+        {"role": "assistant", "content": None, "tool_calls": [{"arguments": {"expression": "1+1"}}]},
+        {"role": "tool", "content": "2"},
+    ]})
+    assert not ok
+
+
+def test_tool_call_missing_arguments_rejected():
+    ok, _ = validate_sft_row({"messages": [
+        {"role": "assistant", "content": None, "tool_calls": [{"name": "calculator"}]},
+        {"role": "tool", "content": "2"},
+    ]})
+    assert not ok
+
+
+def test_unresolved_tool_call_at_end_rejected():
+    ok, _ = validate_sft_row({"messages": [
+        {"role": "assistant", "content": None, "tool_calls": [{"name": "calculator", "arguments": {"expression": "1+1"}}]},
+    ]})
+    assert not ok
+
+
 def test_malformed_row_rejected():
     ok, _ = validate_sft_row({"messages": [{"role": "tool", "content": "x"}]})
     assert not ok
