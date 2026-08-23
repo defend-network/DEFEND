@@ -886,33 +886,19 @@ class VastClient:
     def build_create_payload(self, offer: VastOffer, launch: LaunchSpec) -> dict:
         """The exact serialized create-instance request body for an offer.
 
-        Validation runs here so the documented-launch contract is enforced
-        before any HTTP request is made. Raises before returning a payload.
+        Generic validation runs here so the launch contract is enforced before
+        any HTTP request is made. Product-specific launch authorization (which
+        LaunchSpec values are permitted) is the caller's responsibility and
+        lives in product code, NOT this neutral transport.
         """
         if not isinstance(offer, VastOffer):
             raise ValueError("offer must be a VastOffer")
+        if not isinstance(launch, LaunchSpec):
+            raise ValueError("launch must be a LaunchSpec")
         if "ssh_direc" in launch.runtype.split():
             raise ValueError(
                 "undocumented Vast runtype token ssh_direc is rejected; "
                 "use the documented ssh_direct or ssh_proxy"
-            )
-        coder = LaunchSpec.coder_default()
-        coder_heavy = LaunchSpec.coder_heavy_direct()
-        is_coder_launch = (
-            launch.label == coder.label
-            and launch.disk_gb == coder.disk_gb
-            and launch.runtype in (coder.runtype, coder_heavy.runtype)
-        )
-        candidate_canary = LaunchSpec.candidate_canary()
-        is_candidate_canary_launch = launch == candidate_canary
-        if (
-            launch != LaunchSpec.default()
-            and not is_coder_launch
-            and not is_candidate_canary_launch
-        ):
-            raise ValueError(
-                "only the approved DEFEND, DEFENDcoder, or DEFEND AI "
-                "candidate-canary Vast launch is supported"
             )
         offer_id = _positive_int(offer.offer_id, "offer ID")
         return {
