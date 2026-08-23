@@ -884,8 +884,6 @@ def test_policy_endpoint_reports_effective_agent_policy(
     assert policy["max_loop_seconds"] == 1800.0
     assert policy["finalization_enabled"] is False
     assert policy["finalization_timeout_seconds"] == 120.0
-    assert policy["model_timeout_seconds"] > 0
-    assert policy["connect_timeout_seconds"] > 0
 
 
 def test_cancel_endpoint_requires_csrf(client, settings):

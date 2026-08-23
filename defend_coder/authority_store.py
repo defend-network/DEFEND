@@ -587,7 +587,7 @@ def hydrate_authority(
         active_prompt_core = (first.bundle_id, first.version)
 
     if seed_if_empty and not technicals:
-        for provider in ("deepseek", "qwen3-vllm", "openai"):
+        for provider in ("deepseek", "self_hosted", "openai"):
             technical = build_provider_technical_profile(provider)
             store.save_technical(technical)
             technicals[(technical.profile_id, technical.version)] = technical
@@ -599,7 +599,7 @@ def hydrate_authority(
     # (covers the schema-10 -> 11 upgrade where profiles exist but the new
     # active-pointer table is empty). Never overwrites an existing explicit
     # selection.
-    for provider in ("deepseek", "qwen3-vllm", "openai"):
+    for provider in ("deepseek", "self_hosted", "openai"):
         if store.active_technical_for(provider) is None:
             canonical = build_provider_technical_profile(provider)
             key = (canonical.profile_id, canonical.version)

@@ -138,11 +138,11 @@ class TestProviderIntegrity:
         _reset(db)
         _apply_up_to(db, 11)
         store = PostgresAuthorityStore(db)
-        for provider in ("deepseek", "qwen3-vllm", "openai"):
+        for provider in ("deepseek", "self_hosted", "openai"):
             store.save_technical(build_provider_technical_profile(provider))
         assert store.active_technical_for("deepseek") is None
         from defend_coder.authority_store import hydrate_authority
 
         hydrate_authority(store)
-        for provider in ("deepseek", "qwen3-vllm", "openai"):
+        for provider in ("deepseek", "self_hosted", "openai"):
             assert store.active_technical_for(provider) is not None

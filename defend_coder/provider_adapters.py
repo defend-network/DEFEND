@@ -405,23 +405,43 @@ class OpenAIResponsesProvider:
 
     def generate(self, request: CoderGenerationRequest) -> CoderGenerationResult:
         response_id = request.continuation_state.get("response_id")
-        tool_outputs = [
-            {
-                "type": "function_call_output",
-                "call_id": m.get("tool_call_id"),
-                "output": m.get("content") or "",
-            }
-            for m in request.conversation
-            if m.get("role") == "tool" and m.get("tool_call_id")
-        ]
+        call_ids = request.continuation_state.get("call_ids") or []
         payload = {
             "model": self.model_id,
             "instructions": request.system_authority,
             "max_output_tokens": request.max_output_tokens,
         }
-        if response_id and tool_outputs:
-            # Continuation: previous_response_id + exact function_call_output
-            # items (call_id preserved). Authority is re-sent explicitly.
+        if response_id and call_ids:
+            # Continuation: use ONLY the immediately preceding response's
+            # call_ids (provider-private, never client-supplied). Emit each
+            # expected function_call_output exactly once, in provider order,
+            # and fail closed on missing/duplicate/mismatched results.
+            results_by_call: dict[str, str] = {}
+            for m in request.conversation:
+                if m.get("role") != "tool":
+                    continue
+                call_id = m.get("tool_call_id")
+                if not call_id:
+                    continue
+                if call_id in results_by_call:
+                    raise CoderProviderProtocolError(
+                        f"duplicate tool result for call {call_id!r}"
+                    )
+                results_by_call[call_id] = m.get("content") or ""
+            tool_outputs = []
+            for call_id in call_ids:
+                if call_id not in results_by_call:
+                    raise CoderProviderProtocolError(
+                        f"missing expected function_call_output for "
+                        f"{call_id!r}"
+                    )
+                tool_outputs.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": call_id,
+                        "output": results_by_call[call_id],
+                    }
+                )
             payload["previous_response_id"] = response_id
             payload["input"] = tool_outputs
         else:

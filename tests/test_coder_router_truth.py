@@ -142,6 +142,7 @@ class TestRouteBeforeRunnerStart:
 
         from test_coder_router_integration import (
             FakeAuth,
+            FakePreparation,
             FakeRepository,
             FakeRunsRepository,
             FakeRunner,
@@ -178,6 +179,7 @@ class TestRouteBeforeRunnerStart:
                 )
             ),
             provider_factory=provider_factory,
+            preparation=FakePreparation(runs, workspace),
         )
         client = TestClient(app)
         client.cookies.set("defendcoder_session", "session-token")

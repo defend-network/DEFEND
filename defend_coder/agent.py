@@ -8,6 +8,7 @@ from uuid import UUID
 
 from .agent_client import (
     AgentChatClient,
+    AgentChatResponse,
 )
 from .identity import default_identity_profile
 from .prompts import PROMPT_VERSION

@@ -204,6 +204,10 @@ def main() -> None:
     technical_registry = ProviderTechnicalRegistry()
     for profile in hydrated.technical_profiles.values():
         technical_registry.register(profile)
+    for provider in ("deepseek", "self_hosted", "openai"):
+        active_key = authority_store.active_technical_for(provider)
+        if active_key is not None:
+            technical_registry.set_active_for_provider(provider, *active_key)
 
     authority_resolver = RunAuthorityResolver(
         identity_registry=identity_registry,

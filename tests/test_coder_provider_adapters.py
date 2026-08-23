@@ -354,6 +354,118 @@ class TestOpenAIResponsesProvider:
         ]
         assert continuation_payload["instructions"] == "DEFEND authority"
 
+    def test_responses_multi_round_does_not_replay_stale_call(self):
+        calls = []
+
+        def transport(body: bytes) -> dict:
+            payload = json.loads(body)
+            calls.append(payload)
+            n = len(calls)
+            if n == 1:
+                return {
+                    "id": "resp_1",
+                    "status": "in_progress",
+                    "output": [
+                        {"type": "function_call", "call_id": "fc_1", "name": "read_file", "arguments": "{}"}
+                    ],
+                }
+            if n == 2:
+                return {
+                    "id": "resp_2",
+                    "status": "in_progress",
+                    "output": [
+                        {"type": "function_call", "call_id": "fc_2", "name": "write_file", "arguments": "{}"}
+                    ],
+                }
+            return {
+                "id": "resp_3",
+                "status": "completed",
+                "output": [{"type": "message", "content": [{"type": "output_text", "text": "done"}]}],
+            }
+
+        provider = OpenAIResponsesProvider("gpt-5.6-sol", api_key="sk-fake", transport=transport)
+        r1 = provider.generate(CoderGenerationRequest(system_authority="A", conversation=(), tools=()))
+        assert r1.protocol_state["call_ids"] == ["fc_1"]
+        # Tool fc_1 executes; conversation carries its result AND later fc_2.
+        r2 = provider.generate(
+            CoderGenerationRequest(
+                system_authority="A",
+                conversation=(
+                    {"role": "tool", "tool_call_id": "fc_1", "content": "r1"},
+                ),
+                continuation_state=r1.protocol_state,
+            )
+        )
+        assert r2.protocol_state["call_ids"] == ["fc_2"]
+        # Second continuation must contain ONLY fc_2 output, never fc_1.
+        r3 = provider.generate(
+            CoderGenerationRequest(
+                system_authority="A",
+                conversation=(
+                    {"role": "tool", "tool_call_id": "fc_1", "content": "r1"},
+                    {"role": "tool", "tool_call_id": "fc_2", "content": "r2"},
+                ),
+                continuation_state=r2.protocol_state,
+            )
+        )
+        assert r3.visible_content == "done"
+        second_continuation = calls[2]
+        assert second_continuation["input"] == [
+            {"type": "function_call_output", "call_id": "fc_2", "output": "r2"}
+        ]
+
+    def test_responses_multi_tool_same_response_preserves_order(self):
+        calls = []
+
+        def transport(body: bytes) -> dict:
+            payload = json.loads(body)
+            calls.append(payload)
+            if len(calls) == 1:
+                return {
+                    "id": "resp_1",
+                    "status": "in_progress",
+                    "output": [
+                        {"type": "function_call", "call_id": "fc_a", "name": "read_file", "arguments": "{}"},
+                        {"type": "function_call", "call_id": "fc_b", "name": "write_file", "arguments": "{}"},
+                    ],
+                }
+            return {"id": "resp_2", "status": "completed", "output": [{"type": "message", "content": [{"type": "output_text", "text": "ok"}]}]}
+
+        provider = OpenAIResponsesProvider("gpt-5.6-sol", api_key="sk-fake", transport=transport)
+        r1 = provider.generate(CoderGenerationRequest(system_authority="A", conversation=(), tools=()))
+        assert r1.protocol_state["call_ids"] == ["fc_a", "fc_b"]
+        provider.generate(
+            CoderGenerationRequest(
+                system_authority="A",
+                conversation=(
+                    {"role": "tool", "tool_call_id": "fc_a", "content": "ra"},
+                    {"role": "tool", "tool_call_id": "fc_b", "content": "rb"},
+                ),
+                continuation_state=r1.protocol_state,
+            )
+        )
+        assert calls[1]["input"] == [
+            {"type": "function_call_output", "call_id": "fc_a", "output": "ra"},
+            {"type": "function_call_output", "call_id": "fc_b", "output": "rb"},
+        ]
+
+    def test_responses_missing_expected_output_fails_closed(self):
+        def transport(body: bytes) -> dict:
+            return {"id": "resp_1", "status": "in_progress", "output": [
+                {"type": "function_call", "call_id": "fc_1", "name": "read_file", "arguments": "{}"}
+            ]}
+
+        provider = OpenAIResponsesProvider("gpt-5.6-sol", api_key="sk-fake", transport=transport)
+        r1 = provider.generate(CoderGenerationRequest(system_authority="A", conversation=(), tools=()))
+        with pytest.raises(Exception):
+            provider.generate(
+                CoderGenerationRequest(
+                    system_authority="A",
+                    conversation=(),
+                    continuation_state=r1.protocol_state,
+                )
+            )
+
 
 class TestCoderProviderFactory:
     def test_factory_routes_to_correct_provider(self):

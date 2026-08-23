@@ -22,6 +22,7 @@ from .config import CoderSettings
 from .credentials import CredentialStore
 from .db import CoderDatabase
 from .identity import default_identity_profile
+from .preparation import RunPreparationService
 from .provider_adapters import CoderProviderFactory
 from .providers import (
     NEXT_MODEL,
@@ -36,6 +37,7 @@ from .registry import (
     IdentityRegistry,
     PromptAuthorityComposer,
     PromptBundleRegistry,
+    ProviderTechnicalRegistry,
     build_prompt_core_bundle,
 )
 from .repositories import CoderRepository, WorkspaceRecord
@@ -241,6 +243,8 @@ def build_coder_app(
     prompt_registry: PromptBundleRegistry | None = None,
     prompt_authority: PromptAuthorityComposer | None = None,
     provider_factory: object | None = None,
+    technical_registry: object | None = None,
+    preparation: object | None = None,
 ) -> FastAPI:
     idle_timeout_seconds = (
         settings.idle_timeout_seconds
@@ -324,6 +328,8 @@ def build_coder_app(
             )
         )
     _provider_factory = provider_factory or CoderProviderFactory(_credentials)
+    _technical_registry = technical_registry or ProviderTechnicalRegistry()
+    _preparation = preparation or RunPreparationService(db)
 
     def _live_targets() -> dict[str, ModelTarget]:
         """Targets keyed by MODEL ID with LIVE credential availability."""
@@ -744,49 +750,60 @@ def build_coder_app(
                 detail=f"{route.tier.value} is not currently configured",
             )
 
-        # Create the run record, persist the selected routing, THEN start
-        # execution using that exact route.
-        run = runs_repository.create_run(
-            workspace=workspace,
-            prompt=payload.prompt,
-        )
-        runs_repository.set_run_routing(
-            run.run_id,
-            requested_mode=mode,
-            selected_tier=route.tier.value,
-            selected_model=route.target.model_id,
-            selected_provider=route.target.provider,
-            route_reason=(
-                "OWNER_REQUESTED"
-                if explicit_tier is not None
-                else "AUTO_DEFAULT"
-            ),
-        )
+        # Server-authoritative pins: derive identity/prompt/technical from
+        # durable ACTIVE authority + selected route. The client only supplies
+        # intent (workspace, prompt, requested mode); it can never supply
+        # authority hashes.
         identity = _identity_registry.active()
-        runs_repository.set_run_identity(
-            run.run_id,
-            profile_id=identity.profile_id,
-            version=identity.version,
-            identity_hash=identity.hash,
-        )
         bundle = _prompt_registry.active()
-        runs_repository.set_run_prompt_bundle(
-            run.run_id,
-            bundle_id=bundle.bundle_id,
-            version=bundle.version,
-            bundle_hash=bundle.hash,
+        technical = _technical_registry.active_for_provider(
+            route.target.provider
         )
+        try:
+            prepared = _preparation.prepare_run(
+                workspace_id=workspace.workspace_id,
+                owner_account_id=account.account_id,
+                prompt=payload.prompt,
+                requested_mode=mode,
+                selected_tier=route.tier.value,
+                provider=route.target.provider,
+                model=route.target.model_id,
+                identity=(
+                    identity.profile_id,
+                    identity.version,
+                    identity.hash,
+                ),
+                prompt_core=(bundle.bundle_id, bundle.version, bundle.hash),
+                technical=(
+                    technical.profile_id,
+                    technical.version,
+                    technical.hash,
+                ),
+                reason=(
+                    "OWNER_REQUESTED"
+                    if explicit_tier is not None
+                    else "AUTO_DEFAULT"
+                ),
+            )
+        except Exception as error:  # noqa: BLE001
+            raise HTTPException(
+                status_code=500,
+                detail=f"run preparation failed: {type(error).__name__}",
+            ) from None
 
-        # ONLY NOW start execution on the persisted route.
+        # ONLY NOW start execution on the persisted, complete envelope.
         runner.start_existing(
-            run_id=run.run_id,
+            run_id=prepared.run_id,
             workspace=workspace,
             prompt=payload.prompt,
         )
 
+        run = runs_repository.get_run(prepared.run_id)
         return {
             "run": _run_dict(run),
-            "routing": runs_repository.get_run_routing(run.run_id).as_public_dict(),
+            "routing": runs_repository.get_run_routing(
+                prepared.run_id
+            ).as_public_dict(),
         }
 
     @app.post("/v1/workspaces/{workspace_id}/runs/{run_id}/cancel")

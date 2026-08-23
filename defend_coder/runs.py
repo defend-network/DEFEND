@@ -8,6 +8,7 @@ import time
 from typing import Any, Callable
 from uuid import UUID, uuid4
 
+from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from .agent import CodingAgent, RunLog
@@ -703,7 +704,7 @@ class RunsRepository:
     def max_message_seq(self, run_id: UUID) -> int:
         """Highest existing message seq for a run (continuation continuity)."""
         with self._db.connect() as connection:
-            with connection.cursor() as cursor:
+            with connection.cursor(row_factory=dict_row) as cursor:
                 cursor.execute(
                     """
                     SELECT COALESCE(MAX(seq), 0) AS seq
@@ -717,7 +718,7 @@ class RunsRepository:
 
     def get_run_routing(self, run_id: UUID) -> RunRouting | None:
         with self._db.connect() as connection:
-            with connection.cursor() as cursor:
+            with connection.cursor(row_factory=dict_row) as cursor:
                 cursor.execute(
                     """
                     SELECT
@@ -783,7 +784,7 @@ class RunsRepository:
     ) -> tuple[str, str, str] | None:
         """(profile_id, version, hash) pinned on a run, or None."""
         with self._db.connect() as connection:
-            with connection.cursor() as cursor:
+            with connection.cursor(row_factory=dict_row) as cursor:
                 cursor.execute(
                     """
                     SELECT identity_profile_id, identity_version, identity_hash
@@ -829,7 +830,7 @@ class RunsRepository:
     ) -> tuple[str, str, str] | None:
         """(bundle_id, version, hash) pinned on a run, or None."""
         with self._db.connect() as connection:
-            with connection.cursor() as cursor:
+            with connection.cursor(row_factory=dict_row) as cursor:
                 cursor.execute(
                     """
                     SELECT prompt_bundle_id, prompt_bundle_version,
@@ -901,7 +902,7 @@ class RunsRepository:
         run_id: UUID,
     ) -> tuple[dict[str, object], ...]:
         with self._db.connect() as connection:
-            with connection.cursor() as cursor:
+            with connection.cursor(row_factory=dict_row) as cursor:
                 cursor.execute(
                     """
                     SELECT

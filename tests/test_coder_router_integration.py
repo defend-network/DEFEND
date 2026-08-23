@@ -80,8 +80,11 @@ class FakeRunsRepository:
         self._approved_by: list[str] = []
         self.routing_writes: list[tuple[str, str]] = []
         self.created = 0
+        self._created_runs: dict[Any, Any] = {}
 
     def get_run(self, run_id):
+        if run_id in self._created_runs:
+            return self._created_runs[run_id]
         if str(run_id) == str(self._run_id):
             return self._run(self._workspace)
         return None
@@ -91,7 +94,9 @@ class FakeRunsRepository:
 
     def create_run(self, *, workspace, prompt):
         self.created += 1
-        return self._run(workspace)
+        run = self._run(workspace, prompt)
+        self._created_runs[run.run_id] = run
+        return run
 
     def get_active_run_for_workspace(self, workspace_id):
         return None
@@ -125,14 +130,14 @@ class FakeRunsRepository:
         return None
 
     @staticmethod
-    def _run(workspace):
+    def _run(workspace, prompt="prompt"):
         from defend_coder.runs import RunRecord
 
         return RunRecord(
             run_id=uuid4(),
             workspace_id=workspace.workspace_id,
             owner_account_id=workspace.owner_account_id,
-            prompt="prompt",
+            prompt=prompt,
             status="queued",
             phase="queued",
             reason="unknown",
@@ -208,10 +213,69 @@ class FakeRunsRepository:
         return True
 
 
+class FakePreparation:
+    """Mimics RunPreparationService against the fake repository."""
+
+    def __init__(self, runs: FakeRunsRepository, workspace: Any) -> None:
+        self._runs = runs
+        self._workspace = workspace
+        self.calls = 0
+        self.pins: dict[str, Any] = {}
+
+    def prepare_run(
+        self,
+        *,
+        workspace_id,
+        owner_account_id,
+        prompt,
+        requested_mode,
+        selected_tier,
+        provider,
+        model,
+        identity,
+        prompt_core,
+        technical,
+        reason="initial",
+    ):
+        self.calls += 1
+        self.pins = {
+            "identity": identity,
+            "prompt_core": prompt_core,
+            "technical": technical,
+            "provider": provider,
+            "model": model,
+            "requested_mode": requested_mode,
+            "selected_tier": selected_tier,
+        }
+        run = self._runs.create_run(workspace=self._workspace, prompt=prompt)
+        self._runs.set_run_routing(
+            run.run_id,
+            requested_mode=requested_mode,
+            selected_tier=selected_tier,
+            selected_model=model,
+            selected_provider=provider,
+            route_reason=reason,
+        )
+        self._runs.set_run_identity(
+            run.run_id,
+            profile_id=identity[0],
+            version=identity[1],
+            identity_hash=identity[2],
+        )
+        self._runs.set_run_prompt_bundle(
+            run.run_id,
+            bundle_id=prompt_core[0],
+            version=prompt_core[1],
+            bundle_hash=prompt_core[2],
+        )
+        from defend_coder.preparation import PreparedRun
+
+        return PreparedRun(run_id=run.run_id, checkpoint_id=uuid4())
+
+
 class FakeRepository:
     def __init__(self, workspace: Any) -> None:
         self._workspace = workspace
-
     def list_workspaces_for_owner(self, account_id):
         if str(account_id) == str(self._workspace.owner_account_id):
             return [self._workspace]
@@ -329,6 +393,7 @@ class _App:
             runtime_adapter=self.runtime,
             credentials=CredentialStore(store_loader=self.credentials),
             provider_factory=provider_factory,
+            preparation=FakePreparation(self.runs, workspace),
         )
         from fastapi.testclient import TestClient
 

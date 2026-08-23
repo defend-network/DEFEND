@@ -356,7 +356,7 @@ def build_provider_technical_profile(
         return ProviderTechnicalProfile(
             profile_id="qwen3-coder-vllm-v1",
             version=version,
-            provider=provider,
+            provider="self_hosted",
             protocol="chat_completions",
             technical_instructions=vllm_technical_instructions(),
         )
@@ -378,16 +378,38 @@ class ProviderTechnicalUnavailableError(RuntimeError):
 class ProviderTechnicalRegistry:
     def __init__(self) -> None:
         self._profiles: dict[tuple[str, str], ProviderTechnicalProfile] = {}
+        self._active_by_provider: dict[str, tuple[str, str]] = {}
 
     def register(self, profile: ProviderTechnicalProfile) -> None:
         self._profiles[(profile.profile_id, profile.version)] = profile
 
+    def set_active_for_provider(
+        self, provider: str, profile_id: str, version: str
+    ) -> None:
+        if (profile_id, version) not in self._profiles:
+            raise ProviderTechnicalUnavailableError(
+                f"cannot activate unknown technical profile "
+                f"{profile_id}@{version}"
+            )
+        self._active_by_provider[provider] = (profile_id, version)
+
+    def active_for_provider(self, provider: str) -> ProviderTechnicalProfile:
+        key = self._active_by_provider.get(provider)
+        if key is not None:
+            return self._profiles[key]
+        return self.for_provider(provider)
+
     def for_provider(self, provider: str) -> ProviderTechnicalProfile:
-        for key, profile in self._profiles.items():
+        key = self._active_by_provider.get(provider)
+        if key is not None:
+            return self._profiles[key]
+        for (pid, version), profile in self._profiles.items():
             if profile.provider == provider:
+                self._active_by_provider[provider] = (pid, version)
                 return profile
         profile = build_provider_technical_profile(provider)
         self.register(profile)
+        self._active_by_provider[provider] = (profile.profile_id, profile.version)
         return profile
 
     def resolve(

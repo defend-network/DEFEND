@@ -254,6 +254,7 @@ class TestRunIdentityPinning:
 
         from test_coder_router_integration import (
             FakeAuth,
+            FakePreparation,
             FakeRepository,
             FakeRunsRepository,
             FakeRunner,
@@ -287,6 +288,7 @@ class TestRunIdentityPinning:
             credentials=CredentialStore(
                 store_loader=FakeSecretStore(deepseek_key=True)
             ),
+            preparation=FakePreparation(runs, workspace),
         )
         client = TestClient(app)
         client.cookies.set("defendcoder_session", "session-token")
