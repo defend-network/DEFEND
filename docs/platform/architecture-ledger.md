@@ -8,7 +8,7 @@ lanes own the internal behavior of DEFEND AI, DEFENDcoder, DEFENDMarkets and
 SCS; Control Center supervises; `shared_platform/` holds genuinely neutral
 infrastructure. Keep this file updated through code and tests where practical.
 
-Last updated: P0.1 canonical integration anchor (`agent/platform-integration-v1`).
+Last updated: P0.2 four-product integration V2 (`agent/platform-integration-v2`).
 
 ---
 
@@ -17,9 +17,10 @@ Last updated: P0.1 canonical integration anchor (`agent/platform-integration-v1`
 | Product | Application id (Control Center) | Runtime owner | Control Center role |
 | --- | --- | --- | --- |
 | DEFEND AI | `defend` | DEFEND AI lane (controller/orchestrator) | Supervise only |
-| DEFENDcoder | `coder` | DEFENDcoder lane (`defend_coder/`, `coder_*` plane) | Supervise only |
-| DEFENDMarkets | `sports` | DEFENDMarkets lane (`defend_markets/`, `tools/defend_sports_server`) | Supervise only |
-| SCS | `scs` | SCS lane (`scs_ai/`, `scs_api/`, `scs-ui/`) | Supervise only |
+| DEFENDcoder | `coder` | DEFENDcoder lane (`defend_coder/runtime`, `defend_coder.launch`) | Supervise only; provider construction REMOVED (R3) |
+| DEFENDMarkets | `markets` | DEFENDMarkets lane (`defend_markets/`, `defendmarkets-ui`, `defend_markets.launch`) | Supervise only |
+| DEFEND Sports (legacy) | `sports` | transition/data-inspection only | Legacy; never masquerades as Markets |
+| SCS | `scs` | SCS lane (`scs_data/supervision`, `scs_data/settings`, `scs_api/`) | Supervise only |
 
 Control Center may START/STOP/observe product processes it owns and display
 product-reported health. It may NOT own product models, tools, ports,
@@ -30,32 +31,36 @@ provider APIs on a product's behalf.
 
 - Neutral contract: `ProductSupervisionManifest` (`defend_control/supervision.py`).
   The product owns manifest values; Control Center consumes them.
-- Compatibility adapter: `build_compatibility_manifests()` stamps explicit
-  provenance per product (P0.1):
-  - CODER: `product:defend_coder.launch.build_launch_manifest` (product-owned
-    launch contract consumed; Control Center does NOT redefine ports/commands).
-  - DEFEND AI: `COMPATIBILITY_LEGACY` — no canonical application supervision
-    manifest; `defend_ai.launch` holds GPU LaunchSpecs only (not an app manifest).
-  - SCS: `COMPATIBILITY_LEGACY` — no clean manifest loadable without side effects.
-  - DEFENDMarkets: `COMPATIBILITY_LEGACY` + `MARKETS_MANIFEST_STATE=LEGACY/
-    PENDING_LATEST_MARKETS_LANE` (latest Markets lane not integrated).
+- Compatibility adapter `build_compatibility_manifests()` stamps provenance
+  per product (P0.2):
+  - CODER: `product:defend_coder.launch.build_launch_manifest` (8301/3301/8403).
+  - MARKETS: `product:defend_markets.launch.build_manifest` (8500/3500).
+  - SCS: `product:scs_data.supervision.supervision_manifest` (SCS-owned env
+    config; no side-effect import of `scs_api.runtime`).
+  - DEFEND AI: `COMPATIBILITY_LEGACY` + `PRODUCT_CONTRACT_REQUIRED` — no
+    canonical application supervision manifest; `defend_ai.launch` holds GPU
+    LaunchSpecs only (not an app manifest).
+  - DEFEND Sports: `COMPATIBILITY_LEGACY` transition surface.
 - Status vocabulary: `ProductSupervisionState` — STOPPED / STARTING / RUNNING /
   DEGRADED / FAILED / EXTERNAL / UNKNOWN. RUNNING is never inferred from
   port-open alone (process identity + product health required).
 
-## Ports (product-owned manifests) — P0.1 authority states
+## Ports (product-owned manifests) — P0.2 authority states
 
 | Product | Component | Port | Source | Authority state |
 | --- | --- | --- | --- | --- |
-| DEFEND AI | api | 8401 | controller/runtime | COMPATIBILITY_LEGACY |
+| DEFEND AI | api | 8401 | controller/runtime | COMPATIBILITY_LEGACY (PRODUCT_CONTRACT_REQUIRED) |
 | DEFENDcoder | api | 8301 | `defend_coder.launch` | CANONICAL_PRODUCT |
 | DEFENDcoder | ui | 3301 | `defend_coder.launch` | CANONICAL_PRODUCT |
 | DEFENDcoder | model forward | 8403 | `defend_coder.launch` | CANONICAL_PRODUCT |
-| DEFENDMarkets | api | 8200 | `SPORTS_API_PORT` | COMPATIBILITY_LEGACY |
-| DEFENDMarkets | web | 3200 | `SPORTS_WEB_PORT` | COMPATIBILITY_LEGACY |
-| SCS | core api | 8100 | `SCS_API_PORT` | COMPATIBILITY_LEGACY |
-| SCS | ai api | 8300 | `SCS_AI_API_PORT` | COMPATIBILITY_LEGACY |
-| SCS | web | 3100 | `SCS_WEB_PORT` | COMPATIBILITY_LEGACY |
+| DEFENDMarkets | api | 8500 | `defend_markets.launch` | CANONICAL_PRODUCT |
+| DEFENDMarkets | ui | 3500 | `defend_markets.launch` | CANONICAL_PRODUCT |
+| SCS | api | 8100 | `scs_data.supervision` | CANONICAL_PRODUCT |
+| SCS | web | 3100 | `scs_data.supervision` | CANONICAL_PRODUCT |
+| DEFEND Sports (legacy) | api | 8200 | `SPORTS_API_PORT` | COMPATIBILITY_LEGACY |
+| DEFEND Sports (legacy) | web | 3200 | `SPORTS_WEB_PORT` | COMPATIBILITY_LEGACY |
+
+Collision validator over the product-owned contracts: PASS.
 
 Collision result on the integrated repository: PASS (no duplicates in the
 current compatibility manifest set). Cross-product validation:
@@ -122,18 +127,18 @@ chooses product models or manages product GPU lifecycle directly.
 | CC-03 | Coder billing | `defend_control/coder_billing.py` | Coder-associated legacy primitives (NOT neutral authority) | Neutral platform billing (future) | `LEGACY_CODER_BILLING=EXISTS`; no consumer charging |
 | CC-04 | Markets launch | `tools/defend_sports_server` via `products.py` | Markets API process spec | Markets-owned manifest | Compatibility; latest Markets lane PENDING |
 
-## Membership / billing authority (P0.1 corrected)
+## Membership / billing authority (P0.2 — unchanged)
 
 - Identity: `LEGACY_OWNER_IDENTITY=defend_data.identity_store` (historically
   DEFEND-AI-owned/mixed — NOT a neutral-platform identity authority).
   `NEUTRAL_PLATFORM_IDENTITY_AUTHORITY=NOT_ESTABLISHED`. Membership
   (account/org/role/entitlement): `NOT_IMPLEMENTED`.
+- Markets shared-owner auth bootstrap reads the existing shared store; it does
+  NOT establish neutral identity ownership.
 - Billing: `LEGACY_CODER_BILLING=EXISTS` (`defend_control.coder_billing` is
   Coder-associated/legacy mixed, NOT accepted as neutral authority).
   `NEUTRAL_PLATFORM_BILLING_AUTHORITY=NOT_ESTABLISHED`. `CONSUMER_BILLING=NOT_IMPLEMENTED`.
   No Stripe, no customer money, no token-ledger expansion.
-- Sequencing: membership/billing come AFTER product runtime boundaries + the
-  Markets standalone migration complete.
 
 ## Shared platform modules (`shared_platform/`)
 
@@ -142,7 +147,8 @@ chooses product models or manages product GPU lifecycle directly.
 | `secure_store.py` | CANONICAL physical DPAPI secret persistence (`DpapiSecretStore`) |
 | `dpapi.py` | TEMPORARY compat re-export -> secure_store |
 | `secrets.py` | `NamespacedSecrets` logical views |
-| `vast.py` | Generic low-level Vast transport/client authority |
+| `vast.py` | Generic low-level Vast transport/client authority (NO product policy) |
+| `ssh_tunnel.py` | Generic SSH transport/safety primitives (NO product approval policy) |
 | `processes.py` | `ProcessSupervisor` / `ProcessSpec` (owned vs external) |
 | `redaction.py` | `redact_text` neutral redaction |
 | `windows_job.py` | `WindowsJob` process-group ownership |
@@ -151,8 +157,8 @@ chooses product models or manages product GPU lifecycle directly.
 | `services.py` | `ServiceProfile` / `RouteProfile` / `DeploymentProfile` / `validate_deployment` |
 | `phase0.py` | phase-0 deployment helpers |
 
-`defend_control/{secrets,redaction,processes,windows_job,vast}.py` are TEMPORARY
-legacy compatibility shims -> the shared_platform implementations.
+`defend_control/{secrets,redaction,processes,windows_job,vast,ssh_tunnel}.py`
+are TEMPORARY legacy compatibility shims -> the shared_platform implementations.
 
 ## Public origins (product-owned)
 
@@ -165,25 +171,26 @@ legacy compatibility shims -> the shared_platform implementations.
 
 ## Legacy debt
 
-- Product launch defaults still live in `defend_control/products.py`
-  (`ProductsSettings`, `build_*_process_spec`). Marked `LEGACY_PRODUCT_AUTHORITY`;
-  the compatibility manifests consume the same product-owned env config so the
-  values are not duplicated.
+- DEFEND AI launch remains controller-orchestrated; no product application
+  supervision manifest (`PRODUCT_CONTRACT_REQUIRED` — Section 9).
 - `CODER_LAUNCH_MANIFEST_CONFIG_DRIFT=OPEN`: `defend_coder.launch` still carries
   hardcoded constants (8301/3301/8403) while claiming env settings are
   canonical. Coder R3 owns that correction.
-- `CONTROL_CENTER_CODER_PROVIDER_PATH=LEGACY_ACTIVE`: `tools/defend_control_center.py`
-  still constructs the coder provider plane (Vast path). Coder R3 removes it.
+- `CONTROL_CENTER_CODER_PROVIDER_PATH=NONE` (R3 removed `_build_coder_plane`
+  construction); remaining coder lifecycle wiring belongs to the NEXT Coder lane.
+- Legacy `defend_control/products.py` still holds bespoke product service
+  classes (SportsService, ScsService, CoderService, DefendService) — a thin
+  generic-supervisor convergence is the target (Section 10), not completed here.
 - Old Control Center `SetupDialog` (tkinter secret catalog) coexists with the
   registry-driven web Setup (`defend-ui-v2`). Both read the same DPAPI store.
 
-## P0.1 integration state
+## P0.2 integration state
 
 | Lane | State |
 | --- | --- |
-| DEFEND AI | standalone product boundary PASS; C6-R PARTIAL; no canonical app supervision manifest (GPU LaunchSpec only) |
-| DEFENDcoder | standalone API/UI PASS; product runtime lifecycle PARTIAL; active CC Vast path OPEN; product launch manifest EXISTS |
-| DEFENDMarkets | latest standalone migration NOT INTEGRATED / PENDING (auditor convergence) |
-| SCS | standalone PASS; B4 PASS; real-data M1.5C owner action pending |
-| Platform | supervision foundation PASS; full provider-boundary convergence PARTIAL |
-| Shared | physical secret store authority PASS; logical secret namespace PASS; Vast neutral authority PASS; process authority PASS; membership NOT_ESTABLISHED; billing NOT_ESTABLISHED |
+| DEFEND AI | standalone PASS; C6-RZ PARTIAL; paid canary NOT READY; no app supervision manifest (PRODUCT_CONTRACT_REQUIRED) |
+| DEFENDcoder | standalone PASS; runtime implementation ownership PASS; runtime manager/lifecycle wiring PARTIAL; Control Center provider authority CLOSED; launch manifest EXISTS |
+| DEFENDMarkets | standalone PASS; setup/auth backend READY; owner login OWNER_ACTION_REQUIRED; `defend_markets.launch` + `defendmarkets-ui` + 8500/3500 integrated |
+| SCS | standalone PASS; Setup V1 PASS; real-data acceptance OWNER_ACTION_REQUIRED; `scs_data.settings`/`scs_data.supervision` integrated |
+| Platform | four-product integration PASS; neutral identity NOT_ESTABLISHED; neutral billing NOT_ESTABLISHED |
+| Shared | secure store PASS; logical secrets PASS; Vast neutral PASS (VAST_PRODUCT_POLICY=NO); SSH neutral PASS (SSH_PRODUCT_POLICY=NO); processes PASS |
