@@ -181,28 +181,55 @@ def build_job_truth_packet(record: JobRecord, graph: MechanicalPlanGraph | None,
     }
 
 
+_COVERAGE_RANK = {"NO_OEM_SOURCE": 0, "GENERAL_MANUFACTURER_ONLY": 1,
+                  "FAMILY_REFERENCE": 2, "MODEL_SERIES_MANUAL": 3,
+                  "EXACT_MODEL_MANUAL": 4}
+
+
 def knowledge_coverage(knowledge: SCSKnowledgeLibrary | None,
                        equipment: dict[str, Any]) -> str:
-    """Knowledge coverage for one equipment entity (Phase 11)."""
+    """Knowledge coverage for one equipment entity (Phase 11 / P5-P6).
+
+    Coverage derives from SOURCE METADATA + accepted applicability identity,
+    never from semantic-search similarity. Reuses the canonical identity
+    normalizers from the M1.4 claim verifier."""
     if knowledge is None:
         return "NO_OEM_SOURCE"
+    from scs_copilot.claims import _family_of, _normalize_id
     manufacturer = (equipment.get("manufacturer") or "").strip()
     model = (equipment.get("model") or "").strip()
     if not manufacturer and not model:
         return "NO_OEM_SOURCE"
-    exact = knowledge.search(f"{manufacturer} {model}", limit=3,
-                             active_only=True) if model else []
-    if any(r.get("source_type", "").startswith("OEM_") for r in exact):
-        return "EXACT_MODEL_MANUAL"
-    family = knowledge.search(f"{manufacturer} {model}", limit=3,
-                              active_only=True)
-    if any(r.get("source_type", "").startswith("OEM_") for r in family):
-        return "MODEL_SERIES_MANUAL"
-    manufacturer_hits = knowledge.search(manufacturer, limit=3,
-                                         active_only=True) if manufacturer else []
-    if any(r.get("source_type", "").startswith("OEM_") for r in manufacturer_hits):
-        return "GENERAL_MANUFACTURER_ONLY"
-    return "NO_OEM_SOURCE"
+    oem_sources = [s for s in knowledge.list_sources()
+                   if (s.source_type or "").startswith("OEM_")
+                   and s.source_state in ("SOURCE_VERIFIED", "ACTIVE")]
+    best, best_rank = "NO_OEM_SOURCE", 0
+    for source in oem_sources:
+        if manufacturer and source.manufacturer \
+                and source.manufacturer.upper() != manufacturer.upper():
+            continue  # wrong manufacturer provides no coverage
+        coverage, rank = _source_coverage(source, model)
+        if rank > best_rank:
+            best, best_rank = coverage, rank
+    return best
+
+
+def _source_coverage(source, model: str) -> tuple[str, int]:
+    from scs_copilot.claims import _family_of, _normalize_id
+    if not model:
+        return "GENERAL_MANUFACTURER_ONLY", 1
+    src_model = (source.model or "").strip()
+    if src_model and _normalize_id(src_model) == _normalize_id(model):
+        return "EXACT_MODEL_MANUAL", 4
+    src_series = (source.model_series or "").strip()
+    n_series = _normalize_id(src_series)
+    if src_series and len(n_series) >= 3 and _normalize_id(model).startswith(n_series):
+        return "MODEL_SERIES_MANUAL", 3
+    family = _family_of(model)
+    families = {_normalize_id(str(t)) for t in (source.equipment_family_tags or [])}
+    if family and _normalize_id(family) in families:
+        return "FAMILY_REFERENCE", 2
+    return "GENERAL_MANUFACTURER_ONLY", 1
 
 
 def _structured_citations(raw: dict[str, Any]) -> list[dict[str, Any]]:

@@ -51,7 +51,7 @@ def build_scs_app(context: ApplicationContext, identity: ScsIdentityStore, maile
         app.include_router(build_import_router(context, identity, customers))
     if jobs is not None or customers is not None:
         app.include_router(build_reports_router(context, identity, reports_paths))
-    app.include_router(build_field_router(context, identity))
+    app.include_router(build_field_router(context, identity, jobs))
 
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(request: Request, error: Exception):

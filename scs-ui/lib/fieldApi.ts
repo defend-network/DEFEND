@@ -18,10 +18,35 @@ export type ReadinessResult = {
   OPTIONAL: ReadinessReason[];
 };
 
+export type JobReadiness = {
+  ready_to_leave: ReadinessResult;
+  report_readiness: {ready: boolean; readiness: string; summary: Record<string, number>; questions: string[]};
+};
+
+export type HistoryEntry = {
+  answer_id: string;
+  question: string;
+  answer: string;
+  mode: string;
+  verified_claim_ids: string[];
+  blocked_claim_ids: string[];
+  tool_calls: Array<Record<string, unknown>>;
+  source_ids: string[];
+  calculator_ids: string[];
+  timestamp: string;
+};
+
+export const READING_CONCEPTS = [
+  "SUPPLY_CFM","RETURN_CFM","OA_CFM","EXHAUST_CFM","VAV_CFM","TESP",
+  "SUPPLY_STATIC","RETURN_STATIC","FILTER_DP","COIL_DP","FAN_RPM","VFD_HZ",
+  "BUILDING_PRESSURE","DRY_BULB","RH",
+] as const;
+
 export type KnowledgeStatus = {
   knowledge_root: string;
   configured: boolean;
   state: "CONFIGURED" | "NOT_CONFIGURED";
+  discovery: Array<Record<string, unknown>>;
   documents: Array<Record<string, unknown>>;
   counts: Record<string, number>;
   discovered: number;
@@ -56,8 +81,19 @@ export async function jobTruth(jobId: string): Promise<Record<string, unknown>> 
   return api(`/api/scs/field/jobs/${encodeURIComponent(jobId)}/truth`);
 }
 
-export async function jobReadiness(jobId: string): Promise<ReadinessResult> {
-  return api<ReadinessResult>(`/api/scs/field/jobs/${encodeURIComponent(jobId)}/readiness`);
+export async function jobReadiness(jobId: string): Promise<JobReadiness> {
+  return api<JobReadiness>(`/api/scs/field/jobs/${encodeURIComponent(jobId)}/readiness`);
+}
+
+export async function chatHistory(jobId: string): Promise<{history: HistoryEntry[]}> {
+  return api(`/api/scs/field/jobs/${encodeURIComponent(jobId)}/history`);
+}
+
+export async function recordReading(jobId: string, payload: Record<string, unknown>): Promise<{reading: Record<string, unknown>}> {
+  return api(`/api/scs/field/jobs/${encodeURIComponent(jobId)}/readings`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 }
 
 export async function jobChat(jobId: string, message: string): Promise<ChatAnswer> {
@@ -77,4 +113,8 @@ export async function knowledgeDiscover(): Promise<{documents: Array<Record<stri
 
 export async function knowledgeApprove(payload: Record<string, unknown>): Promise<{source: Record<string, unknown>}> {
   return api("/api/scs/knowledge/approve", {method: "POST", body: JSON.stringify(payload)});
+}
+
+export async function knowledgeBlock(discoveryId: string): Promise<{document: Record<string, unknown>}> {
+  return api("/api/scs/knowledge/block", {method: "POST", body: JSON.stringify({discovery_id: discoveryId})});
 }

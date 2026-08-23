@@ -149,9 +149,8 @@ def test_discover_documents_is_discovered_not_authoritative(tmp_path):
     doc.write_text("Carrier 50TC installation guide", encoding="utf-8")
     discovered = discover_documents(tmp_path)
     assert discovered
-    assert discovered[0]["ingestion_state"] == "DISCOVERED"
-    assert discovered[0]["owner_approval_state"] == "PENDING"
-    assert discovered[0]["source_type"] == "OEM_IOM"
+    assert discovered[0]["state"] == "DISCOVERED"
+    assert discovered[0]["candidate_source_type"] == "OEM_IOM"
 
 
 def test_discover_documents_ignores_library_db(tmp_path):
