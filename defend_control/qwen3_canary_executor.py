@@ -254,6 +254,8 @@ class CanaryRunResult:
     billing_termination_verified: bool
     billing_risk: str
     evidence: list[PhaseEvidence] = field(default_factory=list)
+    git_head: str = ""
+    adapter_dir: str = ""
 
 
 class _BudgetExceeded(Exception):
@@ -269,12 +271,14 @@ class Qwen3CanaryExecutor:
         remote: RemoteHost,
         clock=time.monotonic,
         run_id: str | None = None,
+        git_head: str = "",
     ) -> None:
         self.policy = policy
         self.vast = vast
         self.remote = remote
         self.clock = clock
         self.run_id = run_id or uuid.uuid4().hex[:12]
+        self.git_head = git_head
 
     def _deadline(self, created_at: float, hourly_rate: Decimal) -> float:
         # hard $2.00 cap with conservative 0.85 margin.
@@ -296,7 +300,7 @@ class Qwen3CanaryExecutor:
 
             offer = self.vast.select_offer(self.policy)
             if offer is None:
-                return CanaryRunResult(self.run_id, "CANARY_NOT_STARTED", mutations, None, 0, False, "NONE", evidence)
+                return CanaryRunResult(self.run_id, "CANARY_NOT_STARTED", mutations, None, 0, False, "NONE", evidence, self.git_head, "")
             evidence.append(PhaseEvidence("OFFER_SELECTION", "PASS", False, True, f"offer={offer.offer_id}"))
 
             created = self.vast.create(offer)
@@ -335,6 +339,8 @@ class Qwen3CanaryExecutor:
         if steps != self.policy.max_steps:
             billing_risk = "HIGH" if canary_id is not None else billing_risk
         status = "SUCCESS" if (steps == self.policy.max_steps and billing_verified) else "FAILED"
+        adapter_dir_out = f"canary-artifacts/{self.run_id}/adapter" if canary_id is not None else ""
         return CanaryRunResult(
-            self.run_id, status, mutations, canary_id, steps, billing_verified, billing_risk, evidence
+            self.run_id, status, mutations, canary_id, steps, billing_verified, billing_risk, evidence,
+            self.git_head, adapter_dir_out,
         )

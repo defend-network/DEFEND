@@ -310,6 +310,15 @@ def test_executor_no_offer_does_not_create():
     assert result.provider_mutations == 0
 
 
+def test_executor_binds_git_head_and_run_scoped_adapter():
+    vast = FakeVast()
+    ex = Qwen3CanaryExecutor(policy=CanaryPolicy(), vast=vast, remote=FakeRemote(), clock=lambda: 0.0,
+                             run_id="abc123", git_head="42433eda3cf0ac0ca3fb07f9d9dce275b8259ebf")
+    result = ex.run()
+    assert result.git_head == "42433eda3cf0ac0ca3fb07f9d9dce275b8259ebf"
+    assert result.adapter_dir == "canary-artifacts/abc123/adapter"
+
+
 # ─────────────────────────────────────────────────────────────
 # P18-P19 — paid CLI authorization gate
 # ─────────────────────────────────────────────────────────────
