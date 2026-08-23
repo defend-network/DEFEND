@@ -164,7 +164,9 @@ def main() -> None:
         IdentityRegistry,
         PromptAuthorityComposer,
         PromptBundleRegistry,
-        build_prompt_bundle,
+        ProviderTechnicalRegistry,
+        RunAuthorityResolver,
+        build_prompt_core_bundle,
     )
 
     def _secret_store_loader() -> object:
@@ -182,24 +184,36 @@ def main() -> None:
     prompt_authority = PromptAuthorityComposer()
     prompt_registry = PromptBundleRegistry()
     prompt_registry.activate(
-        build_prompt_bundle(identity_registry.active(), prompt_authority)
+        build_prompt_core_bundle(identity_registry.active(), prompt_authority)
+    )
+    technical_registry = ProviderTechnicalRegistry()
+    authority_resolver = RunAuthorityResolver(
+        identity_registry=identity_registry,
+        prompt_registry=prompt_registry,
+        technical_registry=technical_registry,
     )
 
     def _authority_for(run_id):
-        """Resolve the EXACT pinned identity + prompt bundle for a run."""
+        """Resolve the EXACT pinned identity + provider-neutral prompt core,
+        cross-validate, and compose the system authority. Fail closed."""
         identity_pin = runs_repository.get_run_identity(run_id)
-        bundle_pin = runs_repository.get_run_prompt_bundle(run_id)
-        profile = identity_registry.active()
-        if identity_pin is not None:
-            profile = identity_registry.resolve(
-                identity_pin[0], identity_pin[1], identity_pin[2]
-            )
-        bundle = prompt_registry.active()
-        if bundle_pin is not None:
-            bundle = prompt_registry.resolve(
-                bundle_pin[0], bundle_pin[1], bundle_pin[2]
-            )
-        return bundle.system_authority
+        prompt_pin = runs_repository.get_run_prompt_bundle(run_id)
+        routing = runs_repository.get_run_routing(run_id)
+        route = None
+        provider = DEFAULT_DEEPSEEK_MODEL
+        if routing is not None:
+            provider = routing.selected_model or DEFAULT_DEEPSEEK_MODEL
+            route = (routing.requested_mode, routing.selected_model)
+        if route is None:
+            route = ("AUTO", provider)
+        envelope = authority_resolver.resolve(
+            run_id=str(run_id),
+            identity_pin=identity_pin,
+            prompt_pin=prompt_pin,
+            route=route,
+            provider=provider,
+        )
+        return authority_resolver.compose_authority(envelope)
 
     def _client_for(routing) -> object:
         model = (

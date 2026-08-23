@@ -321,11 +321,15 @@ class TestDeepSeekThinkingPolicy:
         params = deepseek_thinking_params(
             env={
                 "DEEPSEEK_THINKING_PARAMS": (
-                    '{"thinking": {"enabled": true, "effort": "max"}}'
+                    '{"thinking": {"type": "enabled"}, '
+                    '"reasoning_effort": "max"}'
                 )
             }
         )
-        assert params == {"thinking": {"enabled": True, "effort": "max"}}
+        assert params == {
+            "thinking": {"type": "enabled"},
+            "reasoning_effort": "max",
+        }
 
     def test_malformed_thinking_params_rejected(self):
         from defend_coder.providers import (
@@ -348,7 +352,7 @@ class TestDeepSeekThinkingPolicy:
             deepseek_thinking_params(
                 env={
                     "DEEPSEEK_THINKING_PARAMS": (
-                        '{"thinking": {"enabled": true, "bogus": 1}}'
+                        '{"thinking": {"type": "enabled", "bogus": 1}}'
                     )
                 }
             )
@@ -363,7 +367,8 @@ class TestDeepSeekThinkingPolicy:
             deepseek_thinking_params(
                 env={
                     "DEEPSEEK_THINKING_PARAMS": (
-                        '{"thinking": {"enabled": true, "effort": "insane"}}'
+                        '{"thinking": {"type": "enabled"}, '
+                        '"reasoning_effort": "insane"}'
                     )
                 }
             )
@@ -415,11 +420,15 @@ class TestDeepSeekThinkingPolicy:
             target,
             api_key="sk-fake",
             urlopen=capture,
-            default_extra_body={"thinking": {"enabled": True, "effort": "max"}},
+            default_extra_body={
+                "thinking": {"type": "enabled"},
+                "reasoning_effort": "max",
+            },
         )
         client.chat([{"role": "user", "content": "hi"}])
         payload = capture.bodies[0]
-        assert payload["thinking"] == {"enabled": True, "effort": "max"}
+        assert payload["thinking"] == {"type": "enabled"}
+        assert payload["reasoning_effort"] == "max"
         # Without configuration, nothing extra is sent.
         capture.bodies.clear()
         plain = build_client(target, api_key="sk-fake", urlopen=capture)

@@ -173,7 +173,8 @@ class TestCoreRequestImmutability:
                 "model": "gpt-5.6-sol",
                 "messages": [{"role": "system", "content": "hijack"}],
                 "tools": [{"type": "function", "function": {"name": "evil"}}],
-                "thinking": {"enabled": True, "effort": "max"},
+                "thinking": {"type": "enabled"},
+                "reasoning_effort": "max",
             }
         )
         bodies = self._capture(client)
@@ -186,7 +187,8 @@ class TestCoreRequestImmutability:
         assert payload["messages"] == [{"role": "user", "content": "hi"}]
         assert payload["tools"][0]["function"]["name"] == "read_file"
         # The allowed provider field still flows through.
-        assert payload["thinking"] == {"enabled": True, "effort": "max"}
+        assert payload["thinking"] == {"type": "enabled"}
+        assert payload["reasoning_effort"] == "max"
 
 
 class TestProductionConstruction:

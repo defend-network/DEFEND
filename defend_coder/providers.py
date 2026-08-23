@@ -40,10 +40,10 @@ class ConfigurationError(ValueError):
 
 @dataclass(frozen=True)
 class DeepSeekThinkingPolicy:
-    """Typed DeepSeek thinking policy — provider-supported fields ONLY.
+    """Typed DeepSeek thinking policy (current official V4 API shape).
 
-    No arbitrary request-body passthrough. Unknown or unsupported fields are
-    a CONFIGURATION_ERROR.
+    Official request shape: ``"thinking": {"type": "enabled"}`` plus a
+    top-level ``"reasoning_effort": "high"``. No invented parameters.
     """
 
     enabled: bool = False
@@ -59,7 +59,10 @@ class DeepSeekThinkingPolicy:
     def to_request_body(self) -> dict[str, object] | None:
         if not self.enabled:
             return None
-        return {"thinking": {"enabled": True, "effort": self.effort}}
+        return {
+            "thinking": {"type": "enabled"},
+            "reasoning_effort": self.effort,
+        }
 
 
 def parse_deepseek_thinking_policy(
@@ -82,19 +85,29 @@ def parse_deepseek_thinking_policy(
         raise ConfigurationError(
             f"{DEEPSEEK_THINKING_PARAMS_ENV} must be a JSON object"
         )
-    thinking = parsed.get("thinking")
-    if thinking is None:
-        # Only the bare legacy shapes are supported.
-        return DeepSeekThinkingPolicy()
-    if not isinstance(thinking, dict):
-        raise ConfigurationError("'thinking' must be an object")
-    unknown = set(thinking) - {"enabled", "effort"}
-    if unknown:
+    allowed_top = {"thinking", "reasoning_effort"}
+    unknown_top = set(parsed) - allowed_top
+    if unknown_top:
         raise ConfigurationError(
-            f"unsupported DeepSeek thinking fields: {sorted(unknown)}"
+            f"unsupported DeepSeek fields: {sorted(unknown_top)}"
         )
-    enabled = bool(thinking.get("enabled", False))
-    effort = str(thinking.get("effort", "high"))
+    thinking = parsed.get("thinking")
+    enabled = False
+    if thinking is not None:
+        if not isinstance(thinking, dict):
+            raise ConfigurationError("'thinking' must be an object")
+        unknown_thinking = set(thinking) - {"type"}
+        if unknown_thinking:
+            raise ConfigurationError(
+                f"unsupported DeepSeek 'thinking' fields: {sorted(unknown_thinking)}"
+            )
+        thinking_type = thinking.get("type", "disabled")
+        if thinking_type not in ("enabled", "disabled"):
+            raise ConfigurationError(
+                f"unsupported thinking type {thinking_type!r}"
+            )
+        enabled = thinking_type == "enabled"
+    effort = str(parsed.get("reasoning_effort", "high"))
     return DeepSeekThinkingPolicy(enabled=enabled, effort=effort)
 
 

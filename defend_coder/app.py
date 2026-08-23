@@ -35,7 +35,7 @@ from .registry import (
     IdentityRegistry,
     PromptAuthorityComposer,
     PromptBundleRegistry,
-    build_prompt_bundle,
+    build_prompt_core_bundle,
 )
 from .repositories import CoderRepository, WorkspaceRecord
 from .router import (
@@ -316,7 +316,7 @@ def build_coder_app(
     _prompt_registry = prompt_registry or PromptBundleRegistry()
     if _prompt_registry.active_key is None:
         _prompt_registry.activate(
-            build_prompt_bundle(
+            build_prompt_core_bundle(
                 _identity_registry.active(),
                 _prompt_authority,
             )
