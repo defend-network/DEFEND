@@ -901,9 +901,16 @@ class VastClient:
             and launch.disk_gb == coder.disk_gb
             and launch.runtype in (coder.runtype, coder_heavy.runtype)
         )
-        if launch != LaunchSpec.default() and not is_coder_launch:
+        candidate_canary = LaunchSpec.candidate_canary()
+        is_candidate_canary_launch = launch == candidate_canary
+        if (
+            launch != LaunchSpec.default()
+            and not is_coder_launch
+            and not is_candidate_canary_launch
+        ):
             raise ValueError(
-                "only the approved DEFEND or DEFENDcoder Vast launch is supported"
+                "only the approved DEFEND, DEFENDcoder, or DEFEND AI "
+                "candidate-canary Vast launch is supported"
             )
         offer_id = _positive_int(offer.offer_id, "offer ID")
         return {

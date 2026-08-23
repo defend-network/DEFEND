@@ -621,7 +621,8 @@ def test_qlora_rejects_cpu_offload():
 
 
 def _full_readiness():
-    return build_paid_canary_readiness("142b1b8", metadata_compatibility="PASS", production_mutation_guard_configured=True)
+    return build_paid_canary_readiness("142b1b8", metadata_compatibility="PASS", production_mutation_guard_configured=True,
+                                       production_runtime_state=RUNTIME_ABSENT, production_runtime_instance_id=None)
 
 
 def test_readiness_true_only_for_complete_prent_gates():

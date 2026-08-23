@@ -786,6 +786,61 @@ RUNTIME_ABSENT = "ABSENT"
 RUNTIME_UNKNOWN = "UNKNOWN"
 RUNTIME_AMBIGUOUS = "AMBIGUOUS"
 
+#: Provider inventory classification (read-only).
+INVENTORY_NONE_FOUND = "NONE_FOUND"
+INVENTORY_ONE_EXACT_REPLACEMENT = "ONE_EXACT_REPLACEMENT_FOUND"
+INVENTORY_AMBIGUOUS = "AMBIGUOUS"
+INVENTORY_UNKNOWN = "UNKNOWN"
+INVENTORY_MALFORMED = "MALFORMED"
+
+
+@dataclass(frozen=True)
+class InventoryFinding:
+    """One sanitized current-instance observation from a read-only inventory."""
+
+    instance_id: int
+    actual_status: str
+
+
+@dataclass(frozen=True)
+class ProductionRuntimeTruth:
+    """Classified production-runtime truth. ABSENT is a measured result, never a
+    default; UNKNOWN means the provider could not be authoritatively queried."""
+
+    state: str
+    instance_id: int | None
+    inventory_status: str
+    measured_at: str | None
+
+
+def classify_production_runtime(
+    inventory_status: str | None,
+    findings: tuple[InventoryFinding, ...] = (),
+    *,
+    measured_at: str | None = None,
+) -> ProductionRuntimeTruth:
+    """Map a sanitized read-only inventory result to a runtime truth.
+
+    Fail-closed: any inability to measure the provider (exception, malformed,
+    or partial response) becomes UNKNOWN, never ABSENT.
+    """
+    if inventory_status is None or inventory_status not in (
+        INVENTORY_NONE_FOUND,
+        INVENTORY_ONE_EXACT_REPLACEMENT,
+        INVENTORY_AMBIGUOUS,
+    ):
+        return ProductionRuntimeTruth(RUNTIME_UNKNOWN, None, inventory_status or INVENTORY_UNKNOWN, measured_at)
+    if inventory_status == INVENTORY_NONE_FOUND:
+        return ProductionRuntimeTruth(RUNTIME_ABSENT, None, INVENTORY_NONE_FOUND, measured_at)
+    if inventory_status == INVENTORY_AMBIGUOUS:
+        return ProductionRuntimeTruth(RUNTIME_AMBIGUOUS, None, INVENTORY_AMBIGUOUS, measured_at)
+    # ONE_EXACT_REPLACEMENT: exactly one validated finding required.
+    if len(findings) != 1:
+        return ProductionRuntimeTruth(RUNTIME_UNKNOWN, None, INVENTORY_MALFORMED, measured_at)
+    finding = findings[0]
+    state = RUNTIME_PRESENT_RUNNING if finding.actual_status == "running" else RUNTIME_PRESENT_STOPPED
+    return ProductionRuntimeTruth(state, finding.instance_id, INVENTORY_ONE_EXACT_REPLACEMENT, measured_at)
+
 
 def targets_production(*, instance_id=None, operation=None, profile_id=None, purpose=None, role=None) -> bool:
     if operation in ("PROMOTE", "REPLACE"):
@@ -843,6 +898,26 @@ def authorize_candidate_lifecycle(
         if canary_instance_id is None or target_instance_id != canary_instance_id:
             return False, "candidate destroy requires the exact canary instance ID"
     return True, "candidate lifecycle allowed"
+
+
+CANDIDATE_CANARY_LABEL = "defend-ai-qwen3-candidate-canary"
+CANDIDATE_CANARY_PURPOSE = "TRAINING"
+CANDIDATE_CANARY_ROLE = "CANDIDATE_CANARY"
+
+
+def validate_candidate_canary_identity(*, launch_label: str | None, profile_id: str | None, purpose: str | None, role: str | None) -> tuple[bool, str]:
+    """Candidate launch identity must be fully cross-bound: launch label,
+    training profile, TRAINING purpose, and CANDIDATE_CANARY role must all match
+    exactly. Any mixed production/candidate identity is rejected."""
+    if launch_label != CANDIDATE_CANARY_LABEL:
+        return False, "candidate launch label mismatch"
+    if profile_id != CANDIDATE_TRAINING_PROFILE_ID:
+        return False, "candidate profile mismatch"
+    if purpose != CANDIDATE_CANARY_PURPOSE:
+        return False, "candidate purpose mismatch"
+    if role != CANDIDATE_CANARY_ROLE:
+        return False, "candidate role mismatch"
+    return True, "candidate identity valid"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -907,7 +982,9 @@ class PaidCanaryReadiness:
             and self.candidate_base_revision
             and self.adapter_repo
             and self.production_profile_id
+            and self.production_base_repo
             and self.production_base_revision
+            and self.production_adapter_repo
             and self.production_adapter_revision
             # runtime truth must be measured and not UNKNOWN/AMBIGUOUS
             and self.production_runtime_state in (RUNTIME_PRESENT_STOPPED, RUNTIME_PRESENT_RUNNING, RUNTIME_ABSENT)
@@ -929,28 +1006,83 @@ def _canonical_candidate_base() -> tuple[str, str]:
     return profile.base_repo, profile.base_revision
 
 
-def _production_identity() -> tuple[str, str, str, str, str]:
-    from .deployment_profiles import default_profiles
+@dataclass(frozen=True)
+class ProductionIdentity:
+    profile_id: str
+    base_repo: str
+    base_revision: str
+    adapter_repo: str
+    adapter_revision: str
+    tokenizer_repo: str
+    tokenizer_revision: str
 
-    profile = default_profiles().get(PRODUCTION_PROFILE_ID)
+    @property
+    def valid(self) -> bool:
+        return bool(
+            self.profile_id
+            and self.base_repo
+            and self.base_revision
+            and self.adapter_repo
+            and self.adapter_revision
+            and self.tokenizer_repo
+            and self.tokenizer_revision
+        )
+
+
+def resolve_production_identity() -> ProductionIdentity | None:
+    """Fail-closed production identity resolution from the canonical profile.
+
+    Returns None (never a synthesized fallback) if the canonical production
+    profile is missing, malformed, or internally inconsistent.
+    """
+    from .deployment_profiles import ProfilePurpose, ProfileStatus, default_profiles
+
+    try:
+        profiles = default_profiles()
+    except Exception:
+        return None
+    profile = profiles.get(PRODUCTION_PROFILE_ID)
     if profile is None:
-        return (PRODUCTION_PROFILE_ID, "Qwen/Qwen2.5-32B-Instruct", "5ede1c97bbab6ce5cda5812749b4c0bdf79b18dd",
-                "Defend-network/defend-identity-lora-v002", "46ade1686870210ef0ab4603c32fecb0e563330f")
-    return (profile.profile_id, profile.base_repo, profile.base_revision,
-            profile.adapter_repo, profile.adapter_revision)
+        return None
+    if profile.profile_id != PRODUCTION_PROFILE_ID:
+        return None
+    if profile.product_id != "defend-ai":
+        return None
+    if str(profile.purpose) != str(ProfilePurpose.PRODUCTION_INFERENCE):
+        return None
+    if str(profile.status) != str(ProfileStatus.PRODUCTION):
+        return None
+    identity = ProductionIdentity(
+        profile_id=profile.profile_id,
+        base_repo=profile.base_repo or "",
+        base_revision=profile.base_revision or "",
+        adapter_repo=profile.adapter_repo or "",
+        adapter_revision=profile.adapter_revision or "",
+        tokenizer_repo=profile.tokenizer_repo or "",
+        tokenizer_revision=profile.tokenizer_revision or "",
+    )
+    return identity if identity.valid else None
 
 
 def build_paid_canary_readiness(
     clean_branch_head: str,
     metadata_compatibility: str = "PASS",
     production_mutation_guard_configured: bool = True,
-    production_runtime_state: str = RUNTIME_ABSENT,
+    production_runtime_state: str = RUNTIME_UNKNOWN,
     production_runtime_instance_id: int | None = None,
 ) -> PaidCanaryReadiness:
     from .eval_runner_v2 import EVAL_DATASET_SHA, EVALUATOR_VERSION, evaluator_code_sha
 
     candidate_repo, candidate_revision = _canonical_candidate_base()
-    profile_id, base_repo, base_rev, adapter_repo, adapter_rev = _production_identity()
+    identity = resolve_production_identity()
+    if identity is None:
+        profile_id = base_repo = base_rev = adapter_repo = adapter_rev = ""
+    else:
+        profile_id = identity.profile_id
+        base_repo = identity.base_repo
+        base_rev = identity.base_revision
+        adapter_repo = identity.adapter_repo
+        adapter_rev = identity.adapter_revision
     return PaidCanaryReadiness(
         clean_branch_head=clean_branch_head,
         train_dataset_sha="d59b05ee323dc6d8bda8086c2aa3f9589acb8eae883afb173095f53117e1e854",
