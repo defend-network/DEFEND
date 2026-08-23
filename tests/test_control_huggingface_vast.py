@@ -385,7 +385,7 @@ def test_vast_create_accepts_defendcoder_launch_and_rejects_other_launches(
         "args",
         "defendcoder-vllm",
     )
-    with pytest.raises(ValueError, match="approved DEFEND or DEFENDcoder"):
+    with pytest.raises(ValueError, match="approved DEFEND, DEFENDcoder, or DEFEND AI candidate-canary"):
         client.create_instance(offer, rogue)
     legacy = LaunchSpec(
         "vllm/vllm-openai:v0.10.0",

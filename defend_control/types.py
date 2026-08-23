@@ -72,6 +72,18 @@ class LaunchSpec:
             "defendcoder-vllm",
         )
 
+    @classmethod
+    def candidate_canary(cls) -> "LaunchSpec":
+        """DEFEND AI Qwen3 QLoRA training canary — isolated, non-production
+        label. Never confusable with ``defend-vllm`` (production) or
+        ``defendcoder-vllm`` (coder)."""
+        return cls(
+            "pytorch/pytorch:2.7.1-cuda12.8-cudnn9-devel",
+            200,
+            "ssh_proxy",
+            "defend-ai-qwen3-candidate-canary",
+        )
+
 
 @dataclass(frozen=True)
 class ResourceProfile:

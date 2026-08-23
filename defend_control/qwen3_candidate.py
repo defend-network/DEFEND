@@ -59,6 +59,7 @@ V002_RECIPE: dict[str, str | int | float | list[str] | None] = {
 # ─────────────────────────────────────────────────────────────
 
 _VALID_ROLES = {"system", "user", "assistant", "tool"}
+CONVERSION_VERSION = "qwen3-chat-tool-v2"
 
 
 def normalize_row_hash(row: dict) -> str:
@@ -73,49 +74,94 @@ def validate_sft_row(row: dict) -> tuple[bool, str]:
     messages = row.get("messages")
     if not isinstance(messages, list) or not messages:
         return False, "row has no messages list"
-    prev_role = None
+    pending_tool_calls = 0
     for index, message in enumerate(messages):
         if not isinstance(message, dict):
             return False, f"message {index} is not an object"
         role = message.get("role")
         if role not in _VALID_ROLES:
             return False, f"message {index} has invalid role {role!r}"
-        if not isinstance(message.get("content"), str):
+        content = message.get("content")
+        if content is not None and not isinstance(content, str):
             return False, f"message {index} content is not a string"
-        if role == "tool" and prev_role != "assistant":
-            return False, f"message {index} tool without prior assistant message"
-        prev_role = role
+        if role == "assistant":
+            tool_calls = message.get("tool_calls")
+            if tool_calls is not None:
+                if not isinstance(tool_calls, list):
+                    return False, f"message {index} tool_calls is not a list"
+                for call in tool_calls:
+                    if not isinstance(call, dict):
+                        return False, f"message {index} tool_call is not an object"
+                    name = call.get("name")
+                    arguments = call.get("arguments")
+                    if not isinstance(name, str) or not name.strip():
+                        return False, f"message {index} tool_call has missing/invalid name"
+                    if not isinstance(arguments, dict):
+                        return False, f"message {index} tool_call has missing/invalid arguments"
+                    pending_tool_calls += 1
+        elif role == "tool":
+            if pending_tool_calls <= 0:
+                return False, f"message {index} tool result has no prior assistant tool request"
+            pending_tool_calls -= 1
+    if pending_tool_calls != 0:
+        return False, f"row has {pending_tool_calls} unresolved assistant tool calls"
     return True, "valid"
 
 
 def convert_sft_row_to_qwen3(row: dict) -> dict:
     """Faithful transfer to Qwen3-native tool serialization.
 
-    Content and order are preserved verbatim. Only technical role/tool framing
-    is normalized to Qwen3's chat-template tool-call structure.
+    Content, order, and tool trajectory are preserved. Assistant ``tool_calls``
+    are converted to the OpenAI/Qwen function-call structure (name + arguments
+    + stable call id) instead of being dropped; each tool result is linked to
+    its corresponding assistant call via ``tool_call_id`` using the source's
+    order-based linkage. No synthetic tool request is fabricated.
     """
     ok, _reason = validate_sft_row(row)
     if not ok:
         raise ValueError(f"invalid SFT row: {_reason}")
     messages: list[dict[str, Any]] = []
-    tool_seq = 0
+    call_seq = 0
+    pending_ids: list[str] = []
     for message in row["messages"]:
         role = message["role"]
-        content = message["content"]
-        if role == "tool":
-            tool_seq += 1
-            messages.append(
-                {
-                    "role": "tool",
-                    "content": content,
-                    "tool_call_id": f"q3_call_{tool_seq}",
-                }
-            )
+        content = message.get("content")
+        if role == "assistant":
+            out: dict[str, Any] = {"role": "assistant", "content": content}
+            tool_calls = message.get("tool_calls")
+            if isinstance(tool_calls, list) and tool_calls:
+                converted_calls: list[dict[str, Any]] = []
+                for call in tool_calls:
+                    if not isinstance(call, dict):
+                        continue
+                    name = call.get("name")
+                    arguments = call.get("arguments")
+                    if isinstance(arguments, dict):
+                        args_str = json.dumps(arguments, ensure_ascii=False, sort_keys=True)
+                    else:
+                        args_str = arguments or "{}"
+                    call_id = str(call["id"]) if call.get("id") else f"call_{call_seq}"
+                    call_seq += 1
+                    pending_ids.append(call_id)
+                    converted_calls.append(
+                        {
+                            "id": call_id,
+                            "type": "function",
+                            "function": {"name": name, "arguments": args_str},
+                        }
+                    )
+                out["tool_calls"] = converted_calls
+            messages.append(out)
+        elif role == "tool":
+            out = {"role": "tool", "content": content}
+            if pending_ids:
+                out["tool_call_id"] = pending_ids.pop(0)
+            messages.append(out)
         else:
             messages.append({"role": role, "content": content})
     out = dict(row)
     out["messages"] = messages
-    out["format_version"] = "qwen3-chat-tool-v1"
+    out["format_version"] = "qwen3-chat-tool-v2"
     return out
 
 
@@ -134,6 +180,7 @@ def convert_sft_to_qwen3(rows: list[dict]) -> tuple[list[dict], dict]:
         "rows_valid": len(valid),
         "rows_rejected": rejected,
         "dataset_sha256": hashlib.sha256(raw.encode("utf-8")).hexdigest(),
+        "conversion_version": CONVERSION_VERSION,
         "exact_duplicates": len(valid) - len({normalize_row_hash(r) for r in valid}),
     }
 
@@ -208,7 +255,8 @@ def build_training_manifest(*, conversion_summary: dict, code_commit: str) -> di
         "conversion_code_commit": code_commit,
         "training_dataset_sha256": conversion_summary.get("dataset_sha256"),
         "training_rows": conversion_summary.get("rows_valid"),
-        "template_schema_version": "qwen3-chat-tool-v1",
+        "template_schema_version": CONVERSION_VERSION,
+        "conversion_version": conversion_summary.get("conversion_version", CONVERSION_VERSION),
         "validation": {
             "exact_duplicates": conversion_summary.get("exact_duplicates"),
             "eval_exact_leakage": conversion_summary.get("eval_exact_leakage", 0),

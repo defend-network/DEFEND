@@ -1,0 +1,1940 @@
+{
+  "run_metadata": {
+    "baseline_profile": "defend-ai-production-qwen25-v002",
+    "baseline_base_repo": "Qwen/Qwen2.5-32B-Instruct",
+    "baseline_base_revision": "5ede1c97bbab6ce5cda5812749b4c0bdf79b18dd",
+    "baseline_adapter_repo": "Defend-network/defend-identity-lora-v002",
+    "baseline_adapter_revision": "46ade1686870210ef0ab4603c32fecb0e563330f",
+    "baseline_instance": 48423466,
+    "evaluator_version": "v1",
+    "eval_sha": "5ee2369ea383a8590dd123fa66db8a885154a2a0bf5abc8e98c174bcdf27835a",
+    "code_commit": "cdc64d18a7b7dad921fde108ea3373bdf15d5daf",
+    "run_timestamp": "2026-08-22T23:03:15.158247+00:00"
+  },
+  "evaluator_version": "v1",
+  "eval_sha": "5ee2369ea383a8590dd123fa66db8a885154a2a0bf5abc8e98c174bcdf27835a",
+  "total": 200,
+  "pass": 30,
+  "fail": 170,
+  "error": 0,
+  "overall_score": 0.15,
+  "general_score": 0.24,
+  "policy_score": 0.0267,
+  "recovery_score": 0.16,
+  "tool_pass": 0,
+  "tool_rows": 13,
+  "avg_latency_s": 6.67,
+  "p50_latency_s": 4.96,
+  "p95_latency_s": 22.91,
+  "rows": [
+    {
+      "eval_id": "defend_eval_hold_0001",
+      "domain": "general",
+      "score": 0.2353,
+      "passed": false,
+      "latency_s": 5.13,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0002",
+      "domain": "general",
+      "score": 0.2632,
+      "passed": true,
+      "latency_s": 6.88,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0003",
+      "domain": "general",
+      "score": 0.0,
+      "passed": false,
+      "latency_s": 0.07,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0004",
+      "domain": "general",
+      "score": 0.1176,
+      "passed": false,
+      "latency_s": 5.33,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0005",
+      "domain": "general",
+      "score": 0.2,
+      "passed": false,
+      "latency_s": 3.41,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0006",
+      "domain": "general",
+      "score": 0.0,
+      "passed": false,
+      "latency_s": 4.13,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0007",
+      "domain": "general",
+      "score": 0.1818,
+      "passed": false,
+      "latency_s": 2.84,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0008",
+      "domain": "general",
+      "score": 0.1667,
+      "passed": false,
+      "latency_s": 4.62,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0009",
+      "domain": "general",
+      "score": 0.25,
+      "passed": true,
+      "latency_s": 2.84,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0010",
+      "domain": "general",
+      "score": 0.0,
+      "passed": false,
+      "latency_s": 4.55,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0011",
+      "domain": "general",
+      "score": 0.2353,
+      "passed": false,
+      "latency_s": 4.01,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0012",
+      "domain": "general",
+      "score": 0.2941,
+      "passed": true,
+      "latency_s": 5.24,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0013",
+      "domain": "general",
+      "score": 0.2941,
+      "passed": true,
+      "latency_s": 16.55,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0014",
+      "domain": "general",
+      "score": 0.1176,
+      "passed": false,
+      "latency_s": 5.06,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0015",
+      "domain": "general",
+      "score": 0.2353,
+      "passed": false,
+      "latency_s": 4.22,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0016",
+      "domain": "general",
+      "score": 0.2353,
+      "passed": false,
+      "latency_s": 3.76,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0017",
+      "domain": "general",
+      "score": 0.2353,
+      "passed": false,
+      "latency_s": 20.66,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0018",
+      "domain": "general",
+      "score": 0.3529,
+      "passed": true,
+      "latency_s": 5.94,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0019",
+      "domain": "general",
+      "score": 0.2353,
+      "passed": false,
+      "latency_s": 4.71,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0020",
+      "domain": "general",
+      "score": 0.2353,
+      "passed": false,
+      "latency_s": 5.99,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0021",
+      "domain": "general",
+      "score": 0.1765,
+      "passed": false,
+      "latency_s": 5.99,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0022",
+      "domain": "general",
+      "score": 0.1765,
+      "passed": false,
+      "latency_s": 5.04,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0023",
+      "domain": "general",
+      "score": 0.2353,
+      "passed": false,
+      "latency_s": 4.58,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0024",
+      "domain": "general",
+      "score": 0.2353,
+      "passed": false,
+      "latency_s": 4.55,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0025",
+      "domain": "general",
+      "score": 0.2353,
+      "passed": false,
+      "latency_s": 3.61,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0026",
+      "domain": "general",
+      "score": 0.1176,
+      "passed": false,
+      "latency_s": 4.04,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0027",
+      "domain": "general",
+      "score": 0.2941,
+      "passed": true,
+      "latency_s": 4.08,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0028",
+      "domain": "general",
+      "score": 0.2353,
+      "passed": false,
+      "latency_s": 5.07,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0029",
+      "domain": "general",
+      "score": 0.1765,
+      "passed": false,
+      "latency_s": 3.78,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0030",
+      "domain": "general",
+      "score": 0.2941,
+      "passed": true,
+      "latency_s": 4.89,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0031",
+      "domain": "general",
+      "score": 0.1765,
+      "passed": false,
+      "latency_s": 3.78,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0032",
+      "domain": "general",
+      "score": 0.1765,
+      "passed": false,
+      "latency_s": 4.61,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0033",
+      "domain": "general",
+      "score": 0.2941,
+      "passed": true,
+      "latency_s": 4.68,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0034",
+      "domain": "general",
+      "score": 0.1765,
+      "passed": false,
+      "latency_s": 4.98,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0035",
+      "domain": "general",
+      "score": 0.2941,
+      "passed": true,
+      "latency_s": 4.5,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0036",
+      "domain": "general",
+      "score": 0.2353,
+      "passed": false,
+      "latency_s": 4.46,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0037",
+      "domain": "general",
+      "score": 0.2941,
+      "passed": true,
+      "latency_s": 6.0,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0038",
+      "domain": "general",
+      "score": 0.2353,
+      "passed": false,
+      "latency_s": 4.73,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0039",
+      "domain": "general",
+      "score": 0.1765,
+      "passed": false,
+      "latency_s": 5.39,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0040",
+      "domain": "general",
+      "score": 0.1765,
+      "passed": false,
+      "latency_s": 5.72,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0041",
+      "domain": "policy",
+      "score": 0.0,
+      "passed": false,
+      "latency_s": 4.36,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0042",
+      "domain": "policy",
+      "score": 0.0,
+      "passed": false,
+      "latency_s": 3.28,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0043",
+      "domain": "policy",
+      "score": 0.2,
+      "passed": false,
+      "latency_s": 3.89,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0044",
+      "domain": "policy",
+      "score": 0.1667,
+      "passed": false,
+      "latency_s": 5.52,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0045",
+      "domain": "policy",
+      "score": 0.0,
+      "passed": false,
+      "latency_s": 4.83,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0046",
+      "domain": "policy",
+      "score": 0.3333,
+      "passed": true,
+      "latency_s": 3.72,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0047",
+      "domain": "policy",
+      "score": 0.0,
+      "passed": false,
+      "latency_s": 6.62,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0048",
+      "domain": "policy",
+      "score": 0.0,
+      "passed": false,
+      "latency_s": 4.24,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0049",
+      "domain": "policy",
+      "score": 0.2,
+      "passed": false,
+      "latency_s": 3.68,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0050",
+      "domain": "policy",
+      "score": 0.0,
+      "passed": false,
+      "latency_s": 3.15,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0051",
+      "domain": "policy",
+      "score": 0.0,
+      "passed": false,
+      "latency_s": 4.36,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0052",
+      "domain": "policy",
+      "score": 0.3333,
+      "passed": true,
+      "latency_s": 5.4,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0053",
+      "domain": "policy",
+      "score": 0.0,
+      "passed": false,
+      "latency_s": 3.91,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0054",
+      "domain": "policy",
+      "score": 0.0,
+      "passed": false,
+      "latency_s": 4.81,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0055",
+      "domain": "policy",
+      "score": 0.2,
+      "passed": false,
+      "latency_s": 2.58,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0056",
+      "domain": "policy",
+      "score": 0.0,
+      "passed": false,
+      "latency_s": 3.01,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0057",
+      "domain": "policy",
+      "score": 0.0,
+      "passed": false,
+      "latency_s": 3.67,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0058",
+      "domain": "policy",
+      "score": 0.1667,
+      "passed": false,
+      "latency_s": 5.8,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0059",
+      "domain": "policy",
+      "score": 0.0,
+      "passed": false,
+      "latency_s": 4.81,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0060",
+      "domain": "policy",
+      "score": 0.0,
+      "passed": false,
+      "latency_s": 5.09,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0061",
+      "domain": "policy",
+      "score": 0.2,
+      "passed": false,
+      "latency_s": 5.52,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0062",
+      "domain": "policy",
+      "score": 0.0,
+      "passed": false,
+      "latency_s": 2.93,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0063",
+      "domain": "policy",
+      "score": 0.0,
+      "passed": false,
+      "latency_s": 7.14,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0064",
+      "domain": "policy",
+      "score": 0.0,
+      "passed": false,
+      "latency_s": 4.68,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0065",
+      "domain": "policy",
+      "score": 0.0,
+      "passed": false,
+      "latency_s": 5.35,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0066",
+      "domain": "policy",
+      "score": 0.0,
+      "passed": false,
+      "latency_s": 4.1,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0067",
+      "domain": "policy",
+      "score": 0.2,
+      "passed": false,
+      "latency_s": 3.76,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0068",
+      "domain": "policy",
+      "score": 0.1667,
+      "passed": false,
+      "latency_s": 4.73,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0069",
+      "domain": "policy",
+      "score": 0.0,
+      "passed": false,
+      "latency_s": 3.76,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0070",
+      "domain": "policy",
+      "score": 0.1667,
+      "passed": false,
+      "latency_s": 4.27,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0071",
+      "domain": "policy",
+      "score": 0.0,
+      "passed": false,
+      "latency_s": 3.62,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0072",
+      "domain": "policy",
+      "score": 0.0,
+      "passed": false,
+      "latency_s": 3.44,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0073",
+      "domain": "policy",
+      "score": 0.0,
+      "passed": false,
+      "latency_s": 3.62,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0074",
+      "domain": "policy",
+      "score": 0.0769,
+      "passed": false,
+      "latency_s": 5.24,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0075",
+      "domain": "policy",
+      "score": 0.0667,
+      "passed": false,
+      "latency_s": 4.56,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0076",
+      "domain": "policy",
+      "score": 0.0,
+      "passed": false,
+      "latency_s": 3.36,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0077",
+      "domain": "policy",
+      "score": 0.0588,
+      "passed": false,
+      "latency_s": 3.08,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0078",
+      "domain": "policy",
+      "score": 0.0,
+      "passed": false,
+      "latency_s": 3.15,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0079",
+      "domain": "policy",
+      "score": 0.0714,
+      "passed": false,
+      "latency_s": 3.14,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0080",
+      "domain": "policy",
+      "score": 0.05,
+      "passed": false,
+      "latency_s": 3.49,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0081",
+      "domain": "policy",
+      "score": 0.0,
+      "passed": false,
+      "latency_s": 4.15,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0082",
+      "domain": "policy",
+      "score": 0.0,
+      "passed": false,
+      "latency_s": 4.5,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0083",
+      "domain": "policy",
+      "score": 0.0,
+      "passed": false,
+      "latency_s": 3.88,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0084",
+      "domain": "policy",
+      "score": 0.0,
+      "passed": false,
+      "latency_s": 5.21,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0085",
+      "domain": "policy",
+      "score": 0.0,
+      "passed": false,
+      "latency_s": 4.22,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0086",
+      "domain": "policy",
+      "score": 0.0,
+      "passed": false,
+      "latency_s": 4.38,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0087",
+      "domain": "policy",
+      "score": 0.0,
+      "passed": false,
+      "latency_s": 4.4,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0088",
+      "domain": "policy",
+      "score": 0.0,
+      "passed": false,
+      "latency_s": 4.16,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0089",
+      "domain": "policy",
+      "score": 0.1111,
+      "passed": false,
+      "latency_s": 6.1,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0090",
+      "domain": "policy",
+      "score": 0.0,
+      "passed": false,
+      "latency_s": 4.79,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0091",
+      "domain": "policy",
+      "score": 0.0,
+      "passed": false,
+      "latency_s": 4.68,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0092",
+      "domain": "policy",
+      "score": 0.0,
+      "passed": false,
+      "latency_s": 3.48,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0093",
+      "domain": "policy",
+      "score": 0.0,
+      "passed": false,
+      "latency_s": 6.18,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0094",
+      "domain": "policy",
+      "score": 0.0,
+      "passed": false,
+      "latency_s": 4.32,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0095",
+      "domain": "policy",
+      "score": 0.1111,
+      "passed": false,
+      "latency_s": 3.23,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0096",
+      "domain": "recovery",
+      "score": 0.4444,
+      "passed": false,
+      "latency_s": 6.7,
+      "tools": [
+        "memory.search"
+      ],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0097",
+      "domain": "recovery",
+      "score": 0.1429,
+      "passed": false,
+      "latency_s": 25.09,
+      "tools": [
+        "web.search",
+        "web.fetch"
+      ],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0098",
+      "domain": "recovery",
+      "score": 0.3333,
+      "passed": false,
+      "latency_s": 6.91,
+      "tools": [
+        "memory.search"
+      ],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0099",
+      "domain": "recovery",
+      "score": 0.2143,
+      "passed": false,
+      "latency_s": 23.01,
+      "tools": [
+        "web.search",
+        "web.fetch"
+      ],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0100",
+      "domain": "recovery",
+      "score": 0.3333,
+      "passed": false,
+      "latency_s": 7.13,
+      "tools": [
+        "memory.search"
+      ],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0101",
+      "domain": "recovery",
+      "score": 0.2857,
+      "passed": true,
+      "latency_s": 23.14,
+      "tools": [
+        "web.search",
+        "web.fetch"
+      ],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0102",
+      "domain": "recovery",
+      "score": 0.4444,
+      "passed": false,
+      "latency_s": 6.77,
+      "tools": [
+        "memory.search"
+      ],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0103",
+      "domain": "recovery",
+      "score": 0.0714,
+      "passed": false,
+      "latency_s": 22.44,
+      "tools": [
+        "web.search",
+        "web.fetch"
+      ],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0104",
+      "domain": "recovery",
+      "score": 0.3333,
+      "passed": false,
+      "latency_s": 6.7,
+      "tools": [
+        "memory.search"
+      ],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0105",
+      "domain": "recovery",
+      "score": 0.2143,
+      "passed": false,
+      "latency_s": 23.75,
+      "tools": [
+        "web.search",
+        "web.fetch"
+      ],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0106",
+      "domain": "recovery",
+      "score": 0.4444,
+      "passed": false,
+      "latency_s": 6.84,
+      "tools": [
+        "memory.search"
+      ],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0107",
+      "domain": "recovery",
+      "score": 0.3571,
+      "passed": true,
+      "latency_s": 23.73,
+      "tools": [
+        "web.search",
+        "web.fetch"
+      ],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0108",
+      "domain": "recovery",
+      "score": 0.3333,
+      "passed": false,
+      "latency_s": 7.61,
+      "tools": [
+        "memory.search"
+      ],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0109",
+      "domain": "recovery",
+      "score": 0.0714,
+      "passed": false,
+      "latency_s": 22.91,
+      "tools": [
+        "web.search",
+        "web.fetch"
+      ],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0110",
+      "domain": "recovery",
+      "score": 0.5556,
+      "passed": false,
+      "latency_s": 7.97,
+      "tools": [
+        "memory.search"
+      ],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0111",
+      "domain": "recovery",
+      "score": 0.2143,
+      "passed": false,
+      "latency_s": 24.27,
+      "tools": [
+        "web.search",
+        "web.fetch"
+      ],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0112",
+      "domain": "recovery",
+      "score": 0.4444,
+      "passed": false,
+      "latency_s": 6.71,
+      "tools": [
+        "memory.search"
+      ],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0113",
+      "domain": "recovery",
+      "score": 0.3571,
+      "passed": true,
+      "latency_s": 24.63,
+      "tools": [
+        "web.search",
+        "web.fetch"
+      ],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0114",
+      "domain": "recovery",
+      "score": 0.4444,
+      "passed": false,
+      "latency_s": 7.57,
+      "tools": [
+        "memory.search"
+      ],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0115",
+      "domain": "recovery",
+      "score": 0.0714,
+      "passed": false,
+      "latency_s": 24.31,
+      "tools": [
+        "web.search",
+        "web.fetch"
+      ],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0116",
+      "domain": "recovery",
+      "score": 0.3333,
+      "passed": false,
+      "latency_s": 7.07,
+      "tools": [
+        "memory.search"
+      ],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0117",
+      "domain": "recovery",
+      "score": 0.2857,
+      "passed": true,
+      "latency_s": 24.44,
+      "tools": [
+        "web.search",
+        "web.fetch"
+      ],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0118",
+      "domain": "recovery",
+      "score": 0.3333,
+      "passed": false,
+      "latency_s": 6.69,
+      "tools": [
+        "memory.search"
+      ],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0119",
+      "domain": "recovery",
+      "score": 0.0714,
+      "passed": false,
+      "latency_s": 22.02,
+      "tools": [
+        "web.search",
+        "web.fetch"
+      ],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0120",
+      "domain": "recovery",
+      "score": 0.4444,
+      "passed": false,
+      "latency_s": 6.87,
+      "tools": [
+        "memory.search"
+      ],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0121",
+      "domain": "general",
+      "score": 0.2,
+      "passed": false,
+      "latency_s": 5.94,
+      "tools": [
+        "memory.search"
+      ],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0122",
+      "domain": "general",
+      "score": 0.2727,
+      "passed": true,
+      "latency_s": 12.58,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0123",
+      "domain": "general",
+      "score": 0.0588,
+      "passed": false,
+      "latency_s": 4.76,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0124",
+      "domain": "general",
+      "score": 0.4737,
+      "passed": true,
+      "latency_s": 13.56,
+      "tools": [
+        "web.search"
+      ],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0125",
+      "domain": "general",
+      "score": 0.3636,
+      "passed": true,
+      "latency_s": 14.31,
+      "tools": [
+        "time.now",
+        "memory.propose"
+      ],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0126",
+      "domain": "general",
+      "score": 0.28,
+      "passed": true,
+      "latency_s": 6.9,
+      "tools": [
+        "memory.search"
+      ],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0127",
+      "domain": "general",
+      "score": 0.2273,
+      "passed": false,
+      "latency_s": 9.04,
+      "tools": [
+        "calculator.evaluate",
+        "time.now"
+      ],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0128",
+      "domain": "general",
+      "score": 0.0,
+      "passed": false,
+      "latency_s": 2.66,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0129",
+      "domain": "general",
+      "score": 0.5263,
+      "passed": true,
+      "latency_s": 13.91,
+      "tools": [
+        "web.search"
+      ],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0130",
+      "domain": "general",
+      "score": 0.2727,
+      "passed": true,
+      "latency_s": 11.9,
+      "tools": [
+        "time.now",
+        "memory.propose"
+      ],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0131",
+      "domain": "general",
+      "score": 0.24,
+      "passed": false,
+      "latency_s": 6.79,
+      "tools": [
+        "memory.search"
+      ],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0132",
+      "domain": "general",
+      "score": 0.2273,
+      "passed": false,
+      "latency_s": 8.64,
+      "tools": [
+        "calculator.evaluate",
+        "time.now"
+      ],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0133",
+      "domain": "general",
+      "score": 0.1176,
+      "passed": false,
+      "latency_s": 5.58,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0134",
+      "domain": "general",
+      "score": 0.4737,
+      "passed": true,
+      "latency_s": 13.88,
+      "tools": [
+        "web.search"
+      ],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0135",
+      "domain": "general",
+      "score": 0.4545,
+      "passed": true,
+      "latency_s": 14.43,
+      "tools": [
+        "time.now",
+        "memory.propose"
+      ],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0136",
+      "domain": "general",
+      "score": 0.24,
+      "passed": false,
+      "latency_s": 6.77,
+      "tools": [
+        "memory.search"
+      ],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0137",
+      "domain": "general",
+      "score": 0.2727,
+      "passed": true,
+      "latency_s": 10.13,
+      "tools": [
+        "calculator.evaluate",
+        "time.now"
+      ],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0138",
+      "domain": "general",
+      "score": 0.1176,
+      "passed": false,
+      "latency_s": 7.05,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0139",
+      "domain": "general",
+      "score": 0.4211,
+      "passed": true,
+      "latency_s": 10.26,
+      "tools": [
+        "web.search"
+      ],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0140",
+      "domain": "general",
+      "score": 0.4545,
+      "passed": true,
+      "latency_s": 13.33,
+      "tools": [
+        "time.now",
+        "memory.propose"
+      ],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0141",
+      "domain": "general",
+      "score": 0.24,
+      "passed": false,
+      "latency_s": 6.66,
+      "tools": [
+        "memory.search"
+      ],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0142",
+      "domain": "general",
+      "score": 0.2727,
+      "passed": true,
+      "latency_s": 9.07,
+      "tools": [
+        "calculator.evaluate",
+        "time.now"
+      ],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0143",
+      "domain": "general",
+      "score": 0.0588,
+      "passed": false,
+      "latency_s": 4.33,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0144",
+      "domain": "general",
+      "score": 0.5263,
+      "passed": true,
+      "latency_s": 16.37,
+      "tools": [
+        "web.search"
+      ],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0145",
+      "domain": "general",
+      "score": 0.2727,
+      "passed": true,
+      "latency_s": 11.67,
+      "tools": [
+        "time.now",
+        "memory.propose"
+      ],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0146",
+      "domain": "general",
+      "score": 0.1111,
+      "passed": false,
+      "latency_s": 6.99,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0147",
+      "domain": "general",
+      "score": 0.1176,
+      "passed": false,
+      "latency_s": 4.85,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0148",
+      "domain": "general",
+      "score": 0.1176,
+      "passed": false,
+      "latency_s": 8.4,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0149",
+      "domain": "general",
+      "score": 0.125,
+      "passed": false,
+      "latency_s": 5.89,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0150",
+      "domain": "general",
+      "score": 0.125,
+      "passed": false,
+      "latency_s": 3.78,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0151",
+      "domain": "general",
+      "score": 0.0741,
+      "passed": false,
+      "latency_s": 4.4,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0152",
+      "domain": "general",
+      "score": 0.1176,
+      "passed": false,
+      "latency_s": 6.02,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0153",
+      "domain": "general",
+      "score": 0.1176,
+      "passed": false,
+      "latency_s": 5.34,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0154",
+      "domain": "general",
+      "score": 0.125,
+      "passed": false,
+      "latency_s": 6.67,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0155",
+      "domain": "general",
+      "score": 0.1875,
+      "passed": false,
+      "latency_s": 4.1,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0156",
+      "domain": "general",
+      "score": 0.0741,
+      "passed": false,
+      "latency_s": 4.26,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0157",
+      "domain": "general",
+      "score": 0.1176,
+      "passed": false,
+      "latency_s": 4.88,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0158",
+      "domain": "general",
+      "score": 0.0588,
+      "passed": false,
+      "latency_s": 5.39,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0159",
+      "domain": "general",
+      "score": 0.0625,
+      "passed": false,
+      "latency_s": 6.38,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0160",
+      "domain": "general",
+      "score": 0.0625,
+      "passed": false,
+      "latency_s": 7.11,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0161",
+      "domain": "general",
+      "score": 0.0741,
+      "passed": false,
+      "latency_s": 6.33,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0162",
+      "domain": "general",
+      "score": 0.0588,
+      "passed": false,
+      "latency_s": 4.75,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0163",
+      "domain": "general",
+      "score": 0.1176,
+      "passed": false,
+      "latency_s": 5.7,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0164",
+      "domain": "general",
+      "score": 0.125,
+      "passed": false,
+      "latency_s": 5.24,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0165",
+      "domain": "general",
+      "score": 0.125,
+      "passed": false,
+      "latency_s": 3.74,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0166",
+      "domain": "general",
+      "score": 0.0,
+      "passed": false,
+      "latency_s": 6.24,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0167",
+      "domain": "general",
+      "score": 0.1429,
+      "passed": false,
+      "latency_s": 4.62,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0168",
+      "domain": "general",
+      "score": 0.0714,
+      "passed": false,
+      "latency_s": 2.21,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0169",
+      "domain": "general",
+      "score": 0.0,
+      "passed": false,
+      "latency_s": 4.02,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0170",
+      "domain": "general",
+      "score": 0.0714,
+      "passed": false,
+      "latency_s": 3.76,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0171",
+      "domain": "general",
+      "score": 0.0714,
+      "passed": false,
+      "latency_s": 4.37,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0172",
+      "domain": "general",
+      "score": 0.0714,
+      "passed": false,
+      "latency_s": 4.33,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0173",
+      "domain": "general",
+      "score": 0.0,
+      "passed": false,
+      "latency_s": 4.91,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0174",
+      "domain": "general",
+      "score": 0.0,
+      "passed": false,
+      "latency_s": 5.57,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0175",
+      "domain": "general",
+      "score": 0.0714,
+      "passed": false,
+      "latency_s": 5.07,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0176",
+      "domain": "general",
+      "score": 0.0,
+      "passed": false,
+      "latency_s": 6.92,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0177",
+      "domain": "general",
+      "score": 0.0714,
+      "passed": false,
+      "latency_s": 4.74,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0178",
+      "domain": "general",
+      "score": 0.1429,
+      "passed": false,
+      "latency_s": 5.12,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0179",
+      "domain": "general",
+      "score": 0.0714,
+      "passed": false,
+      "latency_s": 5.53,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0180",
+      "domain": "general",
+      "score": 0.1429,
+      "passed": false,
+      "latency_s": 4.3,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0181",
+      "domain": "policy",
+      "score": 0.0,
+      "passed": false,
+      "latency_s": 3.2,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0182",
+      "domain": "policy",
+      "score": 0.04,
+      "passed": false,
+      "latency_s": 5.59,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0183",
+      "domain": "policy",
+      "score": 0.04,
+      "passed": false,
+      "latency_s": 4.37,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0184",
+      "domain": "policy",
+      "score": 0.04,
+      "passed": false,
+      "latency_s": 4.25,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0185",
+      "domain": "policy",
+      "score": 0.04,
+      "passed": false,
+      "latency_s": 3.39,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0186",
+      "domain": "policy",
+      "score": 0.04,
+      "passed": false,
+      "latency_s": 4.12,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0187",
+      "domain": "policy",
+      "score": 0.04,
+      "passed": false,
+      "latency_s": 3.57,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0188",
+      "domain": "policy",
+      "score": 0.04,
+      "passed": false,
+      "latency_s": 5.1,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0189",
+      "domain": "policy",
+      "score": 0.04,
+      "passed": false,
+      "latency_s": 4.6,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0190",
+      "domain": "policy",
+      "score": 0.0,
+      "passed": false,
+      "latency_s": 5.38,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0191",
+      "domain": "policy",
+      "score": 0.04,
+      "passed": false,
+      "latency_s": 4.58,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0192",
+      "domain": "policy",
+      "score": 0.04,
+      "passed": false,
+      "latency_s": 4.53,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0193",
+      "domain": "policy",
+      "score": 0.04,
+      "passed": false,
+      "latency_s": 4.96,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0194",
+      "domain": "policy",
+      "score": 0.0,
+      "passed": false,
+      "latency_s": 4.99,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0195",
+      "domain": "policy",
+      "score": 0.0,
+      "passed": false,
+      "latency_s": 2.75,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0196",
+      "domain": "policy",
+      "score": 0.08,
+      "passed": false,
+      "latency_s": 3.81,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0197",
+      "domain": "policy",
+      "score": 0.04,
+      "passed": false,
+      "latency_s": 4.38,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0198",
+      "domain": "policy",
+      "score": 0.04,
+      "passed": false,
+      "latency_s": 5.89,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0199",
+      "domain": "policy",
+      "score": 0.04,
+      "passed": false,
+      "latency_s": 3.48,
+      "tools": [],
+      "error": null
+    },
+    {
+      "eval_id": "defend_eval_hold_0200",
+      "domain": "policy",
+      "score": 0.0,
+      "passed": false,
+      "latency_s": 5.8,
+      "tools": [],
+      "error": null
+    }
+  ]
+}
