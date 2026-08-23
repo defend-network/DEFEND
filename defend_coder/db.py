@@ -57,6 +57,11 @@ _MIGRATIONS = (
         Path(__file__).with_name("migrations")
         / "0013_tool_ledger_identity.sql",
     ),
+    (
+        14,
+        Path(__file__).with_name("migrations")
+        / "0014_recovery_authority.sql",
+    ),
 )
 
 

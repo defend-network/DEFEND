@@ -23,7 +23,16 @@ from .config import CoderSettings
 from .credentials import CredentialStore
 from .db import CoderDatabase
 from .identity import default_identity_profile
+from .lifecycle import (
+    EnvelopeValidationError,
+    NotResumableError,
+    RecoveryRequiredError,
+    RunConflictError,
+    RunLifecycleError,
+    RunLifecycleService,
+)
 from .preparation import RunPreparationService
+from .tool_ledger import ToolLedgerError
 from .provider_adapters import CoderProviderFactory
 from .providers import (
     NEXT_MODEL,
@@ -112,6 +121,11 @@ class ChatRequest(BaseModel):
 
 class CredentialRequest(BaseModel):
     api_key: str = Field(min_length=1, max_length=4096)
+
+
+class RecoveryRequest(BaseModel):
+    resolution: str = Field(min_length=1, max_length=64)
+    note: str | None = Field(default=None, max_length=2000)
 
 
 def _default_secret_store() -> object:
@@ -380,6 +394,12 @@ def build_coder_app(
     _attempt_store = attempt_store
     _checkpoint_store = checkpoint_store
     _tool_ledger = tool_ledger
+    _lifecycle = RunLifecycleService(
+        runs=runs_repository,
+        preparation=_preparation,
+        tool_ledger=_tool_ledger,
+        runner=runner,
+    )
 
     def _live_targets() -> dict[str, ModelTarget]:
         """Targets keyed by MODEL ID with LIVE credential availability."""
@@ -430,25 +450,17 @@ def build_coder_app(
     ) -> None:
         """Continue the SAME run after an owner escalation choice.
 
-        Persists route change first (done by the caller), transitions to
-        resuming/running, and re-dispatches the worker on the same run_id.
-        The per-run RoutingAgentClient resolves the CURRENT routing before
-        the next generation call, so the approved provider is actually used.
+        Persists route change first (done by the caller), then re-dispatches
+        the worker through the single authoritative lifecycle (reconcile ->
+        recovery-eval -> authority validation -> atomic claim -> dispatch).
         """
         workspace = owned_workspace(account, workspace_id)
         runs_repository.update_run_phase(UUID(run_id), "resuming")
-        runs_repository.update_run_status(
-            UUID(run_id),
-            status="running",
-            error=None,
-            reason="unknown",
+        _lifecycle.start(
+            run_id=UUID(run_id),
+            workspace=workspace,
+            account_id=account.account_id,
         )
-        if runner is not None:
-            runner.start_existing(
-                run_id=UUID(run_id),
-                workspace=workspace,
-                prompt=detail.prompt,
-            )
 
     def _resolve_targets_public() -> dict[str, object]:
         return {
@@ -841,12 +853,18 @@ def build_coder_app(
                 detail=f"run preparation failed: {type(error).__name__}",
             ) from None
 
-        # ONLY NOW start execution on the persisted, complete envelope.
-        runner.start_existing(
-            run_id=prepared.run_id,
-            workspace=workspace,
-            prompt=payload.prompt,
-        )
+        # ONLY NOW start execution through the single authoritative lifecycle
+        # (reconcile -> recovery-eval -> authority validation -> atomic claim
+        # -> dispatch). The prepare_run INSERT already atomically reserved the
+        # workspace's execution authority (partial unique index).
+        try:
+            _lifecycle.start(
+                run_id=prepared.run_id,
+                workspace=workspace,
+                account_id=account.account_id,
+            )
+        except RunLifecycleError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from None
 
         run = runs_repository.get_run(prepared.run_id)
         return {
@@ -901,14 +919,6 @@ def build_coder_app(
         require_csrf(request)
         workspace = owned_workspace(account, workspace_id)
         parsed_run_id = UUID(run_id)
-        run = runs_repository.get_run(parsed_run_id)
-        if run is None or run.workspace_id != workspace.workspace_id:
-            raise HTTPException(status_code=404, detail="run not found")
-        if run.status in ("queued", "running"):
-            raise HTTPException(
-                status_code=409,
-                detail="run is already active",
-            )
         if runner is None:
             raise HTTPException(
                 status_code=503,
@@ -917,31 +927,84 @@ def build_coder_app(
                     "must be started first"
                 ),
             )
-        # Recovery gate: an UNKNOWN_AFTER_INTERRUPTION mutation blocks
-        # automatic progress until the owner acknowledges it.
-        if _tool_ledger is not None:
-            executions = _tool_ledger.list_for_run(parsed_run_id)
-            unknown = [
-                e
-                for e in executions
-                if e.state == "UNKNOWN_AFTER_INTERRUPTION"
-                and e.mutation_class == "mutating"
-            ]
-            if unknown:
-                raise HTTPException(
-                    status_code=409,
-                    detail=(
-                        "recovery required: an interrupted mutation is "
-                        "UNKNOWN_AFTER_INTERRUPTION and will not be "
-                        "automatically repeated"
-                    ),
-                )
-        runner.start_existing(
-            run_id=parsed_run_id,
-            workspace=workspace,
-            prompt=run.prompt,
+        # Single authoritative resume flow: reconcile -> recovery-eval ->
+        # authority validation -> atomic claim -> dispatch. Recovery and
+        # resumability gates are enforced here (fail closed, no worker on
+        # any failure).
+        try:
+            result = _lifecycle.start(
+                run_id=parsed_run_id,
+                workspace=workspace,
+                account_id=account.account_id,
+            )
+        except RecoveryRequiredError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from None
+        except NotResumableError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from None
+        except RunConflictError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from None
+        except EnvelopeValidationError as error:
+            raise HTTPException(status_code=403, detail=str(error)) from None
+        except RunLifecycleError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from None
+        run = runs_repository.get_run(parsed_run_id)
+        return {"run": _run_dict(run), "resumed": result.resumed}
+
+    @app.post(
+        "/v1/workspaces/{workspace_id}/runs/{run_id}/recovery/"
+        "{execution_id}/resolve"
+    )
+    def resolve_recovery(
+        workspace_id: str,
+        run_id: str,
+        execution_id: str,
+        payload: RecoveryRequest,
+        request: Request,
+    ) -> dict[str, object]:
+        account = current_account(request)
+        require_csrf(request)
+        workspace = owned_workspace(account, workspace_id)
+        parsed_run_id = UUID(run_id)
+        run = runs_repository.get_run(parsed_run_id)
+        if run is None or run.workspace_id != workspace.workspace_id:
+            raise HTTPException(status_code=404, detail="run not found")
+        if _tool_ledger is None:
+            raise HTTPException(
+                status_code=503,
+                detail="tool ledger is not connected",
+            )
+        resolution = payload.resolution.strip().upper()
+        executions = _tool_ledger.list_for_run(parsed_run_id)
+        target = next(
+            (e for e in executions if str(e.execution_id) == execution_id),
+            None,
         )
-        return {"run": _run_dict(run), "resumed": True}
+        if target is None:
+            raise HTTPException(status_code=404, detail="execution not found")
+        try:
+            resulting = _tool_ledger.resolve_recovery(
+                run_id=parsed_run_id,
+                execution_id=target.execution_id,
+                tool_call_id=target.tool_call_id,
+                tool_name=target.tool_name,
+                owner_account_id=account.account_id,
+                resolution=resolution,
+                note=payload.note,
+            )
+        except ToolLedgerError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from None
+        if resolution == "ABANDON_RUN":
+            runs_repository.update_run_status(
+                parsed_run_id,
+                status="cancelled",
+                error="abandoned after UNKNOWN_AFTER_INTERRUPTION recovery",
+                reason="user_cancel",
+            )
+        return {
+            "execution_id": execution_id,
+            "resolution": resolution,
+            "resulting_state": resulting,
+        }
 
     @app.get("/v1/workspaces/{workspace_id}/runs/{run_id}/routing")
     def get_run_routing(
@@ -967,6 +1030,7 @@ def build_coder_app(
         request: Request,
     ) -> dict[str, object]:
         account = current_account(request)
+        require_csrf(request)
         _owned_run(account, workspace_id, run_id)
         mode = (payload.requested_mode or "AUTO").strip().upper()
         if mode not in ("AUTO", "DEEPSEEK", "NEXT", "SOL"):
@@ -1041,6 +1105,7 @@ def build_coder_app(
         request: Request,
     ) -> dict[str, object]:
         account = current_account(request)
+        require_csrf(request)
         _require_owner(account)
         detail = _owned_run(account, workspace_id, run_id)
         proposals = runs_repository.list_escalation_proposals(UUID(run_id))
@@ -1147,6 +1212,7 @@ def build_coder_app(
         request: Request,
     ) -> dict[str, object]:
         account = current_account(request)
+        require_csrf(request)
         _require_owner(account)
         detail = _owned_run(account, workspace_id, run_id)
         proposals = runs_repository.list_escalation_proposals(UUID(run_id))

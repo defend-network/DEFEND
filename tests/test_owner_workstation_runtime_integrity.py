@@ -380,6 +380,8 @@ class TestPreparationAndAuthority:
             "deepseek", v1.profile_id, v1.version
         )
         run_v1, envelope_v1 = _prepare(services, workspace)
+        # One active run per workspace: mark run_v1 terminal before run_v2.
+        services.runs.update_run_status(run_v1, status="succeeded")
 
         v2 = build_provider_technical_profile("deepseek", version="2")
         services.store.save_technical(v2)

@@ -8,6 +8,7 @@ import time
 from typing import Any, Callable
 from uuid import UUID, uuid4
 
+from psycopg.errors import UniqueViolation
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
@@ -313,6 +314,36 @@ class RunsRepository:
                     """,
                     (phase, run_id),
                 )
+
+    def claim_active(self, run_id: UUID) -> None:
+        """Atomically claim exclusive workspace execution authority.
+
+        Transitioning the run to 'running' is enforced by the database
+        partial-unique index (one active run per workspace). A concurrent
+        claim (new or resumed) in the same workspace raises RunConflictError.
+        """
+        with self._db.connect() as connection:
+            with connection.cursor() as cursor:
+                try:
+                    cursor.execute(
+                        """
+                        UPDATE coder_runs
+                        SET status = 'running',
+                            phase = CASE
+                                WHEN phase = 'queued' THEN 'waiting_for_model'
+                                ELSE 'resuming'
+                            END,
+                            reason = 'unknown',
+                            error = NULL,
+                            finished_at = NULL
+                        WHERE run_id = %s
+                        """,
+                        (run_id,),
+                    )
+                except UniqueViolation:
+                    raise RunConflictError(
+                        "another run is already active for this workspace"
+                    ) from None
 
     def list_runs_for_workspace(
         self,
@@ -1071,6 +1102,10 @@ class RunRunner:
             raise KeyError(f"run {run_id} is not active on this server")
         event.set()
 
+    def is_active(self, run_id: UUID) -> bool:
+        """Whether a genuinely live worker currently holds this run."""
+        return run_id in self._cancel_events
+
     def start_existing(
         self,
         *,
@@ -1078,11 +1113,13 @@ class RunRunner:
         workspace: WorkspaceRecord,
         prompt: str,
     ) -> None:
-        """Start the worker for an ALREADY-prepared, ALREADY-routed run.
+        """Dispatch the worker for an ALREADY-authorized run.
 
-        Authority is validated BEFORE the run may transition to RUNNING: a
-        persisted execution envelope must exist and its workspace/prompt must
-        match the request. Without a valid envelope, execution cannot begin.
+        The RunLifecycleService performs reconcile -> recovery-eval -> authority
+        validation -> atomic workspace claim -> state transition BEFORE calling
+        this. This method only does a defense-in-depth envelope sanity check and
+        spawns the worker thread. It never reconciles mutations and never
+        transitions run status (both are the lifecycle service's authority).
         """
         if self._envelope_loader is not None:
             envelope = self._envelope_loader(run_id)
@@ -1095,18 +1132,6 @@ class RunRunner:
                 raise RunAuthorityError(
                     f"run {run_id} envelope workspace mismatch"
                 )
-        # Resume/reconstruction boundary: any stale in-flight mutating
-        # execution left by a previous interrupted worker is reconciled to
-        # UNKNOWN_AFTER_INTERRUPTION before this worker may run tools. A
-        # genuinely live worker for the same run never coexists with this call.
-        if self._tool_ledger is not None:
-            recovered = self._tool_ledger.recover_interrupted(run_id)
-            if recovered:
-                self._log(
-                    f"run {run_id}: reconciled {recovered} interrupted "
-                    "mutation(s) to UNKNOWN_AFTER_INTERRUPTION"
-                )
-        self._repository.update_run_status(run_id, status="running")
         cancel_event = threading.Event()
         self._cancel_events[run_id] = cancel_event
         thread = threading.Thread(

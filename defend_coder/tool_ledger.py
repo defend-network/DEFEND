@@ -37,6 +37,15 @@ TOOL_STATE_UNKNOWN = "UNKNOWN_AFTER_INTERRUPTION"
 MUTATION_CLASS_READ_ONLY = "read_only"
 MUTATION_CLASS_MUTATING = "mutating"
 
+RECOVERY_CONFIRMED_APPLIED = "CONFIRMED_APPLIED"
+RECOVERY_CONFIRMED_NOT_APPLIED = "CONFIRMED_NOT_APPLIED"
+RECOVERY_ABANDON_RUN = "ABANDON_RUN"
+RECOVERY_RESOLUTIONS = (
+    RECOVERY_CONFIRMED_APPLIED,
+    RECOVERY_CONFIRMED_NOT_APPLIED,
+    RECOVERY_ABANDON_RUN,
+)
+
 #: Tools whose side effects must never be silently re-executed after restart.
 MUTATING_TOOLS = frozenset(
     {
@@ -265,6 +274,83 @@ class DurableToolLedger:
                     """,
                     (state, result_ref, _now(), execution_id),
                 )
+
+    def resolve_recovery(
+        self,
+        *,
+        run_id: UUID,
+        execution_id: UUID,
+        tool_call_id: str,
+        tool_name: str,
+        owner_account_id: UUID,
+        resolution: str,
+        note: str | None = None,
+    ) -> str:
+        """Persist an explicit owner recovery resolution (additive).
+
+        The historical tool-execution identity is never rewritten; a new
+        immutable ``coder_run_recovery`` row records the resolution, and the
+        execution's state is advanced to the resulting terminal state. The
+        original tool_call_id is never re-executed.
+
+        Returns the resulting execution state.
+        """
+        if resolution not in RECOVERY_RESOLUTIONS:
+            raise ToolLedgerError(f"invalid recovery resolution {resolution!r}")
+        existing = self.for_call(run_id, tool_call_id)
+        if existing is None or str(existing.execution_id) != str(execution_id):
+            raise ToolRecoveryRequiredError(
+                "recovery execution not found for this run"
+            )
+        if existing.state != TOOL_STATE_UNKNOWN:
+            raise ToolRecoveryRequiredError(
+                "execution is not UNKNOWN_AFTER_INTERRUPTION"
+            )
+        if existing.mutation_class != MUTATION_CLASS_MUTATING:
+            raise ToolRecoveryRequiredError("not a mutating execution")
+        if resolution == RECOVERY_ABANDON_RUN:
+            resulting = TOOL_STATE_UNKNOWN
+        elif resolution == RECOVERY_CONFIRMED_APPLIED:
+            resulting = TOOL_STATE_SUCCEEDED
+        else:
+            resulting = TOOL_STATE_FAILED
+        recovery_id = uuid4()
+        with self._db.connect() as connection:
+            with connection.transaction():
+                with connection.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO coder_run_recovery(
+                            recovery_id, run_id, execution_id, tool_call_id,
+                            tool_name, prior_state, mutation_class,
+                            owner_account_id, resolution, note,
+                            resulting_state
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """,
+                        (
+                            recovery_id,
+                            run_id,
+                            execution_id,
+                            tool_call_id,
+                            tool_name,
+                            TOOL_STATE_UNKNOWN,
+                            existing.mutation_class,
+                            owner_account_id,
+                            resolution,
+                            (note or "")[:2000] or None,
+                            resulting,
+                        ),
+                    )
+                    cur.execute(
+                        """
+                        UPDATE coder_tool_executions
+                        SET state = %s, finished_at = %s
+                        WHERE execution_id = %s
+                        """,
+                        (resulting, _now(), execution_id),
+                    )
+        return resulting
 
     def for_call(self, run_id: UUID, tool_call_id: str) -> ToolExecution | None:
         with self._db.connect() as connection:
