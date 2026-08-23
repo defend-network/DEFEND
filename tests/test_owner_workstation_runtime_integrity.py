@@ -536,6 +536,46 @@ class TestToolLedgerRestartSafety:
 
 
 class TestAttemptCheckpointAndContext:
+    def test_checkpoint_and_ledger_list_apis(self, db: CoderDatabase):
+        services = _services(db)
+        workspace = _workspace_record(db)
+        run_id, envelope = _prepare(services, workspace)
+
+        identity = (
+            envelope.identity_profile_id,
+            envelope.identity_version,
+            envelope.identity_hash,
+        )
+        prompt_core = (
+            envelope.prompt_core_id,
+            envelope.prompt_core_version,
+            envelope.prompt_core_hash,
+        )
+        technical = (
+            envelope.technical_profile_id,
+            envelope.technical_profile_version,
+            envelope.technical_profile_hash,
+        )
+        services.checkpoints.write(
+            run_id=run_id, revision=2, objective="obj",
+            identity=identity, prompt_core=prompt_core,
+            provider=envelope.provider, model=envelope.model,
+            technical=technical, completed_work=("write_file: a.txt",),
+        )
+        e1 = services.ledger.begin(
+            run_id=run_id, tool_call_id="fc_1", tool_name="write_file",
+            argument_hash="h1", mutation_class="mutating",
+        )
+        services.ledger.finish(e1, state=TOOL_STATE_SUCCEEDED)
+
+        checkpoints = services.checkpoints.list(run_id)
+        assert [c.revision for c in checkpoints] == [1, 2]
+        assert any("write_file: a.txt" in c.completed_work for c in checkpoints)
+
+        executions = services.ledger.list_for_run(run_id)
+        assert [e.tool_call_id for e in executions] == ["fc_1"]
+        assert executions[0].state == TOOL_STATE_SUCCEEDED
+
     def test_attempt_and_checkpoint_revision_persist_across_restart(
         self, db: CoderDatabase
     ):

@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 import os
 from pathlib import Path
 import secrets
+import subprocess
 import threading
 from typing import Callable
 from uuid import UUID
@@ -222,6 +223,49 @@ def _message_dict(message: object) -> dict[str, object]:
     return result
 
 
+def _git_snapshot(root: Path) -> dict[str, object]:
+    """Read-only git status + bounded diff from the workspace root.
+
+    Server/git truth is authoritative; the UI never fabricates changed files.
+    """
+    if not (root / ".git").exists():
+        return {"is_repo": False, "status": "", "diff": "", "dirty": False}
+    try:
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=30,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return {"is_repo": True, "status": "", "diff": "", "error": "git status failed"}
+    if status.returncode != 0:
+        return {"is_repo": True, "status": "", "diff": "", "error": "not a git work tree"}
+    short = status.stdout
+    try:
+        diff = subprocess.run(
+            ["git", "diff"],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=30,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        diff_text = ""
+    else:
+        diff_text = diff.stdout[:64 * 1024]
+    return {
+        "is_repo": True,
+        "status": short,
+        "diff": diff_text,
+        "dirty": bool(short.strip()),
+        "diff_truncated": len(diff.stdout) > 64 * 1024 if diff_text else False,
+    }
+
+
 def build_coder_app(
     *,
     settings: CoderSettings,
@@ -245,6 +289,9 @@ def build_coder_app(
     provider_factory: object | None = None,
     technical_registry: object | None = None,
     preparation: object | None = None,
+    attempt_store: object | None = None,
+    checkpoint_store: object | None = None,
+    tool_ledger: object | None = None,
 ) -> FastAPI:
     idle_timeout_seconds = (
         settings.idle_timeout_seconds
@@ -330,6 +377,9 @@ def build_coder_app(
     _provider_factory = provider_factory or CoderProviderFactory(_credentials)
     _technical_registry = technical_registry or ProviderTechnicalRegistry()
     _preparation = preparation or RunPreparationService(db)
+    _attempt_store = attempt_store
+    _checkpoint_store = checkpoint_store
+    _tool_ledger = tool_ledger
 
     def _live_targets() -> dict[str, ModelTarget]:
         """Targets keyed by MODEL ID with LIVE credential availability."""
@@ -1202,6 +1252,182 @@ def build_coder_app(
                 for message in detail.messages
             ],
         }
+
+    @app.get("/v1/workspaces/{workspace_id}/runs/{run_id}/attempts")
+    def run_attempts(workspace_id: str, run_id: str, request: Request):
+        account = current_account(request)
+        owned_run(account, workspace_id, run_id)
+        if _attempt_store is None:
+            return {"attempts": []}
+        attempts = _attempt_store.list(UUID(run_id))
+        return {
+            "attempts": [
+                {
+                    "attempt_id": str(a.attempt_id),
+                    "checkpoint_revision": a.checkpoint_revision,
+                    "summary": a.summary,
+                    "failure_class": a.failure_class,
+                    "relevant_files": list(a.relevant_files),
+                    "test_summary": a.test_summary,
+                    "tool_refs": list(a.tool_refs),
+                    "state": a.state,
+                }
+                for a in attempts
+            ]
+        }
+
+    @app.get("/v1/workspaces/{workspace_id}/runs/{run_id}/checkpoints")
+    def run_checkpoints(workspace_id: str, run_id: str, request: Request):
+        account = current_account(request)
+        owned_run(account, workspace_id, run_id)
+        if _checkpoint_store is None:
+            return {"checkpoints": []}
+        checkpoints = _checkpoint_store.list(UUID(run_id))
+        return {
+            "checkpoints": [
+                {
+                    "checkpoint_id": str(c.checkpoint_id),
+                    "revision": c.revision,
+                    "objective": c.objective,
+                    "current_task": c.current_task,
+                    "completed_work": list(c.completed_work),
+                    "current_failure": c.current_failure,
+                    "relevant_files": list(c.relevant_files),
+                    "latest_tests": list(c.latest_tests),
+                    "provider": c.provider,
+                    "model": c.model,
+                    "identity_version": c.identity_version,
+                    "prompt_core_version": c.prompt_core_version,
+                    "technical_profile_version": c.technical_profile_version,
+                }
+                for c in checkpoints
+            ]
+        }
+
+    @app.get("/v1/workspaces/{workspace_id}/runs/{run_id}/tool-executions")
+    def run_tool_executions(workspace_id: str, run_id: str, request: Request):
+        account = current_account(request)
+        owned_run(account, workspace_id, run_id)
+        if _tool_ledger is None:
+            return {"tool_executions": []}
+        executions = _tool_ledger.list_for_run(UUID(run_id))
+        return {
+            "tool_executions": [
+                {
+                    "execution_id": str(e.execution_id),
+                    "tool_call_id": e.tool_call_id,
+                    "tool_name": e.tool_name,
+                    "argument_hash": e.argument_hash,
+                    "mutation_class": e.mutation_class,
+                    "state": e.state,
+                    "result_ref": e.result_ref,
+                    "started_at": (
+                        e.started_at.isoformat()
+                        if e.started_at is not None
+                        else None
+                    ),
+                    "finished_at": (
+                        e.finished_at.isoformat()
+                        if e.finished_at is not None
+                        else None
+                    ),
+                }
+                for e in executions
+            ]
+        }
+
+    @app.get("/v1/workspaces/{workspace_id}/runs/{run_id}/telemetry")
+    def run_telemetry(workspace_id: str, run_id: str, request: Request):
+        account = current_account(request)
+        owned_run(account, workspace_id, run_id)
+        calls = runs_repository.model_calls_for_run(UUID(run_id))
+        aggregated = runs_repository.aggregate_model_calls(UUID(run_id))
+        return {
+            "aggregate": aggregated,
+            "model_calls": [
+                {
+                    "step": c.step,
+                    "phase": c.phase,
+                    "input_tokens": c.input_tokens,
+                    "output_tokens": c.output_tokens,
+                    "total_tokens": c.total_tokens,
+                    "finish_reason": c.finish_reason,
+                    "tool_calls_requested": c.tool_calls_requested,
+                    "request_roundtrip_seconds": c.request_roundtrip_seconds,
+                    "tokens_per_second": c.tokens_per_second,
+                }
+                for c in calls
+            ],
+        }
+
+    @app.get("/v1/workspaces/{workspace_id}/files/content")
+    def file_content(
+        workspace_id: str,
+        request: Request,
+        path: str = ".",
+    ) -> dict[str, object]:
+        account = current_account(request)
+        workspace = owned_workspace(account, workspace_id)
+        try:
+            target = workspace_service.resolve_owned_path(
+                account.account_id,
+                workspace.workspace_id,
+                path,
+            )
+        except WorkspaceAccessError as error:
+            raise HTTPException(
+                status_code=400,
+                detail=str(error),
+            ) from None
+
+        if not target.is_file():
+            raise HTTPException(
+                status_code=400,
+                detail="path is not a file",
+            )
+        if target.stat().st_size > 256 * 1024:
+            raise HTTPException(
+                status_code=413,
+                detail="file too large to display",
+            )
+        try:
+            data = target.read_bytes()
+        except OSError as error:
+            raise HTTPException(
+                status_code=500,
+                detail="could not read file",
+            ) from error
+        if b"\x00" in data[:8192]:
+            return {
+                "path": str(path),
+                "binary": True,
+                "content": None,
+                "size": len(data),
+            }
+        try:
+            content = data.decode("utf-8")
+        except UnicodeDecodeError:
+            return {
+                "path": str(path),
+                "binary": True,
+                "content": None,
+                "size": len(data),
+            }
+        return {
+            "path": str(path),
+            "binary": False,
+            "content": content,
+            "size": len(data),
+        }
+
+    @app.get("/v1/workspaces/{workspace_id}/git/status")
+    def git_status(workspace_id: str, request: Request) -> dict[str, object]:
+        account = current_account(request)
+        workspace = owned_workspace(account, workspace_id)
+        root = workspace_service.resolve_owned_path(
+            account.account_id, workspace.workspace_id, "."
+        )
+        return _git_snapshot(root)
 
     @app.get("/v1/workspaces/{workspace_id}/files")
     def list_files(

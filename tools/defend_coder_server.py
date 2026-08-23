@@ -333,6 +333,9 @@ def main() -> None:
         prompt_authority=prompt_authority,
         technical_registry=technical_registry,
         preparation=preparation,
+        attempt_store=attempt_store,
+        checkpoint_store=checkpoint_store,
+        tool_ledger=run_ledger,
     )
 
     uvicorn.run(

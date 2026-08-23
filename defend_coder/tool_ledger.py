@@ -282,6 +282,28 @@ class DurableToolLedger:
                 row = cur.fetchone()
         if row is None:
             return None
+        return self._row_to_execution(row)
+
+    def list_for_run(self, run_id: UUID) -> tuple[ToolExecution, ...]:
+        """All tool executions for a run (oldest first)."""
+        with self._db.connect() as connection:
+            with connection.cursor(row_factory=dict_row) as cur:
+                cur.execute(
+                    """
+                    SELECT execution_id, run_id, tool_call_id, tool_name,
+                           argument_hash, mutation_class, state, result_ref,
+                           started_at, finished_at
+                    FROM coder_tool_executions
+                    WHERE run_id = %s
+                    ORDER BY started_at ASC NULLS LAST
+                    """,
+                    (run_id,),
+                )
+                rows = cur.fetchall()
+        return tuple(self._row_to_execution(row) for row in rows)
+
+    @staticmethod
+    def _row_to_execution(row: dict[str, Any]) -> ToolExecution:
         return ToolExecution(
             execution_id=row["execution_id"],
             run_id=row["run_id"],

@@ -181,6 +181,21 @@ class RunCheckpointStore:
                 row = cur.fetchone()
         return self._row_to_record(row) if row else None
 
+    def list(self, run_id: UUID) -> tuple[CheckpointRecord, ...]:
+        """All checkpoint revisions for a run (oldest first)."""
+        with self._db.connect() as connection:
+            with connection.cursor(row_factory=dict_row) as cur:
+                cur.execute(
+                    """
+                    SELECT * FROM coder_run_checkpoints
+                    WHERE run_id = %s
+                    ORDER BY revision ASC
+                    """,
+                    (run_id,),
+                )
+                rows = cur.fetchall()
+        return tuple(self._row_to_record(row) for row in rows)
+
     def revision(self, run_id: UUID, revision: int) -> CheckpointRecord | None:
         with self._db.connect() as connection:
             with connection.cursor(row_factory=dict_row) as cur:
