@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { AdminSession, clearAdminSession, isOwner, loadAdminSession, saveAdminSession } from "@/lib/adminAuth";
+import { AdminSession, AdminRole, clearAdminSession, isOwner, loadAdminSession, saveAdminSession } from "@/lib/adminAuth";
 import { marketsOwnerLogin, marketsOwnerLogout } from "@/lib/marketsOwnerApi";
 
 function OwnerLoginForm({ onSuccess }: { onSuccess: (s: AdminSession) => void }) {
@@ -19,7 +19,7 @@ function OwnerLoginForm({ onSuccess }: { onSuccess: (s: AdminSession) => void })
       const now = Date.now();
       const session: AdminSession = {
         username: data.username,
-        role: data.role,
+        role: data.role as AdminRole,
         token: data.token,
         loggedInAt: new Date(now).toISOString(),
         expiresAt: new Date(now + data.expires_in * 1000).toISOString(),

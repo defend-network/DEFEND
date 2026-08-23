@@ -70,6 +70,31 @@ export function fetchOwnerLiveTT(): Promise<{ events: unknown[] }> {
   return ownerJson<{ events: unknown[] }>("/api/markets/owner/live-tt");
 }
 
+export type OwnerBoardQuery = {
+  state?: string;
+  actionability?: string;
+  matched_only?: boolean;
+  sort?: string;
+  limit?: number;
+};
+
+export function fetchOwnerBoard(query: OwnerBoardQuery = {}): Promise<{ events: unknown[]; count: number; total: number }> {
+  const params = new URLSearchParams();
+  if (query.state) params.set("state", query.state);
+  if (query.actionability) params.set("actionability", query.actionability);
+  if (query.matched_only) params.set("matched_only", "true");
+  if (query.sort) params.set("sort", query.sort);
+  if (query.limit) params.set("limit", String(query.limit));
+  const qs = params.toString();
+  return ownerJson<{ events: unknown[]; count: number; total: number }>(
+    `/api/markets/owner/live-tt${qs ? `?${qs}` : ""}`
+  );
+}
+
+export function fetchOwnerEventDetail(canonicalEventId: string): Promise<Record<string, unknown>> {
+  return ownerJson<Record<string, unknown>>(`/api/markets/owner/events/${encodeURIComponent(canonicalEventId)}`);
+}
+
 export function fetchOwnerDataHealth(): Promise<Record<string, unknown>> {
   return ownerJson<Record<string, unknown>>("/api/markets/owner/data-health");
 }

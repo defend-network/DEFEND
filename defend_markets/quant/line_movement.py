@@ -176,35 +176,72 @@ def synchronized_snapshot(
     max_skew_seconds: float = 120.0,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    """P7: synchronized cross-book snapshot with explicit freshness/skew.
+    """P1: synchronized cross-book snapshot with an ENFORCED skew contract.
 
-    Selects the latest quote per book within a freshness window and rejects
-    books whose observation skew exceeds ``max_skew_seconds``. Hard Rock is
-    always the owner-facing reference book when valid.
+    Hard Rock is the reference timestamp. Each comparison book participates only
+    if its quote is fresh AND within ``max_skew_seconds`` of the Hard Rock
+    reference observation. Exclusion reasons are explicit (STALE,
+    SKEW_EXCEEDED, MISSING_TIMESTAMP, NO_REFERENCE). A third unrelated stale
+    book never invalidates an otherwise-valid Hard Rock pair.
     """
     now = now or datetime.now(timezone.utc)
-    fresh_books: dict[str, dict[str, Any]] = {}
-    skews: list[float] = []
-    timestamps: list[datetime] = []
+
+    def _latest(book: str) -> dict[str, Any] | None:
+        quotes = quotes_by_book.get(book) or []
+        if not quotes:
+            return None
+        return max(quotes, key=lambda q: _parse(q.get("observed_at")) or datetime.min.replace(tzinfo=timezone.utc))
+
+    # 1. Hard Rock reference.
+    reference = _latest(REFERENCE_SPORTSBOOK) or _latest(REFERENCE_PROVIDER)
+    reference_t = _parse(reference.get("observed_at")) if reference else None
+    reference_age = (now - reference_t).total_seconds() if reference_t is not None else None
+    reference_fresh = reference_t is not None and reference_age is not None and reference_age <= max_age_seconds
+
+    included_books: dict[str, dict[str, Any]] = {}
+    excluded_books: dict[str, str] = {}
+
+    if not reference_fresh:
+        # no valid Hard Rock reference -> no Hard-Rock-based consensus.
+        for book in quotes_by_book:
+            if not quotes_by_book.get(book):
+                continue
+            excluded_books[book] = "NO_REFERENCE"
+        return {
+            "books": {},
+            "included_books": [],
+            "excluded_books": excluded_books,
+            "observed_skew_seconds": None,
+            "reference_book": REFERENCE_SPORTSBOOK,
+            "reference_present": False,
+        }
+
+    included_books[REFERENCE_SPORTSBOOK] = {**reference, "age_seconds": round(reference_age, 3)}
     for book, quotes in quotes_by_book.items():
+        if book in (REFERENCE_SPORTSBOOK, REFERENCE_PROVIDER):
+            continue
         if not quotes:
             continue
-        latest = max(quotes, key=lambda q: _parse(q.get("observed_at")) or datetime.min.replace(tzinfo=timezone.utc))
+        latest = _latest(book)
         t = _parse(latest.get("observed_at"))
         if t is None:
+            excluded_books[book] = "MISSING_TIMESTAMP"
             continue
         age = (now - t).total_seconds()
         if age > max_age_seconds:
+            excluded_books[book] = "STALE"
             continue
-        fresh_books[book] = {**latest, "age_seconds": round(age, 3)}
-        timestamps.append(t)
-    if len(timestamps) >= 2:
-        spread = (max(timestamps) - min(timestamps)).total_seconds()
-        skews = [(t - min(timestamps)).total_seconds() for t in timestamps]
+        skew = abs((t - reference_t).total_seconds())
+        if skew > max_skew_seconds:
+            excluded_books[book] = "SKEW_EXCEEDED"
+            continue
+        included_books[book] = {**latest, "age_seconds": round(age, 3), "skew_seconds": round(skew, 3)}
+
     return {
-        "books": fresh_books,
-        "observed_skew_seconds": round(max(skews), 3) if skews else None,
-        "fresh": len(fresh_books) == len([b for b in quotes_by_book if quotes_by_book[b]]),
+        "books": included_books,
+        "included_books": sorted(included_books.keys()),
+        "excluded_books": excluded_books,
+        "observed_skew_seconds": round(max((q.get("skew_seconds", 0.0) for q in included_books.values() if "skew_seconds" in q), default=None), 3) if any("skew_seconds" in q for q in included_books.values()) else None,
         "reference_book": REFERENCE_SPORTSBOOK,
-        "reference_present": (REFERENCE_SPORTSBOOK in fresh_books) or (REFERENCE_PROVIDER in fresh_books),
+        "reference_present": True,
     }

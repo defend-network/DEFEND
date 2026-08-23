@@ -2381,6 +2381,32 @@ class PostgresQuantStore(QuantStore):
                 )
             return out
 
+    def list_bet365_observations(self, limit=20000):
+        with self._database.connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT observation_id, canonical_event_id, provider_event_id, bookmaker, market, side, "
+                "participant_key, price, observed_at FROM tt_market_observations "
+                "WHERE bookmaker = 'Bet365' AND market = 'match_winner' "
+                "ORDER BY observed_at DESC LIMIT %s",
+                (limit,),
+            )
+            out = []
+            for row in cursor.fetchall():
+                out.append(
+                    {
+                        "observation_id": row[0],
+                        "canonical_event_id": str(row[1] or ""),
+                        "provider_event_id": str(row[2] or ""),
+                        "bookmaker": str(row[3] or ""),
+                        "market": str(row[4] or ""),
+                        "selection_side": ("PARTICIPANT_A" if str(row[5]) == "A" else "PARTICIPANT_B" if str(row[5]) == "B" else str(row[5])),
+                        "selection": str(row[6] or ""),
+                        "decimal_odds": row[7],
+                        "observed_at": row[8],
+                    }
+                )
+            return out
+
 
 @dataclass
 class InMemoryQuantStore(QuantStore):
@@ -2433,6 +2459,7 @@ class InMemoryQuantStore(QuantStore):
     provider_event_mappings: dict[tuple[str, str], dict[str, Any]] = field(default_factory=dict)
     backfill_checkpoints: dict[tuple[str, str], dict[str, Any]] = field(default_factory=dict)
     _canonical_candidates: list[dict[str, Any]] = field(default_factory=list)
+    _bet365_observations: list[dict[str, Any]] = field(default_factory=list)
     _next_ladder_snapshot: int = 1
     _next_result_request: int = 1
     _next_governance: int = 1
@@ -3253,6 +3280,9 @@ class InMemoryQuantStore(QuantStore):
 
     def list_canonical_event_candidates(self, limit=5000):
         return list(self._canonical_candidates)[:limit]
+
+    def list_bet365_observations(self, limit=20000):
+        return list(self._bet365_observations)[:limit]
 
     def insert_arb_opportunity(self, opp):
         if opp["fingerprint"] in self.arb_opportunities:

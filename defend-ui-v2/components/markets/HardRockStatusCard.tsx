@@ -49,8 +49,17 @@ export function HardRockStatusCard() {
     };
   }, []);
 
-  if (error) return null;
-  if (!data) return null;
+  if (!data) {
+    if (error) {
+      return (
+        <section className="dm-panel hardrock-card">
+          <span className="dm-eyebrow">Hard Rock Bet (FL) via Owls Insight</span>
+          <p className="markets-note">Provider status unavailable (owner API unreachable).</p>
+        </section>
+      );
+    }
+    return null;
+  }
 
   const hr = data.hardrock_owls;
 

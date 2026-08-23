@@ -1,10 +1,10 @@
 import { MarketsShell } from "@/components/markets/MarketsShell";
-import { DataHealthPanel } from "@/components/markets/DataHealthPanel";
+import { OwnerDataHealth } from "@/components/markets/OwnerDataHealth";
 
 export default function MarketsDataHealthPage() {
   return (
     <MarketsShell>
-      <DataHealthPanel />
+      <OwnerDataHealth />
     </MarketsShell>
   );
 }

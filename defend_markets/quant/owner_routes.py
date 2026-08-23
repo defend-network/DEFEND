@@ -1,8 +1,10 @@
-"""M4.8.1 owner-facing Markets read API.
+"""M4.8.2 owner-facing Markets read API.
 
 Read-only owner workstation endpoints. Every endpoint returns real persisted
 state with explicit unavailable/unknown states; no fabricated rows. Gated by
-``require_owner`` (reused shared admin auth). No real-money actions, no secrets.
+``require_owner`` (reused shared admin auth). Routes invoke public orchestrator
+methods (live_tt_board / event_detail / markets_health_snapshot / arbitrage_status
+/ scheduler_status), never store internals (P16). No real-money actions, no secrets.
 """
 
 from __future__ import annotations
@@ -48,19 +50,24 @@ def build_owner_router(orchestrator: MarketsIntelligenceOrchestrator) -> APIRout
         return orchestrator.markets_health_snapshot()
 
     @router.get("/live-tt")
-    async def live_tt(_principal: AdminPrincipal = Depends(require_owner)) -> dict:
+    async def live_tt(
+        state: str | None = None,
+        actionability: str | None = None,
+        matched_only: bool = False,
+        sort: str = "default",
+        limit: int = 200,
+        _principal: AdminPrincipal = Depends(require_owner),
+    ) -> dict:
         _require_owner(_principal)
-        quotes = orchestrator._store.list_hardrock_quotes(limit=10000) if hasattr(orchestrator._store, "list_hardrock_quotes") else []
-        events: dict[str, dict] = {}
-        for q in quotes:
-            events.setdefault(q["canonical_event_id"], {"canonical_event_id": q["canonical_event_id"], "sides": {}})
-            events[q["canonical_event_id"]]["sides"][q["selection_side"]] = {
-                "american_odds": q.get("american_odds"),
-                "decimal_odds": str(q.get("decimal_odds")),
-                "implied_probability": str(q.get("implied_probability")) if q.get("implied_probability") is not None else None,
-                "observed_at": q.get("observed_at"),
-            }
-        return {"events": list(events.values())}
+        bounded = max(1, min(int(limit), 500))
+        return orchestrator.live_tt_board(
+            state=state, actionability=actionability, matched_only=matched_only, sort=sort, limit=bounded
+        )
+
+    @router.get("/events/{canonical_event_id}")
+    async def event_detail(canonical_event_id: str, _principal: AdminPrincipal = Depends(require_owner)) -> dict:
+        _require_owner(_principal)
+        return orchestrator.event_detail(canonical_event_id)
 
     @router.get("/data-health")
     async def data_health(_principal: AdminPrincipal = Depends(require_owner)) -> dict:

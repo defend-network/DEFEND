@@ -2636,3 +2636,37 @@ body:before {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   gap: 14px; margin-top: 14px;
 }
+
+/* M4.8.2 owner decision board + detail */
+.board-controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.board-controls select {
+  background: var(--panel, #141824); color: var(--fg, #e8ecf5);
+  border: 1px solid var(--border, #2a2f3f); border-radius: 6px; padding: 4px 8px; font-size: 0.8rem;
+}
+.tt-board-table { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
+.tt-board-row {
+  display: grid; grid-template-columns: 2fr 1.4fr 1.2fr 0.9fr 1fr 0.9fr 1.1fr;
+  gap: 10px; align-items: center; padding: 10px 12px; border-radius: 8px;
+  background: var(--panel, #141824); border: 1px solid var(--border, #2a2f3f);
+  text-decoration: none; color: var(--fg, #e8ecf5);
+}
+.tt-board-row:hover { border-color: var(--accent, #7aa2ff); }
+.tt-board-head { background: transparent; border: none; font-size: 0.72rem; color: var(--muted, #8b93a7); }
+.tt-board-players { display: block; font-weight: 600; }
+.tt-board-sub { display: block; font-size: 0.72rem; color: var(--muted, #8b93a7); }
+.tt-board-odds { display: block; font-weight: 600; font-variant-numeric: tabular-nums; }
+.tt-board-edge { color: var(--green, #3ddc84); font-weight: 600; }
+.tt-board-edge.neg { color: var(--red, #ff5c5c); }
+.dm-empty { padding: 32px; text-align: center; }
+.detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; margin-top: 12px; }
+.provider-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-top: 12px; }
+.provider-card h3 { margin: 8px 0 4px; }
+.history-list { display: flex; flex-direction: column; gap: 4px; margin-top: 10px; }
+.history-row {
+  display: grid; grid-template-columns: 1.2fr 1fr 1fr 1fr 1.6fr; gap: 8px;
+  padding: 6px 8px; border-bottom: 1px solid var(--border, #2a2f3f); font-size: 0.8rem;
+}
+@media (max-width: 860px) {
+  .tt-board-row { grid-template-columns: 1fr 1fr 1fr; }
+  .tt-board-head { display: none; }
+}

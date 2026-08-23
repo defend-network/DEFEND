@@ -928,6 +928,25 @@ class MarketsIntelligenceOrchestrator:
     def list_event_triggers(self, limit: int = 100) -> list[dict[str, Any]]:
         return self._store.list_triggers(limit=limit)
 
+    def live_tt_board(self, *, state: str | None = None, actionability: str | None = None,
+                      matched_only: bool = False, sort: str = "default", limit: int = 200) -> dict[str, Any]:
+        """P16/P6: owner-facing live TT board via the server-side assembler."""
+        from defend_markets.quant.board import LiveTTBoardService
+
+        return LiveTTBoardService(self._store).board(
+            state=state, actionability=actionability, matched_only=matched_only, sort=sort, limit=limit
+        )
+
+    def event_detail(self, canonical_event_id: str) -> dict[str, Any]:
+        """P16/P7: owner-facing event detail."""
+        from defend_markets.quant.board import LiveTTBoardService
+
+        detail = LiveTTBoardService(self._store).event_detail(canonical_event_id)
+        if detail is None:
+            return {"canonical_event_id": canonical_event_id, "available": False}
+        history = LiveTTBoardService(self._store).hardrock_history(canonical_event_id, limit=50)
+        return {**detail, "hardrock_history": history.get("observations", []), "available": True}
+
     def _evaluation_service(self) -> EvaluationService:
         from defend_markets.quant.evaluation import PostgresOutcomeSource
 

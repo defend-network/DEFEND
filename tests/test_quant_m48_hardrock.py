@@ -337,3 +337,71 @@ class TestSyncSnapshot:
         }
         snap = synchronized_snapshot(quotes_by_book=quotes, now=now)
         assert "Bet365" not in snap["books"]  # stale -> excluded
+
+
+class TestSyncSkewContract:
+    def _now(self):
+        return _NOW
+
+    def test_bet365_30s_within_skew_included(self):
+        from defend_markets.quant.line_movement import synchronized_snapshot
+
+        now = self._now()
+        quotes = {
+            "hardrock_bet": [{"decimal_odds": "1.8", "observed_at": now}],
+            "Bet365": [{"decimal_odds": "1.9", "observed_at": now - timedelta(seconds=30)}],
+        }
+        snap = synchronized_snapshot(quotes_by_book=quotes, now=now, max_skew_seconds=120)
+        assert "Bet365" in snap["books"]
+        assert "Bet365" in snap["included_books"]
+
+    def test_bet365_121s_skew_exceeded(self):
+        from defend_markets.quant.line_movement import synchronized_snapshot
+
+        now = self._now()
+        quotes = {
+            "hardrock_bet": [{"decimal_odds": "1.8", "observed_at": now}],
+            "Bet365": [{"decimal_odds": "1.9", "observed_at": now - timedelta(seconds=121)}],
+        }
+        snap = synchronized_snapshot(quotes_by_book=quotes, now=now, max_skew_seconds=120)
+        assert "Bet365" not in snap["books"]
+        assert snap["excluded_books"]["Bet365"] == "SKEW_EXCEEDED"
+
+    def test_third_stale_book_does_not_poison_valid_pair(self):
+        from defend_markets.quant.line_movement import synchronized_snapshot
+
+        now = self._now()
+        quotes = {
+            "hardrock_bet": [{"decimal_odds": "1.8", "observed_at": now}],
+            "Bet365": [{"decimal_odds": "1.9", "observed_at": now - timedelta(seconds=30)}],
+            "FanDuel": [{"decimal_odds": "2.0", "observed_at": now - timedelta(minutes=5)}],
+        }
+        snap = synchronized_snapshot(quotes_by_book=quotes, now=now, max_skew_seconds=120)
+        assert "Bet365" in snap["books"]  # valid pair preserved
+        assert "FanDuel" not in snap["books"]
+        assert snap["excluded_books"]["FanDuel"] == "SKEW_EXCEEDED"
+
+    def test_hardrock_stale_no_reference(self):
+        from defend_markets.quant.line_movement import synchronized_snapshot
+
+        now = self._now()
+        quotes = {
+            "hardrock_bet": [{"decimal_odds": "1.8", "observed_at": now - timedelta(hours=3)}],
+            "Bet365": [{"decimal_odds": "1.9", "observed_at": now}],
+        }
+        snap = synchronized_snapshot(quotes_by_book=quotes, now=now, max_age_seconds=600)
+        assert snap["reference_present"] is False
+        assert snap["books"] == {}
+        assert snap["excluded_books"]["Bet365"] == "NO_REFERENCE"
+
+    def test_missing_timestamp_excluded(self):
+        from defend_markets.quant.line_movement import synchronized_snapshot
+
+        now = self._now()
+        quotes = {
+            "hardrock_bet": [{"decimal_odds": "1.8", "observed_at": now}],
+            "Bet365": [{"decimal_odds": "1.9"}],  # no observed_at
+        }
+        snap = synchronized_snapshot(quotes_by_book=quotes, now=now, max_skew_seconds=120)
+        assert "Bet365" not in snap["books"]
+        assert snap["excluded_books"]["Bet365"] == "MISSING_TIMESTAMP"
