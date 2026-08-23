@@ -612,3 +612,30 @@ export async function resumeRun(
   const body = (await response.json()) as { run: RunRecord };
   return body.run;
 }
+
+export async function resolveRecovery(
+  fetchImpl: typeof fetch,
+  base: string,
+  workspaceId: string,
+  runId: string,
+  executionId: string,
+  resolution: "CONFIRMED_APPLIED" | "CONFIRMED_NOT_APPLIED" | "ABANDON_RUN",
+  csrfToken: string | null
+): Promise<{ resolution: string; resulting_state: string }> {
+  const response = await apiFetch(
+    fetchImpl,
+    `${base}/v1/workspaces/${workspaceId}/runs/${runId}/recovery/${executionId}/resolve`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(csrfToken ? { "X-CSRF-Token": csrfToken } : {}),
+      },
+      body: JSON.stringify({ resolution }),
+    }
+  );
+  return (await response.json()) as {
+    resolution: string;
+    resulting_state: string;
+  };
+}

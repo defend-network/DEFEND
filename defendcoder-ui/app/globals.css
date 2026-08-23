@@ -973,3 +973,28 @@ input {
   padding: 0;
   font: inherit;
 }
+
+.run-history-section { margin-top: 14px; border-top: 1px solid var(--border, #333); padding-top: 10px; }
+.run-history-section h3 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted, #7a8290); }
+.run-history-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.run-history-list button {
+  width: 100%; text-align: left; background: none; border: 1px solid transparent;
+  border-radius: 4px; padding: 6px 8px; color: inherit; cursor: pointer;
+  display: flex; flex-direction: column; gap: 2px; font: inherit;
+}
+.run-history-list button:hover { background: rgba(255,255,255,0.04); }
+.run-history-item-active { border-color: #1f6feb !important; }
+.run-history-id { font-family: var(--mono, monospace); font-size: 11px; }
+.run-history-status { font-size: 11px; }
+.run-history-prompt { font-size: 11px; color: var(--muted, #7a8290); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.run-inspector { border: 1px solid var(--border, #333); border-radius: 6px; padding: 10px; margin: 8px 0; }
+.inspector-tabs { display: flex; gap: 4px; margin-bottom: 8px; }
+.inspector-tabs button { background: none; border: 1px solid var(--border, #333); border-radius: 4px; padding: 4px 10px; color: inherit; cursor: pointer; font: inherit; font-size: 12px; }
+.inspector-tab-active { background: #1f6feb !important; color: #fff !important; }
+.inspector-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; max-height: 360px; overflow: auto; }
+.inspector-item { display: flex; gap: 8px; font-size: 12px; flex-wrap: wrap; border-bottom: 1px solid rgba(255,255,255,0.04); padding: 3px 0; }
+.inspector-key { font-family: var(--mono, monospace); color: #9ecbff; }
+.recovery-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 6px 0; font-family: var(--mono, monospace); font-size: 12px; }
+.recovery-actions button { background: #1f6feb; color: #fff; border: none; border-radius: 4px; padding: 4px 10px; cursor: pointer; font-size: 12px; }
+.recovery-actions button:disabled { opacity: 0.6; cursor: default; }

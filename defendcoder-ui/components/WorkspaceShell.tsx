@@ -33,6 +33,7 @@ import EscalationModal from "./EscalationModal";
 import FileViewer from "./FileViewer";
 import ModelSelector, { ModelMode } from "./ModelSelector";
 import RecoveryCard from "./RecoveryCard";
+import RunInspector from "./RunInspector";
 
 type Account = {
   username: string;
@@ -256,6 +257,8 @@ export default function WorkspaceShell({
   const [gitStatus, setGitStatus] = useState<GitStatusResponse | null>(null);
   const [gitDirty, setGitDirty] = useState(false);
   const [resumeBusy, setResumeBusy] = useState(false);
+  const [runHistory, setRunHistory] = useState<RunRecord[]>([]);
+  const [inspectingRunId, setInspectingRunId] = useState<string | null>(null);
 
   const [modelMode, setModelMode] = useState<ModelMode>("AUTO");
   const [currentModel, setCurrentModel] = useState<string | null>(
@@ -377,6 +380,24 @@ export default function WorkspaceShell({
         // content is loaded inside FileViewer via load callback
       })
       .catch(() => setError("Unable to read file."));
+  }
+
+  async function openRun(runId: string) {
+    if (!activeWorkspace) return;
+    setInspectingRunId(runId);
+    try {
+      const detail = await fetchRunDetail(
+        fetch,
+        "/v1",
+        activeWorkspace.workspace_id,
+        runId
+      );
+      setActiveRun(detail);
+    } catch (cause) {
+      setError(
+        cause instanceof ApiError ? cause.message : "Unable to load run."
+      );
+    }
   }
 
   async function onResume() {
@@ -600,9 +621,11 @@ export default function WorkspaceShell({
     setFiles([]);
     setFilesPath(".");
     setFilesError(null);
+    setInspectingRunId(null);
 
     try {
       const runs = await listRuns(fetch, "/v1", workspaceId);
+      setRunHistory(runs);
       if (runs.length > 0) {
         const latest = runs[0];
         const detail = await fetchRunDetail(
@@ -1092,6 +1115,37 @@ export default function WorkspaceShell({
             </div>
           </section>
 
+          {activeWorkspace && runHistory.length > 0 ? (
+            <section className="run-history-section">
+              <h3>Run history</h3>
+              <ul className="run-history-list">
+                {runHistory.map((run) => (
+                  <li key={run.run_id}>
+                    <button
+                      type="button"
+                      className={
+                        inspectingRunId === run.run_id
+                          ? "run-history-item-active"
+                          : ""
+                      }
+                      onClick={() => void openRun(run.run_id)}
+                    >
+                      <span className="run-history-id">
+                        {run.run_id.slice(0, 8)}…
+                      </span>
+                      <span className="run-history-status">
+                        {run.status}
+                      </span>
+                      <span className="run-history-prompt">
+                        {run.prompt.slice(0, 60)}
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
+
           {error ? (
             <div className="workspace-error" role="alert">
               {error}
@@ -1208,6 +1262,13 @@ export default function WorkspaceShell({
                 </div>
 
                 <RecoveryCard executions={toolExecutions} />
+
+                {inspectingRunId && activeWorkspace ? (
+                  <RunInspector
+                    workspaceId={activeWorkspace.workspace_id}
+                    runId={inspectingRunId}
+                  />
+                ) : null}
 
                 {conversation.length === 0 ? (
                   <div className="empty-agent-state">
