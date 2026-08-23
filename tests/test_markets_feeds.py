@@ -351,7 +351,7 @@ class TestOddsApiKeyResolution:
         stores_module = types.ModuleType("defend_integrations.stores")
         stores_module.SecretRegistry = _Registry
         stores_module.default_secret_path = lambda: "C:\\fake\\secrets.dpapi"
-        secrets_module = types.ModuleType("defend_control.secrets")
+        secrets_module = types.ModuleType("shared_platform.secure_store")
 
         class _DpapiSecretStore:
             def __init__(self, path: str) -> None:
@@ -359,7 +359,7 @@ class TestOddsApiKeyResolution:
 
         secrets_module.DpapiSecretStore = _DpapiSecretStore
         monkeypatch.setitem(sys.modules, "defend_integrations.stores", stores_module)
-        monkeypatch.setitem(sys.modules, "defend_control.secrets", secrets_module)
+        monkeypatch.setitem(sys.modules, "shared_platform.secure_store", secrets_module)
 
         assert feeds_module._resolve_secret_from_store("THE_ODDS_API_KEY") == "store-key"
         assert len(calls) == 2
