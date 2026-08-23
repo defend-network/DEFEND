@@ -42,3 +42,25 @@ def candidate_canary_resource_profile() -> ResourceProfile:
         min_disk_gb=200,
         max_model_len=8192,
     )
+
+
+def validate_candidate_launch(launch: LaunchSpec) -> None:
+    """DEFEND-AI-owned create authorization for the candidate canary launch.
+
+    Rejects any LaunchSpec that is not exactly the product-approved candidate
+    canary (allowed image, disk, runtype, and run-scoped label). This policy
+    lives product-side; the neutral ``shared_platform.vast`` transport must NOT
+    decide which DEFEND product launch is allowed.
+    """
+    canonical = candidate_canary_launch()
+    if launch.image != canonical.image:
+        raise ValueError("candidate canary launch image is not approved")
+    if launch.disk_gb != canonical.disk_gb:
+        raise ValueError("candidate canary launch disk is not approved")
+    if launch.runtype != canonical.runtype:
+        raise ValueError("candidate canary launch runtype is not approved")
+    if not (
+        launch.label == canonical.label
+        or launch.label.startswith(canonical.label + "-")
+    ):
+        raise ValueError("candidate canary launch label is not run-scoped/approved")

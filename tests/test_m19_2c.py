@@ -195,24 +195,39 @@ def test_vast_create_accepts_exact_candidate_shape():
 
 
 def test_vast_create_rejects_altered_candidate_image():
-    client = VastClient("test-key")
-    altered = replace(LaunchSpec.candidate_canary(), image="evil/image:latest")
-    with pytest.raises(ValueError):
-        client.build_create_payload(_offer(), altered)
+    from defend_ai.launch import candidate_canary_launch, validate_candidate_launch
+
+    altered = replace(candidate_canary_launch(), image="evil/image:latest")
+    with pytest.raises(ValueError, match="image"):
+        validate_candidate_launch(altered)
 
 
 def test_vast_create_rejects_altered_candidate_disk():
-    client = VastClient("test-key")
-    altered = replace(LaunchSpec.candidate_canary(), disk_gb=999)
-    with pytest.raises(ValueError):
-        client.build_create_payload(_offer(), altered)
+    from defend_ai.launch import candidate_canary_launch, validate_candidate_launch
+
+    altered = replace(candidate_canary_launch(), disk_gb=999)
+    with pytest.raises(ValueError, match="disk"):
+        validate_candidate_launch(altered)
 
 
 def test_vast_create_rejects_altered_candidate_label():
+    from defend_ai.launch import candidate_canary_launch, validate_candidate_launch
+
+    altered = replace(candidate_canary_launch(), label="defend-vllm")
+    with pytest.raises(ValueError, match="label"):
+        validate_candidate_launch(altered)
+
+
+def test_neutral_vast_transport_has_no_product_launch_policy():
+    """Section 4/5: the neutral Vast transport accepts a generic LaunchSpec and
+    must NOT decide which DEFEND product launch is allowed. The candidate
+    authorization lives in defend_ai.launch.validate_candidate_launch.
+    """
     client = VastClient("test-key")
-    altered = replace(LaunchSpec.candidate_canary(), label="defend-vllm")
-    with pytest.raises(ValueError):
-        client.build_create_payload(_offer(), altered)
+    payload = client.build_create_payload(
+        _offer(), LaunchSpec.candidate_canary()
+    )
+    assert payload["label"].startswith("defend-ai-qwen3-canary")
 
 
 def test_cross_binding_candidate_profile_production_label_rejects():
