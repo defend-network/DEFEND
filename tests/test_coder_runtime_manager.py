@@ -1,12 +1,16 @@
-"""DEFENDcoder concrete runtime manager: fail-closed NEXT authority."""
+"""DEFENDcoder concrete runtime manager: fail-closed NEXT authority + states."""
 
 from __future__ import annotations
 
 import pytest
 
 from defend_coder.runtime_manager import (
-    NEXT_STATE_READY,
-    NEXT_STATE_STOPPED_RETAINED,
+    ABSENT,
+    FAILED,
+    READY,
+    STARTING,
+    STOPPED_RETAINED,
+    UNKNOWN,
     CoderRuntimeManager,
     RuntimeSnapshot,
 )
@@ -15,17 +19,30 @@ NEXT_MODEL = "Qwen/Qwen3-Coder-Next"
 ENDPOINT = "http://127.0.0.1:8403/v1"
 
 
-class TestCoderRuntimeManager:
-    def test_absent_is_not_routable_and_not_ready(self):
-        manager = CoderRuntimeManager()
-        assert manager.next_availability() is False
-        assert manager.is_next_ready() is False
-        assert manager.get_runtime_endpoint() is None
+def _ready_snapshot(*, endpoint: str | None = ENDPOINT, model: str | None = NEXT_MODEL):
+    return RuntimeSnapshot(
+        state=READY,
+        instance_id="i-1",
+        model=model,
+        endpoint=endpoint,
+        gpu="H100",
+        hourly_cost="4.04",
+        detail=None,
+    )
 
-    def test_stopped_retained_is_routable_but_not_ready(self):
-        manager = CoderRuntimeManager(
+
+class TestCoderRuntimeManager:
+    def test_absent_is_not_selectable_resumable_or_ready(self):
+        m = CoderRuntimeManager()
+        assert m.model_selectable() is False
+        assert m.runtime_resumable() is False
+        assert m.runtime_ready() is False
+        assert m.get_runtime_endpoint() is None
+
+    def test_stopped_retained_is_selectable_and_resumable_but_not_ready(self):
+        m = CoderRuntimeManager(
             snapshot=RuntimeSnapshot(
-                state=NEXT_STATE_STOPPED_RETAINED,
+                state=STOPPED_RETAINED,
                 instance_id="i-1",
                 model=NEXT_MODEL,
                 endpoint=None,
@@ -34,45 +51,66 @@ class TestCoderRuntimeManager:
                 detail="retained",
             )
         )
-        assert manager.next_availability() is True  # routable (resumable)
-        assert manager.is_next_ready() is False  # not READY
-        assert manager.get_runtime_endpoint() is None
+        assert m.model_selectable() is True
+        assert m.runtime_resumable() is True
+        assert m.runtime_ready() is False
 
-    def test_ready_requires_endpoint_and_instance(self):
-        manager = CoderRuntimeManager(
+    def test_starting_is_selectable_but_not_resumable_or_ready(self):
+        m = CoderRuntimeManager(
             snapshot=RuntimeSnapshot(
-                state=NEXT_STATE_READY,
-                instance_id="i-1",
-                model=NEXT_MODEL,
-                endpoint=ENDPOINT,
-                gpu="H100",
-                hourly_cost="4.04",
-                detail=None,
+                state=STARTING, instance_id="i-1", model=NEXT_MODEL,
+                endpoint=None, gpu=None, hourly_cost=None, detail=None,
             )
         )
-        assert manager.is_next_ready() is True
-        assert manager.get_runtime_endpoint() == ENDPOINT
+        assert m.model_selectable() is True
+        assert m.runtime_resumable() is False
+        assert m.runtime_ready() is False
 
-    def test_ready_without_endpoint_is_not_ready(self):
-        manager = CoderRuntimeManager(
+    def test_unknown_is_not_selectable_resumable_or_ready(self):
+        m = CoderRuntimeManager(
             snapshot=RuntimeSnapshot(
-                state=NEXT_STATE_READY,
-                instance_id="i-1",
-                model=NEXT_MODEL,
-                endpoint=None,
-                gpu="H100",
-                hourly_cost="4.04",
-                detail=None,
+                state=UNKNOWN, instance_id=None, model=NEXT_MODEL,
+                endpoint=None, gpu=None, hourly_cost=None, detail=None,
             )
         )
-        assert manager.is_next_ready() is False
+        assert m.model_selectable() is False
+        assert m.runtime_resumable() is False
+        assert m.runtime_ready() is False
 
-    def test_start_runtime_fails_closed(self):
-        manager = CoderRuntimeManager()
+    def test_ready_requires_health_probe(self):
+        # READY state + endpoint + instance, but no successful health probe.
+        m = CoderRuntimeManager(snapshot=_ready_snapshot())
+        assert m.runtime_ready() is False
+        assert m.get_runtime_endpoint() is None
+
+    def test_ready_with_healthy_probe(self):
+        m = CoderRuntimeManager(
+            snapshot=_ready_snapshot(),
+            health_probe=lambda ep, mdl: ep == ENDPOINT and mdl == NEXT_MODEL,
+        )
+        assert m.runtime_ready() is True
+        assert m.get_runtime_endpoint() == ENDPOINT
+
+    def test_ready_wrong_model_not_ready(self):
+        m = CoderRuntimeManager(
+            snapshot=_ready_snapshot(model="other-model"),
+            health_probe=lambda ep, mdl: False,
+        )
+        assert m.runtime_ready() is False
+
+    def test_start_runtime_fails_closed_without_authorization(self):
+        m = CoderRuntimeManager(snapshot=RuntimeSnapshot(state=STOPPED_RETAINED, instance_id="i-1", model=NEXT_MODEL, endpoint=None, gpu=None, hourly_cost=None, detail=None))
         with pytest.raises(Exception):
-            manager.start_runtime("defendcoder", authorize_resume=True)
+            m.start_runtime("defendcoder", authorize_resume=False)
 
-    def test_stop_runtime_is_retain_not_destroy(self):
-        manager = CoderRuntimeManager()
-        result = manager.stop_runtime("defendcoder")
-        assert result.get("retained") is True
+    def test_absent_stop_remains_absent(self):
+        m = CoderRuntimeManager()
+        result = m.stop_runtime("defendcoder")
+        assert result["state"] == ABSENT
+        assert result["retained"] is False
+
+    def test_ready_stop_is_retain_not_destroy(self):
+        m = CoderRuntimeManager(snapshot=_ready_snapshot(), health_probe=lambda e, m: True)
+        result = m.stop_runtime("defendcoder")
+        assert result["state"] == STOPPED_RETAINED
+        assert result["retained"] is True

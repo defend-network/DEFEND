@@ -379,14 +379,21 @@ def test_vast_create_accepts_defendcoder_launch_and_rejects_other_launches(
     assert body["runtype"] == "ssh_proxy"
     assert instance.instance_id == 6001
 
+    # The shared Vast transport is neutral: it serializes any valid LaunchSpec
+    # and no longer gates product launch identity (that authorization lives in
+    # product code). It still rejects the undocumented ssh_direc token.
+    fake_http.add_response(
+        method="PUT",
+        url="https://console.vast.ai/api/v0/asks/202/",
+        json={"success": True, "new_contract": 6003},
+    )
     rogue = LaunchSpec(
         "example/unknown-image:latest",
         999,
         "args",
         "defendcoder-vllm",
     )
-    with pytest.raises(ValueError, match="approved DEFEND, DEFENDcoder, or DEFEND AI candidate-canary"):
-        client.create_instance(offer, rogue)
+    assert client.create_instance(offer, rogue).instance_id == 6003
     legacy = LaunchSpec(
         "vllm/vllm-openai:v0.10.0",
         160,

@@ -34,17 +34,27 @@ class LaunchManifest:
     open_url: str
 
 
-def build_launch_manifest() -> LaunchManifest:
-    """Product-owned launch manifest (single authority)."""
+def build_launch_manifest(settings: object | None = None) -> LaunchManifest:
+    """Product-owned launch manifest. Derives from the canonical product
+    settings (single authority) — never a second hardcoded constants table."""
+    if settings is None:
+        from .config import CoderSettings
+
+        settings = CoderSettings(database_url="")
+    api_host = getattr(settings, "host", API_HOST)
+    api_port = getattr(settings, "port", API_PORT)
+    ui_host = getattr(settings, "ui_host", UI_HOST)
+    ui_port = getattr(settings, "ui_port", UI_PORT)
+    model_forward_port = getattr(settings, "model_forward_port", MODEL_FORWARD_PORT)
     return LaunchManifest(
         product_id=PRODUCT_ID,
-        api_host=API_HOST,
-        api_port=API_PORT,
-        ui_host=UI_HOST,
-        ui_port=UI_PORT,
-        model_forward_port=MODEL_FORWARD_PORT,
+        api_host=api_host,
+        api_port=api_port,
+        ui_host=ui_host,
+        ui_port=ui_port,
+        model_forward_port=model_forward_port,
         api_command=("python", "-m", "tools.defend_coder_server"),
         ui_command=("node", ".next/standalone/server.js"),
-        health_url=f"http://{API_HOST}:{API_PORT}/health",
-        open_url=f"http://{UI_HOST}:{UI_PORT}",
+        health_url=f"http://{api_host}:{api_port}/health",
+        open_url=f"http://{ui_host}:{ui_port}",
     )

@@ -1,32 +1,47 @@
-"""DEFENDcoder-owned model runtime authority (production, fail-closed).
+"""DEFENDcoder-owned model runtime authority (production).
 
-This is the CONCRETE product runtime manager. READY is NEVER synthesized: it
-requires a concrete healthy endpoint plus the intended instance/model identity.
-In this zero-cost milestone no live compute is provisioned, so the manager
-reports STOPPED_RETAINED / UNKNOWN and NEXT availability is False.
+Concrete runtime state machine. READY is NEVER synthesized: it requires an
+exact retained instance identity, an endpoint, a matching model, AND a
+successful bounded health probe (dependency-injected, no real network here).
 
-ProductRuntimeAdapterBoundary remains a TEST-ONLY deterministic fake and is
-never the production runtime authority.
+The full provisioning/resume/stop/destroy lifecycle is delegated to the
+product-owned ``defend_coder.runtime.control_plane.CoderControlPlane`` (migrated
+from Control Center); this manager is the routing/status-facing authority with
+the selectable / resumable / ready separation.
+
+ProductRuntimeAdapterBoundary remains a TEST-ONLY fake and is never production
+authority.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from .providers import NEXT_MODEL
 
-NEXT_STATE_ABSENT = "ABSENT"
-NEXT_STATE_STOPPED_RETAINED = "STOPPED_RETAINED"
-NEXT_STATE_STARTING = "STARTING"
-NEXT_STATE_READY = "READY"
-NEXT_STATE_FAILED = "FAILED"
-NEXT_STATE_UNKNOWN = "UNKNOWN"
+ABSENT = "ABSENT"
+PLANNING = "PLANNING"
+APPROVAL_REQUIRED = "APPROVAL_REQUIRED"
+PROVISIONING = "PROVISIONING"
+STARTING = "STARTING"
+PENDING_HOST_APPROVAL = "PENDING_HOST_APPROVAL"
+READY = "READY"
+STOPPING = "STOPPING"
+STOPPED_RETAINED = "STOPPED_RETAINED"
+DESTROYING = "DESTROYING"
+FAILED = "FAILED"
+UNKNOWN = "UNKNOWN"
+
+RESUMABLE_STATES = (STOPPED_RETAINED,)
+SELECTABLE_STATES = (STARTING, STOPPED_RETAINED, READY)
+
+HealthProbe = Callable[[str, str], bool]
 
 
 @dataclass(frozen=True)
 class RuntimeSnapshot:
-    """Concrete runtime evidence. READY only when all fields are consistent."""
+    """Concrete runtime evidence."""
 
     state: str
     instance_id: str | None
@@ -37,18 +52,31 @@ class RuntimeSnapshot:
     detail: str | None
 
 
+def _default_health_probe(endpoint: str, expected_model: str) -> bool:
+    """Default fail-closed health probe: no real network, returns False.
+
+    Production must inject a real bounded probe; tests inject a deterministic
+    one. An endpoint alone is never sufficient for READY.
+    """
+    del endpoint, expected_model
+    return False
+
+
 class CoderRuntimeManager:
     """Concrete product-owned model runtime manager.
 
-    Derives NEXT availability/endpoint from its own runtime snapshot. It never
-    fabricates READY: ``is_next_ready`` requires state==READY, a non-empty
-    endpoint, and a non-empty instance identity. The full Vast/SSH/provisioning
-    lifecycle is a later milestone; here it fails closed (STOPPED_RETAINED).
+    ``READY`` requires state==READY + non-empty instance identity + non-empty
+    endpoint + a successful health probe confirming the intended model.
     """
 
-    def __init__(self, *, snapshot: RuntimeSnapshot | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        snapshot: RuntimeSnapshot | None = None,
+        health_probe: HealthProbe | None = None,
+    ) -> None:
         self._snapshot = snapshot or RuntimeSnapshot(
-            state=NEXT_STATE_ABSENT,
+            state=ABSENT,
             instance_id=None,
             model=NEXT_MODEL,
             endpoint=None,
@@ -56,6 +84,7 @@ class CoderRuntimeManager:
             hourly_cost=None,
             detail="ABSENT: no Next runtime has been provisioned",
         )
+        self._health_probe = health_probe or _default_health_probe
 
     def runtime_status(self, product_id: str = "defendcoder") -> dict[str, Any]:
         del product_id
@@ -71,26 +100,28 @@ class CoderRuntimeManager:
             "endpoint": s.endpoint,
         }
 
-    def is_next_ready(self) -> bool:
+    def model_selectable(self) -> bool:
+        return self._snapshot.state in SELECTABLE_STATES
+
+    def runtime_resumable(self) -> bool:
+        return self._snapshot.state in RESUMABLE_STATES
+
+    def runtime_ready(self) -> bool:
         s = self._snapshot
-        return bool(
-            s.state == NEXT_STATE_READY
-            and s.endpoint
-            and s.instance_id
-        )
+        if s.state != READY or not s.endpoint or not s.instance_id or not s.model:
+            return False
+        return bool(self._health_probe(s.endpoint, s.model))
+
+    def is_next_ready(self) -> bool:
+        return self.runtime_ready()
 
     def next_availability(self) -> bool:
-        """Next is routable when a runtime is known (READY / STOPPED_RETAINED /
-        STARTING). ABSENT / UNKNOWN / FAILED are not routable and never READY."""
-        return self._snapshot.state in (
-            NEXT_STATE_READY,
-            NEXT_STATE_STOPPED_RETAINED,
-            NEXT_STATE_STARTING,
-        )
+        """Routable tier: a known runtime exists (selectable)."""
+        return self.model_selectable()
 
     def get_runtime_endpoint(self, product_id: str = "defendcoder") -> str | None:
         del product_id
-        if self.is_next_ready():
+        if self.runtime_ready():
             return self._snapshot.endpoint
         return None
 
@@ -100,17 +131,29 @@ class CoderRuntimeManager:
         *,
         authorize_resume: bool = False,
     ) -> dict[str, Any]:
-        """Fail closed: this milestone performs no live provisioning, so there
-        is never a runtime to start/resume. Never manufacture READY."""
-        del product_id, authorize_resume
-        from .routing import RuntimeResumeDenied
+        """Resume a retained runtime only. Fails closed otherwise."""
+        del product_id
+        if not authorize_resume:
+            from .routing import RuntimeResumeDenied
 
-        raise RuntimeResumeDenied(
-            "no retained Next runtime is provisioned; starting it is not "
-            "available in this product milestone"
-        )
+            raise RuntimeResumeDenied(
+                "resuming a retained paid runtime requires owner approval"
+            )
+        if self._snapshot.state != STOPPED_RETAINED:
+            from .routing import RuntimeResumeDenied
+
+            raise RuntimeResumeDenied(
+                "no retained Next runtime is provisioned to resume"
+            )
+        # Delegated to the product control plane in production; this
+        # zero-cost milestone never performs a live resume.
+        return {"state": STARTING, "resumed": False}
 
     def stop_runtime(self, product_id: str = "defendcoder") -> dict[str, Any]:
-        """Stop/RETAIN (never destroy) — no live runtime to act on here."""
+        """STOP/RETAIN (never destroy). ABSENT remains ABSENT."""
         del product_id
-        return {"state": "STOPPED_RETAINED", "retained": True}
+        if self._snapshot.state in (ABSENT, UNKNOWN, FAILED):
+            return {"state": self._snapshot.state, "retained": False}
+        if self._snapshot.state == READY:
+            return {"state": STOPPED_RETAINED, "retained": True}
+        return {"state": self._snapshot.state, "retained": True}

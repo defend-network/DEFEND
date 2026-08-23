@@ -9,6 +9,9 @@ class CoderSettings:
     database_url: str
     host: str = "127.0.0.1"
     port: int = 8301
+    ui_host: str = "127.0.0.1"
+    ui_port: int = 3301
+    model_forward_port: int = 8403
     public_https: bool = False
     workspace_root: str = "./coder-workspaces"
     idle_timeout_seconds: int = 600
@@ -80,6 +83,14 @@ class CoderSettings:
                 "127.0.0.1",
             ),
             port=int(os.environ.get("CODER_PORT", "8301")),
+            ui_host=os.environ.get(
+                "CODER_UI_HOST",
+                "127.0.0.1",
+            ),
+            ui_port=int(os.environ.get("CODER_UI_PORT", "3301")),
+            model_forward_port=int(
+                os.environ.get("CODER_MODEL_FORWARD_PORT", "8403")
+            ),
             public_https=os.environ.get(
                 "CODER_PUBLIC_HTTPS",
                 "",

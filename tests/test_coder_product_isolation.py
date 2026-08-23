@@ -132,6 +132,31 @@ class TestProductIsolation:
         assert manifest.health_url == "http://127.0.0.1:8301/health"
         assert "tools.defend_coder_server" in manifest.api_command
 
+    def test_launch_manifest_derives_from_settings(self):
+        from defend_coder.config import CoderSettings
+        from defend_coder.launch import build_launch_manifest
+
+        settings = CoderSettings(database_url="x", port=9999, ui_port=8888, model_forward_port=7777)
+        manifest = build_launch_manifest(settings)
+        assert manifest.api_port == 9999
+        assert manifest.ui_port == 8888
+        assert manifest.model_forward_port == 7777
+        assert manifest.health_url == "http://127.0.0.1:9999/health"
+
+    def test_control_center_no_longer_constructs_coder_provider_runtime(self):
+        server = (
+            Path(__file__).parent.parent / "tools" / "defend_control_center.py"
+        )
+        source = server.read_text(encoding="utf-8")
+        for banned in (
+            "CoderControlPlane(",
+            "VastCoderBackend(",
+            "CoderRemoteVllmBootstrap(",
+            "SshTunnel(",
+            "VastClient(",
+        ):
+            assert banned not in source, f"Control Center still constructs {banned}"
+
     def test_production_runtime_manager_is_concrete_not_fake(self):
         import inspect
 

@@ -62,34 +62,14 @@ class _Runtime:
 
 
 def _provider_instance_exists(secret_source) -> object:
-    """Provider-verified retained-instance truth; never exposes credentials.
+    """Retained-instance reconciliation is now product-owned.
 
-    Returns a callable provider_exists(instance_id) -> bool, or None when the
-    provider is not configured so callers can skip reconciliation silently.
+    Control Center must make ZERO coder provider calls and must not construct
+    VastClient. Return None so callers skip provider reconciliation (the
+    DEFENDcoder product owns retained-instance truth + provider verification).
     """
-    try:
-        values = (
-            secret_source.load()
-            if hasattr(secret_source, "load")
-            else secret_source
-        )
-        api_key = values.get("VAST_API_KEY")
-        if not isinstance(api_key, str) or not api_key:
-            return None
-        from defend_control.vast import VastClient
-
-        client = VastClient(api_key)
-
-        def provider_exists(instance_id: int) -> bool:
-            try:
-                client.show_instance(instance_id)
-                return True
-            except Exception:
-                return False
-
-        return provider_exists
-    except Exception:
-        return None
+    del secret_source
+    return None
 
 
 class _CoderFingerprintConfirmer:
@@ -125,125 +105,17 @@ def _build_coder_plane(
     confirmer: _CoderFingerprintConfirmer | None = None,
     state_directory: Path | None = None,
 ):
-    """Build the DEFENDcoder control plane; None when Vast is not configured.
+    """DEFENDcoder runtime is product-owned; Control Center no longer builds it.
 
-    The plane performs zero billable calls on construction; launch flows
-    reach approval_required before any create_instance call.
+    Control Center is an OPTIONAL process supervisor only: it launches the
+    canonical DEFENDcoder API/UI, reads health/status, and stops the child it
+    launched. It must NOT construct CoderControlPlane / VastCoderBackend /
+    CoderRemoteVllmBootstrap / SshTunnel / VastClient, and it makes zero coder
+    provider mutations. The canonical runtime authority lives in
+    ``defend_coder.runtime``.
     """
-    from defend_control.coder_control_plane import (
-        CoderControlPlane,
-        CoderPolicy,
-        resource_profile,
-    )
-    from defend_control.coder_remote_vllm import CoderRemoteVllmBootstrap
-    from defend_control.coder_vast_backend import VastCoderBackend
-    from defend_control.ssh_tunnel import (
-        HostFingerprintConfirmation,
-        SshTunnel,
-    )
-    from defend_control.vast import VastClient
-
-    secrets = _load_coder_secrets(secret_source)
-    if not secrets.get("VAST_API_KEY"):
-        return None
-
-    local_app_data = os.environ.get("LOCALAPPDATA")
-    if not local_app_data:
-        return None
-    ssh_root = Path(local_app_data) / "DEFEND" / "ssh"
-    known_hosts = ssh_root / "known_hosts"
-    key_path = ssh_root / "vast_ed25519"
-
-    active_confirmer = (
-        confirmer if confirmer is not None else _CoderFingerprintConfirmer()
-    )
-
-    def host_prepare(instance, prefer_direct):
-        tunnel = SshTunnel(
-            supervisor,
-            known_hosts=known_hosts,
-            key_path=key_path,
-            name="coder ssh host preparation",
-        )
-        try:
-            tunnel.prepare_host(
-                instance,
-                confirm_fingerprint=None,
-                prefer_direct=prefer_direct,
-            )
-        except HostFingerprintConfirmation as pending:
-            if not active_confirmer.confirm(
-                pending.instance_id,
-                pending.fingerprint,
-            ):
-                raise
-            tunnel.prepare_host(
-                instance,
-                confirm_fingerprint=pending.fingerprint,
-                prefer_direct=prefer_direct,
-            )
-
-    def tunnel_start(instance, local_port, *, prefer_direct):
-        tunnel = SshTunnel(
-            supervisor,
-            known_hosts=known_hosts,
-            key_path=key_path,
-            local_port=local_port,
-            name=f"coder ssh tunnel:{local_port}",
-        )
-        try:
-            fingerprint = tunnel.prepare_host(
-                instance,
-                confirm_fingerprint=None,
-                prefer_direct=prefer_direct,
-            )
-        except HostFingerprintConfirmation as pending:
-            if not active_confirmer.confirm(
-                pending.instance_id,
-                pending.fingerprint,
-            ):
-                raise
-            fingerprint = tunnel.prepare_host(
-                instance,
-                confirm_fingerprint=pending.fingerprint,
-                prefer_direct=prefer_direct,
-            )
-        tunnel.start(instance, prefer_direct=prefer_direct)
-        return f"http://127.0.0.1:{local_port}/v1"
-
-    template = SshTunnel(
-        supervisor,
-        known_hosts=known_hosts,
-        key_path=key_path,
-    )
-    bootstrap = CoderRemoteVllmBootstrap(
-        ssh_exe=template.ssh_exe,
-        known_hosts=known_hosts,
-        key_path=key_path,
-    )
-    policy = CoderPolicy(
-        max_hourly_usd=products_settings.coder_max_hourly_usd,
-        min_cuda_max_good=products_settings.coder_min_cuda_max_good,
-    )
-    backend = VastCoderBackend(
-        vast=VastClient(secrets["VAST_API_KEY"]),
-        secrets=secrets,
-        bootstrap=bootstrap,
-        max_hourly=policy.max_hourly_usd,
-        profile=resource_profile("defendcoder-default", policy),
-        tunnel_start=tunnel_start,
-        host_prepare=host_prepare,
-        remote_probe=bootstrap.probe_remote,
-    )
-    plane = CoderControlPlane(
-        backend=backend,
-        token_provider=lambda: secrets.get("HF_TOKEN"),
-        state_directory=(
-            str(state_directory) if state_directory is not None else None
-        ),
-    )
-    plane.fingerprint_confirmer = active_confirmer.confirm
-    return plane
+    del products_settings, secret_source, supervisor, confirmer, state_directory
+    return None
 
 
 @dataclass(frozen=True)
