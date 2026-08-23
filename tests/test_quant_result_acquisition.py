@@ -124,22 +124,22 @@ class _FakeFeed:
     def fetch_recent_results(self, *, from_iso: str, to_iso: str) -> ProviderResultBatch:
         self.sweeps += 1
         if self.error:
-            return ProviderResultBatch(request_kind="RESULT", events_requested=0, events_returned=0, ok=False, error=self.error)
+            return ProviderResultBatch(request_kind="RESULT", events_requested=1, events_returned=0, ok=False, error=self.error, schema_status="UNKNOWN")
         events = [e for e in self.results.values() if e.provider_event_id not in self.empty_for]
         return ProviderResultBatch(
-            request_kind="RESULT", events_requested=len(events), events_returned=len(events), ok=True, events=tuple(events)
+            request_kind="RESULT", events_requested=1, events_returned=len(events), ok=True, schema_status="UNDERSTOOD", events=tuple(events)
         )
 
     def fetch_event_result(self, provider_event_id: str) -> ProviderResultBatch:
         self.by_id_calls.append(provider_event_id)
         if self.error:
-            return ProviderResultBatch(request_kind="RESULT_BY_ID", events_requested=1, events_returned=0, ok=False, error=self.error)
+            return ProviderResultBatch(request_kind="RESULT_BY_ID", events_requested=1, events_returned=0, ok=False, error=self.error, schema_status="UNKNOWN")
         if provider_event_id in self.empty_for:
-            return ProviderResultBatch(request_kind="RESULT_BY_ID", events_requested=1, events_returned=0, ok=True, events=(), error="provider event not found")
+            return ProviderResultBatch(request_kind="RESULT_BY_ID", events_requested=1, events_returned=0, ok=True, events=(), error="provider event not found", schema_status="UNDERSTOOD")
         event = self.results.get(provider_event_id)
         if event is None:
-            return ProviderResultBatch(request_kind="RESULT_BY_ID", events_requested=1, events_returned=0, ok=True, events=(), error="provider event not found")
-        return ProviderResultBatch(request_kind="RESULT_BY_ID", events_requested=1, events_returned=1, ok=True, events=(event,))
+            return ProviderResultBatch(request_kind="RESULT_BY_ID", events_requested=1, events_returned=0, ok=True, events=(), error="provider event not found", schema_status="UNDERSTOOD")
+        return ProviderResultBatch(request_kind="RESULT_BY_ID", events_requested=1, events_returned=1, ok=True, events=(event,), schema_status="UNDERSTOOD")
 
 
 def _seed_store(store: InMemoryQuantStore, *, events, provider_ids, m5=True, shadow=True):

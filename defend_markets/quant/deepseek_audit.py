@@ -20,6 +20,10 @@ from typing import Any
 
 DEEPSEEK_AUDIT_VERSION = "DEEPSEEK_AUDIT_V1"
 AUDIT_RESULT = "DEFENDMARKETS_DEEPSEEK_INTEGRATION_REQUIRED=YES"
+# P39: the Quant Director may remain CONFIGURED_NOT_CALLED until live reviews
+# are intentionally activated; LIVE_DEEPSEEK_CALLS may remain 0.
+STATE_CONFIGURED_NOT_CALLED = "CONFIGURED_NOT_CALLED"
+STATE_INTEGRATION_REQUIRED = "INTEGRATION_REQUIRED"
 
 
 def audit_deepseek_integration() -> dict[str, Any]:
@@ -47,12 +51,17 @@ def audit_deepseek_integration() -> dict[str, Any]:
     if not authorized:
         evidence.append("no ai_models provider is granted to the defendmarkets product in the shared registry")
         evidence.append("no shared credential resolver routes DeepSeek to DEFENDMarkets")
+    state = STATE_INTEGRATION_REQUIRED
+    if authorized:
+        state = STATE_CONFIGURED_NOT_CALLED  # P39: authorized but not yet invoked
     return {
-        "result": "AUTHORIZED" if authorized else AUDIT_RESULT,
+        "result": AUDIT_RESULT if not authorized else "AUTHORIZED",
+        "state": state,
         "authorized": authorized,
+        "live_deepseek_calls": 0,
         "policy_version": DEEPSEEK_AUDIT_VERSION,
         "evidence": evidence,
-        "note": "Do not copy or duplicate the canonical DeepSeek secret; integration must be owner-authorized via the shared registry.",
+        "note": "Do not copy or duplicate the canonical DeepSeek secret; integration must be owner-authorized via the shared registry. No live AI call is made merely to prove key availability.",
     }
 
 
@@ -60,3 +69,33 @@ def quant_director_arb_review_allowed() -> bool:
     """P50: DeepSeek arb review is allowed only when the shared credential is
     authorized for DEFENDMarkets. Currently returns False."""
     return audit_deepseek_integration()["authorized"]
+
+
+# P40 AI authority boundary. The Quant Director may analyze, review, suggest and
+# summarize; it may NEVER place wagers, alter bookmaker accounts, change the
+# selected subscription, bypass promotion gates, change M5 weights, override
+# deterministic arb math, or modify settlements without evidence.
+QUANT_DIRECTOR_FORBIDDEN_ACTIONS = (
+    "PLACE_WAGER",
+    "ALTER_BOOKMAKER_ACCOUNT",
+    "CHANGE_SELECTED_BOOKMAKER",
+    "BYPASS_PROMOTION_GATE",
+    "CHANGE_M5_WEIGHTS",
+    "OVERRIDE_ARB_MATH",
+    "MODIFY_SETTLEMENT_WITHOUT_EVIDENCE",
+)
+
+QUANT_DIRECTOR_ALLOWED_ACTIONS = (
+    "ANALYZE_PERFORMANCE",
+    "REVIEW_WEAKNESSES",
+    "SUGGEST_HYPOTHESES",
+    "SUMMARIZE_ARB_EVIDENCE",
+)
+
+
+def ai_authority_boundary() -> dict[str, Any]:
+    return {
+        "allowed": list(QUANT_DIRECTOR_ALLOWED_ACTIONS),
+        "forbidden": list(QUANT_DIRECTOR_FORBIDDEN_ACTIONS),
+        "policy_version": DEEPSEEK_AUDIT_VERSION,
+    }

@@ -28,6 +28,10 @@ from defend_markets.quant.market import FULL_MATCH, MATCH_WINNER, SPREAD, TOTAL,
 ARB_FEED_POLICY_VERSION = "CANONICAL_ODDS_FEED_V1"
 ARB_SCAN_POLICY_VERSION = "SPORTS_ARB_SCAN_V1"
 
+# P28: fail-closed. Until the canonical observation storage preserves exact
+# period and line, production arb scanning is restricted to MATCH_WINNER_2WAY.
+ARB_ALLOWED_FAMILIES = (MarketFamily.MATCH_WINNER_2WAY,)
+
 
 def _market_family(market: str) -> MarketFamily | None:
     normalized = str(market or "").strip().casefold()
@@ -93,12 +97,17 @@ def observation_to_arb_quote(
     period = str(row.get("period") or FULL_MATCH)
     line = None
     if family in (MarketFamily.SPREAD, MarketFamily.TOTAL):
+        # P27/P28: SPREAD/TOTAL require an exact line. If the canonical
+        # observation storage does not preserve the line, fail closed and do
+        # NOT fabricate line=None (which would treat different totals/spreads
+        # as compatible).
         raw_line = row.get("line")
-        if raw_line is not None:
-            try:
-                line = Decimal(str(raw_line))
-            except Exception:  # noqa: BLE001
-                line = None
+        if raw_line is None:
+            return None
+        try:
+            line = Decimal(str(raw_line))
+        except Exception:  # noqa: BLE001
+            return None
     event_id = str(row.get("canonical_event_id") or "")
     if not event_id:
         return None
@@ -247,6 +256,17 @@ class SportsArbScanner:
             if not candidate.complete:
                 funnel["rejected_market_mismatch"] += 1
                 continue
+            # P28: fail-closed to MATCH_WINNER_2WAY only.
+            families = {q.market_family for q in candidate.source_quotes}
+            if any(f not in ARB_ALLOWED_FAMILIES for f in families):
+                funnel["rejected_market_mismatch"] += 1
+                continue
+            # P29: cross-book arb requires >=2 distinct bookmakers; two outcomes
+            # from the same bookmaker are not cross-book evidence.
+            books = {q.bookmaker for q in candidate.source_quotes}
+            if len(books) < 2:
+                funnel["rejected_market_mismatch"] += 1
+                continue
             from defend_markets.arb.compatibility import check_market_compatibility
             from defend_markets.arb.freshness import FreshnessPolicy, evaluate_freshness
 
@@ -296,8 +316,13 @@ class SportsArbScanner:
                 continue  # no material signal; skip persistence
             # persist immutable snapshot
             fingerprint = opportunity.opportunity_id
-            if self._store.insert_arb_opportunity(self._opportunity_row(opportunity)):
+            stored_row = self._store.insert_arb_opportunity(self._opportunity_row(opportunity))
+            if stored_row:
                 stored += 1
+                # P31: paper-arb creation path — record a PAPER_ARB ticket for
+                # a validated mathematical/executable opportunity.
+                if opportunity.classification.value in ("MATHEMATICAL_ARB", "EXECUTABLE_ARB"):
+                    self._record_paper_ticket(opportunity)
 
         # expire ACTIVE opportunities that are past expires_at
         for opp in self._store.list_arb_opportunities(limit=5000, status="ACTIVE"):
@@ -312,6 +337,26 @@ class SportsArbScanner:
             "quotes": len(quotes),
             "summary": f"arb scan: {funnel['quote_sets_examined']} sets, {funnel['mathematical_arbs']} math arbs, {stored} persisted",
         }
+
+    def _record_paper_ticket(self, opportunity: Any) -> None:
+        """P31: record an immutable PAPER_ARB ticket for a validated opportunity."""
+        from defend_markets.quant.paper_arb import PaperArbStore
+
+        PaperArbStore(self._store).record_ticket(opportunity)
+
+    def _record_verification(self, opportunity: Any, *, still_valid: bool) -> None:
+        """P30: append a survival verification observation (never mutate snapshot)."""
+        now = datetime.now(timezone.utc)
+        self._store.insert_arb_verification(
+            {
+                "opportunity_id": opportunity.opportunity_id,
+                "verified_at": now.isoformat().replace("+00:00", "Z"),
+                "still_valid": still_valid,
+                "quote_age_seconds": opportunity.quote_age_by_leg,
+                "cross_book_delta_seconds": opportunity.cross_book_time_delta,
+                "classification": opportunity.classification.value,
+            }
+        )
 
     def _opportunity_row(self, opportunity: Any) -> dict[str, Any]:
         return {

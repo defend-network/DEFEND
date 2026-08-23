@@ -43,6 +43,8 @@ PROVIDER_RESULT_SCHEMA_UNKNOWN = "PROVIDER_RESULT_SCHEMA_UNKNOWN"
 PROVIDER_EVENT_NOT_FOUND = "PROVIDER_EVENT_NOT_FOUND"
 PROVIDER_EVENT_IDENTITY_MISMATCH = "PROVIDER_EVENT_IDENTITY_MISMATCH"
 RESULT_RECONCILIATION_REQUIRED = "RESULT_RECONCILIATION_REQUIRED"
+# P5: provider 404 may represent retention, not an empty result search.
+PROVIDER_RESULT_OUTSIDE_RETENTION = "PROVIDER_RESULT_OUTSIDE_RETENTION"
 
 _ACQUISITION_STATES = (
     LOCAL_RESULT_PRESENT,
@@ -54,6 +56,7 @@ _ACQUISITION_STATES = (
     PROVIDER_EVENT_NOT_FOUND,
     PROVIDER_EVENT_IDENTITY_MISMATCH,
     RESULT_RECONCILIATION_REQUIRED,
+    PROVIDER_RESULT_OUTSIDE_RETENTION,
 )
 
 # P7 result state machine (persisted in quant_settlements.status).
@@ -78,6 +81,68 @@ _PROVIDER_STATUS_TO_RESULT = {
     "live": RESULT_STATE_PENDING,
 }
 
+# P13 allowed state transitions. A result may move only along these edges.
+ALLOWED_RESULT_TRANSITIONS: dict[str, frozenset[str]] = {
+    RESULT_STATE_PENDING: frozenset({RESULT_STATE_FINAL, RESULT_STATE_CANCELLED, RESULT_STATE_POSTPONED, RESULT_STATE_ABANDONED, RESULT_STATE_VOID, RESULT_STATE_REVIEW_REQUIRED, RESULT_STATE_PROVISIONAL}),
+    RESULT_STATE_PROVISIONAL: frozenset({RESULT_STATE_FINAL, RESULT_STATE_VOID, RESULT_STATE_CANCELLED, RESULT_STATE_REVIEW_REQUIRED}),
+    RESULT_STATE_FINAL: frozenset({RESULT_STATE_SUPERSEDED}),
+    RESULT_STATE_VOID: frozenset({RESULT_STATE_FINAL}),
+    RESULT_STATE_CANCELLED: frozenset(),
+    RESULT_STATE_POSTPONED: frozenset({RESULT_STATE_FINAL, RESULT_STATE_CANCELLED, RESULT_STATE_ABANDONED}),
+    RESULT_STATE_ABANDONED: frozenset(),
+    RESULT_STATE_REVIEW_REQUIRED: frozenset({RESULT_STATE_FINAL, RESULT_STATE_VOID, RESULT_STATE_CANCELLED}),
+    RESULT_STATE_SUPERSEDED: frozenset(),
+}
+
+
+def result_transition_allowed(from_state: str, to_state: str) -> bool:
+    return to_state in ALLOWED_RESULT_TRANSITIONS.get(from_state, frozenset())
+
+
+@dataclass(frozen=True)
+class ResultRequestEvidence:
+    """P2: first-class immutable request evidence.
+
+    A per-event state may use PROVIDER_RESULT_REQUESTED_EMPTY only when this
+    evidence shows the request genuinely succeeded, the response schema was
+    understood, and the request scope actually included that event.
+    """
+
+    request_id: str
+    provider: str
+    request_kind: str
+    requested_at: datetime
+    window_start: str | None = None
+    window_end: str | None = None
+    target_event_count: int = 0
+    http_status: int | None = None
+    provider_request_status: str | None = None
+    response_schema_status: str = "UNKNOWN"  # UNDERSTOOD / UNKNOWN / INVALID
+    events_returned: int = 0
+    events_matched: int = 0
+    raw_payload_hash: str | None = None
+    error_class: str | None = None
+    successful_search_scope: str | None = None
+
+    def to_row(self) -> dict[str, Any]:
+        return {
+            "request_id": self.request_id,
+            "provider": self.provider,
+            "request_kind": self.request_kind,
+            "requested_at": self.requested_at.isoformat().replace("+00:00", "Z"),
+            "window_start": self.window_start,
+            "window_end": self.window_end,
+            "target_event_count": self.target_event_count,
+            "http_status": self.http_status,
+            "provider_request_status": self.provider_request_status,
+            "response_schema_status": self.response_schema_status,
+            "events_returned": self.events_returned,
+            "events_matched": self.events_matched,
+            "raw_payload_hash": self.raw_payload_hash,
+            "error_class": self.error_class,
+            "successful_search_scope": self.successful_search_scope,
+        }
+
 
 @dataclass(frozen=True)
 class ProviderResultEvent:
@@ -97,15 +162,20 @@ class ProviderResultEvent:
 
 @dataclass(frozen=True)
 class ProviderResultBatch:
-    """Bounded provider response for one request."""
+    """Bounded provider response for one request (P6 request-count truth)."""
 
     request_kind: str
-    events_requested: int
-    events_returned: int
+    events_requested: int = 0  # HTTP request count
+    events_returned: int = 0
+    target_events_considered: int = 0
+    events_matched: int = 0
     status_code: int | None = None
     ok: bool = False
     error: str | None = None
+    error_class: str | None = None
+    schema_status: str = "UNKNOWN"  # UNDERSTOOD / UNKNOWN / INVALID
     events: tuple[ProviderResultEvent, ...] = ()
+    evidence: ResultRequestEvidence | None = None
     cost_estimate: float | None = None
 
 
@@ -122,9 +192,17 @@ def parse_result_event(payload: dict[str, Any]) -> ProviderResultEvent:
     Scores come from the top-level ``scores.home/away`` (set count for table
     tennis). Missing/invalid score structure is surfaced as schema_ok=False so
     it can be classified PROVIDER_RESULT_SCHEMA_UNKNOWN rather than guessed.
+    The raw payload hash is always populated (P10) so provenance is
+    reconstructable.
     """
+    import hashlib
+    import json
+
+    raw_hash = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
     if not isinstance(payload, dict):
-        return ProviderResultEvent(provider_event_id="", status="", schema_ok=False, schema_error="payload not an object")
+        return ProviderResultEvent(provider_event_id="", status="", raw_payload_hash=raw_hash, schema_ok=False, schema_error="payload not an object")
     event_id = str(payload.get("id") or "")
     status = str(payload.get("status") or "")
     home = str(payload.get("home") or "")
@@ -159,6 +237,7 @@ def parse_result_event(payload: dict[str, Any]) -> ProviderResultEvent:
         home_score=home_score,
         away_score=away_score,
         completed_at=completed_at,
+        raw_payload_hash=raw_hash,
         schema_ok=schema_error is None,
         schema_error=schema_error,
     )
@@ -182,7 +261,7 @@ def next_poll_at(*, state: str, request_count: int, now: datetime | None = None)
         return now + timedelta(hours=24)
     if state in (PROVIDER_RESULT_ERROR, PROVIDER_RESULT_SCHEMA_UNKNOWN, PROVIDER_EVENT_IDENTITY_MISMATCH):
         return now + timedelta(minutes=15)
-    if state in (PROVIDER_RESULT_REQUESTED_EMPTY, PROVIDER_EVENT_NOT_FOUND):
+    if state in (PROVIDER_RESULT_REQUESTED_EMPTY, PROVIDER_EVENT_NOT_FOUND, PROVIDER_RESULT_OUTSIDE_RETENTION):
         delays = [timedelta(hours=1), timedelta(hours=6), timedelta(hours=24), timedelta(days=3), timedelta(days=7)]
         return now + delays[min(request_count, len(delays) - 1)]
     return now + timedelta(minutes=30)
@@ -221,36 +300,63 @@ class OddsApiIOResultAdapter:
         url = (
             f"{self.BASE}/events?sport=table-tennis&from={from_iso}&to={to_iso}&apiKey={self._key}"
         )
+        requested_at = datetime.now(timezone.utc)
+        import uuid
+
+        request_id = f"oaio-result-{uuid.uuid4().hex}"
         result, evidence, parsed = probe_get(
             "odds_api_io", "result-acquisition", url,
             known_secrets=(self._key,), max_response_bytes=8 * 1024 * 1024,
         )
         self.last_request_count = 1
         if result is None or getattr(result, "status_code", None) is None:
+            req_evidence = ResultRequestEvidence(
+                request_id=request_id, provider="odds_api_io", request_kind="RESULT",
+                requested_at=requested_at, window_start=from_iso, window_end=to_iso,
+                error_class="NO_RESPONSE",
+            )
             batch = ProviderResultBatch(
-                request_kind="RESULT", events_requested=0, events_returned=0,
-                ok=False, error="no provider response", cost_estimate=1.0,
+                request_kind="RESULT", events_requested=1, events_returned=0,
+                ok=False, error="no provider response", error_class="NO_RESPONSE",
+                evidence=req_evidence, cost_estimate=1.0,
             )
             self._record(batch)
             return batch
+        status_code = result.status_code
         payload, _ = parse_recovered_json(evidence.body or "")
         payload = parsed if payload is None else payload
         if not isinstance(payload, list):
+            req_evidence = ResultRequestEvidence(
+                request_id=request_id, provider="odds_api_io", request_kind="RESULT",
+                requested_at=requested_at, window_start=from_iso, window_end=to_iso,
+                http_status=status_code, response_schema_status="INVALID",
+                error_class="SCHEMA_INVALID",
+            )
             batch = ProviderResultBatch(
-                request_kind="RESULT", events_requested=0, events_returned=0,
-                status_code=result.status_code, ok=True, events=(),
-                error="non-list payload", cost_estimate=1.0,
+                request_kind="RESULT", events_requested=1, events_returned=0,
+                status_code=status_code, ok=True, events=(), schema_status="INVALID",
+                error="non-list payload", error_class="SCHEMA_INVALID",
+                evidence=req_evidence, cost_estimate=1.0,
             )
             self._record(batch)
             return batch
         events = tuple(parse_result_event(e) for e in payload if isinstance(e, dict))
+        req_evidence = ResultRequestEvidence(
+            request_id=request_id, provider="odds_api_io", request_kind="RESULT",
+            requested_at=requested_at, window_start=from_iso, window_end=to_iso,
+            http_status=status_code, response_schema_status="UNDERSTOOD",
+            events_returned=len(events),
+            successful_search_scope=f"window {from_iso}..{to_iso}",
+        )
         batch = ProviderResultBatch(
             request_kind="RESULT",
-            events_requested=len(events),
+            events_requested=1,
             events_returned=len(events),
-            status_code=result.status_code,
+            status_code=status_code,
             ok=True,
+            schema_status="UNDERSTOOD",
             events=events,
+            evidence=req_evidence,
             cost_estimate=1.0,
         )
         self._record(batch)
@@ -259,15 +365,24 @@ class OddsApiIOResultAdapter:
     def fetch_event_result(self, provider_event_id: str) -> ProviderResultBatch:
         probe_get, parse_recovered_json = self._load_helpers()
         url = f"{self.BASE}/events/{provider_event_id}?apiKey={self._key}"
+        requested_at = datetime.now(timezone.utc)
+        import uuid
+
+        request_id = f"oaio-result-byid-{uuid.uuid4().hex}"
         result, evidence, parsed = probe_get(
             "odds_api_io", "result-acquisition-by-id", url,
             known_secrets=(self._key,), max_response_bytes=8 * 1024 * 1024,
         )
         self.last_request_count = 1
         if result is None or getattr(result, "status_code", None) is None:
+            req_evidence = ResultRequestEvidence(
+                request_id=request_id, provider="odds_api_io", request_kind="RESULT_BY_ID",
+                requested_at=requested_at, target_event_count=1, error_class="NO_RESPONSE",
+            )
             batch = ProviderResultBatch(
                 request_kind="RESULT_BY_ID", events_requested=1, events_returned=0,
-                ok=False, error="no provider response", cost_estimate=1.0,
+                ok=False, error="no provider response", error_class="NO_RESPONSE",
+                evidence=req_evidence, cost_estimate=1.0,
             )
             self._record(batch)
             return batch
@@ -275,21 +390,33 @@ class OddsApiIOResultAdapter:
         payload, _ = parse_recovered_json(evidence.body or "")
         payload = parsed if payload is None else payload
         if status_code == 404 or payload is None:
+            req_evidence = ResultRequestEvidence(
+                request_id=request_id, provider="odds_api_io", request_kind="RESULT_BY_ID",
+                requested_at=requested_at, target_event_count=1, http_status=status_code,
+                response_schema_status="UNDERSTOOD", error_class="EVENT_NOT_FOUND",
+            )
             batch = ProviderResultBatch(
                 request_kind="RESULT_BY_ID", events_requested=1, events_returned=0,
                 status_code=status_code, ok=True, events=(),
-                error="provider event not found", cost_estimate=1.0,
+                error_class="EVENT_NOT_FOUND", evidence=req_evidence, cost_estimate=1.0,
             )
             self._record(batch)
             return batch
         events = (parse_result_event(payload),) if isinstance(payload, dict) else ()
+        req_evidence = ResultRequestEvidence(
+            request_id=request_id, provider="odds_api_io", request_kind="RESULT_BY_ID",
+            requested_at=requested_at, target_event_count=1, http_status=status_code,
+            response_schema_status="UNDERSTOOD", events_returned=len(events),
+        )
         batch = ProviderResultBatch(
             request_kind="RESULT_BY_ID",
             events_requested=1,
             events_returned=len(events),
             status_code=status_code,
             ok=True,
+            schema_status="UNDERSTOOD",
             events=events,
+            evidence=req_evidence,
             cost_estimate=1.0,
         )
         self._record(batch)
@@ -308,6 +435,8 @@ class OddsApiIOResultAdapter:
                 "cost_estimate": batch.cost_estimate,
             }
         )
+        if batch.evidence is not None:
+            self._store.record_result_request_evidence(batch.evidence.to_row())
 
 
 class TableTennisResultAcquisitionService:
@@ -418,11 +547,13 @@ class TableTennisResultAcquisitionService:
                 "orientation": None,
                 "winner_side": None,
                 "scores_present": False,
+                "raw_payload_hash": provider_result.raw_payload_hash,
+                "provider_result_id": provider_result.provider_event_id or provider_event_id,
             }
-        # participant keys from tt_forward_events (canonical A/B)
-        keys = self._participant_keys(event["canonical_event_id"])
-        canonical_a = keys.get("player_a_key") or provider_result.home
-        canonical_b = keys.get("player_b_key") or provider_result.away
+        # participant names from tt_forward_events (canonical A/B)
+        names = self._participant_keys(event["canonical_event_id"])
+        canonical_a = names.get("player_a_key") or provider_result.home
+        canonical_b = names.get("player_b_key") or provider_result.away
         from defend_markets.quant.market import participant_orientation
 
         orientation, home_maps_to, _ = participant_orientation(
@@ -444,6 +575,8 @@ class TableTennisResultAcquisitionService:
                 "winner_side": None,
                 "scores_present": True,
                 "conflict": True,
+                "raw_payload_hash": provider_result.raw_payload_hash,
+                "provider_result_id": provider_result.provider_event_id or provider_event_id,
             }
         home_score = provider_result.home_score
         away_score = provider_result.away_score
@@ -461,6 +594,8 @@ class TableTennisResultAcquisitionService:
             "orientation": orientation,
             "winner_side": winner,
             "scores_present": True,
+            "raw_payload_hash": provider_result.raw_payload_hash,
+            "provider_result_id": provider_result.provider_event_id or provider_event_id,
         }
 
     def _participant_keys(self, canonical_event_id: str) -> dict[str, str]:
@@ -495,14 +630,21 @@ class TableTennisResultAcquisitionService:
     # Orchestration
     # ------------------------------------------------------------------ #
 
-    def acquire_and_settle(self, *, recent_window_hours: int = 96, max_events: int | None = None) -> dict[str, Any]:
+    def acquire_and_settle(
+        self,
+        *,
+        recent_window_hours: int = 96,
+        max_events: int | None = None,
+        fallback_limit: int | None = None,
+    ) -> dict[str, Any]:
         """Acquire provider results for unsettled past events, persist local
         results, settle FINAL events and score official predictions.
 
         Strategy (P3/P4): one bounded feed sweep first (efficient batch), then
-        per-event lookup only for events not found in the feed. Local result
-        rows are checked first so a genuinely-present local result is never
-        reported as provider-empty.
+        bounded per-event fallback only for eligible unresolved events. A failed
+        sweep NEVER turns recent absent events into PROVIDER_RESULT_REQUESTED_EMPTY
+        (Finding B): only a successful, schema-understood, scope-covering request
+        may establish requested-empty.
         """
         events = self.past_unsettled_events()
         if max_events is not None:
@@ -513,31 +655,60 @@ class TableTennisResultAcquisitionService:
 
         local_results = self._local_results_map(events)
 
+        # -------- sweep phase (Finding B) --------
+        sweep: ProviderResultBatch | None = None
         feed_events: dict[str, ProviderResultEvent] = {}
+        sweep_successful = False
+        sweep_schema_understood = False
         if events:
             sweep = self._feed.fetch_recent_results(from_iso=from_iso, to_iso=to_iso)
-            feed_events = {e.provider_event_id: e for e in sweep.events if e.provider_event_id}
+            sweep_successful = bool(sweep.ok)
+            sweep_schema_understood = sweep.schema_status == "UNDERSTOOD"
+            if sweep_successful and sweep_schema_understood:
+                feed_events = {e.provider_event_id: e for e in sweep.events if e.provider_event_id}
 
         classified: dict[str, int] = {}
         acquired = 0
         settled = 0
         scores = 0
         errors: list[str] = []
-        processed = 0
+        fallback_used = 0
         for event in events:
             canonical_event_id = event["canonical_event_id"]
             provider_event_id = event.get("provider_event_id")
+
+            # -------- local result path (P7) --------
             local = local_results.get(canonical_event_id)
             if local is not None:
-                state = LOCAL_RESULT_PRESENT
+                local_state = self._classify_local_result(event, local)
+                if local_state == RESULT_STATE_REVIEW_REQUIRED:
+                    self._store.upsert_result_acquisition(
+                        {
+                            "canonical_event_id": canonical_event_id,
+                            "provider": event.get("provider") or "odds_api_io",
+                            "provider_event_id": provider_event_id,
+                            "commence_at": event["commence_at"],
+                            "acquisition_state": RESULT_RECONCILIATION_REQUIRED,
+                            "result_status": "review_required",
+                            "actual_a": local["home_score"],
+                            "actual_b": local["away_score"],
+                            "orientation": local["orientation"],
+                            "next_poll_at": next_poll_at(state=RESULT_RECONCILIATION_REQUIRED, request_count=0).isoformat().replace("+00:00", "Z"),
+                            "settled": False,
+                        }
+                    )
+                    classified[RESULT_RECONCILIATION_REQUIRED] = classified.get(RESULT_RECONCILIATION_REQUIRED, 0) + 1
+                    continue
                 if not self._has_final_settlement(canonical_event_id):
                     normalized = {
                         "home_score": local["home_score"],
                         "away_score": local["away_score"],
                         "winner_side": local["winner_side"],
-                        "orientation": "CANONICAL",
+                        "orientation": local["orientation"],
                         "state": RESULT_STATE_FINAL,
                         "provider_event_id": provider_event_id,
+                        "provider_result_id": local.get("source_result_id"),
+                        "raw_payload_hash": local.get("raw_payload_hash"),
                     }
                     settled += self._settle_event(event, normalized)
                     scores += self._score_event(event, normalized)
@@ -547,47 +718,35 @@ class TableTennisResultAcquisitionService:
                         "provider": event.get("provider") or "odds_api_io",
                         "provider_event_id": provider_event_id,
                         "commence_at": event["commence_at"],
-                        "acquisition_state": state,
+                        "acquisition_state": LOCAL_RESULT_PRESENT,
                         "result_status": "settled",
                         "actual_a": local["home_score"],
                         "actual_b": local["away_score"],
                         "winner_side": local["winner_side"],
-                        "orientation": "CANONICAL",
-                        "next_poll_at": next_poll_at(state=state, request_count=0).isoformat().replace("+00:00", "Z"),
+                        "orientation": local["orientation"],
+                        "next_poll_at": next_poll_at(state=LOCAL_RESULT_PRESENT, request_count=0).isoformat().replace("+00:00", "Z"),
                         "settled": True,
                     }
                 )
-                classified[state] = classified.get(state, 0) + 1
-                processed += 1
+                classified[LOCAL_RESULT_PRESENT] = classified.get(LOCAL_RESULT_PRESENT, 0) + 1
                 continue
 
+            # -------- provider sweep result --------
             provider_result = feed_events.get(provider_event_id) if provider_event_id else None
-            state = self.classify_acquisition_state(
-                has_local_result=False,
-                provider_event_id=provider_event_id,
-                provider_batch=(
-                    ProviderResultBatch(
-                        request_kind="RESULT",
-                        events_requested=1,
-                        events_returned=1,
-                        ok=True,
-                        events=(provider_result,),
-                    )
-                    if provider_result is not None
-                    else None
-                ),
-                provider_status=provider_result.status if provider_result is not None else None,
-            )
-            # Distinguish genuinely-requested empty (sweep covered the window)
-            # from never-requested: if the event is within the swept window but
-            # absent, that IS provider-empty evidence for the recent window.
-            if state == LOCAL_RESULT_MISSING_NOT_REQUESTED and provider_event_id is None:
+            if provider_result is not None:
+                state = PROVIDER_RESULT_AVAILABLE
+            elif sweep is None:
+                state = LOCAL_RESULT_MISSING_NOT_REQUESTED
+            elif provider_event_id is None:
                 state = PROVIDER_EVENT_IDENTITY_MISMATCH
-            elif provider_result is None:
-                if self._event_in_window(event, now, recent_window_hours):
-                    state = PROVIDER_RESULT_REQUESTED_EMPTY
-                else:
-                    state = LOCAL_RESULT_MISSING_NOT_REQUESTED
+            elif not sweep_successful:
+                state = PROVIDER_RESULT_ERROR  # failed sweep must NOT be "empty"
+            elif not sweep_schema_understood:
+                state = PROVIDER_RESULT_SCHEMA_UNKNOWN
+            elif self._event_in_window(event, now, recent_window_hours):
+                state = PROVIDER_RESULT_REQUESTED_EMPTY
+            else:
+                state = LOCAL_RESULT_MISSING_NOT_REQUESTED
 
             row = {
                 "canonical_event_id": canonical_event_id,
@@ -603,50 +762,84 @@ class TableTennisResultAcquisitionService:
             self._store.upsert_result_acquisition(row)
             classified[state] = classified.get(state, 0) + 1
 
-            if state not in (PROVIDER_RESULT_AVAILABLE,):
-                if state in (PROVIDER_RESULT_ERROR, PROVIDER_RESULT_SCHEMA_UNKNOWN, PROVIDER_EVENT_IDENTITY_MISMATCH):
-                    errors.append(f"{canonical_event_id}: {state}")
+            if state == PROVIDER_RESULT_AVAILABLE:
+                normalized = self.normalize_result(event, provider_result)
+                if normalized is None:
+                    classified[PROVIDER_EVENT_IDENTITY_MISMATCH] = classified.get(PROVIDER_EVENT_IDENTITY_MISMATCH, 0) + 1
+                    self._store.upsert_result_acquisition(dict(row, acquisition_state=PROVIDER_EVENT_IDENTITY_MISMATCH))
+                    continue
+                if normalized.get("conflict"):
+                    classified[RESULT_RECONCILIATION_REQUIRED] = classified.get(RESULT_RECONCILIATION_REQUIRED, 0) + 1
+                    self._store.upsert_result_acquisition(dict(row, acquisition_state=RESULT_RECONCILIATION_REQUIRED))
+                    continue
+                if not normalized["scores_present"]:
+                    classified[PROVIDER_RESULT_SCHEMA_UNKNOWN] = classified.get(PROVIDER_RESULT_SCHEMA_UNKNOWN, 0) + 1
+                    self._store.upsert_result_acquisition(dict(row, acquisition_state=PROVIDER_RESULT_SCHEMA_UNKNOWN))
+                    continue
+                acquired += 1
+                if normalized["state"] == RESULT_STATE_FINAL and normalized["winner_side"] is not None:
+                    settled += self._settle_event(event, normalized)
+                    scores += self._score_event(event, normalized)
+                    row.update(
+                        acquisition_state=LOCAL_RESULT_PRESENT,
+                        result_status="settled",
+                        actual_a=normalized["home_score"],
+                        actual_b=normalized["away_score"],
+                        winner_side=normalized["winner_side"],
+                        orientation=normalized["orientation"],
+                        settled=True,
+                    )
+                else:
+                    row.update(
+                        acquisition_state=PROVIDER_RESULT_AVAILABLE,
+                        result_status=normalized["state"],
+                        actual_a=normalized.get("home_score"),
+                        actual_b=normalized.get("away_score"),
+                        winner_side=normalized.get("winner_side"),
+                        orientation=normalized.get("orientation"),
+                    )
+                self._store.upsert_result_acquisition(row)
                 continue
 
-            normalized = self.normalize_result(event, provider_result)
-            if normalized is None:
-                classified[PROVIDER_EVENT_IDENTITY_MISMATCH] = classified.get(PROVIDER_EVENT_IDENTITY_MISMATCH, 0) + 1
-                self._store.upsert_result_acquisition(dict(row, acquisition_state=PROVIDER_EVENT_IDENTITY_MISMATCH))
-                continue
-            if normalized.get("conflict"):
-                classified[RESULT_RECONCILIATION_REQUIRED] = classified.get(RESULT_RECONCILIATION_REQUIRED, 0) + 1
-                self._store.upsert_result_acquisition(dict(row, acquisition_state=RESULT_RECONCILIATION_REQUIRED))
-                continue
-            if not normalized["scores_present"]:
-                classified[PROVIDER_RESULT_SCHEMA_UNKNOWN] = classified.get(PROVIDER_RESULT_SCHEMA_UNKNOWN, 0) + 1
-                self._store.upsert_result_acquisition(dict(row, acquisition_state=PROVIDER_RESULT_SCHEMA_UNKNOWN))
-                continue
-
-            acquired += 1
-            if normalized["state"] == RESULT_STATE_FINAL and normalized["winner_side"] is not None:
-                settled_rows = self._settle_event(event, normalized)
-                settled += settled_rows
-                scores += self._score_event(event, normalized)
-                row.update(
-                    acquisition_state=LOCAL_RESULT_PRESENT,
-                    result_status="settled",
-                    actual_a=normalized["home_score"],
-                    actual_b=normalized["away_score"],
-                    winner_side=normalized["winner_side"],
-                    orientation=normalized["orientation"],
-                    settled=True,
-                )
-            else:
-                row.update(
-                    acquisition_state=PROVIDER_RESULT_AVAILABLE,
-                    result_status=normalized["state"],
-                    actual_a=normalized.get("home_score"),
-                    actual_b=normalized.get("away_score"),
-                    winner_side=normalized.get("winner_side"),
-                    orientation=normalized.get("orientation"),
-                )
-            self._store.upsert_result_acquisition(row)
-            processed += 1
+            # -------- per-event fallback (P4/P5) --------
+            if state == PROVIDER_RESULT_REQUESTED_EMPTY and provider_event_id is not None and self._fallback_eligible(event, fallback_limit, fallback_used):
+                fallback_used += 1
+                fb = self._feed.fetch_event_result(provider_event_id)
+                if fb.ok and fb.events:
+                    fb_event = fb.events[0]
+                    if not fb_event.schema_ok:
+                        classified[PROVIDER_RESULT_SCHEMA_UNKNOWN] = classified.get(PROVIDER_RESULT_SCHEMA_UNKNOWN, 0) + 1
+                        self._store.upsert_result_acquisition(dict(row, acquisition_state=PROVIDER_RESULT_SCHEMA_UNKNOWN, request_count=2))
+                    elif fb_event.provider_event_id and fb_event.provider_event_id != provider_event_id:
+                        classified[PROVIDER_EVENT_IDENTITY_MISMATCH] = classified.get(PROVIDER_EVENT_IDENTITY_MISMATCH, 0) + 1
+                        self._store.upsert_result_acquisition(dict(row, acquisition_state=PROVIDER_EVENT_IDENTITY_MISMATCH, request_count=2))
+                    else:
+                        normalized = self.normalize_result(event, fb_event)
+                        if normalized is None:
+                            classified[PROVIDER_EVENT_IDENTITY_MISMATCH] = classified.get(PROVIDER_EVENT_IDENTITY_MISMATCH, 0) + 1
+                            self._store.upsert_result_acquisition(dict(row, acquisition_state=PROVIDER_EVENT_IDENTITY_MISMATCH, request_count=2))
+                        elif normalized.get("conflict"):
+                            classified[RESULT_RECONCILIATION_REQUIRED] = classified.get(RESULT_RECONCILIATION_REQUIRED, 0) + 1
+                            self._store.upsert_result_acquisition(dict(row, acquisition_state=RESULT_RECONCILIATION_REQUIRED, request_count=2))
+                        elif not normalized["scores_present"]:
+                            classified[PROVIDER_RESULT_SCHEMA_UNKNOWN] = classified.get(PROVIDER_RESULT_SCHEMA_UNKNOWN, 0) + 1
+                            self._store.upsert_result_acquisition(dict(row, acquisition_state=PROVIDER_RESULT_SCHEMA_UNKNOWN, request_count=2))
+                        else:
+                            acquired += 1
+                            if normalized["state"] == RESULT_STATE_FINAL and normalized["winner_side"] is not None:
+                                settled += self._settle_event(event, normalized)
+                                scores += self._score_event(event, normalized)
+                                classified[LOCAL_RESULT_PRESENT] = classified.get(LOCAL_RESULT_PRESENT, 0) + 1
+                                self._store.upsert_result_acquisition(dict(row, acquisition_state=LOCAL_RESULT_PRESENT, result_status="settled", actual_a=normalized["home_score"], actual_b=normalized["away_score"], winner_side=normalized["winner_side"], orientation=normalized["orientation"], settled=True, request_count=2))
+                            else:
+                                classified[PROVIDER_RESULT_AVAILABLE] = classified.get(PROVIDER_RESULT_AVAILABLE, 0) + 1
+                                self._store.upsert_result_acquisition(dict(row, acquisition_state=PROVIDER_RESULT_AVAILABLE, result_status=normalized["state"], actual_a=normalized.get("home_score"), actual_b=normalized.get("away_score"), winner_side=normalized.get("winner_side"), orientation=normalized.get("orientation"), request_count=2))
+                elif fb.ok and fb.status_code == 404:
+                    classified[PROVIDER_RESULT_OUTSIDE_RETENTION] = classified.get(PROVIDER_RESULT_OUTSIDE_RETENTION, 0) + 1
+                    self._store.upsert_result_acquisition(dict(row, acquisition_state=PROVIDER_RESULT_OUTSIDE_RETENTION, request_count=2, next_poll_at=next_poll_at(state=PROVIDER_RESULT_OUTSIDE_RETENTION, request_count=1).isoformat().replace("+00:00", "Z")))
+                elif not fb.ok:
+                    classified[PROVIDER_RESULT_ERROR] = classified.get(PROVIDER_RESULT_ERROR, 0) + 1
+                    self._store.upsert_result_acquisition(dict(row, acquisition_state=PROVIDER_RESULT_ERROR, request_count=2, next_poll_at=next_poll_at(state=PROVIDER_RESULT_ERROR, request_count=1).isoformat().replace("+00:00", "Z")))
 
         return {
             "classified": classified,
@@ -654,29 +847,85 @@ class TableTennisResultAcquisitionService:
             "acquired": acquired,
             "settled": settled,
             "scores": scores,
+            "fallback_used": fallback_used,
             "errors": errors[:20],
             "summary": f"result acquisition: {acquired} acquired, {settled} settled, {scores} scored",
         }
 
+    def _classify_local_result(self, event: dict[str, Any], local: dict[str, Any]) -> str:
+        """P7: run the same canonical orientation resolver for local results.
+
+        A local tt_match_results row is evidence, not canonical truth. Only
+        CANONICAL/REVERSED may settle; CONFLICT/UNKNOWN -> REVIEW_REQUIRED.
+        """
+        orientation = local.get("orientation")
+        if orientation in ("CANONICAL", "REVERSED"):
+            return RESULT_STATE_FINAL
+        return RESULT_STATE_REVIEW_REQUIRED
+
+    def _fallback_eligible(self, event: dict[str, Any], fallback_limit: int | None, fallback_used: int) -> bool:
+        if fallback_limit is not None and fallback_used >= fallback_limit:
+            return False
+        # A per-event 404 is only worth one probe per recent sweep; retention
+        # policy is enforced by next_poll_at cadence (caller passes fallback_limit).
+        return event.get("provider_event_id") is not None
+
     def _local_results_map(self, events: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        """Read local result rows with provenance and resolve orientation (P7).
+
+        A local row is evidence, not canonical truth: participant identity and
+        scores are loaded, then the SAME canonical orientation resolver used
+        for provider results decides CANONICAL / REVERSED / CONFLICT / UNKNOWN.
+        """
         if not events:
             return {}
         with self._database.connect() as connection, connection.cursor() as cursor:
             placeholders = ",".join("%s" for _ in events)
             cursor.execute(
-                f"SELECT event_key, home_score, away_score FROM tt_match_results "
-                f"WHERE event_key IN ({placeholders})",
+                f"SELECT event_key, league_key, home_participant_key, away_participant_key, "
+                f"home_score, away_score, completed_at, source_provider, raw_ref "
+                f"FROM tt_match_results WHERE event_key IN ({placeholders})",
                 [e["canonical_event_id"] for e in events],
             )
-            out: dict[str, dict[str, Any]] = {}
-            for event_key, hs, aws in cursor.fetchall():
-                hs, aws = int(hs), int(aws)
-                out[str(event_key)] = {
-                    "home_score": hs,
-                    "away_score": aws,
-                    "winner_side": result_winner(home_score=hs, away_score=aws),
-                }
-            return out
+            rows = list(cursor.fetchall())
+            # participant display names per canonical event
+            cursor.execute(
+                f"SELECT canonical_event_id, player_a_name, player_b_name FROM tt_forward_events "
+                f"WHERE canonical_event_id IN ({placeholders})",
+                [e["canonical_event_id"] for e in events],
+            )
+            names = {str(row[0]): (str(row[1] or ""), str(row[2] or "")) for row in cursor.fetchall()}
+        from defend_markets.quant.market import participant_orientation
+
+        out: dict[str, dict[str, Any]] = {}
+        for event_key, league, hk, ak, hs, aws, completed, source_provider, raw_ref in rows:
+            hs, aws = int(hs), int(aws)
+            canonical_names = names.get(str(event_key), ("", ""))
+            canonical_a, canonical_b = canonical_names
+            # Use participant keys as fallback for canonical identity when names absent.
+            orientation = "UNKNOWN"
+            if canonical_a and canonical_b:
+                orientation, _, _ = participant_orientation(
+                    provider_home=str(hk or ""),
+                    provider_away=str(ak or ""),
+                    canonical_a=canonical_a,
+                    canonical_b=canonical_b,
+                )
+            else:
+                # no display names: orientation UNKNOWN (never assumed canonical)
+                orientation = "UNKNOWN"
+            out[str(event_key)] = {
+                "home_score": hs,
+                "away_score": aws,
+                "winner_side": result_winner(home_score=hs, away_score=aws),
+                "orientation": orientation,
+                "source_provider": str(source_provider or ""),
+                "source_result_id": str(raw_ref or "") or str(event_key),
+                "completed_at": completed,
+                "participant_home": str(hk or ""),
+                "participant_away": str(ak or ""),
+            }
+        return out
 
     def _has_final_settlement(self, canonical_event_id: str) -> bool:
         settlements = self._store.list_settlements(limit=100000)
@@ -692,10 +941,15 @@ class TableTennisResultAcquisitionService:
         return (now - commence).total_seconds() <= window_hours * 3600
 
     def _settle_event(self, event: dict[str, Any], normalized: dict[str, Any]) -> int:
-        """Insert a FINAL settlement (P7) without overwriting prior revisions."""
+        """Insert a FINAL settlement (P7) without overwriting prior revisions.
+
+        P11: provenance fields are persisted (provider_event_id, source_result_id,
+        raw_payload_hash, observed_at, orientation, winner) — never left null
+        merely because scores are known.
+        """
         canonical_event_id = event["canonical_event_id"]
         provider_event_id = normalized["provider_event_id"] or event.get("provider_event_id")
-        source_result_id = f"oaio:{provider_event_id}" if provider_event_id else canonical_event_id
+        source_result_id = normalized.get("provider_result_id") or (f"oaio:{provider_event_id}" if provider_event_id else canonical_event_id)
         created = self._store.insert_settlement(
             {
                 "canonical_event_id": canonical_event_id,
@@ -707,7 +961,9 @@ class TableTennisResultAcquisitionService:
                 "source_result_id": source_result_id,
                 "source_provider": "odds_api_io",
                 "observed_at": normalized.get("completed_at"),
+                "raw_payload_hash": normalized.get("raw_payload_hash"),
                 "orientation_verified": normalized["orientation"] in ("CANONICAL", "REVERSED"),
+                "provider_result_id": normalized.get("provider_result_id"),
             }
         )
         return 1 if created else 0
@@ -765,41 +1021,138 @@ def _parse_dt(value: Any) -> datetime | None:
 
 
 def forward_evidence_summary(store: Any) -> dict[str, Any]:
-    """P11: unique canonical-event metrics for official forward predictions."""
+    """P14: unique canonical-event metrics for official forward predictions.
+
+    The scoring unit is ONE official score per (canonical event, model identity).
+    Multiple score rows for the same event/model are deduplicated so the
+    denominator cannot be inflated, and M5-vs-shadow pairing is by exact event
+    with a uniqueness assertion (never an arbitrary bucket[0]).
+    """
     scores = store.list_forward_scores(limit=100000)
-    m5: dict[str, list[dict[str, Any]]] = {}
-    shadow: dict[str, list[dict[str, Any]]] = {}
+    m5: dict[str, dict[str, dict[str, Any]]] = {}
+    shadow: dict[str, dict[str, dict[str, Any]]] = {}
     for s in scores:
         event = str(s["canonical_event_id"])
         model = str(s["model_id"])
+        key = str(s.get("model_id"))
         target = m5 if "M5" in model.upper() else shadow
-        target.setdefault(event, []).append(s)
-    def _summarize(bucket: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
-        events = list(bucket.keys())
-        if not events:
+        target.setdefault(event, {}).setdefault(key, s)
+
+    def _summarize(bucket: dict[str, dict[str, dict[str, Any]]]) -> dict[str, Any]:
+        # one scoring unit per event per model identity
+        units = [s for models in bucket.values() for s in models.values()]
+        events = len(bucket)
+        if not units:
             return {"events": 0, "brier": None, "logloss": None}
-        n = len(events)
-        brier = sum(float(s["brier"]) for rows in bucket.values() for s in rows) / n
-        logloss = sum(float(s["logloss"]) for rows in bucket.values() for s in rows) / n
-        return {"events": n, "brier": round(brier, 8), "logloss": round(logloss, 8)}
+        n = len(units)
+        brier = sum(float(s["brier"]) for s in units) / n
+        logloss = sum(float(s["logloss"]) for s in units) / n
+        return {"events": events, "brier": round(brier, 8), "logloss": round(logloss, 8)}
+
     m5_summary = _summarize(m5)
     shadow_summary = _summarize(shadow)
     paired_events = set(m5) & set(shadow)
     paired = None
     if paired_events:
-        m5_pairs = [float(bucket[e][0]["brier"]) for e in paired_events for bucket in (m5,)]
-        shadow_pairs = [float(bucket[e][0]["brier"]) for e in paired_events for bucket in (shadow,)]
-        m5_brier = sum(m5_pairs) / len(m5_pairs)
-        shadow_brier = sum(shadow_pairs) / len(shadow_pairs)
-        paired = {
-            "events": len(paired_events),
-            "m5_brier": round(m5_brier, 8),
-            "shadow_brier": round(shadow_brier, 8),
-            "brier_delta": round(m5_brier - shadow_brier, 8),
-        }
+        m5_vals: list[float] = []
+        shadow_vals: list[float] = []
+        for event in paired_events:
+            m5_models = m5[event]
+            shadow_models = shadow[event]
+            # uniqueness assertion: one M5 and one shadow identity per event
+            if len(m5_models) != 1 or len(shadow_models) != 1:
+                continue
+            m5_vals.append(float(next(iter(m5_models.values()))["brier"]))
+            shadow_vals.append(float(next(iter(shadow_models.values()))["brier"]))
+        if m5_vals:
+            m5_brier = sum(m5_vals) / len(m5_vals)
+            shadow_brier = sum(shadow_vals) / len(shadow_vals)
+            paired = {
+                "events": len(m5_vals),
+                "m5_brier": round(m5_brier, 8),
+                "shadow_brier": round(shadow_brier, 8),
+                "brier_delta": round(m5_brier - shadow_brier, 8),
+            }
     return {
         "m5": m5_summary,
         "shadow": shadow_summary,
         "paired": paired,
         "policy_versions": {"logloss_eps": LOGLOSS_EPSILON_POLICY, "scoring": SCORING_POLICY_VERSION},
     }
+
+
+def settle_acquired_results(store: Any) -> dict[str, Any]:
+    """P0: the production settlement job.
+
+    Consumes already-acquired, normalized canonical results (from the
+    acquisition ledger) and settles those that are FINAL with a verified
+    orientation, then scores official forward predictions. This is the ONLY
+    production settlement authority; it never queries tt_match_results directly
+    and never labels a local miss as provider-empty.
+    """
+    acquisitions = store.list_result_acquisition(limit=100000)
+    settled = 0
+    scores = 0
+    for acq in acquisitions:
+        state = str(acq.get("acquisition_state") or "")
+        if state not in (LOCAL_RESULT_PRESENT, PROVIDER_RESULT_AVAILABLE):
+            continue
+        if str(acq.get("result_status") or "") not in ("settled", "FINAL"):
+            continue
+        winner_side = acq.get("winner_side")
+        if winner_side is None:
+            continue
+        orientation = str(acq.get("orientation") or "")
+        if orientation not in ("CANONICAL", "REVERSED"):
+            continue
+        canonical_event_id = str(acq["canonical_event_id"])
+        if store.latest_final_settlement(canonical_event_id) is not None:
+            continue
+        provider_event_id = acq.get("provider_event_id")
+        provider_result_id = acq.get("provider_result_id") or provider_event_id
+        source_result_id = provider_result_id or (f"oaio:{provider_event_id}" if provider_event_id else canonical_event_id)
+        created = store.insert_settlement(
+            {
+                "canonical_event_id": canonical_event_id,
+                "provider_event_id": provider_event_id,
+                "status": RESULT_STATE_FINAL,
+                "actual_a": acq.get("actual_a"),
+                "actual_b": acq.get("actual_b"),
+                "winner_side": winner_side,
+                "source_result_id": source_result_id,
+                "source_provider": acq.get("provider") or "odds_api_io",
+                "observed_at": None,
+                "raw_payload_hash": acq.get("raw_provenance_hash"),
+                "orientation_verified": True,
+                "provider_result_id": provider_result_id,
+            }
+        )
+        if created:
+            settled += 1
+        settlement = store.latest_final_settlement(canonical_event_id)
+        if settlement is None:
+            continue
+        actual = 1.0 if winner_side == "A" else 0.0
+        official = store.list_official_predictions(limit=100000)
+        for p in official:
+            if str(p["canonical_event_id"]) != canonical_event_id:
+                continue
+            brier, logloss, clipped = score_prediction(probability_a=float(p["probability_a"]), actual_outcome=actual)
+            scored = store.insert_forward_score(
+                {
+                    "canonical_event_id": canonical_event_id,
+                    "official_prediction_id": p["official_prediction_id"],
+                    "model_id": p["model_id"],
+                    "settlement_id": settlement["settlement_id"],
+                    "probability_a": float(p["probability_a"]),
+                    "actual_outcome": actual,
+                    "brier": round(brier, 8),
+                    "logloss": round(logloss, 8),
+                    "effective_clipped_p": clipped,
+                    "logloss_eps_policy": LOGLOSS_EPSILON_POLICY,
+                    "scoring_policy_version": SCORING_POLICY_VERSION,
+                }
+            )
+            if scored:
+                scores += 1
+    return {"settled": settled, "scores": scores, "summary": f"settlement: {settled} settled, {scores} scored"}

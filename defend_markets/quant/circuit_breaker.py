@@ -24,7 +24,13 @@ _HALF_OPEN_ALLOWED_FAILURES = 1
 
 
 class ProviderCircuitBreaker:
-    """DB-persisted circuit breaker per (provider, function_name)."""
+    """DB-persisted circuit breaker per (provider, function_name).
+
+    P22: HALF_OPEN permits EXACTLY ONE probe at a time via an atomic lease;
+    concurrent callers are deferred. P23: auth/config failures open
+    OPEN_CONFIGURATION (no endless retry); a 404 event lookup is result/retention
+    evidence and must NOT trip the provider-system breaker.
+    """
 
     def __init__(self, store: Any, *, now: datetime | None = None) -> None:
         self._store = store
@@ -75,10 +81,10 @@ class ProviderCircuitBreaker:
             return False
         if row["state"] == STATE_OPEN_CONFIGURATION:
             return False
-        # HALF_OPEN allows a single probe request.
-        if row["state"] == STATE_HALF_OPEN and row.get("consecutive_failures", 0) > 0:
-            # allow exactly one probe (existing failures remain until success)
-            return True
+        if row["state"] == STATE_HALF_OPEN:
+            # HALF_OPEN requires an atomic probe lease (P22): only the caller
+            # that wins the lease may probe.
+            return self._store.try_claim_half_open_probe(provider, function_name)
         return True
 
     def record_success(self, provider: str, function_name: str) -> None:

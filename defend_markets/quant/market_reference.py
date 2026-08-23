@@ -85,6 +85,84 @@ def persist_market_reference(store: Any, rows: list[dict[str, Any]], *, commence
     return {"stored": True, "reference": reference}
 
 
+def select_coherent_snapshot(
+    rows: list[dict[str, Any]],
+    *,
+    commence_at: Any,
+    bookmaker: str | None = None,
+    cutoff_seconds: float = MARKET_REFERENCE_CUTOFF_SECONDS,
+) -> dict[str, dict[str, Any]] | None:
+    """P17: select a COHERENT two-sided market snapshot.
+
+    Side A and side B must come from the same bookmaker, same market, same
+    period, same line and the same snapshot/poll, strictly pre-cutoff. This
+    prevents combining side A from one timestamp/book with side B from another.
+    """
+    commence = _parse(commence_at)
+    if commence is None:
+        return None
+    cutoff = commence - timedelta(seconds=cutoff_seconds)
+    candidates = []
+    for row in rows:
+        observed = _parse(row.get("observed_at"))
+        if observed is None or observed >= cutoff:
+            continue
+        if bookmaker is not None and str(row.get("bookmaker")) != bookmaker:
+            continue
+        candidates.append(row)
+    # group by (book, market, period, line, snapshot key) then require both A/B
+    groups: dict[tuple[str, str, str, str], dict[str, dict[str, Any]]] = {}
+    for row in candidates:
+        key = (
+            str(row.get("bookmaker") or ""),
+            str(row.get("market") or ""),
+            str(row.get("period") or "FULL_MATCH"),
+            str(row.get("line") or ""),
+        )
+        side = str(row.get("side") or "")
+        groups.setdefault(key, {})[side] = row
+    # pick the latest coherent group that has both sides
+    coherent: list[tuple[datetime, dict[str, dict[str, Any]]]] = []
+    for key, sides in groups.items():
+        if "A" not in sides or "B" not in sides:
+            continue
+        latest = max(
+            (_parse(sides[s]["observed_at"]) or datetime.min.replace(tzinfo=timezone.utc))
+            for s in ("A", "B")
+        )
+        coherent.append((latest, sides))
+    if not coherent:
+        return None
+    coherent.sort(key=lambda item: item[0], reverse=True)
+    return coherent[0][1]
+
+
+def persist_coherent_reference(store: Any, rows: list[dict[str, Any]], *, commence_at: Any,
+                               bookmaker: str | None = None) -> dict[str, Any]:
+    """P17/P18: persist a coherent, frozen two-sided market reference."""
+    snapshot = select_coherent_snapshot(rows, commence_at=commence_at, bookmaker=bookmaker)
+    if snapshot is None:
+        return {"stored": False, "reason": "no coherent pre-cutoff snapshot"}
+    now = datetime.now(timezone.utc)
+    stored = []
+    for side, row in snapshot.items():
+        reference = {
+            "canonical_event_id": str(row.get("canonical_event_id")),
+            "policy_version": MARKET_REFERENCE_POLICY_VERSION,
+            "market": str(row.get("market")),
+            "side": str(row.get("side")),
+            "bookmaker": str(row.get("bookmaker")),
+            "price": row.get("price"),
+            "observation_id": row.get("observation_id"),
+            "referenced_at": now.isoformat().replace("+00:00", "Z"),
+            "frozen": True,
+        }
+        store.upsert_market_reference(reference)
+        stored.append(reference)
+    store.freeze_market_reference(str(snapshot.get("A", snapshot.get("B", {})).get("canonical_event_id")))
+    return {"stored": True, "references": stored}
+
+
 def market_baseline_metrics(store: Any, *, model_scores: list[dict[str, Any]]) -> dict[str, Any]:
     """P13: compare model probability against the no-vig market probability.
 

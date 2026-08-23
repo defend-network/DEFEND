@@ -588,7 +588,7 @@ class MarketsIntelligenceOrchestrator:
         return None
 
     def run_result_discovery(self) -> dict[str, Any]:
-        """P9: durable RESULT_DISCOVERY job."""
+        """P9/P19: durable RESULT_DISCOVERY job (quota + circuit governed)."""
         database = self._runtime_database()
         if database is None:
             return {"ran": False, "reason": "no markets database"}
@@ -599,10 +599,14 @@ class MarketsIntelligenceOrchestrator:
             if not key:
                 return {"summary": "result discovery: no provider key", "result": {"ok": False, "reason": "no provider key"}}
             from defend_markets.quant.circuit_breaker import ProviderCircuitBreaker
+            from defend_markets.quant.quota import CLASS_RESULT, RequestQuotaGovernor
 
             breaker = ProviderCircuitBreaker(self._store)
             if not breaker.allow_request("odds_api_io", "result"):
                 return {"summary": "result discovery: breaker OPEN", "result": {"ok": False, "reason": "circuit open"}}
+            governor = RequestQuotaGovernor(self._store)
+            if not governor.consume(CLASS_RESULT):
+                return {"summary": "result discovery: result quota exhausted", "result": {"ok": False, "reason": "quota exhausted"}}
             feed = OddsApiIOResultAdapter(key, store=self._store)
             service = TableTennisResultAcquisitionService(database, self._store, feed)
             try:
@@ -618,15 +622,16 @@ class MarketsIntelligenceOrchestrator:
         return self._scheduler.run_due("RESULT_DISCOVERY", handler=handler)
 
     def run_settlement(self) -> dict[str, Any]:
-        """P9: durable SETTLEMENT job (settles anything newly available)."""
-        database = self._runtime_database()
-        if database is None:
-            return {"ran": False, "reason": "no markets database"}
-        from defend_markets.quant.forward_evidence import settlement_catchup
+        """P0: durable SETTLEMENT job (consumes already-acquired canonical results).
+
+        This is the ONLY production settlement authority. The legacy
+        settlement_catchup is NOT invoked here (it violates result truth).
+        """
+        from defend_markets.quant.result_acquisition import settle_acquired_results
 
         def handler() -> dict[str, Any]:
-            outcome = settlement_catchup(database, self._store)
-            return {"summary": f"settlement: {outcome.get('settled', 0)} settled, {outcome.get('scores', 0)} scored", "result": outcome}
+            outcome = settle_acquired_results(self._store)
+            return {"summary": outcome.get("summary", "settlement ran"), "result": outcome}
 
         return self._scheduler.run_due("SETTLEMENT", handler=handler)
 
@@ -698,6 +703,8 @@ class MarketsIntelligenceOrchestrator:
                     canonical_event_id=event_id,
                     settlement_id=int(settlement["settlement_id"]),
                     actual_winner_side=str(settlement.get("winner_side") or ""),
+                    result_status=str(settlement.get("status") or "FINAL"),
+                    settlement_revision=int(settlement.get("revision") or 1),
                 )
                 settled_any += outcome["settled"]
             return {"summary": f"paper arb settlement: {settled_any} tickets settled", "result": {"settled": settled_any}}
@@ -705,19 +712,62 @@ class MarketsIntelligenceOrchestrator:
         return self._scheduler.run_due("PAPER_ARB_SETTLEMENT", handler=handler)
 
     def arbitrage_status(self) -> dict[str, Any]:
-        """P53/P61: sports arb observability."""
+        """P37: sports arb observability — real metrics, no hard-coded nulls."""
         opportunities = self._store.list_arb_opportunities(limit=5000)
         active = [o for o in opportunities if o.get("status") == "ACTIVE"]
         math = [o for o in opportunities if o.get("classification") in ("MATHEMATICAL_ARB", "EXECUTABLE_ARB")]
         paper = self._store.list_paper_arb_tickets(limit=5000)
         profiles = {p["bookmaker"]: p for p in self._store.list_book_access_profiles()}
+        verifications = self._store.list_arb_verifications(limit=5000)
+        # current quotes / distinct books from the canonical feed
+        quotes_current = 0
+        distinct_books: list[str] = []
+        database = self._runtime_database()
+        if database is not None:
+            from defend_markets.quant.arb_feed import CanonicalOddsFeed
+
+            feed = CanonicalOddsFeed(database)
+            quotes = feed.quotes_for_events()
+            quotes_current = len(quotes)
+            distinct_books = sorted({q.bookmaker for q in quotes})
+        two_book_events = 0
+        if database is not None:
+            from defend_markets.quant.arb_feed import CanonicalOddsFeed
+
+            feed = CanonicalOddsFeed(database)
+            quotes = feed.quotes_for_events()
+            by_event: dict[str, set[str]] = {}
+            for q in quotes:
+                by_event.setdefault(q.canonical_event_id, set()).add(q.bookmaker)
+            two_book_events = sum(1 for books in by_event.values() if len(books) >= 2)
+        # median arb lifetime from detections (first_seen -> expired)
+        lifetimes: list[float] = []
+        for opp in opportunities:
+            fs = opp.get("first_seen_at")
+            exp = opp.get("expired_at")
+            if fs and exp:
+                from defend_markets.quant.market import parse_dt
+
+                f = parse_dt(fs)
+                e = parse_dt(exp)
+                if f is not None and e is not None and e >= f:
+                    lifetimes.append((e - f).total_seconds())
+        median_lifetime = None
+        if lifetimes:
+            lifetimes.sort()
+            mid = len(lifetimes) // 2
+            median_lifetime = lifetimes[mid] if len(lifetimes) % 2 else (lifetimes[mid - 1] + lifetimes[mid]) / 2
         return {
             "arb_opportunities_24h": len(opportunities),
             "current_active_arbs": len(active),
             "current_mathematical_arbs": len(math),
             "paper_actionable_arbs": len([o for o in math if o.get("classification") == "EXECUTABLE_ARB"]),
             "paper_arb_tickets": len(paper),
-            "median_arb_lifetime": None,
+            "quotes_current": quotes_current,
+            "distinct_books": distinct_books,
+            "two_book_events": two_book_events,
+            "arb_verifications": len(verifications),
+            "median_arb_lifetime": round(median_lifetime, 3) if median_lifetime is not None else None,
             "owner_access_profiles": profiles,
             "last_arb_scan": self._scheduler.status("ARB_SCAN"),
         }
@@ -736,8 +786,14 @@ class MarketsIntelligenceOrchestrator:
         from defend_markets.quant.result_acquisition import forward_evidence_summary
 
         scores = forward_evidence_summary(self._store)
+        unsettled_states = ("LOCAL_RESULT_MISSING_NOT_REQUESTED", "PROVIDER_RESULT_REQUESTED_EMPTY", "PROVIDER_EVENT_NOT_FOUND", "PROVIDER_RESULT_OUTSIDE_RETENTION", "PROVIDER_RESULT_ERROR", "PROVIDER_RESULT_SCHEMA_UNKNOWN")
+        unsettled_count = sum(by_state.get(s, 0) for s in unsettled_states)
+        settlements = self._store.list_settlements(limit=100000)
+        last_settlement = max((s.get("created_at") for s in settlements), default=None)
+        fwd_scores = self._store.list_forward_scores(limit=100000)
+        last_forward_score = max((s.get("created_at") for s in fwd_scores), default=None)
         return {
-            "unsettled_past_events": sum(1 for s in by_state if s in ("LOCAL_RESULT_MISSING_NOT_REQUESTED", "PROVIDER_RESULT_REQUESTED_EMPTY", "PROVIDER_EVENT_NOT_FOUND", "PROVIDER_RESULT_ERROR", "PROVIDER_RESULT_SCHEMA_UNKNOWN")),
+            "unsettled_past_events": unsettled_count,
             "acquisition_states": by_state,
             "result_requests_used": len(requests),
             "result_requests_ok": ok_requests,
@@ -745,10 +801,10 @@ class MarketsIntelligenceOrchestrator:
             "result_events_returned": returned,
             "result_request_yield": round(yield_rate, 4) if yield_rate is not None else None,
             "last_result_provider_call": requests[0]["observed_at"] if requests else None,
-            "last_settlement": None,
-            "last_forward_score": None,
+            "last_settlement": last_settlement,
+            "last_forward_score": last_forward_score,
             "forward_evidence": scores,
-            "settlements": len(self._store.list_settlements(limit=100000)),
+            "settlements": len(settlements),
         }
 
     def record_event_trigger(self, trigger_type: str, evidence: dict[str, Any], *, invoke: bool = False) -> dict[str, Any]:

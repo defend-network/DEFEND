@@ -64,11 +64,13 @@ class RequestQuotaGovernor:
         }
 
     def consume(self, request_class: str, *, amount: int = 1) -> bool:
-        allowed, state = self.check(request_class, amount=amount)
-        if not allowed:
-            return False
-        self._store.consume_quota(request_class, self._period_iso(), amount)
-        return True
+        """P20: atomic quota consumption.
+
+        The check-and-increment is a single atomic DB operation so two
+        concurrent workers cannot both spend the final available request.
+        """
+        self.ensure_budget(request_class)
+        return self._store.consume_quota_atomic(request_class, self._period_iso(), amount)
 
     def snapshot(self) -> dict[str, Any]:
         out = {}

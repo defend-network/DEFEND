@@ -204,8 +204,17 @@ def score_prediction(*, probability_a: float, actual_outcome: float) -> tuple[fl
 
 
 def settlement_catchup(database: Any, store: Any) -> dict[str, Any]:
-    """Find official-prediction events whose commence is past and classify
-    their settlement state, settling those with a real FINAL result."""
+    """DEPRECATED (M4.7.1): legacy settlement path.
+
+    This helper predates the result-acquisition truth model and MUST NOT be
+    called by any production scheduler or API path. It queries tt_match_results
+    only, labels a local miss RESULT_PROVIDER_EMPTY, does not validate
+    orientation, and uses prediction_id as provider_event_id. Production
+    settlement flows through CanonicalResultFeed -> ResultAcquisitionService
+    -> normalization -> orientation -> settlement -> scoring instead.
+
+    Kept only for historical/backward-compatible test fixtures.
+    """
     official = store.list_official_predictions(limit=100000)
     events = {str(p["canonical_event_id"]): p for p in official}
     if not events:

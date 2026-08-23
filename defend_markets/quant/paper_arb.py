@@ -104,28 +104,58 @@ class PaperArbStore:
             "reason": "mathematical arb detected; paper-only (no real wager)",
         }
 
-    def settle_for_event(self, *, canonical_event_id: str, settlement_id: int, actual_winner_side: str) -> dict[str, Any]:
-        """P46/P47: settle every PAPER_ARB ticket sharing the canonical event.
+    def settle_for_event(self, *, canonical_event_id: str, settlement_id: int, actual_winner_side: str, result_status: str = "FINAL", settlement_revision: int = 1) -> dict[str, Any]:
+        """P33-P36: settle every PAPER_ARB ticket sharing the canonical event.
 
-        A mathematically correct arb yields a balanced payout regardless of the
-        outcome; worst-case profit is used as the realized paper P/L invariant.
+        Uses the actual rounded ticket stakes/odds stored at decision time and
+        the canonical FINAL result to compute the winning leg, realized payout,
+        realized P/L and ROI. Never simply copies worst-case profit. VOID /
+        CANCELLED / ABANDONED / review-required results are not settled as a
+        normal win.
         """
         tickets = self._store.list_paper_arb_tickets(limit=5000)
         matched = [t for t in tickets if str(t.get("canonical_event_id")) == canonical_event_id]
         settled = 0
         for ticket in matched:
-            realized_payout = float(ticket.get("expected_return") or 0)
-            worst = float(ticket.get("worst_case_profit") or 0)
-            capital = float(ticket.get("constraints", {}).get("bankroll_by_book") or 0)
-            capital_allocated = sum(float(s) for s in ticket.get("stakes", []) if s)
-            roi = (worst / capital_allocated) if capital_allocated > 0 else 0
+            if ticket.get("settlement_id") is not None:
+                continue
+            # P35: void/cancelled/abandoned/review results never settle as a win.
+            if result_status in ("VOID", "CANCELLED", "ABANDONED", "REVIEW_REQUIRED", "SUPERSEDED"):
+                self._store.settle_paper_arb_ticket(
+                    str(ticket["opportunity_id"]),
+                    settlement_id=settlement_id,
+                    settlement_revision=settlement_revision,
+                    realized_payout=0.0,
+                    realized_pnl=0.0,
+                    roi=0.0,
+                    void_state=result_status,
+                )
+                settled += 1
+                continue
+            # P33/P34: settle actual legs from stored rounded stakes/odds.
+            legs = ticket.get("legs") or []
+            total_staked = Decimal("0")
+            winning_payout = Decimal("0")
+            for leg in legs:
+                stake = Decimal(str(leg.get("stake") or "0"))
+                odds = Decimal(str(leg.get("odds") or "0"))
+                total_staked += stake
+                side = str(leg.get("selection_side") or "")
+                # 2-way match winner: the winning leg is PARTICIPANT_A when A wins,
+                # PARTICIPANT_B when B wins.
+                if actual_winner_side == "A" and side == "PARTICIPANT_A":
+                    winning_payout += stake * odds
+                elif actual_winner_side == "B" and side == "PARTICIPANT_B":
+                    winning_payout += stake * odds
+            realized_pnl = winning_payout - total_staked
+            roi = (realized_pnl / total_staked) if total_staked > 0 else Decimal("0")
             self._store.settle_paper_arb_ticket(
                 str(ticket["opportunity_id"]),
                 settlement_id=settlement_id,
-                settlement_revision=1,
-                realized_payout=realized_payout,
-                realized_pnl=worst,
-                roi=roi,
+                settlement_revision=settlement_revision,
+                realized_payout=float(winning_payout),
+                realized_pnl=float(realized_pnl),
+                roi=float(roi),
                 void_state="SETTLED",
             )
             settled += 1
