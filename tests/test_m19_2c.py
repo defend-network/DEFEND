@@ -174,7 +174,7 @@ def test_missing_profile_makes_readiness_false(monkeypatch):
 def test_candidate_canary_launch_exact_fields():
     spec = LaunchSpec.candidate_canary()
     assert spec.label == CANDIDATE_CANARY_LABEL
-    assert spec.runtype == "ssh_proxy"
+    assert spec.runtype == "ssh_direct"
     assert spec.disk_gb == 200
     assert "pytorch" in spec.image
 

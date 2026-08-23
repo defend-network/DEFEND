@@ -900,16 +900,22 @@ def authorize_candidate_lifecycle(
     return True, "candidate lifecycle allowed"
 
 
-CANDIDATE_CANARY_LABEL = "defend-ai-qwen3-candidate-canary"
+CANDIDATE_CANARY_LABEL_PREFIX = "defend-ai-qwen3-canary"
+CANDIDATE_CANARY_LABEL = CANDIDATE_CANARY_LABEL_PREFIX  # legacy alias: prefix
 CANDIDATE_CANARY_PURPOSE = "TRAINING"
 CANDIDATE_CANARY_ROLE = "CANDIDATE_CANARY"
 
 
+def candidate_label_matches(label: str | None) -> bool:
+    return bool(label) and (label == CANDIDATE_CANARY_LABEL_PREFIX or label.startswith(CANDIDATE_CANARY_LABEL_PREFIX + "-"))
+
+
 def validate_candidate_canary_identity(*, launch_label: str | None, profile_id: str | None, purpose: str | None, role: str | None) -> tuple[bool, str]:
-    """Candidate launch identity must be fully cross-bound: launch label,
-    training profile, TRAINING purpose, and CANDIDATE_CANARY role must all match
-    exactly. Any mixed production/candidate identity is rejected."""
-    if launch_label != CANDIDATE_CANARY_LABEL:
+    """Candidate launch identity must be fully cross-bound: launch label (prefix
+    match on the run-scoped identity), training profile, TRAINING purpose, and
+    CANDIDATE_CANARY role must all match. Any mixed production/candidate identity
+    is rejected."""
+    if not candidate_label_matches(launch_label):
         return False, "candidate launch label mismatch"
     if profile_id != CANDIDATE_TRAINING_PROFILE_ID:
         return False, "candidate profile mismatch"
