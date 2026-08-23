@@ -127,6 +127,12 @@ class ProductsSettings:
     coder_min_cuda_max_good: Decimal | None = Decimal("13.0")
     coder_config_errors: tuple[str, ...] = ()
     sports_database_url: str | None = field(default=None, repr=False)
+    # M4.8.2C: canonical DEFENDMarkets standalone product (API 8500 / UI 3500).
+    markets_api_port: int = 8500
+    markets_web_port: int = 3500
+    markets_public_origin: str = "https://defendmarkets.defend-network.org"
+    markets_data_root: Path = Path(r"C:\DEFEND_MARKETS_DATA")
+    markets_database_url: str | None = field(default=None, repr=False)
 
     @classmethod
     def from_env(cls) -> "ProductsSettings":
@@ -236,6 +242,16 @@ class ProductsSettings:
             ),
             coder_config_errors=tuple(coder_config_errors),
             sports_database_url=os.environ.get("SPORTS_DATABASE_URL"),
+            markets_api_port=port("MARKETS_API_PORT", 8500),
+            markets_web_port=port("MARKETS_WEB_PORT", 3500),
+            markets_public_origin=text(
+                "MARKETS_PUBLIC_ORIGIN",
+                "https://defendmarkets.defend-network.org",
+            ),
+            markets_data_root=Path(
+                text("MARKETS_DATA_ROOT", str(Path(r"C:\DEFEND_MARKETS_DATA")))
+            ),
+            markets_database_url=os.environ.get("MARKETS_DATABASE_URL"),
         )
 
 
@@ -259,6 +275,51 @@ def build_sports_process_spec(
             "SPORTS_DATABASE_URL": settings.sports_database_url,
         },
         health_url=f"http://127.0.0.1:{settings.sports_api_port}/health",
+    )
+
+
+def build_markets_api_process_spec(
+    settings: ProductsSettings,
+    repository: Path,
+    python_executable: str,
+) -> ProcessSpec:
+    """Canonical DEFENDMarkets API process spec (product-owned launch contract).
+
+    Control Center only supervises this; it does not define Markets runtime
+    policy. Ports/DB come from the product-owned MARKETS_* environment.
+    """
+    if not settings.markets_database_url:
+        raise ValueError("MARKETS_DATABASE_URL is not configured")
+    return ProcessSpec(
+        name="markets:api",
+        argv=(python_executable, "-m", "tools.defend_markets_server"),
+        cwd=Path(repository),
+        env={
+            "MARKETS_DATA_ROOT": str(settings.markets_data_root),
+            "MARKETS_PUBLIC_ORIGIN": settings.markets_public_origin,
+            "MARKETS_SESSION_COOKIE": "markets_session",
+            "MARKETS_API_PORT": str(settings.markets_api_port),
+            "MARKETS_WEB_PORT": str(settings.markets_web_port),
+            "MARKETS_DATABASE_URL": settings.markets_database_url,
+        },
+        health_url=f"http://127.0.0.1:{settings.markets_api_port}/health",
+    )
+
+
+def build_markets_web_process_spec(
+    settings: ProductsSettings,
+    repository: Path,
+) -> ProcessSpec:
+    return ProcessSpec(
+        name="markets:web",
+        argv=("node", ".next/standalone/server.js"),
+        cwd=Path(repository) / "defendmarkets-ui",
+        env={
+            "HOSTNAME": "127.0.0.1",
+            "PORT": str(settings.markets_web_port),
+            "NODE_ENV": "production",
+        },
+        health_url=f"http://127.0.0.1:{settings.markets_web_port}/markets",
     )
 
 
@@ -592,7 +653,9 @@ class DefendService:
 
 class SportsService:
     application_id = "sports"
-    display_name = "DEFENDmarkets"
+    # M4.8.2C: legacy Sports no longer masquerades as "DEFENDmarkets". The
+    # canonical DEFENDMarkets product is MarketsService (application_id=markets).
+    display_name = "DEFEND Sports"
 
     def __init__(
         self,
@@ -728,6 +791,153 @@ class SportsService:
         snapshot = self._supervisor.logs.snapshot()
         return tuple(
             entry for entry in snapshot if entry.service.startswith("sports:")
+        )
+
+
+class MarketsService:
+    """Canonical DEFENDMarkets product (supervision only).
+
+    Control Center launches/health-checks/opens the standalone Markets API and
+    UI; it does NOT own Markets models, feeds, auth, ports, or runtime policy.
+    """
+
+    application_id = "markets"
+    display_name = "DEFENDmarkets"
+
+    def __init__(
+        self,
+        *,
+        supervisor,
+        repository: Path,
+        python_executable: str,
+        settings: ProductsSettings,
+        probe=fetch_http_json,
+        clock=time.monotonic,
+        probe_ttl_seconds: float = 3.0,
+    ) -> None:
+        self._supervisor = supervisor
+        self._repository = Path(repository)
+        self._python_executable = str(python_executable)
+        self._settings = settings
+        self._probe = probe
+        self._clock = clock
+        self._probe_ttl = float(probe_ttl_seconds)
+        self._probe_cache: dict[str, tuple[float, JsonResult]] = {}
+        self._last_error: str | None = None
+
+    @property
+    def state(self) -> str:
+        states = {
+            snap.name: snap.running for snap in self._supervisor.snapshot()
+        }
+        api = states.get("markets:api")
+        web = states.get("markets:web")
+        if api and web:
+            return "running"
+        if api or web:
+            return "degraded"
+        return "stopped"
+
+    def _health_url(self) -> str:
+        return f"http://127.0.0.1:{self._settings.markets_api_port}/health"
+
+    def _cached_json(self, url: str) -> JsonResult:
+        now = self._clock()
+        cached = self._probe_cache.get(url)
+        if cached is not None and now - cached[0] < self._probe_ttl:
+            return cached[1]
+        result = self._probe(url, 2.0)
+        self._probe_cache[url] = (now, result)
+        return result
+
+    def start(self) -> ProductStatus:
+        if not self._settings.markets_database_url:
+            self._last_error = "MARKETS_DATABASE_URL is not configured"
+            return self.status()
+        if self.state == "running":
+            return self.status()
+        api_spec = build_markets_api_process_spec(
+            self._settings, self._repository, self._python_executable
+        )
+        web_spec = build_markets_web_process_spec(self._settings, self._repository)
+        try:
+            self._supervisor.logs.add_known_secrets(
+                [self._settings.markets_database_url]
+            )
+            self._supervisor.start(api_spec)
+            self._supervisor.start(web_spec)
+            self._last_error = None
+        except Exception as error:
+            self._last_error = f"start failed ({type(error).__name__})"
+        return self.status()
+
+    def stop(self) -> ProductStatus:
+        try:
+            self._supervisor.stop("markets:api")
+            self._supervisor.stop("markets:web")
+            self._last_error = None
+        except Exception as error:
+            self._last_error = f"stop failed ({type(error).__name__})"
+        return self.status()
+
+    def status(self) -> ProductStatus:
+        state = self.state
+        details: list[tuple[str, str]] = [
+            ("API state", state),
+            ("DB health", "—"),
+            ("Schema version", "—"),
+            ("Public origin", self._settings.markets_public_origin),
+            ("API port", str(self._settings.markets_api_port)),
+            ("UI port", str(self._settings.markets_web_port)),
+        ]
+        if state in ("running", "degraded"):
+            health = self._cached_json(self._health_url())
+            if health.ok and isinstance(health.data, dict):
+                details[1] = (
+                    "DB health",
+                    str(health.data.get("database") or "unknown"),
+                )
+                schema = health.data.get("schema_version")
+                if schema is not None:
+                    details[2] = ("Schema version", str(schema))
+        status_text = f"API {state}"
+        if self._last_error:
+            status_text += f" — {self._last_error}"
+        return ProductStatus(
+            application_id=self.application_id,
+            display_name=self.display_name,
+            state=state,
+            status_text=status_text,
+            details=tuple(details),
+            open_url=self._settings.markets_public_origin,
+            last_error=self._last_error,
+        )
+
+    def smoke(self) -> SmokeResult:
+        url = self._health_url()
+        result = self._probe(url, 3.0)
+        if result.ok and isinstance(result.data, dict):
+            detail = (
+                "database="
+                f"{result.data.get('database')} "
+                f"schema_version={result.data.get('schema_version')}"
+            )
+        elif result.error_type:
+            detail = result.error_type
+        else:
+            detail = "NotReady"
+        return SmokeResult(result.ok, url, result.latency_ms, detail)
+
+    def health(self) -> bool:
+        return self._cached_json(self._health_url()).ok
+
+    def open_url(self) -> bool:
+        return webbrowser.open(self._settings.markets_public_origin)
+
+    def logs(self) -> tuple[LogEntry, ...]:
+        snapshot = self._supervisor.logs.snapshot()
+        return tuple(
+            entry for entry in snapshot if entry.service.startswith("markets:")
         )
 
 
@@ -2126,6 +2336,14 @@ def build_products(
     return (
         DefendService(controller, public_origin=public_origin),
         SportsService(
+            supervisor=supervisor,
+            repository=repository,
+            python_executable=python_executable,
+            settings=products_settings,
+            probe=probe,
+            clock=clock,
+        ),
+        MarketsService(
             supervisor=supervisor,
             repository=repository,
             python_executable=python_executable,

@@ -100,8 +100,8 @@ class SetupDialog(tk.Toplevel):
         ),
         (
             IntegrationOwner.SPORTS,
-            "DEFENDmarkets",
-            "Odds, statistics, exchanges, and table-tennis data providers.",
+            "DEFEND Sports",
+            "Legacy odds, statistics, exchanges, and table-tennis data providers.",
         ),
         (
             IntegrationOwner.SCS,
@@ -1192,7 +1192,8 @@ class ControlCenterUI:
     def _product_tab_title(application_id: str, display_name: str) -> str:
         names = {
             "defend": "DEFEND AI",
-            "sports": "DEFENDmarkets",
+            "markets": "DEFENDmarkets",
+            "sports": "DEFEND Sports",
             "scs": "SCS AI",
             "coder": "DEFENDcoder",
         }
@@ -1577,9 +1578,10 @@ class ControlCenterUI:
     def _ordered_products(self) -> tuple[object, ...]:
         order = {
             "defend": 0,
-            "sports": 1,
+            "markets": 1,
             "coder": 2,
             "scs": 3,
+            "sports": 4,
         }
 
         return tuple(

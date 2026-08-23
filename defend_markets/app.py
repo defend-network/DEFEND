@@ -651,6 +651,13 @@ def build_markets_app(dependencies: MarketsDependencies) -> FastAPI:
         # return 503 from the shared admin_auth dependency, not crash startup.
         pass
 
+    # M4.8.2C: owner AUTH mounts unconditionally so login/logout remain available
+    # even if quant/model initialization fails. Data routes mount only when the
+    # orchestrator is available (and return truthful 503 otherwise).
+    from defend_markets.quant.owner_routes import build_owner_auth_router
+
+    app.include_router(build_owner_auth_router())
+
     @app.get("/health")
     def health() -> dict[str, object]:
         if deps.database is None:
@@ -1011,9 +1018,9 @@ def build_markets_app(dependencies: MarketsDependencies) -> FastAPI:
                 artifact_dir=quant_artifact_dir,
             )
             app.include_router(build_quant_router(quant_orchestrator))
-            from defend_markets.quant.owner_routes import build_owner_router
+            from defend_markets.quant.owner_routes import build_owner_data_router
 
-            app.include_router(build_owner_router(quant_orchestrator))
+            app.include_router(build_owner_data_router(quant_orchestrator))
             quant_state = quant_orchestrator.health_state()
 
             import asyncio
@@ -1044,6 +1051,12 @@ def build_markets_app(dependencies: MarketsDependencies) -> FastAPI:
                 "runtime_model": "",
                 "initialized": False,
             }
+            # M4.8.2C: keep the owner DATA router mounted with a null orchestrator
+            # so dependent endpoints return truthful 503 "quant unavailable"
+            # instead of disappearing alongside login.
+            from defend_markets.quant.owner_routes import build_owner_data_router
+
+            app.include_router(build_owner_data_router(None))
 
         @app.get("/v1/quant/state")
         def quant_state_endpoint() -> dict[str, object]:

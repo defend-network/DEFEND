@@ -22,10 +22,10 @@ def _url() -> str:
 def test_default_ports_are_reserved_for_markets(clean_env, monkeypatch):
     monkeypatch.setenv("MARKETS_DATABASE_URL", _url())
     settings = MarketsSettings.from_env()
-    assert settings.api_port == 8300
-    # M4.8.2B: Markets UI is served by shared defend-ui-v2 at 3000; 3300 collided
-    # with SCS_AI_WEB_PORT and was never a standalone Markets web server.
-    assert settings.web_port == 3000
+    assert settings.api_port == 8500
+    # M4.8.2C: dedicated standalone Markets UI port; no longer the shared
+    # DEFEND AI web surface (3000).
+    assert settings.web_port == 3500
     assert settings.public_origin == "https://defendmarkets.defend-network.org"
     assert settings.session_cookie == "markets_session"
 
@@ -68,5 +68,5 @@ def test_data_root_expands_and_resolves(clean_env, monkeypatch):
 
 def test_ports_collide_with_neither_existing_application():
     # DEFENDcoder owns 8301 (API) and 3301 (web) per shared_platform.
-    assert 8300 != 8301
-    assert 3000 != 3301
+    assert 8500 != 8301
+    assert 3500 != 3301

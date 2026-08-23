@@ -50,7 +50,7 @@ def test_control_center_orders_defend_products_before_scs():
 
     assert "_ordered_products" in source
     assert '"defend": 0' in source
-    assert '"sports": 1' in source
+    assert '"markets": 1' in source
     assert '"coder": 2' in source
     assert '"scs": 3' in source
 
