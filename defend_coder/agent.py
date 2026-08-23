@@ -15,6 +15,12 @@ from .agent_client import (
 )
 from .identity import default_identity_profile
 from .prompts import PROMPT_VERSION
+from .provider_adapters import (
+    ChatCompletionsProvider,
+    CoderGenerationRequest,
+    CoderGenerationResult,
+    CoderProvider,
+)
 from .registry import PromptAuthorityComposer
 from .telemetry import ModelCallRecord, build_call_record
 from .tools import CoderToolkit
@@ -82,7 +88,8 @@ class CodingAgent:
     def __init__(
         self,
         *,
-        client: AgentChatClient,
+        client: AgentChatClient | None = None,
+        provider: CoderProvider | None = None,
         toolkit: CoderToolkit,
         log: Callable[[str], None] | None = None,
         max_steps: int = 12,
@@ -94,12 +101,27 @@ class CodingAgent:
         telemetry_sink: Callable[[ModelCallRecord], None] | None = None,
         phase_max_tokens: dict[str, int] | None = None,
         system_authority: str | None = None,
+        max_output_tokens: int = 4096,
+        timeout_seconds: float = 600.0,
     ) -> None:
-        if not isinstance(client, AgentChatClient):
-            raise TypeError("client must be an AgentChatClient")
         if not isinstance(toolkit, CoderToolkit):
             raise TypeError("toolkit must be a CoderToolkit")
-        self._client = client
+        if provider is not None:
+            self._provider = provider
+            self._ceiling = max(1, int(max_output_tokens))
+            self._timeout_seconds = max(1.0, float(timeout_seconds))
+        elif isinstance(client, AgentChatClient):
+            # Legacy client is wrapped as a normalized provider (internal
+            # transport reuse). The agent itself is provider-neutral.
+            self._provider = ChatCompletionsProvider(
+                client.provider,
+                client.model_name,
+                transport=client,
+            )
+            self._ceiling = client.max_tokens
+            self._timeout_seconds = client.timeout_seconds
+        else:
+            raise TypeError("a CoderProvider or AgentChatClient is required")
         self._toolkit = toolkit
         self._log = log or (lambda _line: None)
         self._max_steps = max(1, min(100, int(max_steps)))
@@ -112,6 +134,7 @@ class CodingAgent:
         self._is_cancelled = cancelled or (lambda: False)
         self._telemetry_sink = telemetry_sink
         self._phase_max_tokens = self._resolve_phase_budgets(phase_max_tokens)
+        self._continuation_state: dict[str, Any] = {}
         # ONE prompt authority: the resolved system authority is always the
         # composed bundle (identity + owner directive + contracts). When the
         # caller does not supply one, compose from the default identity via
@@ -124,7 +147,7 @@ class CodingAgent:
         self,
         overrides: dict[str, int] | None,
     ) -> dict[str, int]:
-        ceiling = self._client.max_tokens
+        ceiling = self._ceiling
         budgets: dict[str, int] = {}
         for phase, default in _PHASE_BUDGET_DEFAULTS.items():
             if overrides and phase in overrides:
@@ -161,7 +184,7 @@ class CodingAgent:
         phase: str,
         roundtrip_seconds: float,
         remaining_action_budget: int,
-        response: AgentChatResponse | None = None,
+        response: CoderGenerationResult | None = None,
         error: Exception | None = None,
     ) -> None:
         if self._telemetry_sink is None:
@@ -272,14 +295,17 @@ class CodingAgent:
                 )
                 call_started = time.monotonic()
                 try:
-                    response = self._client.chat(
-                        messages,
-                        tools=tool_schemas,
-                        max_tokens=self._max_tokens_for(call_phase),
-                        on_request_started=lambda: self._set_phase(
-                            "model_generating"
-                        ),
+                    self._set_phase("model_generating")
+                    response = self._provider.generate(
+                        CoderGenerationRequest(
+                            system_authority=self._system_authority,
+                            conversation=tuple(messages[1:]),
+                            tools=tuple(tool_schemas),
+                            max_output_tokens=self._max_tokens_for(call_phase),
+                            continuation_state=self._continuation_state,
+                        )
                     )
+                    self._continuation_state = dict(response.protocol_state)
                     call_error = None
                 except Exception as error:
                     response = None
@@ -333,13 +359,9 @@ class CodingAgent:
                         }
                         for call in response.tool_calls
                     ]
-                # Provider protocol state (DeepSeek thinking-mode tool calls):
-                # reasoning_content MUST be replayed internally for a valid
-                # continuation, but it is NEVER written to the visible sink.
-                if response.reasoning_content:
-                    assistant_message["reasoning_content"] = (
-                        response.reasoning_content
-                    )
+                # Provider protocol state (e.g. DeepSeek reasoning_content)
+                # is NOT embedded in the conversation: the provider replays it
+                # internally from continuation_state on the next turn.
                 messages.append(assistant_message)
 
                 sink(
@@ -475,7 +497,7 @@ class CodingAgent:
             )
 
         budget = min(
-            self._client.timeout_seconds,
+            self._timeout_seconds,
             self._finalization_timeout,
         )
         if budget < 1.0:
@@ -499,14 +521,15 @@ class CodingAgent:
         )
         call_started = time.monotonic()
         try:
-            response = self._client.chat(
-                finalization_messages,
-                tools=None,
-                timeout_seconds=budget,
-                max_tokens=self._max_tokens_for("finalizing"),
-                on_request_started=lambda: self._set_phase(
-                    "model_generating"
-                ),
+            response = self._provider.generate(
+                CoderGenerationRequest(
+                    system_authority=self._system_authority,
+                    conversation=tuple(finalization_messages[1:]),
+                    tools=(),
+                    max_output_tokens=self._max_tokens_for("finalizing"),
+                    timeout_seconds=budget,
+                    continuation_state=self._continuation_state,
+                )
             )
         except ModelTimeoutError as error:
             self._emit_call(

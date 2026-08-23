@@ -57,6 +57,10 @@ class CoderGenerationResult:
     #: checkpoint/telemetry exposed.
     protocol_state: dict[str, Any] = field(default_factory=dict, repr=False)
 
+    @property
+    def content(self) -> str | None:
+        return self.visible_content
+
 
 class CoderProvider(Protocol):
     provider_id: str
@@ -103,11 +107,25 @@ def _inject_reasoning(
     return result
 
 
-class DeepSeekProvider:
-    provider_id = "deepseek"
+class ChatCompletionsProvider:
+    """Generic OpenAI-compatible Chat Completions adapter (internal reuse).
+
+    Wraps any AgentChatClient transport, owns reasoning_content replay, and
+    emits a normalized CoderGenerationResult. DeepSeek/Next are thin
+    subclasses; the transport is never selected as provider authority.
+    """
+
+    provider_id = "chat_completions"
     protocol = "chat_completions"
 
-    def __init__(self, model_id: str, *, transport: AgentChatClient) -> None:
+    def __init__(
+        self,
+        provider_id: str,
+        model_id: str,
+        *,
+        transport: AgentChatClient,
+    ) -> None:
+        self.provider_id = provider_id
         self.model_id = model_id
         self._transport = transport
 
@@ -115,7 +133,10 @@ class DeepSeekProvider:
         conversation = _inject_reasoning(
             request.conversation, request.continuation_state
         )
-        messages = [{"role": "system", "content": request.system_authority}, *conversation]
+        messages = [
+            {"role": "system", "content": request.system_authority},
+            *conversation,
+        ]
         response = self._transport.chat(
             messages,
             tools=list(request.tools) or None,
@@ -133,31 +154,18 @@ class DeepSeekProvider:
         )
 
 
-class NextVllmProvider:
-    provider_id = "self_hosted"
-    protocol = "chat_completions"
+class DeepSeekProvider(ChatCompletionsProvider):
+    provider_id = "deepseek"
 
     def __init__(self, model_id: str, *, transport: AgentChatClient) -> None:
-        self.model_id = model_id
-        self._transport = transport
+        super().__init__("deepseek", model_id, transport=transport)
 
-    def generate(self, request: CoderGenerationRequest) -> CoderGenerationResult:
-        messages = request.as_messages()
-        response = self._transport.chat(
-            messages,
-            tools=list(request.tools) or None,
-            max_tokens=request.max_output_tokens,
-            timeout_seconds=request.timeout_seconds,
-        )
-        return CoderGenerationResult(
-            visible_content=response.content,
-            tool_calls=response.tool_calls,
-            usage=response.usage,
-            finish_reason=response.finish_reason,
-            provider=self.provider_id,
-            model=self.model_id,
-            protocol_state={},
-        )
+
+class NextVllmProvider(ChatCompletionsProvider):
+    provider_id = "self_hosted"
+
+    def __init__(self, model_id: str, *, transport: AgentChatClient) -> None:
+        super().__init__("self_hosted", model_id, transport=transport)
 
 
 class OpenAIResponsesProvider:

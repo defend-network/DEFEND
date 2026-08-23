@@ -209,7 +209,8 @@ class TestNextVllmProvider:
         provider = NextVllmProvider("Qwen/Qwen3-Coder-Next", transport=client)
         result = provider.generate(CoderGenerationRequest(system_authority="x"))
         assert result.provider == "self_hosted"
-        assert result.protocol_state == {}
+        # vLLM emits no reasoning; protocol_state carries a None marker only.
+        assert result.protocol_state == {"reasoning_content": None}
         # Constructing the provider performs zero runtime/gpu activity (pure
         # object + transport; no start_runtime/resume called).
 
@@ -314,3 +315,74 @@ class TestCoderProviderFactory:
         factory = CoderProviderFactory(CredentialStore(store_loader=_Store()))
         provider = factory.for_model(next_target().model_id)
         assert isinstance(provider, NextVllmProvider)
+
+
+class TestCodingAgentProviderNeutral:
+    def test_agent_accepts_coder_provider_and_completes(self):
+        from pathlib import Path
+        from uuid import uuid4
+
+        from defend_coder.agent import CodingAgent
+        from defend_coder.tools import CoderToolkit
+
+        from test_coder_router_integration import FakeRepository, _workspace
+
+        responses = [
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "Let me read it.",
+                            "reasoning_content": "internal only",
+                            "tool_calls": [
+                                {
+                                    "id": "c1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "read_file",
+                                        "arguments": '{"path": "a.py"}',
+                                    },
+                                }
+                            ],
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ],
+                "usage": {},
+            },
+            {
+                "choices": [
+                    {
+                        "message": {"role": "assistant", "content": "Done."},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {},
+            },
+        ]
+        client = _scripted_client(responses)
+        provider = DeepSeekProvider("deepseek-v4-flash", transport=client)
+        workspace = _workspace(uuid4())
+        toolkit = CoderToolkit(
+            repository=FakeRepository(workspace),
+            configured_root=Path("C:/fake/root"),
+            enabled=False,
+        )
+        agent = CodingAgent(
+            provider=provider,
+            toolkit=toolkit,
+            max_steps=3,
+            system_authority="DEFEND authority",
+        )
+        visible: list[dict] = []
+        outcome = agent.run(
+            prompt="read a.py",
+            account_id=workspace.owner_account_id,
+            workspace_id=workspace.workspace_id,
+            sink=lambda **fields: visible.append(dict(fields)),
+        )
+        assert outcome.state == "succeeded"
+        transcript = json.dumps(visible)
+        assert "internal only" not in transcript
+        assert "reasoning_content" not in transcript
