@@ -7,6 +7,7 @@ import {JobCreator,JobWorkspace} from "./JobWorkspace";
 import {KnowledgePanel} from "./KnowledgePanel";
 import {ModelStatus} from "./ModelStatus";
 import {ReportsWorkspace} from "./reports/ReportsWorkspace";
+import {SetupPanel} from "./SetupPanel";
 type Employee = {display_name:string;roles:string[];permissions:string[]};
 type Job = {job_id:string;job_type:string;status:string;job_date:string;priority:string;customer_id:string;site_id:string};
 type Metric = {state:string;value:number|null};
@@ -19,7 +20,7 @@ export function Workspace({employee,jobs,summary,onRefresh=()=>{}}:{employee:Emp
   const jobContext = jobs.length ? `Assigned jobs: ${jobs.map(job=>`${job.job_type} on ${job.job_date} (${job.status})`).join("; ")}.` : "No jobs assigned to this employee right now.";
   return <div className="workspace">
     <header><div><p className="eyebrow">Sunshine Climate Solutions</p><h1>Good day, {employee.display_name}</h1></div><div className="header-right"><span className="status-dot">Secure workspace</span><ModelStatus/></div></header>
-    <nav aria-label="Primary"><a href="#jobs">Assigned jobs</a><a href="#field">Field</a><a href="#reports">Reports</a><a href="#assistant">AI assistant</a><a href="#knowledge">Knowledge</a><a href="#calculators">Calculators</a><a href="#customers">Customers</a>{canManage && <a href="#employees">Employee admin</a>}</nav>
+    <nav aria-label="Primary"><a href="#jobs">Assigned jobs</a><a href="#field">Field</a><a href="#reports">Reports</a><a href="#assistant">AI assistant</a><a href="#knowledge">Knowledge</a><a href="#setup">Setup</a><a href="#calculators">Calculators</a><a href="#customers">Customers</a>{canManage && <a href="#employees">Employee admin</a>}</nav>
     <section id="jobs"><div className="section-title"><div><p className="eyebrow">Today & upcoming</p><h2>Assigned jobs</h2></div><span>{jobs.length} active</span></div>
       {canManageJobs&&<JobCreator onCreated={onRefresh}/>}
       <div className="job-grid">{jobs.length ? jobs.map(job=><article className="job-card" key={job.job_id}><span className="pill">{job.status}</span><h3>{jobNames[job.job_type] ?? job.job_type}</h3><p>{job.job_date} · {job.priority} priority</p><JobWorkspace jobId={job.job_id} onUpdated={onRefresh} canManage={canManageJobs}/></article>) : <div className="empty">No assigned work right now.</div>}</div>
@@ -27,6 +28,7 @@ export function Workspace({employee,jobs,summary,onRefresh=()=>{}}:{employee:Emp
     <section id="assistant"><div className="section-title"><div><p className="eyebrow">SCS AI</p><h2>AI assistant</h2></div><span>grounded in your assigned work</span></div><AiAssistant jobContext={jobContext}/></section>
     <section id="field"><div className="section-title"><div><p className="eyebrow">Jobsite</p><h2>Field workstation</h2></div><span>server-owned job truth</span></div><FieldWorkspace/></section>
     <section id="knowledge"><div className="section-title"><div><p className="eyebrow">Owner-authorized</p><h2>Knowledge</h2></div><span>private manuals & standards</span></div><KnowledgePanel/></section>
+    <section id="setup"><div className="section-title"><div><p className="eyebrow">Product-owned</p><h2>Setup</h2></div><span>knowledge onboarding</span></div><SetupPanel/></section>
     <ReportsWorkspace technician={employee.display_name}/>
     <section id="calculators"><div className="section-title"><div><p className="eyebrow">Field math</p><h2>Calculators</h2></div><span>no invented inputs</span></div><Calculators/></section>
     {summary && <section className="metrics"><article><span>Total spend</span><strong>{summary.total_spend.state === "not_available" ? "Not available" : summary.total_spend.value}</strong></article><article><span>Average payment time</span><strong>{summary.average_payment_days.state === "not_available" ? "Not available" : summary.average_payment_days.value}</strong></article></section>}

@@ -314,8 +314,11 @@ class JobMemoryStore:
         self._dir.mkdir(parents=True, exist_ok=True)
 
     def _path(self, job_id: str) -> Path:
-        safe = re.sub(r"[^A-Za-z0-9._-]", "_", job_id)
-        return self._dir / f"{safe}.memory.json"
+        return self._dir / f"{self._safe_name(job_id)}.memory.json"
+
+    @staticmethod
+    def _safe_name(job_id: str) -> str:
+        return re.sub(r"[^A-Za-z0-9._-]", "_", str(job_id))
 
     def _load_state(self, path: Path, job_id: str) -> tuple[JobConversationMemory | None, str]:
         if not path.exists():
@@ -398,7 +401,7 @@ class JobMemoryStore:
             sha = hashlib.sha256(raw).hexdigest()
             archive_dir = self._dir / "_recovery"
             archive_dir.mkdir(parents=True, exist_ok=True)
-            archive_path = archive_dir / f"{job_id}.corrupt.{sha[:16]}.json"
+            archive_path = archive_dir / f"{self._safe_name(job_id)}.corrupt.{sha[:16]}.json"
             archive_path.write_bytes(raw)
             path.unlink()
             return {"state": "RECOVERED", "archived": True,

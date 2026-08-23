@@ -136,6 +136,29 @@ export async function knowledgeBlock(discoveryId: string): Promise<{document: Re
   return api("/api/scs/knowledge/block", {method: "POST", body: JSON.stringify({discovery_id: discoveryId})});
 }
 
+export type SetupStatus = {
+  manifest: {product_id: string; name: string; setup_url: string; open_url: string};
+  knowledge_root: string | null;
+  knowledge_root_source: string;
+  knowledge_configured: boolean;
+  discovery_ledger_state: string | null;
+};
+
+export async function setupStatus(): Promise<SetupStatus> {
+  return api<SetupStatus>("/api/scs/setup");
+}
+
+export async function setKnowledgeRoot(path: string): Promise<{knowledge_root: string; source: string}> {
+  return api("/api/scs/setup/knowledge/root", {method: "PUT", body: JSON.stringify({path})});
+}
+
+export async function recoverLedger(confirmUnknownAuthority = false): Promise<Record<string, unknown>> {
+  return api("/api/scs/setup/knowledge/recover", {
+    method: "POST",
+    body: JSON.stringify({confirm_unknown_authority: confirmUnknownAuthority}),
+  });
+}
+
 export async function knowledgeClassify(discoveryId: string, metadata: Record<string, unknown>): Promise<{document: Record<string, unknown>}> {
   return api("/api/scs/knowledge/classify", {method: "POST", body: JSON.stringify({discovery_id: discoveryId, ...metadata})});
 }

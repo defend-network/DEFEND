@@ -18,6 +18,7 @@ from .import_routes import build_import_router
 from .employee_routes import build_employee_router
 from .reports_routes import build_reports_router
 from .field_routes import build_field_router
+from .setup_routes import build_setup_router
 
 
 def _allowed_origins(context: ApplicationContext) -> list[str]:
@@ -52,6 +53,7 @@ def build_scs_app(context: ApplicationContext, identity: ScsIdentityStore, maile
     if jobs is not None or customers is not None:
         app.include_router(build_reports_router(context, identity, reports_paths))
     app.include_router(build_field_router(context, identity, jobs))
+    app.include_router(build_setup_router(context, identity))
 
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(request: Request, error: Exception):
