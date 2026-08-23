@@ -27,6 +27,7 @@ from defend_coder.model_config import load_model_config
 from defend_coder.preparation import RunPreparationService
 from defend_coder.repositories import CoderRepository
 from defend_coder.runs import RunRunner, RunsRepository
+from defend_coder.tool_ledger import DurableToolLedger
 from defend_coder.tools import CoderToolkit
 
 DEFAULT_STATUS_FILE = str(
@@ -181,6 +182,7 @@ def main() -> None:
     authority_store = build_authority_store(database)
     hydrated = hydrate_authority(authority_store)
     preparation = RunPreparationService(database)
+    run_ledger = DurableToolLedger(database)
 
     identity_registry = IdentityRegistry()
     for profile in hydrated.identity_profiles.values():
@@ -290,6 +292,7 @@ def main() -> None:
         proposal_factory=_proposal_for,
         authority_resolver=_authority_for,
         envelope_loader=preparation.load_envelope,
+        tool_ledger=run_ledger,
         toolkit_factory=lambda log_reader: CoderToolkit(
             repository=repository,
             configured_root=settings.workspace_root,

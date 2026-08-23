@@ -107,6 +107,8 @@ class CodingAgent:
         system_authority: str | None = None,
         max_output_tokens: int = 4096,
         timeout_seconds: float = 600.0,
+        tool_ledger: object | None = None,
+        run_id: UUID | None = None,
     ) -> None:
         if not isinstance(toolkit, CoderToolkit):
             raise TypeError("toolkit must be a CoderToolkit")
@@ -127,6 +129,8 @@ class CodingAgent:
         else:
             raise TypeError("a CoderProvider or AgentChatClient is required")
         self._toolkit = toolkit
+        self._tool_ledger = tool_ledger
+        self._run_id = run_id
         self._log = log or (lambda _line: None)
         self._max_steps = max(1, min(100, int(max_steps)))
         self._max_loop_seconds = max(30.0, float(max_loop_seconds))
@@ -255,6 +259,77 @@ class CodingAgent:
             self._phase_sink(phase)
         except Exception:  # noqa: BLE001
             self._log(f"agent: phase sink failed for {phase}")
+
+    def _execute_tool(
+        self,
+        call,
+        *,
+        account_id: UUID,
+        workspace_id: UUID,
+    ):
+        """Execute a tool call with the durable mutation crash policy.
+
+        Mutating tools are recorded in the durable ledger before execution.
+        A completed mutation is never re-executed (idempotent skip); an
+        in-flight execution that crashes is marked UNKNOWN_AFTER_INTERRUPTION
+        (ambiguous recovery) rather than silently repeated.
+        """
+        from .tool_ledger import (
+            TOOL_STATE_FAILED,
+            TOOL_STATE_SUCCEEDED,
+            TOOL_STATE_UNKNOWN,
+            ToolAlreadySucceededError,
+            argument_hash,
+            mutation_class_for,
+        )
+        from .tools import ToolResult
+
+        if self._tool_ledger is None or self._run_id is None:
+            return self._toolkit.execute(
+                call.name,
+                call.arguments,
+                account_id=account_id,
+                workspace_id=workspace_id,
+            )
+        mutation_class = mutation_class_for(call.name)
+        if mutation_class != "mutating":
+            return self._toolkit.execute(
+                call.name,
+                call.arguments,
+                account_id=account_id,
+                workspace_id=workspace_id,
+            )
+        try:
+            execution_id = self._tool_ledger.begin(
+                run_id=self._run_id,
+                tool_call_id=call.id,
+                tool_name=call.name,
+                argument_hash=argument_hash(call.arguments),
+                mutation_class=mutation_class,
+            )
+        except ToolAlreadySucceededError:
+            return ToolResult(
+                content="already completed (durable ledger); not re-executed",
+                kind="tool",
+                ok=True,
+            )
+        try:
+            result = self._toolkit.execute(
+                call.name,
+                call.arguments,
+                account_id=account_id,
+                workspace_id=workspace_id,
+            )
+        except Exception:
+            self._tool_ledger.finish(
+                execution_id, state=TOOL_STATE_UNKNOWN
+            )
+            raise
+        self._tool_ledger.finish(
+            execution_id,
+            state=TOOL_STATE_SUCCEEDED if result.ok else TOOL_STATE_FAILED,
+        )
+        return result
 
     def run(
         self,
@@ -418,9 +493,8 @@ class CodingAgent:
                         f"(step {steps})"
                     )
                     try:
-                        result = self._toolkit.execute(
-                            call.name,
-                            call.arguments,
+                        result = self._execute_tool(
+                            call,
                             account_id=account_id,
                             workspace_id=workspace_id,
                         )

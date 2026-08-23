@@ -1022,6 +1022,7 @@ class RunRunner:
         proposal_factory: Callable[[object, object], object | None] | None = None,
         authority_resolver: Callable[[UUID], str] | None = None,
         envelope_loader: Callable[[UUID], object | None] | None = None,
+        tool_ledger: object | None = None,
         # Deprecated legacy wiring (internal transport reuse only):
         client: AgentChatClient | None = None,
         client_resolver: Callable[[object], AgentChatClient] | None = None,
@@ -1035,6 +1036,7 @@ class RunRunner:
         self._proposal_factory = proposal_factory
         self._authority_resolver = authority_resolver
         self._envelope_loader = envelope_loader
+        self._tool_ledger = tool_ledger
         self._toolkit_factory = toolkit_factory
         self._log = log or (lambda _line: None)
         self._max_steps = max(1, min(100, int(max_steps)))
@@ -1173,6 +1175,8 @@ class RunRunner:
             ),
             phase_max_tokens=self._phase_max_tokens,
             system_authority=system_authority,
+            tool_ledger=self._tool_ledger,
+            run_id=run_id,
         )
         seq_lock = threading.Lock()
         seq_counter = self._repository.max_message_seq(run_id)

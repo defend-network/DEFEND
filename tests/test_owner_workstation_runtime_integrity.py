@@ -147,6 +147,12 @@ def _services(db: CoderDatabase) -> Services:
 
 
 def _make_workspace(db: CoderDatabase) -> tuple[UUID, UUID]:
+    return _make_workspace_with_root(db, "C:/fake")
+
+
+def _make_workspace_with_root(
+    db: CoderDatabase, root: object
+) -> tuple[UUID, UUID]:
     account_id = uuid4()
     workspace_id = uuid4()
     with db.connect() as connection:
@@ -159,7 +165,7 @@ def _make_workspace(db: CoderDatabase) -> tuple[UUID, UUID]:
             cur.execute(
                 "INSERT INTO coder_workspaces(workspace_id, owner_account_id, "
                 "name, workspace_root) VALUES (%s, %s, %s, %s)",
-                (workspace_id, account_id, "ws", "C:/fake"),
+                (workspace_id, account_id, "ws", str(root)),
             )
     return account_id, workspace_id
 
@@ -261,6 +267,45 @@ class _EscalatingProvider:
             provider=self.provider_id,
             model=self.model_id,
         )
+
+
+class _MutatingScriptProvider:
+    """Fake provider: write_file call (call_1) then a final answer."""
+
+    provider_id = "deepseek"
+    model_id = "deepseek-v4-flash"
+    protocol = "chat_completions"
+
+    def __init__(self) -> None:
+        from defend_coder.agent_client import ToolCall
+
+        self._script = [
+            CoderGenerationResult(
+                visible_content=None,
+                tool_calls=(
+                    ToolCall(
+                        id="call_1",
+                        name="write_file",
+                        arguments={"path": "notes.txt", "content": "v1"},
+                    ),
+                ),
+                usage=None,
+                finish_reason="tool_calls",
+                provider=self.provider_id,
+                model=self.model_id,
+            ),
+            CoderGenerationResult(
+                visible_content="done",
+                tool_calls=(),
+                usage=None,
+                finish_reason="stop",
+                provider=self.provider_id,
+                model=self.model_id,
+            ),
+        ]
+
+    def generate(self, request: CoderGenerationRequest) -> CoderGenerationResult:
+        return self._script.pop(0)
 
 
 class TestPreparationAndAuthority:
@@ -383,6 +428,76 @@ class TestToolLedgerRestartSafety:
                 argument_hash="h1",
                 mutation_class="mutating",
             )
+
+    def test_production_mutation_never_reexecuted_after_restart(
+        self, db: CoderDatabase, tmp_path
+    ):
+        from defend_coder.agent import CodingAgent
+        from defend_coder.agent_client import ToolCall
+
+        services = _services(db)
+        root = tmp_path / "wsroot"
+        root.mkdir()
+        account_id, workspace_id = _make_workspace_with_root(db, root)
+        identity, prompt = _pins(services)
+        technical = services.technical_registry.active_for_provider("deepseek")
+        prepared = services.preparation.prepare_run(
+            workspace_id=workspace_id,
+            owner_account_id=account_id,
+            prompt="Write the file.",
+            requested_mode="AUTO",
+            selected_tier="DEEPSEEK",
+            provider="deepseek",
+            model="deepseek-v4-flash",
+            identity=identity,
+            prompt_core=prompt,
+            technical=(
+                technical.profile_id,
+                technical.version,
+                technical.hash,
+            ),
+        )
+        run_id = prepared.run_id
+
+        def _toolkit():
+            return CoderToolkit(
+                repository=CoderRepository(db),
+                configured_root=str(root),
+            )
+
+        def _provider():
+            return _MutatingScriptProvider()
+
+        def _run():
+            agent = CodingAgent(
+                provider=_provider(),
+                toolkit=_toolkit(),
+                log=lambda _m: None,
+                tool_ledger=DurableToolLedger(db),
+                run_id=run_id,
+            )
+            outcome = agent.run(
+                prompt="Write the file.",
+                account_id=account_id,
+                workspace_id=workspace_id,
+                sink=lambda **kw: None,
+            )
+            return outcome
+
+        first = _run()
+        assert first.state == "succeeded"
+        written = root / "notes.txt"
+        assert written.read_text(encoding="utf-8") == "v1"
+        assert (
+            DurableToolLedger(db).for_call(run_id, "call_1").state
+            == TOOL_STATE_SUCCEEDED
+        )
+
+        # Restart: the provider asks for the SAME mutating tool again; the
+        # durable ledger must skip re-execution (idempotent), not re-write.
+        second = _run()
+        assert second.state == "succeeded"
+        assert written.read_text(encoding="utf-8") == "v1"
 
     def test_inflight_mutation_recovery_is_idempotent(self, db: CoderDatabase):
         services = _services(db)

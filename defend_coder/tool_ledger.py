@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
+import json
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -29,9 +31,38 @@ TOOL_STATE_UNKNOWN = "UNKNOWN_AFTER_INTERRUPTION"
 MUTATION_CLASS_READ_ONLY = "read_only"
 MUTATION_CLASS_MUTATING = "mutating"
 
+#: Tools whose side effects must never be silently re-executed after restart.
+MUTATING_TOOLS = frozenset(
+    {
+        "write_file",
+        "edit_file",
+        "delete_file",
+        "run_tests",
+        "run_command",
+        "git_commit",
+        "git_checkout",
+        "git_merge",
+        "git_push",
+        "apply_patch",
+    }
+)
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def mutation_class_for(tool_name: str) -> str:
+    return (
+        MUTATION_CLASS_MUTATING
+        if tool_name in MUTATING_TOOLS
+        else MUTATION_CLASS_READ_ONLY
+    )
+
+
+def argument_hash(arguments: dict[str, Any]) -> str:
+    canonical = json.dumps(arguments, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)
