@@ -12,11 +12,11 @@ import time
 import pytest
 
 import defend_control.health as health_module
-import defend_control.processes as processes_module
-import defend_control.windows_job as windows_job_module
+import shared_platform.processes as processes_module
+import shared_platform.windows_job as windows_job_module
 from defend_control.health import probe_http
-from defend_control.processes import LogBuffer, ProcessSpec, ProcessSupervisor
-from defend_control.windows_job import WindowsJob
+from shared_platform.processes import LogBuffer, ProcessSpec, ProcessSupervisor
+from shared_platform.windows_job import WindowsJob
 
 
 ROOT = Path(__file__).resolve().parents[1]
