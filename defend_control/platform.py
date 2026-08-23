@@ -301,12 +301,12 @@ class PlatformService:
     def billing(self) -> dict[str, Any]:
         return {
             "status": "NOT_IMPLEMENTED",
-            "legacy_coder_billing": "EXISTS (defend_control.coder_billing: account, credit balance, usage ledger, spending limits)",
+            "legacy_coder_billing": "EXISTS (legacy_stack/control_center/coder_billing.py: account, credit balance, usage ledger, spending limits)",
             "neutral_platform_billing_authority": "NOT_ESTABLISHED",
             "consumer_billing": "NOT_IMPLEMENTED",
             "note": (
-                "defend_control.coder_billing is Coder-associated/legacy mixed "
-                "code, NOT accepted as neutral authority. No consumer charging, "
+                "legacy_stack/control_center/coder_billing.py is Coder-associated/legacy "
+                "mixed code, NOT accepted as neutral authority. No consumer charging, "
                 "no Stripe, no customer money in this milestone."
             ),
         }

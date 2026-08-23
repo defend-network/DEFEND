@@ -1134,7 +1134,7 @@ def _load_odds_api_io_key() -> str:
     """Load the Odds-API.io key without ever logging it."""
     try:
         from defend_integrations.stores import SecretRegistry, default_secret_path
-        from defend_control.secrets import DpapiSecretStore
+        from shared_platform.secure_store import DpapiSecretStore
     except Exception:
         return ""
     try:
@@ -1148,7 +1148,7 @@ def _load_owls_insight_key() -> str:
     """Load the Owls Insight key from DPAPI without ever logging it (P1)."""
     try:
         from defend_integrations.stores import SecretRegistry, default_secret_path
-        from defend_control.secrets import DpapiSecretStore
+        from shared_platform.secure_store import DpapiSecretStore
     except Exception:
         return ""
     try:

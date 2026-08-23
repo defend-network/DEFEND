@@ -1,3 +1,12 @@
+# ==============================================================
+# LEGACY / NON-CANONICAL
+# ==============================================================
+# STATUS: LEGACY_ACTIVE_TRANSITIONAL
+# CANONICAL_OWNER: DEFENDMarkets
+# CANONICAL_REPLACEMENT: defend_markets
+# REMOVAL_CONDITION: legacy data pipeline decommissioned
+# DO NOT ADD NEW FEATURES HERE.
+# ==============================================================
 """DEFEND Sports live feed collector.
 
 Polls the real The Odds API provider for table-tennis events and persists
@@ -22,10 +31,10 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from defend_markets.feeds import odds_api_key
-from defend_sports.config import SportsSettings
-from defend_sports.db import SportsDatabase
-from defend_sports.ingestion import IngestionService
-from defend_sports.providers.the_odds_api import (
+from legacy_stack.defend_sports.config import SportsSettings
+from legacy_stack.defend_sports.db import SportsDatabase
+from legacy_stack.defend_sports.ingestion import IngestionService
+from legacy_stack.defend_sports.providers.the_odds_api import (
     OddsApiProviderError,
     TheOddsApiSportsProvider,
 )

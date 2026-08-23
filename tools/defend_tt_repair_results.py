@@ -1,3 +1,12 @@
+# ==============================================================
+# LEGACY / NON-CANONICAL
+# ==============================================================
+# STATUS: LEGACY_ACTIVE_TRANSITIONAL
+# CANONICAL_OWNER: DEFENDMarkets
+# CANONICAL_REPLACEMENT: defend_markets
+# REMOVAL_CONDITION: legacy data pipeline decommissioned
+# DO NOT ADD NEW FEATURES HERE.
+# ==============================================================
 """Repair tt_match_results labels from raw_provider_events using the canonical
 final-result parser (parse_tt_final_result). Preview mode (default) writes a
 deterministic JSON artifact and prints counts without touching any database;
@@ -25,7 +34,7 @@ from defend_markets.db import MarketsDatabase
 from defend_markets.domain import TTMatchResult
 from defend_markets.repositories import MarketsRepository
 from defend_markets.store import PostgresMarketsStore
-from defend_sports.providers.odds_api_io import parse_tt_final_result
+from legacy_stack.defend_sports.providers.odds_api_io import parse_tt_final_result
 
 ARTIFACT_PATH = r"C:\Users\thoma\AppData\Local\Temp\opencode\tt_audit\repair_preview.json"
 

@@ -1,3 +1,12 @@
+# ==============================================================
+# LEGACY / NON-CANONICAL
+# ==============================================================
+# STATUS: LEGACY_ACTIVE_TRANSITIONAL
+# CANONICAL_OWNER: DEFENDMarkets
+# CANONICAL_REPLACEMENT: defend_markets
+# REMOVAL_CONDITION: legacy data pipeline decommissioned
+# DO NOT ADD NEW FEATURES HERE.
+# ==============================================================
 """Local/control-plane entrypoint for the DEFEND Sports API service.
 
 Startup sequence: SportsSettings.from_env() -> SportsDatabase -> migrations
@@ -10,9 +19,9 @@ import sys
 
 import uvicorn
 
-from defend_sports.app import build_sports_app
-from defend_sports.config import SportsSettings
-from defend_sports.db import SportsDatabase
+from legacy_stack.defend_sports.app import build_sports_app
+from legacy_stack.defend_sports.config import SportsSettings
+from legacy_stack.defend_sports.db import SportsDatabase
 
 _DEFAULT_HOST = "127.0.0.1"
 

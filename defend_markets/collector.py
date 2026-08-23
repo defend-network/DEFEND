@@ -31,15 +31,15 @@ from typing import Any, Callable, Sequence
 
 from defend_markets.feeds import FeedError, FeedService, odds_api_key
 
-from defend_sports.db import SportsDatabase
-from defend_sports.domain import SourceRef
-from defend_sports.ingestion import IngestionService
-from defend_sports.providers.base import ProviderBatch
-from defend_sports.providers.the_odds_api import (
+from legacy_stack.defend_sports.db import SportsDatabase
+from legacy_stack.defend_sports.domain import SourceRef
+from legacy_stack.defend_sports.ingestion import IngestionService
+from legacy_stack.defend_sports.providers.base import ProviderBatch
+from legacy_stack.defend_sports.providers.the_odds_api import (
     OddsApiProviderError,
     TheOddsApiSportsProvider,
 )
-from defend_sports.repositories import SportsRepository
+from legacy_stack.defend_sports.repositories import SportsRepository
 
 ODDS_API_BASE = "https://api.the-odds-api.com/v4/sports"
 PROVIDER_NAME = "the_odds_api"

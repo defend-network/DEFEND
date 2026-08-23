@@ -7,10 +7,10 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from defend_sports.backfill import BackfillJob
-from defend_sports.db import SportsDatabase
-from defend_sports.ingestion import IngestionService
-from defend_sports.providers.base import ProviderBatch
+from legacy_stack.defend_sports.backfill import BackfillJob
+from legacy_stack.defend_sports.db import SportsDatabase
+from legacy_stack.defend_sports.ingestion import IngestionService
+from legacy_stack.defend_sports.providers.base import ProviderBatch
 
 requires_database = pytest.mark.skipif(
     not os.environ.get("SPORTS_TEST_DATABASE_URL"),

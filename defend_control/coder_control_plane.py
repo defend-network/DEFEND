@@ -1,3 +1,11 @@
+# ==============================================================
+# LEGACY / NON-CANONICAL
+# ==============================================================
+# STATUS: LEGACY_COMPATIBILITY_SHIM
+# RUNTIME_AUTHORITY: NONE
+# ==============================================================
+LEGACY_COMPATIBILITY_SHIM_ONLY = True
+CANONICAL_TARGET = "defend_coder.runtime.control_plane"
 """Compatibility shim: migrated to defend_coder.runtime.control_plane (product-owned runtime).
 Re-exports ALL names (including private) for old test/importers."""
 import defend_coder.runtime.control_plane as _impl  # noqa: F401

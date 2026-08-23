@@ -1,3 +1,12 @@
+# ==============================================================
+# LEGACY / NON-CANONICAL
+# ==============================================================
+# STATUS: LEGACY_ACTIVE_TRANSITIONAL
+# CANONICAL_OWNER: DEFENDcoder
+# CANONICAL_REPLACEMENT: neutral platform billing (NOT_ESTABLISHED) / defend_coder
+# REMOVAL_CONDITION: neutral billing authority established or coder lane moves primitives
+# DO NOT ADD NEW FEATURES HERE.
+# ==============================================================
 """DEFENDcoder billing domain — thin internal interfaces (runtime-v1).
 
 No Stripe SDK, no HTTP, no API calls, no credentials. StripeBillingProvider

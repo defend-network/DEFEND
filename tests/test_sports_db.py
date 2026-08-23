@@ -4,11 +4,12 @@ import re
 
 import pytest
 
-from defend_sports.db import SportsDatabase
+from legacy_stack.defend_sports.db import SportsDatabase
 
 
 _MIGRATION_PATH = (
     Path(__file__).resolve().parents[1]
+    / "legacy_stack"
     / "defend_sports"
     / "migrations"
     / "0001_foundation.sql"
@@ -52,18 +53,21 @@ _SHARED_MARKET_TABLES = {
 }
 _MIGRATION_V2_PATH = (
     Path(__file__).resolve().parents[1]
+    / "legacy_stack"
     / "defend_sports"
     / "migrations"
     / "0002_quota_discovery.sql"
 )
 _MIGRATION_V3_PATH = (
     Path(__file__).resolve().parents[1]
+    / "legacy_stack"
     / "defend_sports"
     / "migrations"
     / "0003_backfill.sql"
 )
 _MIGRATION_V4_PATH = (
     Path(__file__).resolve().parents[1]
+    / "legacy_stack"
     / "defend_sports"
     / "migrations"
     / "0004_raw_provider_uniqueness.sql"

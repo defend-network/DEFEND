@@ -1,1 +1,0 @@
-"""DEFEND Sports application package."""

@@ -1,3 +1,12 @@
+# ==============================================================
+# LEGACY / NON-CANONICAL
+# ==============================================================
+# STATUS: LEGACY_ACTIVE_TRANSITIONAL
+# CANONICAL_OWNER: DEFENDMarkets
+# CANONICAL_REPLACEMENT: defend_markets
+# REMOVAL_CONDITION: legacy data pipeline decommissioned
+# DO NOT ADD NEW FEATURES HERE.
+# ==============================================================
 """DEFEND table-tennis historical backfill (Odds-API.io, resumable + quota-aware).
 
 Operational harness for the reusable backfill job. Supports dry-run
@@ -34,10 +43,10 @@ from defend_integrations.stores import SecretRegistry, default_secret_path
 from defend_markets.db import MarketsDatabase
 from defend_markets.repositories import MarketsRepository
 from defend_markets.store import PostgresMarketsStore
-from defend_sports.backfill import BackfillJob
-from defend_sports.db import SportsDatabase
-from defend_sports.ingestion import IngestionService
-from defend_sports.providers.odds_api_io import OddsApiIoSportsProvider
+from legacy_stack.defend_sports.backfill import BackfillJob
+from legacy_stack.defend_sports.db import SportsDatabase
+from legacy_stack.defend_sports.ingestion import IngestionService
+from legacy_stack.defend_sports.providers.odds_api_io import OddsApiIoSportsProvider
 
 
 def odds_api_io_key() -> str:

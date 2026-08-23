@@ -8,7 +8,7 @@ import urllib.parse
 
 import pytest
 
-from defend_sports.providers.odds_api_io import (
+from legacy_stack.defend_sports.providers.odds_api_io import (
     OddsApiIoProviderError,
     OddsApiIoSportsProvider,
     _is_legal_final_game,
@@ -298,7 +298,7 @@ def test_resolve_league_slug_pin_overrides_discovery():
 
 
 def test_parse_event_payload_dict_league():
-    from defend_sports.providers.odds_api_io import parse_event_payload
+    from legacy_stack.defend_sports.providers.odds_api_io import parse_event_payload
 
     raw, event = parse_event_payload(
         {
@@ -335,7 +335,7 @@ def test_historical_odds_unexpected_payload_raises():
 
 
 def test_parse_odds_payload_shapes():
-    from defend_sports.providers.odds_api_io import parse_odds_payload
+    from legacy_stack.defend_sports.providers.odds_api_io import parse_odds_payload
 
     observed_at = datetime(2026, 8, 1, tzinfo=timezone.utc)
     dict_rows = parse_odds_payload(

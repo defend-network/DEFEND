@@ -274,11 +274,11 @@ def build_compatibility_manifests(
         ),
         ProductSupervisionManifest(
             product_id="sports",
-            display_name="DEFEND Sports",
+            display_name="DEFEND Sports (Legacy)",
             ports=(sports_api, sports_web),
             api_port=sports_api,
             web_port=sports_web,
-            api_launch=(py, "-m", "tools.defend_sports_server"),
+            api_launch=(py, "-m", "tools.legacy_defend_sports_server"),
             working_dir=repository,
             health_url=f"http://127.0.0.1:{sports_api}/health",
             open_url=sports_origin,

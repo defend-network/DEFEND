@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from defend_control.coder_billing import BillingPolicy
+from legacy_stack.control_center.coder_billing import BillingPolicy
 from defend_control.coder_control_plane import (
     CoderControlPlane,
     CoderLiveSmokePlan,

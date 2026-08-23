@@ -8,7 +8,7 @@ lanes own the internal behavior of DEFEND AI, DEFENDcoder, DEFENDMarkets and
 SCS; Control Center supervises; `shared_platform/` holds genuinely neutral
 infrastructure. Keep this file updated through code and tests where practical.
 
-Last updated: P0.2 four-product integration V2 (`agent/platform-integration-v2`).
+Last updated: P0.3 legacy quarantine + canonical stack truth (`agent/platform-legacy-quarantine-v1`).
 
 ---
 
@@ -194,3 +194,38 @@ are TEMPORARY legacy compatibility shims -> the shared_platform implementations.
 | SCS | standalone PASS; Setup V1 PASS; real-data acceptance OWNER_ACTION_REQUIRED; `scs_data.settings`/`scs_data.supervision` integrated |
 | Platform | four-product integration PASS; neutral identity NOT_ESTABLISHED; neutral billing NOT_ESTABLISHED |
 | Shared | secure store PASS; logical secrets PASS; Vast neutral PASS (VAST_PRODUCT_POLICY=NO); SSH neutral PASS (SSH_PRODUCT_POLICY=NO); processes PASS |
+
+## P0.3 stack taxonomy (see `docs/platform/stack-registry.json`)
+
+### CANONICAL PRODUCTS
+`defend_ai/`, `defend_coder/`, `defend_markets/`, `defend_data/` (DEFEND AI),
+`scs_*`, `defendmarkets-ui/`, `defendcoder-ui/`, `defend-ui-v2/`.
+
+### NEUTRAL SHARED
+`shared_platform/`, `defend_integrations/`.
+
+### CONTROL CENTER
+`defend_control/` (supervision only; see compatibility shims below).
+
+### LEGACY ACTIVE (transitional)
+`legacy_stack/defend_sports/`, `legacy_stack/control_center/coder_billing.py`,
+`TableTennis/`, and the explicitly-named legacy tools
+(`tools/legacy_defend_sports_server.py`, `tools/defend_sports_ingest.py`,
+`tools/defend_coder_vast_diagnose.py`, `tools/defend_tt_*`).
+
+### COMPATIBILITY SHIMS
+`defend_control/{coder_*, secrets, redaction, processes, windows_job, vast,
+ssh_tunnel, deployment_profiles}.py` — logic-free re-exports, each carrying
+`LEGACY_COMPATIBILITY_SHIM_ONLY` + `CANONICAL_TARGET` and enforced by AST test.
+
+### HISTORICAL REQUIRED
+`legacy_stack/defend_sports/migrations/`, `evals/`, `bench/`.
+
+### ARCHIVED
+(none yet — `archive/` reserved, non-importable, no `__init__.py`).
+
+### OPEN MIGRATIONS
+- DEFEND AI application supervision manifest (`PRODUCT_CONTRACT_REQUIRED`) — AI lane.
+- Coder lifecycle wiring + launch-manifest drift — Coder lane.
+- Markets -> legacy-sports read-only data relationship (`defend_markets/collector.py` -> `legacy_stack.defend_sports`, Section 13 exception) — Markets lane.
+- Neutral identity + neutral billing — future Platform milestone (NOT started).

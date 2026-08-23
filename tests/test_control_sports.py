@@ -168,7 +168,7 @@ def test_sports_start_spec_targets_sports_api_with_module_server(tmp_path):
     assert len(supervisor.started) == 1
     spec = supervisor.started[0]
     assert spec.name == "sports:api"
-    assert spec.argv == (sys.executable, "-m", "tools.defend_sports_server")
+    assert spec.argv == (sys.executable, "-m", "tools.legacy_defend_sports_server")
     assert spec.cwd == ROOT
     assert spec.env["SPORTS_DATABASE_URL"] == "postgresql://u:s@localhost/db"
     assert spec.health_url == "http://127.0.0.1:8200/health"

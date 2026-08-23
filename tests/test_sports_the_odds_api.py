@@ -5,8 +5,8 @@ from decimal import Decimal
 
 import pytest
 
-from defend_sports.providers.base import SportsProvider
-from defend_sports.providers.the_odds_api import (
+from legacy_stack.defend_sports.providers.base import SportsProvider
+from legacy_stack.defend_sports.providers.the_odds_api import (
     OddsApiProviderError,
     TheOddsApiSportsProvider,
 )

@@ -6,10 +6,10 @@ import socket
 import pytest
 from starlette.testclient import TestClient
 
-from defend_sports.config import SportsSettings
-from defend_sports.db import SportsDatabase
-from defend_sports.ingestion import IngestionService
-from defend_sports.providers.fixture import FixtureSportsProvider
+from legacy_stack.defend_sports.config import SportsSettings
+from legacy_stack.defend_sports.db import SportsDatabase
+from legacy_stack.defend_sports.ingestion import IngestionService
+from legacy_stack.defend_sports.providers.fixture import FixtureSportsProvider
 
 requires_database = pytest.mark.skipif(
     not os.environ.get("SPORTS_TEST_DATABASE_URL"),
@@ -107,7 +107,7 @@ def _settings(tmp_path) -> SportsSettings:
 
 
 def _app(settings, database):
-    from defend_sports.app import build_sports_app
+    from legacy_stack.defend_sports.app import build_sports_app
 
     return build_sports_app(settings, database)
 
@@ -179,7 +179,7 @@ class TestServiceBoundary:
         assert database.connect_calls == 0
 
     def test_importing_sports_app_opens_no_global_database_connection(self, monkeypatch):
-        module = importlib.import_module("defend_sports.app")
+        module = importlib.import_module("legacy_stack.defend_sports.app")
 
         assert not any(isinstance(value, SportsDatabase) for value in vars(module).values())
         assert not hasattr(module, "_database")
@@ -203,8 +203,8 @@ class TestServiceBoundary:
                 assert fragment not in lowered
 
     def test_sports_app_has_no_platform_runtime_dependencies(self):
-        import defend_sports.app as app_module
-        import tools.defend_sports_server as server_module
+        import legacy_stack.defend_sports.app as app_module
+        import tools.legacy_defend_sports_server as server_module
 
         for module in (app_module, server_module):
             source = inspect.getsource(module)

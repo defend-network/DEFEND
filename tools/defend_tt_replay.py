@@ -1,3 +1,12 @@
+# ==============================================================
+# LEGACY / NON-CANONICAL
+# ==============================================================
+# STATUS: LEGACY_ACTIVE_TRANSITIONAL
+# CANONICAL_OWNER: DEFENDMarkets
+# CANONICAL_REPLACEMENT: defend_markets
+# REMOVAL_CONDITION: legacy data pipeline decommissioned
+# DO NOT ADD NEW FEATURES HERE.
+# ==============================================================
 """DEFEND table-tennis replay tool (Phase 16).
 
 Replays the prediction -> settlement pipeline from persisted data only:
@@ -35,7 +44,7 @@ from defend_markets.settle_service import TtSettlementService
 from defend_markets.sports_adapter import PostgresSportsDataReader
 from defend_markets.store import PostgresMarketsStore
 from defend_markets.strategies import build_default_registry
-from defend_sports.db import SportsDatabase
+from legacy_stack.defend_sports.db import SportsDatabase
 
 
 def _parse_cutoff(raw: str | None) -> datetime:

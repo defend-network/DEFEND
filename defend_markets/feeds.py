@@ -492,7 +492,7 @@ def _resolve_secret_from_store(name: str) -> str | None:
     """
     try:
         from defend_integrations.stores import SecretRegistry, default_secret_path
-        from defend_control.secrets import DpapiSecretStore
+        from shared_platform.secure_store import DpapiSecretStore
     except Exception:
         return None
     try:

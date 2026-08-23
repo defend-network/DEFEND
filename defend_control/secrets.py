@@ -1,3 +1,11 @@
+# ==============================================================
+# LEGACY / NON-CANONICAL
+# ==============================================================
+# STATUS: LEGACY_COMPATIBILITY_SHIM
+# RUNTIME_AUTHORITY: NONE
+# ==============================================================
+LEGACY_COMPATIBILITY_SHIM_ONLY = True
+CANONICAL_TARGET = "shared_platform.secure_store"
 """TEMPORARY legacy compatibility re-export -> shared_platform.secure_store.
 
 The canonical physical DPAPI secret-persistence implementation now lives in

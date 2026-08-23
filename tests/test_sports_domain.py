@@ -4,7 +4,7 @@ from decimal import Decimal
 
 import pytest
 
-from defend_sports.domain import (
+from legacy_stack.defend_sports.domain import (
     CanonicalEvent,
     CanonicalMarket,
     CanonicalSelection,

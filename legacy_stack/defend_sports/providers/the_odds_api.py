@@ -1,3 +1,12 @@
+# ==============================================================
+# LEGACY / NON-CANONICAL
+# ==============================================================
+# STATUS: LEGACY_ACTIVE_TRANSITIONAL
+# CANONICAL_OWNER: DEFENDMarkets
+# CANONICAL_REPLACEMENT: defend_markets
+# REMOVAL_CONDITION: Markets stops its read-only legacy-sports data relationship
+# DO NOT ADD NEW FEATURES HERE.
+# ==============================================================
 """Table tennis events, odds and live state from The Odds API.
 
 Network provider: polls The Odds API v4 (sports list, h2h odds, scores)
@@ -17,13 +26,13 @@ from typing import Callable
 
 from defend_markets.feeds import FeedError, http_get_json as _markets_http_get_json
 
-from defend_sports.domain import (
+from legacy_stack.defend_sports.domain import (
     CanonicalEvent,
     LiveObservation,
     OddsObservation,
     SourceRef,
 )
-from defend_sports.providers.base import ProviderBatch, RawProviderEvent, SportsProvider
+from legacy_stack.defend_sports.providers.base import ProviderBatch, RawProviderEvent, SportsProvider
 
 _TT_SPORT_KEY_HINTS = ("tabletennis", "table_tennis", "pingpong")
 

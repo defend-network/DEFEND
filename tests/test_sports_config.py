@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from defend_sports.config import SportsSettings
+from legacy_stack.defend_sports.config import SportsSettings
 
 
 def _settings_from_env(monkeypatch, **overrides) -> SportsSettings:

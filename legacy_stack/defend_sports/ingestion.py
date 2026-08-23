@@ -1,3 +1,12 @@
+# ==============================================================
+# LEGACY / NON-CANONICAL
+# ==============================================================
+# STATUS: LEGACY_ACTIVE_TRANSITIONAL
+# CANONICAL_OWNER: DEFENDMarkets
+# CANONICAL_REPLACEMENT: defend_markets
+# REMOVAL_CONDITION: Markets stops its read-only legacy-sports data relationship
+# DO NOT ADD NEW FEATURES HERE.
+# ==============================================================
 """Canonical ingestion service for DEFEND Sports provider batches."""
 
 from __future__ import annotations
@@ -6,10 +15,10 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterable
 
-from defend_sports.db import SportsDatabase
-from defend_sports.domain import CanonicalMarket, CanonicalSelection, SourceRef
-from defend_sports.providers.base import ProviderBatch, RawProviderEvent
-from defend_sports.repositories import SportsRepository, humanize_key
+from legacy_stack.defend_sports.db import SportsDatabase
+from legacy_stack.defend_sports.domain import CanonicalMarket, CanonicalSelection, SourceRef
+from legacy_stack.defend_sports.providers.base import ProviderBatch, RawProviderEvent
+from legacy_stack.defend_sports.repositories import SportsRepository, humanize_key
 
 
 @dataclass(frozen=True)

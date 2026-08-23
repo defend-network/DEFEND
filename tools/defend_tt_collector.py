@@ -1,3 +1,12 @@
+# ==============================================================
+# LEGACY / NON-CANONICAL
+# ==============================================================
+# STATUS: LEGACY_ACTIVE_TRANSITIONAL
+# CANONICAL_OWNER: DEFENDMarkets
+# CANONICAL_REPLACEMENT: defend_markets
+# REMOVAL_CONDITION: legacy data pipeline decommissioned
+# DO NOT ADD NEW FEATURES HERE.
+# ==============================================================
 """DEFEND table-tennis live collector (scores + h2h odds, quota governed).
 
 Operational harness for the Phase 2 collector. Reuses the existing
@@ -32,7 +41,7 @@ from defend_markets.feeds import FeedService, TheOddsApiTTResultsFeedProvider, o
 from defend_markets.forecast_store import PostgresForecastStore
 from defend_markets.repositories import MarketsRepository
 from defend_markets.store import PostgresMarketsStore
-from defend_sports.db import SportsDatabase
+from legacy_stack.defend_sports.db import SportsDatabase
 
 
 def _build_collector(*, floor: int | None = None) -> TtCollector:

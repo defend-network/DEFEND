@@ -5,12 +5,12 @@ import socket
 
 import pytest
 
-from defend_sports.db import SportsDatabase
-from defend_sports.domain import CanonicalEvent, LiveObservation, OddsObservation
-from defend_sports.ingestion import IngestionService
-from defend_sports.providers.base import ProviderBatch, RawProviderEvent, SportsProvider
-from defend_sports.providers.fixture import FixtureSportsProvider
-from defend_sports.repositories import SportsRepository
+from legacy_stack.defend_sports.db import SportsDatabase
+from legacy_stack.defend_sports.domain import CanonicalEvent, LiveObservation, OddsObservation
+from legacy_stack.defend_sports.ingestion import IngestionService
+from legacy_stack.defend_sports.providers.base import ProviderBatch, RawProviderEvent, SportsProvider
+from legacy_stack.defend_sports.providers.fixture import FixtureSportsProvider
+from legacy_stack.defend_sports.repositories import SportsRepository
 
 requires_database = pytest.mark.skipif(
     not os.environ.get("SPORTS_TEST_DATABASE_URL"),
@@ -487,7 +487,7 @@ class _OddsApiStubHttp:
 @requires_database
 class TestOddsApiIngestionPipeline:
     def test_odds_api_batch_ingests_through_the_same_pipeline(self, database):
-        from defend_sports.providers.the_odds_api import TheOddsApiSportsProvider
+        from legacy_stack.defend_sports.providers.the_odds_api import TheOddsApiSportsProvider
 
         provider = TheOddsApiSportsProvider(
             api_key="test-key",
@@ -507,7 +507,7 @@ class TestOddsApiIngestionPipeline:
         assert result.health == "HEALTHY"
 
     def test_odds_api_event_and_live_state_persisted(self, database):
-        from defend_sports.providers.the_odds_api import TheOddsApiSportsProvider
+        from legacy_stack.defend_sports.providers.the_odds_api import TheOddsApiSportsProvider
 
         provider = TheOddsApiSportsProvider(
             api_key="test-key",

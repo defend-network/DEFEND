@@ -1,3 +1,11 @@
+# ==============================================================
+# LEGACY / NON-CANONICAL
+# ==============================================================
+# STATUS: LEGACY_COMPATIBILITY_SHIM
+# RUNTIME_AUTHORITY: NONE
+# ==============================================================
+LEGACY_COMPATIBILITY_SHIM_ONLY = True
+CANONICAL_TARGET = "shared_platform.redaction"
 """TEMPORARY legacy compatibility shim -> shared_platform.redaction.
 
 The canonical neutral redaction primitive lives in ``shared_platform.redaction``

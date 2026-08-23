@@ -1,3 +1,12 @@
+# ==============================================================
+# LEGACY / NON-CANONICAL
+# ==============================================================
+# STATUS: LEGACY_ACTIVE_TRANSITIONAL
+# CANONICAL_OWNER: DEFENDMarkets
+# CANONICAL_REPLACEMENT: defend_markets
+# REMOVAL_CONDITION: legacy TT engine decommissioned
+# DO NOT ADD NEW FEATURES HERE.
+# ==============================================================
 """
 Admin-only tool wrapper — register only under owner policy.
 """

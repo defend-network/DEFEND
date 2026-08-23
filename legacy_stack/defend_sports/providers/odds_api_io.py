@@ -1,3 +1,12 @@
+# ==============================================================
+# LEGACY / NON-CANONICAL
+# ==============================================================
+# STATUS: LEGACY_ACTIVE_TRANSITIONAL
+# CANONICAL_OWNER: DEFENDMarkets
+# CANONICAL_REPLACEMENT: defend_markets
+# REMOVAL_CONDITION: Markets stops its read-only legacy-sports data relationship
+# DO NOT ADD NEW FEATURES HERE.
+# ==============================================================
 """Table tennis events, historical results and closing odds from Odds-API.io.
 
 Network provider: reads the Odds-API.io v3 REST API (apiKey query auth) and
@@ -25,13 +34,13 @@ from typing import Callable, Sequence
 
 from defend_markets.feeds import FeedError, http_get_json as _markets_http_get_json
 
-from defend_sports.domain import (
+from legacy_stack.defend_sports.domain import (
     CanonicalEvent,
     LiveObservation,
     OddsObservation,
     SourceRef,
 )
-from defend_sports.providers.base import ProviderBatch, RawProviderEvent, SportsProvider
+from legacy_stack.defend_sports.providers.base import ProviderBatch, RawProviderEvent, SportsProvider
 
 _ODDS_API_IO_BASE = "https://api.odds-api.io/v3"
 

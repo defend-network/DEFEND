@@ -1,3 +1,11 @@
+# ==============================================================
+# LEGACY / NON-CANONICAL
+# ==============================================================
+# STATUS: LEGACY_COMPATIBILITY_SHIM
+# RUNTIME_AUTHORITY: NONE
+# ==============================================================
+LEGACY_COMPATIBILITY_SHIM_ONLY = True
+CANONICAL_TARGET = "shared_platform.processes"
 """Compatibility shim -> shared_platform.processes"""
 
 import shared_platform.processes as _impl

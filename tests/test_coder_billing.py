@@ -6,8 +6,8 @@ from decimal import Decimal
 
 import pytest
 
-from defend_control import coder_billing as billing
-from defend_control.coder_billing import (
+from legacy_stack.control_center import coder_billing as billing
+from legacy_stack.control_center.coder_billing import (
     Account,
     BillingPolicy,
     BillingProvider,

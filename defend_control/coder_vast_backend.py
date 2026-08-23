@@ -1,3 +1,11 @@
+# ==============================================================
+# LEGACY / NON-CANONICAL
+# ==============================================================
+# STATUS: LEGACY_COMPATIBILITY_SHIM
+# RUNTIME_AUTHORITY: NONE
+# ==============================================================
+LEGACY_COMPATIBILITY_SHIM_ONLY = True
+CANONICAL_TARGET = "defend_coder.runtime.vast_backend"
 """Compatibility shim: migrated to defend_coder.runtime.vast_backend (product-owned runtime).
 Re-exports ALL names (including private) for old test/importers."""
 import defend_coder.runtime.vast_backend as _impl  # noqa: F401

@@ -1,3 +1,12 @@
+# ==============================================================
+# LEGACY / NON-CANONICAL
+# ==============================================================
+# STATUS: LEGACY_ACTIVE_TRANSITIONAL
+# CANONICAL_OWNER: DEFENDMarkets
+# CANONICAL_REPLACEMENT: defend_markets
+# REMOVAL_CONDITION: Markets stops its read-only legacy-sports data relationship
+# DO NOT ADD NEW FEATURES HERE.
+# ==============================================================
 """Deterministic fixture sports provider for DS1 ingestion tests.
 
 No network access. The fixture emits one table-tennis live event and one
@@ -12,13 +21,13 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from defend_sports.domain import (
+from legacy_stack.defend_sports.domain import (
     CanonicalEvent,
     LiveObservation,
     OddsObservation,
     SourceRef,
 )
-from defend_sports.providers.base import ProviderBatch, RawProviderEvent, SportsProvider
+from legacy_stack.defend_sports.providers.base import ProviderBatch, RawProviderEvent, SportsProvider
 
 _BASE_OBSERVED_AT = datetime(2026, 8, 14, 12, 0, 0, tzinfo=timezone.utc)
 

@@ -1,3 +1,12 @@
+# ==============================================================
+# LEGACY / NON-CANONICAL
+# ==============================================================
+# STATUS: LEGACY_ACTIVE_TRANSITIONAL
+# CANONICAL_OWNER: DEFENDMarkets
+# CANONICAL_REPLACEMENT: defend_markets
+# REMOVAL_CONDITION: Markets stops its read-only legacy-sports data relationship
+# DO NOT ADD NEW FEATURES HERE.
+# ==============================================================
 """Reusable, resumable, quota-aware historical backfill for DEFEND Sports.
 
 The backfill job is deliberately NOT a one-off script: it is a small
@@ -34,10 +43,10 @@ from typing import Any, Callable, Sequence
 from defend_markets.domain import TTMatchResult
 from defend_markets.feeds import participant_key
 
-from defend_sports.db import SportsDatabase
-from defend_sports.ingestion import IngestionService
-from defend_sports.providers.base import ProviderBatch, RawProviderEvent
-from defend_sports.providers.odds_api_io import (
+from legacy_stack.defend_sports.db import SportsDatabase
+from legacy_stack.defend_sports.ingestion import IngestionService
+from legacy_stack.defend_sports.providers.base import ProviderBatch, RawProviderEvent
+from legacy_stack.defend_sports.providers.odds_api_io import (
     OddsApiIoProviderError,
     OddsApiIoSportsProvider,
     _parse_scores,

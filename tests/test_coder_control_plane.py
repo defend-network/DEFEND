@@ -6,7 +6,7 @@ from decimal import Decimal
 
 import pytest
 
-from defend_control.coder_billing import BillingPolicy as BillingPolicySettings
+from legacy_stack.control_center.coder_billing import BillingPolicy as BillingPolicySettings
 from defend_control.coder_control_plane import (
     ActiveCoderEndpoint,
     CoderControlPlane,

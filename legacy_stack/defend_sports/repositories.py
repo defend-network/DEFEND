@@ -1,3 +1,12 @@
+# ==============================================================
+# LEGACY / NON-CANONICAL
+# ==============================================================
+# STATUS: LEGACY_ACTIVE_TRANSITIONAL
+# CANONICAL_OWNER: DEFENDMarkets
+# CANONICAL_REPLACEMENT: defend_markets
+# REMOVAL_CONDITION: Markets stops its read-only legacy-sports data relationship
+# DO NOT ADD NEW FEATURES HERE.
+# ==============================================================
 """Persistence API for DEFEND Sports canonical entities and observations."""
 
 from __future__ import annotations
@@ -8,7 +17,7 @@ from uuid import UUID, uuid4
 
 from psycopg.types.json import Jsonb
 
-from defend_sports.domain import (
+from legacy_stack.defend_sports.domain import (
     CanonicalEvent,
     CanonicalMarket,
     CanonicalSelection,
@@ -16,7 +25,7 @@ from defend_sports.domain import (
     OddsObservation,
     SourceRef,
 )
-from defend_sports.providers.base import RawProviderEvent
+from legacy_stack.defend_sports.providers.base import RawProviderEvent
 
 
 def humanize_key(key: str) -> str:

@@ -1,3 +1,12 @@
+# ==============================================================
+# LEGACY / NON-CANONICAL
+# ==============================================================
+# STATUS: LEGACY_ACTIVE_TRANSITIONAL
+# CANONICAL_OWNER: DEFENDMarkets
+# CANONICAL_REPLACEMENT: defend_markets
+# REMOVAL_CONDITION: Markets stops its read-only legacy-sports data relationship
+# DO NOT ADD NEW FEATURES HERE.
+# ==============================================================
 """DEFEND Sports FastAPI application factory and V1 system endpoints."""
 
 from __future__ import annotations
@@ -6,8 +15,8 @@ from typing import Any
 
 from fastapi import FastAPI
 
-from defend_sports.config import SportsSettings
-from defend_sports.db import SportsDatabase
+from legacy_stack.defend_sports.config import SportsSettings
+from legacy_stack.defend_sports.db import SportsDatabase
 
 
 def build_sports_app(settings: SportsSettings, db: SportsDatabase) -> FastAPI:

@@ -250,7 +250,7 @@ def build_sports_process_spec(
         raise ValueError("SPORTS_DATABASE_URL is not configured")
     return ProcessSpec(
         name="sports:api",
-        argv=(python_executable, "-m", "tools.defend_sports_server"),
+        argv=(python_executable, "-m", "tools.legacy_defend_sports_server"),
         cwd=Path(repository),
         env={
             "SPORTS_DATA_ROOT": str(settings.sports_data_root),
@@ -724,7 +724,7 @@ class SportsService:
     application_id = "sports"
     # M4.8.2C: legacy Sports no longer masquerades as "DEFENDmarkets". The
     # canonical DEFENDMarkets product is MarketsService (application_id=markets).
-    display_name = "DEFEND Sports"
+    display_name = "DEFEND Sports (Legacy)"
 
     def __init__(
         self,

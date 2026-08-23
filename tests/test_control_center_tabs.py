@@ -11,9 +11,9 @@ def test_control_center_uses_product_notebook():
     assert "ttk.Notebook" in source
     assert '"Home"' in source
     assert '"DEFEND AI"' in source
-    # M4.8.2C-R: legacy Sports no longer masquerades as "DEFENDmarkets"; the
-    # tab is labeled "DEFEND Sports" and Markets is a standalone product.
-    assert '"DEFEND Sports"' in source
+    # M4.8.2C-R / P0.3: legacy Sports no longer masquerades as "DEFENDmarkets";
+    # the tab is labeled "DEFEND Sports (Legacy)" and Markets is a standalone product.
+    assert '"DEFEND Sports (Legacy)"' in source
     assert '"SCS AI"' in source
     assert '"DEFENDcoder"' in source
 

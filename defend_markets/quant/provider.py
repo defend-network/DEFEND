@@ -65,7 +65,7 @@ class ProviderTruthService:
 
     def selected_bookmakers(self) -> list[str]:
         from defend_integrations.stores import SecretRegistry, default_secret_path
-        from defend_control.secrets import DpapiSecretStore
+        from shared_platform.secure_store import DpapiSecretStore
         from defend_integrations.probing import probe_get
         from defend_markets.shadow import parse_recovered_json
 
@@ -107,7 +107,7 @@ class ProviderTruthService:
         window_hours: int = 72,
     ) -> dict[str, Any]:
         from defend_integrations.stores import SecretRegistry, default_secret_path
-        from defend_control.secrets import DpapiSecretStore
+        from shared_platform.secure_store import DpapiSecretStore
         from defend_integrations.probing import probe_get
         from defend_markets.shadow import parse_recovered_json
 
