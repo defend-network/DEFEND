@@ -37,7 +37,9 @@ SOURCE_ATTRS = (
     "superseded_by_source_id", "active", "confidence", "notes", "source_state",
     "duplicate_of_source_id", "ingest_id", "parser_version", "chunking_version",
     "document_type", "byte_size", "verification_method", "verified_by",
-    "verified_at", "verification_evidence",
+    "verified_at", "verification_evidence", "filename", "ingestion_state",
+    "owner_approval_state", "model", "model_series", "page_count",
+    "source_origin",
 )
 
 # H5/H6: source verification + quarantine state + dedup lineage
@@ -45,6 +47,17 @@ SOURCE_STATES = ("ACTIVE", "QUARANTINED", "CANDIDATE", "SOURCE_VERIFIED",
                  "DISABLED", "SUPERSEDED")
 VERIFICATION_METHODS = ("DETERMINISTIC_METADATA", "OWNER_APPROVED",
                         "MANUFACTURER_SOURCE_VERIFIED")
+
+
+def source_id_for_sha256(digest: str) -> str:
+    """One canonical source-id derivation (B4-04). Ingest and discovery
+    cleanup must both use this — no duplicate/truncated algorithms."""
+    return f"SRC-{digest[:10]}"
+
+
+class SourceIdCollision(Exception):
+    """Raised when a truncated source id collides with a different document."""
+
 
 
 @dataclass
@@ -81,6 +94,13 @@ class KnowledgeSource:
     verified_by: str | None = None
     verified_at: str | None = None
     verification_evidence: str | None = None
+    filename: str | None = None
+    ingestion_state: str = "INDEXED"
+    owner_approval_state: str = "PENDING"
+    model: str | None = None
+    model_series: str | None = None
+    page_count: int | None = None
+    source_origin: str = "LEGACY"
 
     def to_dict(self) -> dict[str, Any]:
         data = {attr: getattr(self, attr) for attr in SOURCE_ATTRS}
@@ -168,6 +188,13 @@ class SCSKnowledgeLibrary:
             "verified_by": "TEXT",
             "verified_at": "TEXT",
             "verification_evidence": "TEXT",
+            "filename": "TEXT",
+            "ingestion_state": "TEXT DEFAULT 'INDEXED'",
+            "owner_approval_state": "TEXT DEFAULT 'PENDING'",
+            "model": "TEXT",
+            "model_series": "TEXT",
+            "page_count": "INTEGER",
+            "source_origin": "TEXT DEFAULT 'LEGACY'",
         }
         for column, ddl in migrations.items():
             if column not in existing:
@@ -179,8 +206,12 @@ class SCSKnowledgeLibrary:
     def add_source(self, source: KnowledgeSource) -> None:
         existing = self.get_source(source.source_id)
         if existing is not None:
-            # Source identity is immutable (P37). Only version/link relations
-            # may be updated explicitly - never silently replace trusted data.
+            # Source identity is immutable (P37). Never silently replace trusted
+            # data. A truncated-id collision with a DIFFERENT document fails
+            # closed (B4-04) rather than mixing two documents under one id.
+            if (existing.document_hash and source.document_hash
+                    and existing.document_hash != source.document_hash):
+                raise SourceIdCollision(source.source_id)
             if source.superseded_by_source_id or source.supersedes_source_id:
                 self._db.execute(
                     "UPDATE sources SET supersedes_source_id=COALESCE(?, supersedes_source_id), "
@@ -223,6 +254,31 @@ class SCSKnowledgeLibrary:
         self._db.execute("UPDATE sources SET source_state=? WHERE source_id=?",
                          (state, source_id))
         self._db.commit()
+
+    def mark_discovery_managed(self, source_id: str) -> None:
+        self._db.execute(
+            "UPDATE sources SET source_origin='DISCOVERY_MANAGED' WHERE source_id=?",
+            (source_id,))
+        self._db.commit()
+
+    def quarantine_source(self, source_id: str) -> None:
+        """Atomically disable a source and all its chunks/tables (fail-closed).
+
+        Raises on any failure — a failed cleanup must never be swallowed into
+        apparent success (M1.5B3 defect A)."""
+        try:
+            self._db.execute("BEGIN")
+            self._db.execute(
+                "UPDATE sources SET source_state='QUARANTINED', active=0 "
+                "WHERE source_id=?", (source_id,))
+            self._db.execute(
+                "UPDATE chunks SET active=0 WHERE source_id=?", (source_id,))
+            self._db.execute(
+                "UPDATE tables SET active=0 WHERE source_id=?", (source_id,))
+            self._db.commit()
+        except Exception:
+            self._db.rollback()
+            raise
 
     def verify_source(self, source_id: str, *, method: str,
                       verified_by: str = "owner",

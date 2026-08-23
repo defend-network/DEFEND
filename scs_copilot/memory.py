@@ -102,17 +102,23 @@ class JobConversationMemory:
                        operating_mode: str | None = None,
                        concept: str | None = None,
                        source_key: str | None = None,
-                       recorded_at: str | None = None) -> dict[str, Any]:
+                       observed_at: str | None = None,
+                       unit: str | None = None,
+                       entered_by: str | None = None,
+                       submitted_value: Any = None,
+                       submitted_unit: str | None = None,
+                       submitted_concept: str | None = None) -> dict[str, Any]:
         """Store a timestamped reading with explicit stage; never overwrite.
 
-        P15: a ``source_key`` gives the reading stable source identity so the
-        same persistent reading is not duplicated on re-seed; a changed value
-        produces a new revision. P16: ``recorded_at`` preserves the original
-        measurement time instead of pretending it was taken now.
+        M1.5B2: ``value``/``unit`` are the CANONICAL value+unit; the technician's
+        original ``submitted_value``/``submitted_unit``/``submitted_concept`` are
+        preserved. ``observed_at`` is when the measurement was taken (or the
+        SOURCE_TIMESTAMP_UNKNOWN marker); ``recorded_at`` is server-derived.
         """
         if equipment_id:
             self.active_entity = equipment_id
         canon = concept or canonical_measurement(key)
+        now = datetime.now().isoformat(timespec="seconds")
         if source_key:
             for e in self.readings.get(key, []):
                 if e.get("source_key") == source_key:
@@ -123,12 +129,18 @@ class JobConversationMemory:
             "job_id": self.job_id,
             "equipment_id": equipment_id,
             "concept": canon,
-            "value": value, "unit": None,
+            "submitted_concept": submitted_concept,
+            "value": value,
+            "unit": unit or "UNKNOWN_LEGACY",
+            "submitted_value": submitted_value,
+            "submitted_unit": submitted_unit,
             "stage": stage if stage in STAGES else "FIELD",
             "operating_mode": operating_mode, "instrument_id": instrument_id,
             "source": source,
+            "entered_by": entered_by,
             "source_key": source_key,
-            "recorded_at": recorded_at or datetime.now().isoformat(timespec="seconds"),
+            "observed_at": observed_at or now,
+            "recorded_at": now,
         }
         self.readings.setdefault(key, []).append(entry)
         self._resolve_open(canon, equipment_id, value)
@@ -280,6 +292,14 @@ def _shared_lock(path: Path) -> threading.RLock:
         return _GLOBAL_LOCKS[key]
 
 
+class JobMemoryCorrupt(Exception):
+    """Raised when writes are attempted against a corrupt durable memory file."""
+
+    def __init__(self, job_id: str) -> None:
+        super().__init__(f"JOB_MEMORY_CORRUPT: {job_id}; writes blocked pending recovery")
+        self.job_id = job_id
+
+
 class JobMemoryStore:
     """Durable per-job conversation memory (P12-P14).
 
@@ -297,16 +317,32 @@ class JobMemoryStore:
         safe = re.sub(r"[^A-Za-z0-9._-]", "_", job_id)
         return self._dir / f"{safe}.memory.json"
 
-    def _load_path(self, path: Path, job_id: str) -> JobConversationMemory:
+    def _load_state(self, path: Path, job_id: str) -> tuple[JobConversationMemory | None, str]:
         if not path.exists():
-            return JobConversationMemory(job_id=job_id)
+            return JobConversationMemory(job_id=job_id), "EMPTY"
         try:
             state = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(state, dict):
+                raise ValueError("memory state is not an object")
             memory = JobConversationMemory.from_state(state)
             memory.job_id = job_id
-            return memory
+            return memory, "OK"
         except Exception:
-            return JobConversationMemory(job_id=job_id)
+            # M1.5B4: durable file truth is authoritative. Corruption is
+            # explicit and write-blocked — never a silent fresh empty store.
+            return None, "CORRUPT"
+
+    def memory_state(self, job_id: str) -> str:
+        path = self._path(job_id)
+        with _shared_lock(path):
+            _memory, state = self._load_state(path, job_id)
+            return state
+
+    def _load_or_raise(self, path: Path, job_id: str) -> JobConversationMemory:
+        memory, state = self._load_state(path, job_id)
+        if state == "CORRUPT":
+            raise JobMemoryCorrupt(job_id)
+        return memory  # EMPTY -> fresh empty memory; OK -> durable memory
 
     def _write_path(self, path: Path, memory: JobConversationMemory) -> None:
         tmp = path.with_name(path.name + f".{uuid.uuid4().hex[:8]}.tmp")
@@ -317,13 +353,14 @@ class JobMemoryStore:
     def load(self, job_id: str) -> JobConversationMemory:
         path = self._path(job_id)
         with _shared_lock(path):
-            return self._load_path(path, job_id)
+            return self._load_or_raise(path, job_id)
 
     def save(self, memory: JobConversationMemory) -> None:
         if not memory.job_id:
             return
         path = self._path(memory.job_id)
         with _shared_lock(path):
+            self._load_or_raise(path, memory.job_id)  # blocks overwrite of corrupt
             self._write_path(path, memory)
 
     def update(self, job_id: str,
@@ -331,7 +368,7 @@ class JobMemoryStore:
         """P13: atomic load -> mutate -> write under the shared lock."""
         path = self._path(job_id)
         with _shared_lock(path):
-            memory = self._load_path(path, job_id)
+            memory = self._load_or_raise(path, job_id)
             mutator(memory)
             self._write_path(path, memory)
             return memory
@@ -342,16 +379,38 @@ class JobMemoryStore:
         current state (P13). Independent updates are never lost (P14)."""
         path = self._path(job_id)
         with _shared_lock(path):
-            current = self._load_path(path, job_id)
+            current = self._load_or_raise(path, job_id)
             current.merge_from(working)
             self._write_path(path, current)
             return current
+
+    def archive_corrupt_and_reset(self, job_id: str, *, actor: str = "operator") -> dict[str, Any]:
+        """Explicit owner/operator recovery (B4-01/B4-03): preserve the corrupt
+        durable bytes under private SCS storage with their SHA, then begin a
+        fresh EMPTY memory. Never invoked automatically."""
+        import hashlib
+        path = self._path(job_id)
+        with _shared_lock(path):
+            _memory, state = self._load_state(path, job_id)
+            if state != "CORRUPT":
+                return {"state": state, "archived": False}
+            raw = path.read_bytes()
+            sha = hashlib.sha256(raw).hexdigest()
+            archive_dir = self._dir / "_recovery"
+            archive_dir.mkdir(parents=True, exist_ok=True)
+            archive_path = archive_dir / f"{job_id}.corrupt.{sha[:16]}.json"
+            archive_path.write_bytes(raw)
+            path.unlink()
+            return {"state": "RECOVERED", "archived": True,
+                    "archive_sha": sha, "actor": actor,
+                    "recovered_at": datetime.now().isoformat(timespec="seconds")}
 
     def delete(self, job_id: str) -> None:
         path = self._path(job_id)
         with _shared_lock(path):
             if path.exists():
                 path.unlink()
+            self._corrupt.discard(job_id)
 
 
 def _normalize_question(question: str) -> str:
