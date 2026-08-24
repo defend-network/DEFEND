@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from defend_control.eval_runner import (
+from defend_ai.eval_runner import (
     EVALUATOR_VERSION,
     evaluate_row,
     input_hash,

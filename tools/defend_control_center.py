@@ -20,7 +20,7 @@ from defend_control.admin_surface import (
 from defend_control.controller import ControlController
 from defend_control.health import probe_http
 from defend_control.local_model import LocalOllamaBackend
-from defend_control.model_registry import ADAPTER_REPO
+from defend_ai.model_registry import ADAPTER_REPO
 from defend_control.orchestrator import StackOrchestrator
 from defend_control.preflight import CheckResult, PreflightRunner
 from shared_platform.processes import ProcessSupervisor

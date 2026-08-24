@@ -7,9 +7,9 @@ from decimal import Decimal
 
 import pytest
 
-from defend_control.qwen3_canary_executor import build_execution_contract
-from defend_control.qwen3_canary_runner import CanaryPolicy
-from defend_control.qwen3_canary_hosts import (
+from defend_ai.qwen3_canary_executor import build_execution_contract
+from defend_ai.qwen3_canary_runner import CanaryPolicy
+from defend_ai.qwen3_canary_hosts import (
     BLOCKED_HOSTS,
     CanaryRemoteTarget,
     ConcreteRemoteHost,
@@ -38,7 +38,7 @@ def test_assistant_labels_equal_input_ids():
         from transformers import AutoTokenizer
     except Exception:
         pytest.skip("transformers not installed")
-    from defend_control.qwen3_masking import build_qwen3_masked_example
+    from defend_ai.qwen3_masking import build_qwen3_masked_example
 
     tok = AutoTokenizer.from_pretrained("Qwen/Qwen3-32B", revision="9216db5781bf21249d130ec9da846c4624c16137", trust_remote_code=True, use_fast=True)
     msgs = [
@@ -63,7 +63,7 @@ def test_assistant_labels_equal_input_ids():
 
 
 def test_masked_labels_equal_neg100():
-    from defend_control.training_hardening import validate_assistant_masking
+    from defend_ai.training_hardening import validate_assistant_masking
     labels = [-100, -100, -100, 7, 8, -100, -100, -100, 9, 10]
     spans = [("system", 0, 1), ("user", 1, 3), ("assistant", 3, 5), ("tool", 5, 8), ("assistant", 8, 10)]
     ok, _ = validate_assistant_masking(labels, spans)
@@ -178,7 +178,7 @@ def test_target_binds_once():
 
 
 def test_parse_remote_result_steps():
-    from defend_control.qwen3_canary_executor import parse_canary_result
+    from defend_ai.qwen3_canary_executor import parse_canary_result
     r = parse_canary_result(_v2('TRAIN_5_STEPS', 'PASS', steps=5), 0, "TRAIN_5_STEPS", expected_run_id="RUN")
     assert r.status == "PASS"
     assert r.steps_completed == 5
@@ -190,31 +190,31 @@ def test_parse_remote_result_steps():
 
 
 def test_parse_unknown_status_fails():
-    from defend_control.qwen3_canary_executor import parse_canary_result
+    from defend_ai.qwen3_canary_executor import parse_canary_result
     r = parse_canary_result('DEFEND_CANARY_RESULT={"status": "SUCCESSISH"}', 0, "HOST_PREFLIGHT", expected_run_id="RUN")
     assert r.status == "FAIL"
 
 
 def test_parse_malformed_record_fails():
-    from defend_control.qwen3_canary_executor import parse_canary_result
+    from defend_ai.qwen3_canary_executor import parse_canary_result
     r = parse_canary_result('DEFEND_CANARY_RESULT=not-json', 0, "HOST_PREFLIGHT", expected_run_id="RUN")
     assert r.status == "FAIL"
 
 
 def test_parse_missing_record_fails():
-    from defend_control.qwen3_canary_executor import parse_canary_result
+    from defend_ai.qwen3_canary_executor import parse_canary_result
     r = parse_canary_result('some random stdout', 0, "HOST_PREFLIGHT", expected_run_id="RUN")
     assert r.status == "FAIL"
 
 
 def test_parse_nonzero_returncode_fails():
-    from defend_control.qwen3_canary_executor import parse_canary_result
+    from defend_ai.qwen3_canary_executor import parse_canary_result
     r = parse_canary_result(_v2('HOST_PREFLIGHT', 'PASS'), 1, "HOST_PREFLIGHT", expected_run_id="RUN")
     assert r.status == "FAIL"
 
 
 def test_production_parser_derives_five_steps_from_stdout():
-    from defend_control.qwen3_canary_executor import parse_canary_result
+    from defend_ai.qwen3_canary_executor import parse_canary_result
     simulated = "OPTIMIZER_STEPS_COMPLETED=5\nADAPTER_SAVED=/x\n" + _v2("TRAIN_5_STEPS", "PASS", steps=5)
     r = parse_canary_result(simulated, 0, "TRAIN_5_STEPS", expected_run_id="RUN")
     assert r.status == "PASS"
@@ -222,7 +222,7 @@ def test_production_parser_derives_five_steps_from_stdout():
 
 
 def test_preflight_real_entrypoint_wrong_revision():
-    from defend_control.qwen3_canary_preflight import run_preflight
+    from defend_ai.qwen3_canary_preflight import run_preflight
     from pathlib import Path
     ok, evidence = run_preflight("abc", Path("does-not-matter.jsonl"), "deadbeef")
     assert ok is False
@@ -230,7 +230,7 @@ def test_preflight_real_entrypoint_wrong_revision():
 
 
 def test_preflight_real_entrypoint_missing_train():
-    from defend_control.qwen3_canary_preflight import run_preflight
+    from defend_ai.qwen3_canary_preflight import run_preflight
     from pathlib import Path
     ok, evidence = run_preflight("abc", Path("no-such-file.jsonl"), "9216db5781bf21249d130ec9da846c4624c16137")
     assert ok is False
@@ -238,7 +238,7 @@ def test_preflight_real_entrypoint_missing_train():
 
 
 def test_preflight_paid_host_torch_unavailable_fails():
-    from defend_control.qwen3_canary_preflight import run_preflight
+    from defend_ai.qwen3_canary_preflight import run_preflight
     from pathlib import Path
     try:
         import torch  # noqa: F401
@@ -251,10 +251,10 @@ def test_preflight_paid_host_torch_unavailable_fails():
 
 
 def test_reload_failure_is_not_success():
-    from defend_control.qwen3_canary_executor import (
+    from defend_ai.qwen3_canary_executor import (
         INSTANCE_ABSENT, ProductionInventory, Qwen3CanaryExecutor,
     )
-    from defend_control.training_hardening import INVENTORY_NONE_FOUND
+    from defend_ai.training_hardening import INVENTORY_NONE_FOUND
     from types import SimpleNamespace
 
     class Vast:
@@ -299,10 +299,10 @@ def test_reload_failure_is_not_success():
 
 
 def test_train_steps_4_fails_before_reload():
-    from defend_control.qwen3_canary_executor import (
+    from defend_ai.qwen3_canary_executor import (
         INSTANCE_ABSENT, ProductionInventory, Qwen3CanaryExecutor,
     )
-    from defend_control.training_hardening import INVENTORY_NONE_FOUND
+    from defend_ai.training_hardening import INVENTORY_NONE_FOUND
     from types import SimpleNamespace
 
     class Vast:
@@ -344,10 +344,10 @@ def test_train_steps_4_fails_before_reload():
 
 
 def test_teardown_eventual_absent():
-    from defend_control.qwen3_canary_executor import (
+    from defend_ai.qwen3_canary_executor import (
         INSTANCE_ABSENT, INSTANCE_PRESENT, ProductionInventory, Qwen3CanaryExecutor,
     )
-    from defend_control.training_hardening import INVENTORY_NONE_FOUND
+    from defend_ai.training_hardening import INVENTORY_NONE_FOUND
     from types import SimpleNamespace
 
     class StatefulVast:

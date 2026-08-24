@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from defend_control.eval_runner_v2 import (
+from defend_ai.eval_runner_v2 import (
     EPISODE_DIRECT,
     EPISODE_RECOVERY,
     EPISODE_TOOL,
@@ -26,7 +26,7 @@ from defend_control.eval_runner_v2 import (
     score_with_rubric,
     tool_eval_status,
 )
-from defend_control.training_hardening import (
+from defend_ai.training_hardening import (
     FULL_RESOLVER_PROOF,
     HOST_INSTALL_REQUIRED,
     CANDIDATE_TRAINING_PROFILE_ID,

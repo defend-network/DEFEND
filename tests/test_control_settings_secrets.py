@@ -9,7 +9,7 @@ import sys
 import pytest
 
 import shared_platform.secure_store as secrets_module
-from defend_control.model_registry import ADAPTER_REPO
+from defend_ai.model_registry import ADAPTER_REPO
 from shared_platform.redaction import redact_text
 from shared_platform.secure_store import DpapiSecretStore
 from defend_control.settings import ControlSettings, JsonSettingsStore

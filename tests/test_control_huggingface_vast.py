@@ -7,9 +7,9 @@ from urllib.parse import urlencode, urlsplit
 
 import pytest
 
-from defend_control.huggingface import HuggingFaceClient
-from defend_control.huggingface import HuggingFaceError
-from defend_control.model_registry import ADAPTER_REPO
+from defend_ai.huggingface import HuggingFaceClient
+from defend_ai.huggingface import HuggingFaceError
+from defend_ai.model_registry import ADAPTER_REPO
 from defend_control.types import LaunchSpec, ResourceProfile, VastInstance, VastOffer
 from shared_platform.vast import (
     VastClient,

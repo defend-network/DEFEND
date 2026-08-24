@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from defend_control.qwen3_canary_runner import (
+from defend_ai.qwen3_canary_runner import (
     CANARY_HARD_SPEND_CAP_USD,
     CANARY_MAX_HOURLY_USD,
     CANARY_MAX_INSTANCES,
@@ -26,7 +26,7 @@ from defend_control.qwen3_canary_runner import (
     validate_five_steps,
     validate_qlora_contract,
 )
-from defend_control.training_hardening import (
+from defend_ai.training_hardening import (
     CANDIDATE_CANARY_LABEL,
     CANDIDATE_CANARY_PURPOSE,
     CANDIDATE_CANARY_ROLE,
@@ -328,7 +328,7 @@ def test_masking_contract_tool_result_masked():
     labels = [-100] * 12
     for pos in range(8, 12):  # assistant trainable
         labels[pos] = pos
-    from defend_control.training_hardening import validate_assistant_masking
+    from defend_ai.training_hardening import validate_assistant_masking
     ok, failures = validate_assistant_masking(labels, spans)
     assert ok
     # a tool token made trainable is rejected

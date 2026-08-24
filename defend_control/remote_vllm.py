@@ -9,7 +9,7 @@ import shlex
 import sys
 from typing import Protocol
 
-from .model_registry import ADAPTER_REPO
+from defend_ai.model_registry import ADAPTER_REPO
 from shared_platform.processes import ProcessSpec
 from .settings import ControlSettings
 from shared_platform.ssh_tunnel import CommandResult, run_command

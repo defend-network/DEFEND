@@ -18,7 +18,7 @@ from shared_platform.ssh_tunnel import (
     run_command,
 )
 from defend_control.model_probe import ModelProbe, ModelProbeError, ProbeResponse
-from defend_control.model_registry import ADAPTER_REPO
+from defend_ai.model_registry import ADAPTER_REPO
 from defend_control.remote_vllm import RemoteVllmBootstrap, RemoteVllmError
 from defend_control.types import AdapterSpec, ModelReady, VastInstance
 from shared_platform.vast import VastClient

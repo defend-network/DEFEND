@@ -10,7 +10,7 @@ from typing import Protocol
 import webbrowser
 
 from .health import JsonResult, fetch_http_json
-from .model_registry import ADAPTER_REPO, ADAPTER_REVISION, LOCAL_ALIAS, SERVING_ALIAS
+from defend_ai.model_registry import ADAPTER_REPO, ADAPTER_REVISION, LOCAL_ALIAS, SERVING_ALIAS
 from shared_platform.processes import LogBuffer, LogEntry, ProcessSpec
 from .product_runtime import ProductRuntimeRegistry, PRODUCT_API_PORTS, PRODUCT_FORWARD_PORTS
 from defend_coder.runtime.control_plane import (

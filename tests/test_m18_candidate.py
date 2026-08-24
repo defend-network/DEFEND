@@ -15,7 +15,7 @@ from defend_ai.deployment_profiles import (
     default_profiles,
     profile_adapter_base_compatible,
 )
-from defend_control.qwen3_candidate import (
+from defend_ai.qwen3_candidate import (
     HELDOUT_EVAL_ROWS,
     HELDOUT_EVAL_SHA256,
     convert_sft_row_to_qwen3,
@@ -75,7 +75,7 @@ def test_heldout_eval_constants_are_canonical():
 def test_manifest_marks_eval_excluded_and_leakage_zero():
     summary, _ = None, None
     rows, conversion = convert_sft_to_qwen3([_sample_sft_row()])
-    manifest = __import__("defend_control.qwen3_candidate", fromlist=["build_training_manifest"]).build_training_manifest(
+    manifest = __import__("defend_ai.qwen3_candidate", fromlist=["build_training_manifest"]).build_training_manifest(
         conversion_summary=conversion, code_commit="test"
     )
     assert manifest["heldout_eval"]["excluded_from_training"] is True
@@ -85,7 +85,7 @@ def test_manifest_marks_eval_excluded_and_leakage_zero():
 
 
 def test_eval_hash_does_not_appear_in_synthetic_train_hashes():
-    from defend_control.qwen3_candidate import normalize_row_hash
+    from defend_ai.qwen3_candidate import normalize_row_hash
 
     train = {normalize_row_hash(_sample_sft_row())}
     assert HELDOUT_EVAL_SHA256 not in train

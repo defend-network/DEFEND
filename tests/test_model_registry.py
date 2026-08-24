@@ -4,7 +4,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from defend_control.model_registry import (
+from defend_ai.model_registry import (
     ADAPTER_REPO,
     ADAPTER_REVISION,
     DEFEND_MODEL_REGISTRY,

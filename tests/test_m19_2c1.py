@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from defend_control.qwen3_canary_executor import (
+from defend_ai.qwen3_canary_executor import (
     CanaryRunResult,
     PaidCanaryCertification,
     ProductionInventory,
@@ -20,14 +20,14 @@ from defend_control.qwen3_canary_executor import (
     candidate_canary_resource_profile,
     classify_production_inventory,
 )
-from defend_control.qwen3_canary_runner import (
+from defend_ai.qwen3_canary_runner import (
     CANARY_OWNER_AUTHORIZATION,
     EXPECTED_CONVERTED_SHA,
     EXPECTED_HELDOUT_SHA,
     CanaryPolicy,
     validate_five_steps,
 )
-from defend_control.training_hardening import (
+from defend_ai.training_hardening import (
     INVENTORY_AMBIGUOUS,
     INVENTORY_NONE_FOUND,
     INVENTORY_ONE_EXACT_REPLACEMENT,
@@ -380,7 +380,7 @@ def test_five_steps_locked():
 
 
 def test_training_parser_rejects_forbidden_flags():
-    from defend_control.qwen3_canary_train import parse_args
+    from defend_ai.qwen3_canary_train import parse_args
     with pytest.raises(SystemExit):
         parse_args(["--data-file", "x", "--adapter-dir", "y", "--steps", "10"])
     with pytest.raises(SystemExit):
@@ -388,18 +388,18 @@ def test_training_parser_rejects_forbidden_flags():
 
 
 def test_training_parser_rejects_wrong_base_revision():
-    from defend_control.qwen3_canary_train import parse_args
+    from defend_ai.qwen3_canary_train import parse_args
     with pytest.raises(SystemExit):
         parse_args(["--data-file", "x", "--adapter-dir", "y", "--base-revision", "deadbeef"])
 
 
 def test_reload_rejects_wrong_base_revision(capsys):
-    from defend_control.qwen3_canary_reload import main as reload_main
+    from defend_ai.qwen3_canary_reload import main as reload_main
     assert reload_main(["--adapter-dir", "x", "--run-id", "RUN", "--base-revision", "deadbeef"]) == 5
 
 
 def test_reload_parser_and_peft_validation(tmp_path):
-    from defend_control.qwen3_canary_reload import _validate_adapter_dir
+    from defend_ai.qwen3_canary_reload import _validate_adapter_dir
     ok, _ = _validate_adapter_dir(tmp_path)
     assert not ok  # empty dir -> no PEFT artifacts
     (tmp_path / "adapter_config.json").write_text("{}")

@@ -5,7 +5,7 @@ import threading
 import pytest
 
 from defend_control.health import HealthResult
-from defend_control.model_registry import ADAPTER_REPO
+from defend_ai.model_registry import ADAPTER_REPO
 from defend_control.orchestrator import (
     AlreadyRunning,
     ExternalCloudflaredDetector,

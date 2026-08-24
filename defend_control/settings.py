@@ -8,7 +8,7 @@ from pathlib import Path
 import tempfile
 from urllib.parse import urlsplit
 
-from .model_registry import ADAPTER_REPO
+from defend_ai.model_registry import ADAPTER_REPO
 from .types import ResourceProfile
 
 

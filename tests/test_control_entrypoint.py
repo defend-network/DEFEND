@@ -9,7 +9,7 @@ from tools.defend_control_center import (
     _RuntimeCoordinator,
     _schedule_settings_load_error,
 )
-from defend_control.model_registry import ADAPTER_REPO
+from defend_ai.model_registry import ADAPTER_REPO
 from defend_control.settings import ControlSettings
 
 

@@ -524,7 +524,7 @@ class StackOrchestrator:
 
     def _ensure_remote_dependencies(self, secrets: Mapping[str, str]) -> None:
         if self._huggingface_client is None:
-            from .huggingface import HuggingFaceClient
+            from defend_ai.huggingface import HuggingFaceClient
 
             self._huggingface_client = HuggingFaceClient()
         if self._vast_client is None:

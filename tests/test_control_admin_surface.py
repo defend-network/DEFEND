@@ -18,7 +18,7 @@ from defend_control.admin_surface import (
     resolve_setup_target,
 )
 from defend_control.health import HealthResult
-from defend_control.model_registry import ADAPTER_REPO
+from defend_ai.model_registry import ADAPTER_REPO
 from defend_control.orchestrator import StackOrchestrator, StartFailed
 from defend_control.preflight import CheckResult, PreflightRunner
 from defend_control.settings import ControlSettings

@@ -4,7 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from defend_control.health import JsonResult
-from defend_control.model_registry import ADAPTER_REPO, ADAPTER_REVISION
+from defend_ai.model_registry import ADAPTER_REPO, ADAPTER_REVISION
 from defend_control.product_runtime import ProductRuntimeRegistry
 from defend_control.products import DefendService
 

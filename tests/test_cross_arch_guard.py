@@ -7,7 +7,7 @@ must fail closed before any GPU provisioning.
 
 from __future__ import annotations
 
-from defend_control.huggingface import adapter_runtime_base_compatible
+from defend_ai.huggingface import adapter_runtime_base_compatible
 
 
 def _qwen25_runtime() -> dict:
@@ -70,6 +70,6 @@ def test_current_production_adapter_resolves_to_qwen25_base():
     """CASE-B guard: the pinned current production adapter is Qwen2.5. This
     documents that a Qwen3 upgrade requires a NEW adapter trained on a Qwen3
     base and must never reuse the Qwen2.5 adapter."""
-    from defend_control.model_registry import ADAPTER_REPO
+    from defend_ai.model_registry import ADAPTER_REPO
 
     assert ADAPTER_REPO == "Defend-network/defend-identity-lora-v002"

@@ -4,7 +4,7 @@ from pathlib import Path
 import sqlite3
 
 import defend_control.preflight as preflight_module
-from defend_control.model_registry import ADAPTER_REPO
+from defend_ai.model_registry import ADAPTER_REPO
 from defend_control.preflight import CheckResult, PreflightRunner
 from defend_control.settings import ControlSettings
 
