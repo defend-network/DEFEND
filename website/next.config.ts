@@ -10,6 +10,7 @@ const contentSecurityPolicy = [
   "frame-ancestors 'none'",
   "object-src 'none'",
   "script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com https://static.cloudflareinsights.com",
+  "script-src-attr 'none'",
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob: https:",
   "font-src 'self' data:",
@@ -22,10 +23,20 @@ const securityHeaders = [
   { key: "X-Content-Type-Options", value: "nosniff" },
   { key: "X-Frame-Options", value: "DENY" },
   { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+  { key: "Cross-Origin-Opener-Policy", value: "same-origin" },
+  { key: "Cross-Origin-Resource-Policy", value: "same-origin" },
+  { key: "Origin-Agent-Cluster", value: "?1" },
+  { key: "X-Permitted-Cross-Domain-Policies", value: "none" },
   {
     key: "Permissions-Policy",
     value: "camera=(self), microphone=(), geolocation=(), payment=()",
   },
+];
+
+const privateNoStoreHeaders = [
+  { key: "Cache-Control", value: "private, no-store, max-age=0" },
+  { key: "Pragma", value: "no-cache" },
+  { key: "X-Robots-Tag", value: "noindex, nofollow" },
 ];
 
 const nextConfig: NextConfig = {
@@ -57,6 +68,12 @@ const nextConfig: NextConfig = {
               ]
             : securityHeaders,
       },
+      { source: "/admin/:path*", headers: privateNoStoreHeaders },
+      { source: "/members/:path*", headers: privateNoStoreHeaders },
+      { source: "/api/auth/:path*", headers: privateNoStoreHeaders },
+      { source: "/login/:path*", headers: privateNoStoreHeaders },
+      { source: "/activate/:path*", headers: privateNoStoreHeaders },
+      { source: "/reset-password/:path*", headers: privateNoStoreHeaders },
     ];
   },
 };

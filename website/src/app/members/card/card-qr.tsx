@@ -75,10 +75,10 @@ export function CardQr({ initialName }: { initialName: string }) {
               <Badge variant="red" className="bg-red-600 text-white">
                 {data.chapterName}
               </Badge>
-              <Badge variant="outline" className="border-white/20 text-slate-200">
+              <Badge variant="outline" className="border-white/40 text-white">
                 {data.status.replaceAll("_", " ")}
               </Badge>
-              <Badge variant="outline" className="border-white/20 text-slate-200">
+              <Badge variant="outline" className="border-white/40 text-white">
                 Dues: {data.duesStatus.replaceAll("_", " ")}
               </Badge>
             </div>

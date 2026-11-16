@@ -4,7 +4,7 @@ Isolated organizational website, member portal, and administrative workstation f
 
 **Branch:** `rebuild/website-platform-v1`
 
-**Status:** Milestone 4 development. Administrative modules, document preview/versioning, database-backed programs, accessibility hardening, and newsletter subscription are implemented and verified locally and on staging. This is not a production release.
+**Status:** Production closeout. Milestone 4 is accepted as the staging baseline. Administrative modules, document versioning, newsletter unsubscribe, encrypted backups, and authenticated accessibility audits are implemented. This is not a production release.
 
 **Staging:** https://defend-website-staging.owner-e75.workers.dev
 
@@ -14,8 +14,10 @@ Isolated organizational website, member portal, and administrative workstation f
 - Staging Worker: `defend-website-staging`
 - Staging D1: `defend-website-staging` (`f1f53b17-39e5-43ad-8b92-6f4c891da9fc`)
 - Staging R2: `defend-private-documents-staging`, `defend-public-media-staging`
+- Staging Worker version: `1fd44e74-1a06-4abe-b063-c0bf4b577aba`
 - Staging email transport: development outbox
 - Staging payments: test mode, live charging disabled
+- Staging migrations: `0000`-`0009`
 - Production DNS and apex domain: unchanged
 
 Staging owner bootstrap is intentionally left to the owner because it requires a staging password decision:
@@ -23,6 +25,13 @@ Staging owner bootstrap is intentionally left to the owner because it requires a
 ```powershell
 npm run bootstrap:owner -- --remote --env staging
 ```
+
+## Closeout documents
+
+- [Owner-assisted integration closeout](docs/integration-closeout.md)
+- [Owner walkthrough](docs/owner-walkthrough.md)
+- [Launch checklist](docs/launch-checklist.md)
+- [Production readiness](docs/production-readiness.md)
 
 ## Implemented and verified
 
@@ -42,7 +51,9 @@ npm run bootstrap:owner -- --remote --env staging
 - Stripe Checkout/Customer Portal/webhook code with live charging gated off.
 - Admin CRM (organizations, contacts, leads, activities, tasks), facilities/property, chapter administration, private R2 documents, CMS pages/articles/news, communications history, finance expenses/allocations, program configuration, system roles, and audit visibility.
 - Public news, support/partnership, volunteer, and expanded program pages.
-- Unit, migration, Worker runtime, browser smoke, and 29-check end-to-end membership/admin workflow tests.
+- Newsletter subscription with signed unsubscribe confirmation and D1 persistence.
+- Encrypted AES-256-GCM D1 backup/decrypt drill and prepared scheduled offsite backup workflow.
+- Unit, migration, Worker runtime, browser smoke, 33-check end-to-end membership/admin workflow, newsletter, public/admin/member accessibility, and mobile navigation tests.
 
 ## Not implemented yet
 
@@ -51,7 +62,8 @@ npm run bootstrap:owner -- --remote --env staging
 - Turnstile widget/secret configuration. In production, forms fail closed when spam protection is not configured.
 - Funnel reporting/analytics and complete CMS block editor. Referral/UTM attribution is captured and shown on applications.
 - External Google/Bing/Cloudflare analytics verification tokens.
-- Production backups, monitoring, accessibility audit, and penetration testing.
+- Production monitoring, manual screen-reader validation, and penetration testing.
+- Enabled scheduled offsite backup until owner secrets are configured.
 - Live payments, donations, production deployment, and DNS changes.
 
 ## Local requirements
@@ -91,7 +103,11 @@ npm run preview
 | `npm run bootstrap:owner` | Create the initial owner |
 | `npm run e2e:smoke` | Public form smoke test |
 | `npm run e2e:membership` | Full membership lifecycle browser test |
-| `node scripts/accessibility-audit.mjs` | Axe WCAG 2.2 AA audit (Worker on port 8787) |
+| `npm run e2e:newsletter` | Newsletter subscribe/unsubscribe browser test |
+| `node scripts/accessibility-audit.mjs` | Public axe WCAG 2.2 AA audit |
+| `node scripts/accessibility-auth-audit.mjs` | Authenticated admin/member axe and mobile navigation audit |
+| `npm run backup:staging` | Encrypted D1 backup; requires `BACKUP_PASSPHRASE` |
+| `npm run backup:verify` | Decrypt and verify an encrypted backup |
 | `npm run audit:prod` | Production dependency audit |
 
 ## Environment
@@ -105,8 +121,11 @@ Required deployed secrets:
 - `PII_ENCRYPTION_KEY`
 - `CARD_TOKEN_SECRET` (or auth secret fallback)
 - `TURNSTILE_SECRET_KEY` (secret) and `NEXT_PUBLIC_TURNSTILE_SITE_KEY` (build-time public site key)
+- `NEWSLETTER_UNSUBSCRIBE_SECRET` (or card/auth secret fallback)
+- `BACKUP_PASSPHRASE` (backup workflow only; never commit)
 - `EMAIL_TRANSPORT`, `RESEND_API_KEY`, `EMAIL_FROM`
 - `STRIPE_SECRET_KEY`, `STRIPE_PRICE_ID`, `STRIPE_WEBHOOK_SECRET`
+- `NEXT_PUBLIC_CF_WEB_ANALYTICS_TOKEN`, `GOOGLE_SITE_VERIFICATION`, `BING_SITE_VERIFICATION`
 
 Safe payment defaults:
 

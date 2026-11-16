@@ -1,5 +1,11 @@
 # Production Readiness
 
+Related closeout documents:
+
+- [Owner-assisted integration closeout](integration-closeout.md)
+- [Owner walkthrough](owner-walkthrough.md)
+- [Launch checklist](launch-checklist.md)
+
 Production deployment is **not authorized**. The live `defend-network.org` site and DNS remain unchanged. This document records the Milestone 4 readiness state and the gates that still require owner action.
 
 ## Environment status
@@ -7,7 +13,7 @@ Production deployment is **not authorized**. The live `defend-network.org` site 
 | Item | Status |
 |---|---|
 | Staging URL | `https://defend-website-staging.owner-e75.workers.dev` |
-| Staging Worker version | `084f2433-565e-4ea5-9326-7c8951cb05be` |
+| Staging Worker version | `1fd44e74-1a06-4abe-b063-c0bf4b577aba` |
 | Staging D1 migrations | `0000`-`0009` applied |
 | Staging programs | 7 seeded / database-backed |
 | Staging newsletter | Verified signup writes to D1 |
@@ -22,12 +28,12 @@ The currently available Cloudflare account owns the staging Worker and `sparklin
 - Administrative modules for CRM, facilities, chapters, documents, CMS/news, communications, finance, programs, events, volunteers, check-in, roles, and audit.
 - Private document upload/list, authorized inline preview, version history, restore, and archive without deleting the original object.
 - Database-backed public programs and seeded program content.
-- Newsletter subscription with consent, duplicate reactivation, rate limiting, honeypot, and Turnstile support.
+- Newsletter subscription with consent, duplicate reactivation, rate limiting, honeypot, Turnstile support, and signed unsubscribe confirmation.
 - Application referral and UTM capture with administrative display.
 - Static CSP and security headers; auth forms use POST so password fallback submissions do not enter URLs.
-- WCAG 2.2 AA axe audit covering 10 public routes with zero violations.
-- D1 export/restore and R2 object recovery drills.
-- 29-check membership/admin end-to-end workflow.
+- WCAG 2.2 AA axe audit: zero violations on 12 public routes and 22 authenticated admin/member routes, plus mobile menu verification.
+- Encrypted AES-256-GCM D1 backup/decrypt drill and R2 object recovery drill; scheduled GitHub Actions backup workflow prepared.
+- 33-check membership/admin workflow including document preview, version restore, archive, and authorization checks.
 
 ## Blocking owner actions
 
@@ -40,7 +46,7 @@ The currently available Cloudflare account owns the staging Worker and `sparklin
 7. Complete a real-device camera QR scan test.
 8. Confirm production Cloudflare account access and the production zone ownership path.
 9. Complete legal review: incorporation, 501(c)(3) counsel, membership policy, privacy/terms, Florida solicitation registration, and youth safeguarding.
-10. Decide and document the backup schedule for D1 exports and R2 object versions.
+10. Enable the prepared encrypted backup workflow with `BACKUP_PASSPHRASE` and `ENABLE_STAGING_BACKUPS=true`; confirm artifact retention and add an S3-compatible production copy.
 
 ## Production gates
 
@@ -57,7 +63,6 @@ The currently available Cloudflare account owns the staging Worker and `sparklin
 
 - CSP uses `'unsafe-inline'` for Next.js bootstrap scripts. A nonce policy caused cached-HTML hydration failures under OpenNext and was removed; cache-safe nonce delivery remains pending.
 - Funnel reporting is limited to referral/UTM capture and administrative display.
-- Newsletter unsubscribe flow is not implemented because bulk email is not enabled.
-- Automated remote backups are documented but not scheduled.
+- Automated remote backup workflow is prepared but not enabled until owner secrets/variables are set.
 - Manual screen-reader testing has not been performed.
 - Production secrets, email, payments, analytics, and Turnstile are not configured.

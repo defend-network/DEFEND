@@ -47,7 +47,7 @@ export function ChapterStatusForm({ chapterId, status }: { chapterId: string; st
   return (
     <form action={action} className="grid gap-2">
       <input type="hidden" name="chapterId" value={chapterId} />
-      <select name="status" defaultValue={status} className="h-10 rounded-[var(--radius-control)] border border-slate-300 bg-white px-3 text-sm">
+      <select name="status" aria-label="Chapter status" defaultValue={status} className="h-10 rounded-[var(--radius-control)] border border-slate-300 bg-white px-3 text-sm">
         {statuses.map((value) => <option key={value} value={value}>{value.replaceAll("_", " ")}</option>)}
       </select>
       <Button type="submit" variant="secondary" size="sm" disabled={pending}>{pending ? "Updating…" : "Update status"}</Button>

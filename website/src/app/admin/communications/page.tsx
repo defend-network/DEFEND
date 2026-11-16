@@ -1,12 +1,12 @@
-﻿import type { Metadata } from "next";
-import { count, desc } from "drizzle-orm";
+import type { Metadata } from "next";
+import { count, desc, eq } from "drizzle-orm";
 import { format } from "date-fns";
 
 import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { getDb } from "@/lib/db/client";
-import { emailDeliveryEvents, emailOutbox } from "@/db/schema";
+import { emailDeliveryEvents, emailOutbox, newsletterSubscribers } from "@/db/schema";
 
 export const metadata: Metadata = {
   title: "Communications",
@@ -17,7 +17,7 @@ export const dynamic = "force-dynamic";
 
 export default async function CommunicationsPage() {
   const db = await getDb();
-  const [events, outbox, outboxCount] = await Promise.all([
+  const [events, outbox, outboxCount, newsletterCount] = await Promise.all([
     db
       .select()
       .from(emailDeliveryEvents)
@@ -29,6 +29,10 @@ export default async function CommunicationsPage() {
       .orderBy(desc(emailOutbox.createdAt))
       .limit(20),
     db.select({ value: count() }).from(emailOutbox),
+    db
+      .select({ value: count() })
+      .from(newsletterSubscribers)
+      .where(eq(newsletterSubscribers.status, "subscribed")),
   ]);
 
   const transport = process.env.EMAIL_TRANSPORT || (process.env.APP_ENV === "production" ? "not_configured" : "outbox");
@@ -47,10 +51,11 @@ export default async function CommunicationsPage() {
         </p>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-3">
+      <div className="grid gap-4 sm:grid-cols-4">
         <Card><CardHeader><p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">Transport</p><CardTitle className="text-2xl">{transport}</CardTitle></CardHeader></Card>
         <Card><CardHeader><p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">Resend credentials</p><CardTitle className="text-2xl">{resendConfigured ? "Configured" : "Not configured"}</CardTitle></CardHeader></Card>
         <Card><CardHeader><p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">Outbox messages</p><CardTitle className="text-3xl">{outboxCount[0]?.value ?? 0}</CardTitle></CardHeader></Card>
+        <Card><CardHeader><p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">Newsletter subscribers</p><CardTitle className="text-3xl">{newsletterCount[0]?.value ?? 0}</CardTitle></CardHeader></Card>
       </div>
 
       <Alert tone="warning">
@@ -94,7 +99,7 @@ export default async function CommunicationsPage() {
                 {outbox.map((message) => (
                   <li key={message.id} className="rounded-[var(--radius-control)] border border-slate-200 p-3">
                     <p className="font-semibold text-navy-900">{message.subject}</p>
-                    <p className="text-xs text-slate-500">{message.recipient} Â· {message.templateKey} Â· {format(message.createdAt, "MMM d, yyyy h:mm a")}</p>
+                    <p className="text-xs text-slate-500">{message.recipient} · {message.templateKey} · {format(message.createdAt, "MMM d, yyyy h:mm a")}</p>
                   </li>
                 ))}
               </ul>

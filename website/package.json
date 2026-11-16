@@ -19,7 +19,10 @@
     "cf-typegen": "wrangler types",
     "e2e:smoke": "node scripts/e2e-smoke.mjs",
     "bootstrap:owner": "node scripts/bootstrap-owner.mjs",
-    "e2e:membership": "node scripts/e2e-membership.mjs"
+    "e2e:membership": "node scripts/e2e-membership.mjs",
+    "e2e:newsletter": "node scripts/e2e-newsletter.mjs",
+    "backup:staging": "node scripts/backup-d1.mjs --env=staging",
+    "backup:verify": "node scripts/verify-backup.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^7.0.6",

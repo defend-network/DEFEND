@@ -4,11 +4,13 @@ import { z } from "zod";
 import { eq } from "drizzle-orm";
 
 import { getDb } from "@/lib/db/client";
+import { recordAuditEvent, hashClientIp } from "@/lib/audit/audit";
+import { verifyUnsubscribeToken } from "@/lib/newsletter/tokens";
 import { getRequestIp } from "@/lib/security/request-ip";
 import { checkRateLimit, rateLimitKey } from "@/lib/security/rate-limit";
 import { verifyTurnstile } from "@/lib/security/turnstile";
 import { newsletterSubscribers } from "@/db/schema";
-import type { NewsletterState } from "./state";
+import type { NewsletterState, UnsubscribeState } from "./state";
 
 const schema = z.object({
   email: z.string().trim().email("Enter a valid email address.").max(320),
@@ -80,5 +82,70 @@ export async function subscribeNewsletter(
     };
   } catch {
     return { status: "error", message: "Unable to subscribe. Please try again." };
+  }
+}
+
+
+export async function unsubscribeNewsletter(
+  _previous: UnsubscribeState,
+  formData: FormData,
+): Promise<UnsubscribeState> {
+  const token = String(formData.get("token") ?? "");
+  const verified = await verifyUnsubscribeToken(token);
+  if (!verified.valid) {
+    return {
+      status: "error",
+      message: "This unsubscribe link is invalid or incomplete.",
+    };
+  }
+
+  const ip = await getRequestIp();
+  const limiter = await checkRateLimit({
+    key: rateLimitKey("newsletter-unsubscribe", ip ?? "unknown"),
+    limit: 10,
+    windowSeconds: 15 * 60,
+  });
+  if (!limiter.allowed) {
+    return { status: "error", message: "Too many attempts. Try again later." };
+  }
+
+  try {
+    const db = await getDb();
+    const rows = await db
+      .select({ id: newsletterSubscribers.id, status: newsletterSubscribers.status })
+      .from(newsletterSubscribers)
+      .where(eq(newsletterSubscribers.id, verified.subscriberId))
+      .limit(1);
+    const subscriber = rows[0];
+    if (!subscriber) {
+      return {
+        status: "error",
+        message: "This subscription is no longer available.",
+      };
+    }
+
+    if (subscriber.status !== "unsubscribed") {
+      await db
+        .update(newsletterSubscribers)
+        .set({ status: "unsubscribed", unsubscribedAt: new Date() })
+        .where(eq(newsletterSubscribers.id, subscriber.id));
+      await recordAuditEvent({
+        actorUserId: null,
+        action: "newsletter.unsubscribe",
+        targetType: "newsletter_subscriber",
+        targetId: subscriber.id,
+        outcome: "success",
+        ipHash: await hashClientIp(ip),
+        metadata: { source: "website" },
+      });
+    }
+
+    return {
+      status: "success",
+      message:
+        "You have been unsubscribed from DEFEND organizational updates. No further bulk email will be sent to this address.",
+    };
+  } catch {
+    return { status: "error", message: "Unable to unsubscribe. Please try again." };
   }
 }

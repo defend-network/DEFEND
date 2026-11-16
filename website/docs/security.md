@@ -16,6 +16,10 @@
 - Client IP values are hashed with `AUDIT_HASH_SALT`; raw IPs are not stored in audit events.
 - Security headers: HSTS in production, CSP baseline, nosniff, frame denial, referrer policy, permissions policy.
 - Public forms use honeypots, server-side Zod validation, optional Turnstile verification, duplicate application checks, and D1-backed rate limiting.
+- Newsletter unsubscribe links use HMAC-signed tokens, a confirmation POST, masked email display, and audit logging.
+- Admin/member/auth responses use private no-store caching; authenticated pages and APIs are excluded from shared caches.
+- D1 backups are AES-256-GCM encrypted with scrypt-derived keys and verified by checksum before restore.
+- Authenticated accessibility audit covers admin and member routes at desktop and mobile navigation.
 - Production fails closed when Turnstile is not configured.
 - D1 queries are parameterized through Drizzle.
 - Stripe webhooks verify signatures, store unique event IDs, and treat duplicate deliveries as no-ops.
@@ -26,10 +30,11 @@
 - Staging uses Cloudflare Turnstile test keys (public test site key plus test secret). Local development runs without Turnstile. Production requires real Turnstile site/secret keys.
 - The development email outbox is enabled only outside production. Real Resend delivery has not been externally verified.
 - Stripe Checkout and Customer Portal have not been executed against an external Stripe test account because no test credentials are present. Webhook signature/idempotency logic was locally tested.
-- CSP is a static header with `'unsafe-inline'` for Next.js bootstrap scripts. A nonce-based policy was tested but removed after cached HTML/nonce mismatches broke hydration; nonce hardening remains pending and requires cache-safe delivery.
+- CSP is a static header with `'unsafe-inline'` for Next.js bootstrap scripts. A nonce-based policy was tested but removed after cached HTML/nonce mismatches broke hydration. This remains a documented production security decision: either accept the residual XSS surface or implement cache-safe nonce/hash delivery before launch.
 - MFA recovery is implemented but not exercised end-to-end with two independent administrators.
 - Email verification is implemented but invitation activation marks invited addresses verified; the resend verification path was not exercised end-to-end.
 - Document uploads are admin-only with MIME/size validation, private R2 storage, authorized downloads, inline authorized preview, version history/restoration, and download audit. Archive is implemented without deleting the original R2 object.
+- Scheduled offsite backups remain disabled until owner secrets and the enable variable are configured.
 - No production secret management has been performed.
 - No penetration test has been performed.
 
@@ -47,6 +52,6 @@ Before production:
 - Exercise Stripe test-mode checkout, renewal, failure, cancellation, refund, and duplicate webhooks.
 - Verify email verification and recovery with real delivery.
 - Run the full authorization matrix and IDOR tests.
-- Add backup/restore and rollback drills.
+- Verify encrypted backups and restore drills; enable the scheduled workflow.
 - Complete legal review of privacy, terms, membership criteria, and organizational status copy.
 - Do not enable live payments or donations until legal, financial, processor, and owner readiness are confirmed.

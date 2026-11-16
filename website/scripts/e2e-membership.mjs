@@ -124,6 +124,9 @@ try {
   await member.waitForURL(/\/members/, { timeout: 30000 });
   await member.getByRole("heading", { name: /Welcome/i }).waitFor();
   pass("member sign-in and dashboard");
+  if (process.env.E2E_MEMBER_STATE) {
+    await memberContext.storageState({ path: process.env.E2E_MEMBER_STATE });
+  }
 
   // 5. Profile and directory settings
   await member.goto(`${baseURL}/members/account`, { waitUntil: "domcontentloaded" });
@@ -240,9 +243,9 @@ try {
 
   await owner.goto(`${baseURL}/admin/documents`, { waitUntil: "networkidle" });
   await owner.locator("#doc-file").setInputFiles({
-    name: "e2e-document.txt",
-    mimeType: "text/plain",
-    buffer: Buffer.from("DEFEND E2E document verification."),
+    name: "e2e-document.pdf",
+    mimeType: "application/pdf",
+    buffer: Buffer.from("%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[]/Count 0>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF"),
   });
   await owner.locator("#doc-title").fill(`E2E Document ${run}`);
   await owner.locator("#doc-category").selectOption("governance");
@@ -251,6 +254,37 @@ try {
   await owner.getByText("Document uploaded.", { exact: false }).waitFor({ timeout: 30000 });
   await owner.getByText(`E2E Document ${run}`, { exact: false }).waitFor();
   pass("private document upload and listing");
+
+  await owner.getByRole("link", { name: `E2E Document ${run}`, exact: false }).first().click();
+  await owner.getByRole("heading", { name: `E2E Document ${run}` }).waitFor();
+  const documentId = owner.url().split("/").pop();
+  const preview = await owner.request.get(`${baseURL}/api/admin/documents/${documentId}/preview`);
+  if (preview.status() !== 200 || preview.headers()["content-type"]?.split(";")[0] !== "application/pdf") {
+    throw new Error(`Document preview failed: ${preview.status()} ${preview.headers()["content-type"]}`);
+  }
+  pass("authorized document preview");
+
+  const signedOut = await browser.newContext();
+  const deniedPreview = await signedOut.request.get(`${baseURL}/api/admin/documents/${documentId}/preview`);
+  if (deniedPreview.status() === 200) throw new Error("Signed-out document preview was not denied.");
+  await signedOut.close();
+  pass("signed-out document preview denied");
+
+  await owner.locator("#new-version-file").setInputFiles({
+    name: "e2e-document-v2.pdf",
+    mimeType: "application/pdf",
+    buffer: Buffer.from("%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[]/Count 0>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n"),
+  });
+  await owner.getByRole("button", { name: "Upload new version" }).click();
+  await owner.getByText("Version 2 uploaded.", { exact: false }).waitFor({ timeout: 30000 });
+  await owner.getByRole("button", { name: "Restore v1" }).click();
+  await owner.getByText("Restored as version 3.", { exact: false }).waitFor({ timeout: 30000 });
+  pass("document version upload and restore");
+
+  await owner.getByRole("button", { name: "Archive document" }).click();
+  await owner.getByText("Document archived.", { exact: false }).waitFor({ timeout: 30000 });
+  await owner.getByText("This document is archived", { exact: false }).waitFor();
+  pass("document archive without deletion");
 
   await owner.goto(`${baseURL}/admin/website`, { waitUntil: "networkidle" });
   await owner.locator("#page-title").fill(`E2E CMS Page ${run}`);

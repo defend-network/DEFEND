@@ -50,7 +50,7 @@ export default async function DocumentsPage({
                   placeholder="Search title or filename"
                   className="h-11 flex-1 rounded-[var(--radius-control)] border border-slate-300 bg-white px-3 text-sm outline-none focus:border-navy-700 focus:ring-2 focus:ring-navy-800/15"
                 />
-                <select name="category" defaultValue={category} className="h-11 rounded-[var(--radius-control)] border border-slate-300 bg-white px-3 text-sm">
+                <select name="category" aria-label="Filter by category" defaultValue={category} className="h-11 rounded-[var(--radius-control)] border border-slate-300 bg-white px-3 text-sm">
                   <option value="all">All categories</option>
                   <option value="governance">Governance</option>
                   <option value="finance">Finance</option>

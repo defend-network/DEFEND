@@ -1,4 +1,4 @@
-﻿import Link from "next/link";
+import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { SignOutButton } from "@/components/auth/sign-out-button";
@@ -46,7 +46,7 @@ export default async function AdminLayout({
 
       <div className="mx-auto grid w-full max-w-7xl gap-8 px-5 py-8 sm:px-8 lg:grid-cols-[220px_1fr]">
         <aside className="h-fit rounded-[var(--radius-card)] border border-slate-200 bg-white p-3">
-          <p className="px-3 pb-2 pt-1 text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">
+          <p className="px-3 pb-2 pt-1 text-[10px] font-bold uppercase tracking-[0.2em] text-slate-600">
             Workstation
           </p>
           <nav aria-label="Admin navigation" className="grid gap-1">
@@ -130,12 +130,3 @@ export default async function AdminLayout({
     </div>
   );
 }
-
-
-
-
-
-
-
-
-

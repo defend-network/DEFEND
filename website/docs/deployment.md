@@ -14,7 +14,7 @@ Production deployment is **not authorized** from this milestone. Do not change p
 
 Staging URL: `https://defend-website-staging.owner-e75.workers.dev`
 
-Current staging version: `084f2433-565e-4ea5-9326-7c8951cb05be` (migrations `0007`-`0009` applied). Staging uses Cloudflare Turnstile test keys; production requires real keys.
+Current staging version: `1fd44e74-1a06-4abe-b063-c0bf4b577aba` (migrations `0000`-`0009` applied). Staging uses Cloudflare Turnstile test keys; production requires real keys.
 
 Staging uses the Cloudflare `workers.dev` hostname because the currently available Cloudflare account does not contain the `defend-network.org` zone. No production DNS was changed.
 
@@ -54,9 +54,24 @@ For the browser tests, keep the Worker running and use:
 ```powershell
 npm run e2e:smoke
 npm run e2e:membership
+npm run e2e:newsletter
+node scripts/accessibility-audit.mjs
+node scripts/accessibility-auth-audit.mjs
 ```
 
 The full membership test requires a locally bootstrapped `owner.e2e@example.com` account without active MFA, because it enrolls MFA during the run. It covers application, request-information, approval, activation, member sign-in, profile, directory, card, event/volunteer registration, check-in, member status management, administrative modules, password reset, MFA challenge, and billing not-configured behavior.
+
+## Encrypted backups
+
+Local drill:
+
+```powershell
+$env:BACKUP_PASSPHRASE = "<unique passphrase of at least 20 characters>"
+npm run backup:staging
+npm run backup:verify -- --file=<backup.enc> --out=restored.sql
+```
+
+The scheduled workflow `.github/workflows/website-backup.yml` is gated by `ENABLE_STAGING_BACKUPS=true` and requires `BACKUP_PASSPHRASE`, `CLOUDFLARE_API_TOKEN`, and `CLOUDFLARE_ACCOUNT_ID`. It uploads encrypted GitHub Actions artifacts with 90-day retention. Add an S3-compatible copy for production; GitHub artifacts alone are not a sufficient production retention policy.
 
 ## Staging deployment
 
