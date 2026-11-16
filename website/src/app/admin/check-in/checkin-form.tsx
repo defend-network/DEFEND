@@ -6,6 +6,7 @@ import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { CameraScanner } from "./camera-scanner";
 
 type CheckinResult = {
   ok: boolean;
@@ -70,6 +71,7 @@ export function CheckinForm({
         </div>
         <div className="grid gap-2">
           <Label htmlFor="token">Card code</Label>
+          <CameraScanner onScan={setToken} />
           <Input
             id="token"
             value={token}
