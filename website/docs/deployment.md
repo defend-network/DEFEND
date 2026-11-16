@@ -9,8 +9,12 @@ Production deployment is **not authorized** from this milestone. Do not change p
 | Environment | Worker | D1 | R2 | Payments |
 |---|---|---|---|---|
 | Local | Wrangler dev | local `.wrangler` | local | test/off |
-| Staging | `defend-website-staging` | separate | separate | Stripe test |
+| Staging | `defend-website-staging` | `f1f53b17-39e5-43ad-8b92-6f4c891da9fc` | staging buckets | test/off |
 | Production | `defend-website` | separate | separate | off until approved |
+
+Staging URL: `https://defend-website-staging.owner-e75.workers.dev`
+
+Staging uses the Cloudflare `workers.dev` hostname because the currently available Cloudflare account does not contain the `defend-network.org` zone. No production DNS was changed.
 
 ## Provisioning checklist
 
@@ -51,6 +55,23 @@ npm run e2e:membership
 ```
 
 The full membership test requires a locally bootstrapped `owner.e2e@example.com` account. It covers application, request-information, approval, activation, member sign-in, profile, directory, card, event/volunteer registration, check-in, member status management, password reset, MFA challenge, and billing not-configured behavior.
+
+## Staging deployment
+
+Staging resources are provisioned. Manual deployment:
+
+```powershell
+npm run build:worker
+npx opennextjs-cloudflare deploy --env staging
+```
+
+Verify:
+
+```powershell
+Invoke-RestMethod https://defend-website-staging.owner-e75.workers.dev/api/health
+```
+
+Automated staging deployment is prepared in `.github/workflows/website-ci.yml` behind the repository variable `ENABLE_STAGING_DEPLOY`. It requires `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` secrets. The current local Cloudflare OAuth connection has Worker/D1 deployment access but is not a GitHub Actions API token, so the automated deploy job remains disabled until an API token is supplied.
 
 ## Rollback
 

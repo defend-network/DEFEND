@@ -4,7 +4,25 @@ Isolated organizational website, member portal, and administrative workstation f
 
 **Branch:** `rebuild/website-platform-v1`
 
-**Status:** Milestone 2 membership operations implemented and locally verified. This is not a production release.
+**Status:** Milestone 3 development. Milestone 2 membership operations are implemented and locally verified. Staging is deployed. This is not a production release.
+
+**Staging:** https://defend-website-staging.owner-e75.workers.dev
+
+## Cloud infrastructure
+
+- GitHub branch: `rebuild/website-platform-v1`
+- Staging Worker: `defend-website-staging`
+- Staging D1: `defend-website-staging` (`f1f53b17-39e5-43ad-8b92-6f4c891da9fc`)
+- Staging R2: `defend-private-documents-staging`, `defend-public-media-staging`
+- Staging email transport: development outbox
+- Staging payments: test mode, live charging disabled
+- Production DNS and apex domain: unchanged
+
+Staging owner bootstrap is intentionally left to the owner because it requires a staging password decision:
+
+```powershell
+npm run bootstrap:owner -- --remote --env staging
+```
 
 ## Implemented and verified
 
