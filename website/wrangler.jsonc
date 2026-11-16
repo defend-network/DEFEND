@@ -1,0 +1,39 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "defend-website",
+  "main": ".open-next/worker.js",
+  "compatibility_date": "2026-11-15",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": ".open-next/assets",
+    "binding": "ASSETS"
+  },
+  "observability": {
+    "enabled": true
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "defend-website-dev",
+      "database_id": "REPLACE_WITH_D1_DATABASE_ID",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "DOCUMENTS",
+      "bucket_name": "defend-private-documents"
+    },
+    {
+      "binding": "MEDIA",
+      "bucket_name": "defend-public-media"
+    }
+  ],
+  "vars": {
+    "APP_ENV": "development",
+    "APP_URL": "http://localhost:3000",
+    "PAYMENTS_MODE": "test",
+    "PAYMENTS_LIVE_APPROVED": "false",
+    "DONATIONS_ENABLED": "false"
+  }
+}

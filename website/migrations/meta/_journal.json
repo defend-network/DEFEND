@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1794786999325,
+      "tag": "0000_powerful_spencer_smythe",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1794787013861,
+      "tag": "0001_seed_pasco_and_audit_guards",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1794788451103,
+      "tag": "0002_rate_limit_id",
+      "breakpoints": true
+    }
+  ]
+}
