@@ -6,6 +6,7 @@ import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { FieldError, Label } from "@/components/ui/label";
 import { Input, Textarea } from "@/components/ui/input";
+import { TurnstileWidget } from "@/components/security/turnstile";
 import {
   initialApplicationState,
   type ApplicationFormState,
@@ -286,6 +287,8 @@ export function ApplicationForm() {
         </label>
         <FieldError>{errorFor(state, "privacyAcknowledged")}</FieldError>
       </fieldset>
+
+      <TurnstileWidget />
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
         <Button type="submit" size="lg" disabled={pending}>

@@ -1,6 +1,6 @@
-import { chromium } from "playwright-core";
+﻿import { chromium } from "playwright-core";
 
-const baseURL = process.env.E2E_BASE_URL ?? "http://127.0.0.1:8787";
+const baseURL = process.env.E2E_BASE_URL ?? "http://localhost:8787";
 const edgePath =
   process.env.E2E_BROWSER_PATH ??
   "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe";

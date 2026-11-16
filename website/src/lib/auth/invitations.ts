@@ -1,8 +1,19 @@
 import { and, eq, isNull, gt } from "drizzle-orm";
 
+import { canAcceptLivePayments } from "@/lib/config/features";
 import { getAuth } from "@/lib/auth/auth";
 import { getDb } from "@/lib/db/client";
-import { invitations } from "@/db/schema";
+import { sendEmail } from "@/lib/email/send";
+import { membershipActivatedEmail } from "@/lib/email/templates";
+import {
+  chapters,
+  invitations,
+  memberProfiles,
+  membershipApplications,
+  memberships,
+  membershipStatusHistory,
+  roleAssignments,
+} from "@/db/schema";
 
 export const INVITATION_TTL_MS = 48 * 60 * 60 * 1000;
 export const MIN_PASSWORD_LENGTH = 12;
@@ -121,11 +132,28 @@ export async function getInvitationStatus(token: string): Promise<{
   };
 }
 
+function splitLegalName(value: string): { first: string; last: string } {
+  const parts = value.trim().split(/\s+/);
+  if (parts.length <= 1) return { first: value.trim(), last: "" };
+  return { first: parts.slice(0, -1).join(" "), last: parts.at(-1) ?? "" };
+}
+
+function generateMemberNumber(): string {
+  const year = new Date().getUTCFullYear();
+  const suffix = crypto.randomUUID().replaceAll("-", "").slice(0, 8).toUpperCase();
+  return `DEF-${year}-${suffix}`;
+}
+
 export async function activateInvitation(input: {
   token: string;
   password: string;
   name: string;
-}): Promise<{ userId: string; email: string }> {
+}): Promise<{
+  userId: string;
+  email: string;
+  memberNumber?: string;
+  chapterName?: string;
+}> {
   if (!input.token || input.token.length > 512) {
     throw new Error("Invitation is unavailable.");
   }
@@ -182,6 +210,114 @@ export async function activateInvitation(input: {
       password: passwordHash,
     });
 
+    let memberNumber: string | undefined;
+    let chapterName: string | undefined;
+
+    if (invitation.applicationId) {
+      const applicationRows = await db
+        .select()
+        .from(membershipApplications)
+        .where(eq(membershipApplications.id, invitation.applicationId))
+        .limit(1);
+      const application = applicationRows[0];
+      if (!application) {
+        throw new Error("The linked application is unavailable.");
+      }
+
+      const existingMembership = await db
+        .select({ id: memberships.id })
+        .from(memberships)
+        .where(eq(memberships.applicationId, application.id))
+        .limit(1);
+      if (existingMembership.length > 0) {
+        throw new Error("A membership already exists for this application.");
+      }
+
+      const chapterId =
+        application.desiredChapterId ??
+        application.recommendedChapterId ??
+        "chapter_pasco";
+      const chapterRows = await db
+        .select({ name: chapters.name })
+        .from(chapters)
+        .where(eq(chapters.id, chapterId))
+        .limit(1);
+      chapterName = chapterRows[0]?.name ?? "Pasco County";
+
+      const legalName = splitLegalName(application.legalName);
+      const now = new Date();
+      memberNumber = generateMemberNumber();
+      const membershipStatus = canAcceptLivePayments()
+        ? "pending_payment"
+        : "founding_access";
+
+      await db.insert(memberProfiles).values({
+        id: `profile_${crypto.randomUUID()}`,
+        userId: created.id,
+        legalFirstName: legalName.first,
+        legalLastName: legalName.last,
+        preferredName: application.preferredName,
+        phoneEncrypted: application.phoneEncrypted,
+        city: application.city,
+        state: application.state,
+        postalCode: application.postalCode,
+        chapterId,
+        joinedAt: now,
+        status: "active",
+        createdAt: now,
+        updatedAt: now,
+      });
+
+      const membershipId = `membership_${crypto.randomUUID()}`;
+      await db.insert(memberships).values({
+        id: membershipId,
+        userId: created.id,
+        applicationId: application.id,
+        chapterId,
+        memberNumber,
+        status: membershipStatus,
+        duesStatus: "not_started",
+        joinedAt: now,
+        activatedAt: now,
+        createdAt: now,
+        updatedAt: now,
+      });
+
+      await db.insert(membershipStatusHistory).values({
+        id: `msh_${crypto.randomUUID()}`,
+        membershipId,
+        fromStatus: null,
+        toStatus: membershipStatus,
+        reason: "Account activation",
+        actorId: created.id,
+        createdAt: now,
+      });
+
+      await db.insert(roleAssignments).values({
+        id: `role_${crypto.randomUUID()}`,
+        userId: created.id,
+        roleKey: "member",
+        scopeType: "self",
+        scopeId: null,
+        grantedBy: created.id,
+        grantedAt: now,
+      });
+
+      await db
+        .update(membershipApplications)
+        .set({ status: "activated", updatedAt: now })
+        .where(eq(membershipApplications.id, application.id));
+
+      await sendEmail(
+        membershipActivatedEmail({
+          to: created.email,
+          name: input.name,
+          memberNumber,
+          chapterName,
+        }),
+      );
+    }
+
     const consumed = await db
       .update(invitations)
       .set({ consumedAt: new Date() })
@@ -199,7 +335,12 @@ export async function activateInvitation(input: {
       throw new Error("Invitation is unavailable.");
     }
 
-    return { userId: created.id, email: created.email };
+    return {
+      userId: created.id,
+      email: created.email,
+      memberNumber,
+      chapterName,
+    };
   } catch (error) {
     await context.internalAdapter.deleteUser(created.id).catch(() => undefined);
     throw error;

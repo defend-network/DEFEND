@@ -35,13 +35,15 @@ export async function POST(request: Request) {
 
   try {
     const result = await activateInvitation(parsed.data);
-    return NextResponse.json({ ok: true, email: result.email });
+    return NextResponse.json({
+      ok: true,
+      email: result.email,
+      memberNumber: result.memberNumber,
+      chapterName: result.chapterName,
+    });
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Invitation is unavailable.";
-    return NextResponse.json(
-      { error: message },
-      { status: 410 },
-    );
+    return NextResponse.json({ error: message }, { status: 410 });
   }
 }

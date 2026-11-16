@@ -46,6 +46,15 @@ const expectedTables = [
   "admin_audit_events",
   "directory_profiles",
   "contact_messages",
+  "application_update_tokens",
+  "email_outbox",
+  "email_delivery_events",
+  "request_rate_limits",
+  "events",
+  "event_registrations",
+  "event_checkins",
+  "volunteer_opportunities",
+  "volunteer_registrations",
 ];
 
 const tables = new Set(

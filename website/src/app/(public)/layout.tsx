@@ -1,5 +1,6 @@
 import { SiteFooter } from "@/components/public/site-footer";
 import { SiteHeader } from "@/components/public/site-header";
+import { TurnstileScript } from "@/components/security/turnstile";
 
 export default function PublicLayout({
   children,
@@ -19,6 +20,7 @@ export default function PublicLayout({
         {children}
       </main>
       <SiteFooter />
+      <TurnstileScript />
     </div>
   );
 }

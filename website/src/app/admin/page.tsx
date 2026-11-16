@@ -1,9 +1,12 @@
-import type { Metadata } from "next";
-import { count, desc, eq } from "drizzle-orm";
+﻿import type { Metadata } from "next";
+import { count, desc, eq, inArray } from "drizzle-orm";
 import { format } from "date-fns";
+
+import Link from "next/link";
 
 import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { getDb } from "@/lib/db/client";
 import {
@@ -21,7 +24,7 @@ export const metadata: Metadata = {
 export const dynamic = "force-dynamic";
 
 function dateLabel(value: Date | null): string {
-  return value ? format(value, "MMM d, yyyy h:mm a") : "—";
+  return value ? format(value, "MMM d, yyyy h:mm a") : "â€”";
 }
 
 export default async function AdminPage() {
@@ -60,7 +63,13 @@ export default async function AdminPage() {
         db
           .select({ value: count() })
           .from(membershipApplications)
-          .where(eq(membershipApplications.status, "submitted")),
+          .where(
+            inArray(membershipApplications.status, [
+              "submitted",
+              "under_review",
+              "needs_info",
+            ]),
+          ),
         db
           .select({ value: count() })
           .from(memberships)
@@ -134,6 +143,17 @@ export default async function AdminPage() {
         <p className="mt-2 text-sm leading-6 text-slate-600">
           Live counts from the DEFEND database. No placeholder metrics.
         </p>
+        <div className="mt-4 flex flex-wrap gap-2">
+          <Button asChild size="sm">
+            <Link href="/admin/applications">Review applications</Link>
+          </Button>
+          <Button asChild variant="secondary" size="sm">
+            <Link href="/admin/members">Manage members</Link>
+          </Button>
+          <Button asChild variant="secondary" size="sm">
+            <Link href="/admin/events">Events and volunteers</Link>
+          </Button>
+        </div>
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -234,7 +254,7 @@ export default async function AdminPage() {
                       {message.subject}
                     </p>
                     <p className="mt-1 text-xs text-slate-500">
-                      {message.name} · {message.email} ·{" "}
+                      {message.name} Â· {message.email} Â·{" "}
                       {dateLabel(message.createdAt)}
                     </p>
                   </li>

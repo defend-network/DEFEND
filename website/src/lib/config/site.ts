@@ -21,6 +21,7 @@ export const publicNavigation = [
   { href: "/about", label: "About" },
   { href: "/programs", label: "Programs" },
   { href: "/chapters", label: "Chapters" },
+  { href: "/events", label: "Events" },
   { href: "/membership", label: "Membership" },
   { href: "/contact", label: "Contact" },
 ] as const;

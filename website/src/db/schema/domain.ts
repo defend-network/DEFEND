@@ -46,6 +46,9 @@ export const memberProfiles = sqliteTable(
     chapterId: text("chapter_id").references(() => chapters.id),
     joinedAt: integer("joined_at", { mode: "timestamp_ms" }),
     status: text("status").notNull().default("pending"),
+    notificationPreferencesJson: text("notification_preferences_json")
+      .notNull()
+      .default("{}"),
     createdAt: integer("created_at", { mode: "timestamp_ms" })
       .default(timestampDefault)
       .notNull(),
@@ -73,6 +76,9 @@ export const membershipApplications = sqliteTable(
     state: text("state"),
     postalCode: text("postal_code"),
     desiredChapterId: text("desired_chapter_id").references(() => chapters.id),
+    recommendedChapterId: text("recommended_chapter_id").references(
+      () => chapters.id,
+    ),
     interestsJson: text("interests_json").notNull().default("[]"),
     skillsJson: text("skills_json").notNull().default("[]"),
     volunteerInterestsJson: text("volunteer_interests_json")
@@ -94,6 +100,8 @@ export const membershipApplications = sqliteTable(
     reviewedAt: integer("reviewed_at", { mode: "timestamp_ms" }),
     reviewedBy: text("reviewed_by").references(() => user.id),
     decisionNotesEncrypted: text("decision_notes_encrypted"),
+    infoRequestEncrypted: text("info_request_encrypted"),
+    infoRequestedAt: integer("info_requested_at", { mode: "timestamp_ms" }),
     notificationStatus: text("notification_status").notNull().default("pending"),
     createdAt: integer("created_at", { mode: "timestamp_ms" })
       .default(timestampDefault)
@@ -144,9 +152,13 @@ export const memberships = sqliteTable(
     userId: text("user_id")
       .notNull()
       .references(() => user.id, { onDelete: "cascade" }),
+    applicationId: text("application_id")
+      .unique()
+      .references(() => membershipApplications.id),
     chapterId: text("chapter_id").references(() => chapters.id),
     memberNumber: text("member_number").notNull().unique(),
     status: text("status").notNull().default("pending_activation"),
+    duesStatus: text("dues_status").notNull().default("not_started"),
     joinedAt: integer("joined_at", { mode: "timestamp_ms" }),
     activatedAt: integer("activated_at", { mode: "timestamp_ms" }),
     endsAt: integer("ends_at", { mode: "timestamp_ms" }),
@@ -159,7 +171,7 @@ export const memberships = sqliteTable(
       .notNull(),
   },
   (table) => [
-    index("memberships_user_id_idx").on(table.userId),
+    uniqueIndex("memberships_user_id_unique").on(table.userId),
     index("memberships_chapter_status_idx").on(table.chapterId, table.status),
   ],
 );
@@ -365,4 +377,210 @@ export const contactMessages = sqliteTable(
       .notNull(),
   },
   (table) => [index("contact_messages_created_idx").on(table.createdAt)],
+);
+
+export const applicationUpdateTokens = sqliteTable(
+  "application_update_tokens",
+  {
+    id: text("id").primaryKey(),
+    applicationId: text("application_id")
+      .notNull()
+      .references(() => membershipApplications.id, { onDelete: "cascade" }),
+    tokenHash: text("token_hash").notNull().unique(),
+    expiresAt: integer("expires_at", { mode: "timestamp_ms" }).notNull(),
+    consumedAt: integer("consumed_at", { mode: "timestamp_ms" }),
+    createdBy: text("created_by").references(() => user.id),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .default(timestampDefault)
+      .notNull(),
+  },
+  (table) => [
+    index("application_update_tokens_application_idx").on(
+      table.applicationId,
+      table.createdAt,
+    ),
+  ],
+);
+
+export const emailOutbox = sqliteTable(
+  "email_outbox",
+  {
+    id: text("id").primaryKey(),
+    recipient: text("recipient").notNull(),
+    subject: text("subject").notNull(),
+    textBody: text("text_body").notNull(),
+    htmlBody: text("html_body"),
+    templateKey: text("template_key").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .default(timestampDefault)
+      .notNull(),
+  },
+  (table) => [index("email_outbox_created_idx").on(table.createdAt)],
+);
+
+export const emailDeliveryEvents = sqliteTable(
+  "email_delivery_events",
+  {
+    id: text("id").primaryKey(),
+    recipient: text("recipient").notNull(),
+    templateKey: text("template_key").notNull(),
+    provider: text("provider").notNull(),
+    providerMessageId: text("provider_message_id"),
+    status: text("status").notNull(),
+    errorCode: text("error_code"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .default(timestampDefault)
+      .notNull(),
+  },
+  (table) => [
+    index("email_delivery_events_created_idx").on(table.createdAt),
+    index("email_delivery_events_recipient_idx").on(table.recipient),
+  ],
+);
+
+export const requestRateLimits = sqliteTable("request_rate_limits", {
+  key: text("key").primaryKey(),
+  count: integer("count").notNull(),
+  windowStart: integer("window_start").notNull(),
+  expiresAt: integer("expires_at").notNull(),
+});
+
+export const events = sqliteTable(
+  "events",
+  {
+    id: text("id").primaryKey(),
+    slug: text("slug").notNull().unique(),
+    title: text("title").notNull(),
+    summary: text("summary").notNull().default(""),
+    description: text("description").notNull().default(""),
+    chapterId: text("chapter_id").references(() => chapters.id),
+    startsAt: integer("starts_at", { mode: "timestamp_ms" }).notNull(),
+    endsAt: integer("ends_at", { mode: "timestamp_ms" }),
+    locationName: text("location_name"),
+    address: text("address"),
+    capacity: integer("capacity"),
+    status: text("status").notNull().default("draft"),
+    registrationOpensAt: integer("registration_opens_at", {
+      mode: "timestamp_ms",
+    }),
+    registrationClosesAt: integer("registration_closes_at", {
+      mode: "timestamp_ms",
+    }),
+    createdBy: text("created_by").references(() => user.id),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .default(timestampDefault)
+      .notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .default(timestampDefault)
+      .$onUpdate(() => new Date())
+      .notNull(),
+  },
+  (table) => [
+    index("events_chapter_status_idx").on(table.chapterId, table.status),
+    index("events_starts_at_idx").on(table.startsAt),
+  ],
+);
+
+export const eventRegistrations = sqliteTable(
+  "event_registrations",
+  {
+    id: text("id").primaryKey(),
+    eventId: text("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    status: text("status").notNull().default("registered"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .default(timestampDefault)
+      .notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .default(timestampDefault)
+      .$onUpdate(() => new Date())
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex("event_registrations_event_user_idx").on(
+      table.eventId,
+      table.userId,
+    ),
+    index("event_registrations_event_status_idx").on(
+      table.eventId,
+      table.status,
+    ),
+  ],
+);
+
+export const eventCheckins = sqliteTable(
+  "event_checkins",
+  {
+    id: text("id").primaryKey(),
+    eventId: text("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    checkedInAt: integer("checked_in_at", { mode: "timestamp_ms" })
+      .default(timestampDefault)
+      .notNull(),
+    checkedInBy: text("checked_in_by").references(() => user.id),
+    method: text("method").notNull().default("qr"),
+  },
+  (table) => [
+    uniqueIndex("event_checkins_event_user_idx").on(
+      table.eventId,
+      table.userId,
+    ),
+  ],
+);
+
+export const volunteerOpportunities = sqliteTable(
+  "volunteer_opportunities",
+  {
+    id: text("id").primaryKey(),
+    chapterId: text("chapter_id").references(() => chapters.id),
+    eventId: text("event_id").references(() => events.id),
+    title: text("title").notNull(),
+    description: text("description").notNull().default(""),
+    slots: integer("slots"),
+    status: text("status").notNull().default("draft"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .default(timestampDefault)
+      .notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .default(timestampDefault)
+      .$onUpdate(() => new Date())
+      .notNull(),
+  },
+  (table) => [
+    index("volunteer_opportunities_chapter_status_idx").on(
+      table.chapterId,
+      table.status,
+    ),
+  ],
+);
+
+export const volunteerRegistrations = sqliteTable(
+  "volunteer_registrations",
+  {
+    id: text("id").primaryKey(),
+    opportunityId: text("opportunity_id")
+      .notNull()
+      .references(() => volunteerOpportunities.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    status: text("status").notNull().default("registered"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .default(timestampDefault)
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex("volunteer_registrations_opportunity_user_idx").on(
+      table.opportunityId,
+      table.userId,
+    ),
+  ],
 );

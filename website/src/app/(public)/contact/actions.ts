@@ -3,6 +3,9 @@
 import { getDb } from "@/lib/db/client";
 import { contactSchema } from "@/lib/validation/contact";
 import { validationFieldErrors } from "@/lib/validation/application";
+import { getRequestIp } from "@/lib/security/request-ip";
+import { checkRateLimit, rateLimitKey } from "@/lib/security/rate-limit";
+import { verifyTurnstile } from "@/lib/security/turnstile";
 import { contactMessages } from "@/db/schema";
 import type { ContactFormState } from "./form-state";
 
@@ -30,6 +33,32 @@ export async function submitContact(
       status: "error",
       message: "Please correct the highlighted fields.",
       fieldErrors: validationFieldErrors(parsed.error),
+    };
+  }
+
+  const ip = await getRequestIp();
+  const turnstile = await verifyTurnstile(
+    String(formData.get("cf-turnstile-response") ?? ""),
+    ip,
+  );
+  if (!turnstile.ok) {
+    return {
+      status: "error",
+      message:
+        turnstile.error ??
+        "Spam protection could not verify this request. Please try again.",
+    };
+  }
+
+  const limiter = await checkRateLimit({
+    key: rateLimitKey("contact", ip ?? "unknown"),
+    limit: 10,
+    windowSeconds: 15 * 60,
+  });
+  if (!limiter.allowed) {
+    return {
+      status: "error",
+      message: "Too many messages. Try again later.",
     };
   }
 

@@ -4,6 +4,13 @@ import { eq } from "drizzle-orm";
 
 import { getDb } from "@/lib/db/client";
 import { encryptPii } from "@/lib/security/pii";
+import { getRequestIp } from "@/lib/security/request-ip";
+import { checkRateLimit, rateLimitKey } from "@/lib/security/rate-limit";
+import { verifyTurnstile } from "@/lib/security/turnstile";
+import { sendEmail } from "@/lib/email/send";
+import { applicationReceivedEmail } from "@/lib/email/templates";
+import { recommendChapter } from "@/lib/chapters/recommend";
+import { chapters as chapterContent } from "@/lib/content/chapters";
 import {
   applicationSchema,
   validationFieldErrors,
@@ -55,7 +62,33 @@ export async function submitApplication(
     };
   }
 
+  const ip = await getRequestIp();
+  const turnstile = await verifyTurnstile(
+    String(formData.get("cf-turnstile-response") ?? ""),
+    ip,
+  );
+  if (!turnstile.ok) {
+    return {
+      status: "error",
+      message:
+        turnstile.error ??
+        "Spam protection could not verify this request. Please try again.",
+    };
+  }
+
   const email = parsed.data.email.toLowerCase();
+  const limiter = await checkRateLimit({
+    key: rateLimitKey("application", `${ip ?? "unknown"}:${email}`),
+    limit: 5,
+    windowSeconds: 15 * 60,
+  });
+  if (!limiter.allowed) {
+    return {
+      status: "error",
+      message: "Too many application attempts. Try again later.",
+    };
+  }
+
   const number = applicationNumber();
 
   try {
@@ -77,9 +110,15 @@ export async function submitApplication(
     const phoneEncrypted = parsed.data.phone
       ? await encryptPii(parsed.data.phone)
       : null;
+    const recommendation = recommendChapter({
+      state: parsed.data.state,
+      postalCode: parsed.data.postalCode,
+      operatingChapters: chapterContent,
+    });
 
+    const applicationId = `app_${crypto.randomUUID()}`;
     await db.insert(membershipApplications).values({
-      id: `app_${crypto.randomUUID()}`,
+      id: applicationId,
       applicationNumber: number,
       legalName: parsed.data.legalName,
       preferredName: parsed.data.preferredName ?? null,
@@ -89,6 +128,7 @@ export async function submitApplication(
       state: parsed.data.state.toUpperCase(),
       postalCode: parsed.data.postalCode ?? null,
       desiredChapterId: parsed.data.desiredChapterId,
+      recommendedChapterId: recommendation.chapterId,
       interestsJson: JSON.stringify(parsed.data.interests),
       skillsJson: JSON.stringify(
         parsed.data.skills ? [parsed.data.skills] : [],
@@ -103,6 +143,18 @@ export async function submitApplication(
       submittedAt: new Date(),
       notificationStatus: "not_configured",
     });
+
+    const emailResult = await sendEmail(
+      applicationReceivedEmail({
+        to: email,
+        name: parsed.data.preferredName || parsed.data.legalName,
+        applicationNumber: number,
+      }),
+    );
+    await db
+      .update(membershipApplications)
+      .set({ notificationStatus: emailResult.status, updatedAt: new Date() })
+      .where(eq(membershipApplications.id, applicationId));
 
     return {
       status: "success",

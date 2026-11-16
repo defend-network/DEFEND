@@ -58,9 +58,11 @@ export async function getActor(): Promise<ActorContext | null> {
     displayName: session.user.name,
     email: session.user.email,
     roles,
-    // MFA enrollment/verification UI is a later milestone. Administrative
-    // mutations fail closed until it is implemented.
-    mfaVerified: false,
+    // A session only exists after the Better Auth 2FA challenge when the user
+    // has TOTP enabled. Administrators without MFA fail closed.
+    mfaVerified: Boolean(
+      (session.user as { twoFactorEnabled?: boolean }).twoFactorEnabled,
+    ),
   };
 
   return actor;

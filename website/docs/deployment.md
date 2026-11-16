@@ -21,7 +21,11 @@ Production deployment is **not authorized** from this milestone. Do not change p
    - `BETTER_AUTH_SECRET`
    - `AUDIT_HASH_SALT`
    - `PII_ENCRYPTION_KEY`
-5. Set `APP_ENV`, `APP_URL`, and feature flags.
+   - `CARD_TOKEN_SECRET`
+   - `TURNSTILE_SECRET_KEY` and `NEXT_PUBLIC_TURNSTILE_SITE_KEY`
+   - `RESEND_API_KEY`, `EMAIL_FROM`
+   - `STRIPE_SECRET_KEY`, `STRIPE_PRICE_ID`, `STRIPE_WEBHOOK_SECRET`
+5. Set `APP_ENV`, `APP_URL`, `EMAIL_TRANSPORT`, `PAYMENTS_MODE`, and feature flags.
 6. Apply migrations with `wrangler d1 migrations apply DB --remote --env <environment>`.
 7. Bootstrap the single owner with `npm run bootstrap:owner -- --remote --env <environment>`.
 8. Build with `npm run build:worker`.
@@ -39,11 +43,14 @@ npm run build:worker
 npm run preview
 ```
 
-For the browser smoke test, keep the Worker running and use:
+For the browser tests, keep the Worker running and use:
 
 ```powershell
 npm run e2e:smoke
+npm run e2e:membership
 ```
+
+The full membership test requires a locally bootstrapped `owner.e2e@example.com` account. It covers application, request-information, approval, activation, member sign-in, profile, directory, card, event/volunteer registration, check-in, member status management, password reset, MFA challenge, and billing not-configured behavior.
 
 ## Rollback
 

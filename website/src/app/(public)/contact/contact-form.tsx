@@ -6,6 +6,7 @@ import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { FieldError, Label } from "@/components/ui/label";
 import { Input, Textarea } from "@/components/ui/input";
+import { TurnstileWidget } from "@/components/security/turnstile";
 import { initialContactState, type ContactFormState } from "./form-state";
 import { submitContact } from "./actions";
 
@@ -87,6 +88,8 @@ export function ContactForm() {
         />
         <FieldError>{fieldError(state, "message")}</FieldError>
       </div>
+
+      <TurnstileWidget />
 
       <div>
         <Button type="submit" disabled={pending}>

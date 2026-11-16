@@ -4,6 +4,11 @@ import { nextCookies } from "better-auth/next-js";
 import { twoFactor } from "better-auth/plugins";
 
 import { getDb } from "@/lib/db/client";
+import { sendEmail } from "@/lib/email/send";
+import {
+  emailVerificationEmail,
+  passwordResetEmail,
+} from "@/lib/email/templates";
 import {
   account,
   rateLimit,
@@ -51,15 +56,39 @@ function createAuth(db: Awaited<ReturnType<typeof getDb>>) {
       minPasswordLength: 12,
       maxPasswordLength: 512,
       requireEmailVerification: true,
+      sendResetPassword: async ({
+        user,
+        url,
+      }: {
+        user: { email: string; name: string };
+        url: string;
+      }) => {
+        await sendEmail(
+          passwordResetEmail({
+            to: user.email,
+            name: user.name,
+            resetUrl: url,
+          }),
+        );
+      },
     },
     emailVerification: {
       sendOnSignUp: false,
-      sendVerificationEmail: async () => {
-        throw new Error("Email transport is not configured.");
+      sendVerificationEmail: async ({
+        user,
+        url,
+      }: {
+        user: { email: string; name: string };
+        url: string;
+      }) => {
+        await sendEmail(
+          emailVerificationEmail({
+            to: user.email,
+            name: user.name,
+            verifyUrl: url,
+          }),
+        );
       },
-    },
-    sendResetPassword: async () => {
-      throw new Error("Email transport is not configured.");
     },
     session: {
       expiresIn: 60 * 60 * 24 * 7,

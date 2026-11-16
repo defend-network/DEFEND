@@ -80,14 +80,44 @@ Core tables:
 
 - Better Auth: `user`, `session`, `account`, `verification`, `two_factor`, `rate_limit`.
 - Organization: `chapters`, `member_profiles`, `memberships`, `membership_status_history`.
-- Applications: `membership_applications`, `application_reviews`.
+- Applications: `membership_applications`, `application_reviews`, `application_update_tokens`.
 - Payments: `membership_subscriptions`, `payment_events`.
 - Access: `invitations`, `role_assignments`.
 - Audit: `admin_audit_events`.
 - Directory: `directory_profiles`.
 - Contact: `contact_messages`.
+- Email: `email_outbox`, `email_delivery_events`.
+- Events: `events`, `event_registrations`, `event_checkins`.
+- Volunteer: `volunteer_opportunities`, `volunteer_registrations`.
+- Abuse controls: `request_rate_limits`.
 
 Pasco County is seeded as `in_development`. Planned chapters are content-only and cannot be selected for membership assignment.
+
+## Membership lifecycle
+
+```text
+Application submitted
+  → admin review
+  → approve / deny / request information
+  → applicant update link (request-information path)
+  → approval creates single-use invitation
+  → activation creates Better Auth user, member profile, membership, and status history
+  → founding_access while live billing is disabled
+  → Stripe test/live billing later when authorized
+```
+
+`founding_access` is not the same as paid. `dues_status` is tracked separately from membership standing. A member is not marked paid unless a verified payment event or an authorized owner action records it.
+
+## MFA and recovery
+
+Administrative permissions that mutate protected data require TOTP MFA. A session is treated as MFA-verified only when the user has `twoFactorEnabled` set by Better Auth. Owner-assisted reset deletes the target TOTP record, clears `twoFactorEnabled`, revokes sessions, and writes an audit event.
+
+## Email and payments
+
+- Email uses Resend when configured; otherwise a development outbox stores local-only emails. The outbox route is unavailable in production.
+- Stripe Checkout, Customer Portal, and webhooks are implemented. Live charging is gated by `PAYMENTS_MODE` and `PAYMENTS_LIVE_APPROVED`.
+- Webhook events are stored by unique Stripe event ID before processing to make retries idempotent.
+
 
 ## D1 constraints
 

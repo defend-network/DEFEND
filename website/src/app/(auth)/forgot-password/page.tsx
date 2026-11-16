@@ -1,10 +1,8 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 
-import { Alert } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { siteConfig } from "@/lib/config/site";
+import { ForgotPasswordForm } from "./forgot-password-form";
 
 export const metadata: Metadata = {
   title: "Password Reset",
@@ -17,24 +15,17 @@ export default function ForgotPasswordPage() {
       <CardHeader>
         <CardTitle>Password reset</CardTitle>
         <p className="text-sm leading-6 text-slate-500">
-          Automated password reset will be available when the DEFEND email
-          integration is configured.
+          Enter the email address associated with your DEFEND account. If an
+          account exists, a reset link will be sent.
         </p>
       </CardHeader>
       <CardContent className="grid gap-5">
-        <Alert tone="info">
-          Email delivery is not configured yet. Contact DEFEND at{" "}
-          <a
-            href={`mailto:${siteConfig.contactEmail}`}
-            className="font-semibold underline underline-offset-4"
-          >
-            {siteConfig.contactEmail}
-          </a>{" "}
-          for account recovery.
-        </Alert>
-        <Button asChild variant="secondary">
-          <Link href="/login">Return to sign in</Link>
-        </Button>
+        <ForgotPasswordForm />
+        <p className="border-t border-slate-100 pt-4 text-xs leading-5 text-slate-500">
+          <Link href="/login" className="font-semibold text-red-700 underline-offset-4 hover:underline">
+            Return to sign in
+          </Link>
+        </p>
       </CardContent>
     </Card>
   );

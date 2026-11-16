@@ -4,44 +4,46 @@ Isolated organizational website, member portal, and administrative workstation f
 
 **Branch:** `rebuild/website-platform-v1`
 
-**Status:** Foundation implemented. This is not a production release.
+**Status:** Milestone 2 membership operations implemented and locally verified. This is not a production release.
 
-## What is implemented
+## Implemented and verified
 
-- Next.js 16.4.6 App Router application with TypeScript and Tailwind CSS.
-- Cloudflare Workers configuration through the OpenNext adapter.
-- D1 database schema and migrations for identity, chapters, applications, memberships, invitations, roles, audit, directory, contact messages, and payment events.
-- Better Auth identity with invitation-only account activation.
-- Central server-side role policy with chapter scoping and MFA-required administrative actions.
-- Append-only administrative audit table with redaction helpers.
-- Public layout, navigation, homepage, About, Programs, Chapters, Membership, Apply, and Contact pages.
-- Real application and contact form persistence with validation and encrypted phone storage.
-- Protected member dashboard shell and read-only administrative overview.
-- Vitest unit tests, migration verification, Worker runtime smoke checks, and a Playwright smoke script.
+- Next.js 16.4.6 App Router, TypeScript, Tailwind CSS, Cloudflare Workers via OpenNext.
+- D1 schema and migrations for identity, chapters, applications, application updates, memberships, status history, invitations, roles, audit, directory, events, volunteers, email, rate limits, and payment events.
+- Better Auth identity with invitation-only activation, password recovery, email verification scaffold, and TOTP MFA.
+- Central server-side policy with global/chapter/self scope and MFA-required administrative actions.
+- Application queue, detail, approve/deny/request-information, applicant update links, and single-use invitations.
+- Membership creation, chapter assignment, status history, dues status separate from membership standing.
+- Member dashboard, profile/account settings, encrypted phone storage, notification preferences.
+- Digital membership card with short-lived signed QR tokens and event check-in.
+- Opt-in directory with field-level privacy controls.
+- Admin event creation, public event pages, member registration, volunteer opportunities, volunteer registration.
+- MFA enrollment, backup codes, and owner-assisted MFA reset.
+- Password reset through Better Auth and the development email outbox.
+- Turnstile server verification (requires configured site/secret keys), D1-backed form rate limiting.
+- Stripe Checkout/Customer Portal/webhook code with live charging gated off.
+- Unit, migration, Worker runtime, browser smoke, and full membership lifecycle E2E tests.
 
-## What is not implemented yet
+## Not implemented yet
 
-- Application review/approve/deny decisions and invitation-creation UI.
-- Member profile editing, digital card, directory, events, and billing UI.
-- CRM, facilities, documents, CMS, communications, finance, and system modules.
-- Email delivery. Password reset and invitation email are not configured.
-- MFA enrollment UI. The Better Auth two-factor plugin and schema are configured, but administrative mutations that require MFA fail closed until enrollment is implemented.
-- Turnstile UI and server verification.
-- Stripe checkout/webhooks. Live payments and donations are disabled.
-- Production deployment. Not authorized.
+- Real Stripe test-mode external execution. No Stripe test credentials are present; checkout is disabled.
+- Real Resend delivery. Development uses an outbox; production requires `EMAIL_TRANSPORT=resend` and provider secrets.
+- Turnstile widget/secret configuration. In production, forms fail closed when spam protection is not configured.
+- CMS, CRM, facilities, documents, communications center, finance reporting, and system administration modules.
+- Member role-assignment UI beyond the owner bootstrap; admin identity management remains a later milestone.
+- Live payments, donations, production deployment, and DNS changes.
 
 ## Local requirements
 
 - Node.js 22 or newer (Node 24 recommended).
 - npm.
-- A Cloudflare account for future staging/production deployment. No remote resources are created by the default commands.
 
 ## Local setup
 
 ```powershell
 npm install
 Copy-Item .dev.vars.example .dev.vars
-# Replace the example secrets with local-only random values.
+# Replace example values with local-only random secrets.
 npm run db:verify
 npm run bootstrap:owner
 npm run build
@@ -49,11 +51,7 @@ npm run build:worker
 npm run preview
 ```
 
-`npm run preview` starts the built Worker locally with Wrangler. Local D1 data lives under `.wrangler/` and is ignored by Git.
-
-`npm run bootstrap:owner` creates the single initial owner account and global owner role. It prompts for the email, display name, and a hidden password. It refuses to run if an active owner already exists. Use `--remote --env staging` only after the corresponding D1 database is provisioned and authorized. Never pass the password on the command line or store it in Git.
-
-`npm run dev` starts the Next.js development server. OpenNext's development integration supplies local Cloudflare bindings when available.
+`npm run bootstrap:owner` creates the single initial owner and global owner role. It prompts for email, name, and a hidden password, and refuses to run if an active owner exists. Add `--remote --env staging` only after the corresponding D1 database is provisioned and authorized.
 
 ## Commands
 
@@ -66,11 +64,12 @@ npm run preview
 | `npm run typecheck` | TypeScript check |
 | `npm run lint` | ESLint |
 | `npm test` | Vitest unit tests |
-| `npm run db:generate` | Generate a Drizzle migration from schema changes |
+| `npm run db:generate` | Generate a Drizzle migration |
 | `npm run db:migrate:local` | Apply migrations to local D1 |
-| `npm run db:verify` | Apply local migrations and verify tables, triggers, and seed data |
-| `npm run bootstrap:owner` | Create the single initial owner account and global owner role |
-| `npm run e2e:smoke` | Playwright smoke test against a running Worker |
+| `npm run db:verify` | Apply local migrations and verify tables/triggers/seed |
+| `npm run bootstrap:owner` | Create the initial owner |
+| `npm run e2e:smoke` | Public form smoke test |
+| `npm run e2e:membership` | Full membership lifecycle browser test |
 | `npm run audit:prod` | Production dependency audit |
 
 ## Environment
@@ -79,53 +78,53 @@ Public configuration is documented in `.env.example`. Local Worker secrets belon
 
 Required deployed secrets:
 
-- `BETTER_AUTH_SECRET` — high-entropy signing secret.
-- `AUDIT_HASH_SALT` — salt for hashed client IP audit context.
-- `PII_ENCRYPTION_KEY` — key material for encrypted applicant phone numbers.
+- `BETTER_AUTH_SECRET`
+- `AUDIT_HASH_SALT`
+- `PII_ENCRYPTION_KEY`
+- `CARD_TOKEN_SECRET` (or auth secret fallback)
+- `TURNSTILE_SECRET_KEY` / `NEXT_PUBLIC_TURNSTILE_SITE_KEY`
+- `EMAIL_TRANSPORT`, `RESEND_API_KEY`, `EMAIL_FROM`
+- `STRIPE_SECRET_KEY`, `STRIPE_PRICE_ID`, `STRIPE_WEBHOOK_SECRET`
 
-Feature flags default to safe values:
+Safe payment defaults:
 
 - `PAYMENTS_MODE=test`
 - `PAYMENTS_LIVE_APPROVED=false`
 - `DONATIONS_ENABLED=false`
 
-## Cloudflare configuration
+## Testing
 
-`wrangler.jsonc` defines:
+Start the Worker locally and run the browser tests:
 
-- D1 binding: `DB`
-- R2 bindings: `DOCUMENTS` and `MEDIA`
-- Static assets binding: `ASSETS`
-- Compatibility date and `nodejs_compat`
+```powershell
+npm run build:worker
+npm run preview
+# In another terminal:
+npm run e2e:smoke
+npm run e2e:membership
+```
 
-The D1 `database_id` is a placeholder. Replace it only when a development or staging D1 database is provisioned with owner approval. Do not deploy production from this branch without a separate release authorization.
+For the full membership test, bootstrap the E2E owner first and provide a local-only test password through the environment:
 
-## Database
+```powershell
+$env:E2E_OWNER_PASSWORD="<local-test-password>"
+node scripts/bootstrap-owner.mjs --email=owner.e2e@example.com --name="E2E Owner" --password-env=E2E_OWNER_PASSWORD
+```
 
-- Schema: `src/db/schema/`
-- Migrations: `migrations/`
-- Local data: `.wrangler/state/v3/d1/`
-- Pasco County is seeded as `in_development`. Do not change that status without verified evidence.
+The membership test covers application, request-information, approval, invitation, activation, sign-in, profile, directory, card, event registration, volunteer registration, check-in, member status management, password reset, MFA challenge, and honest billing status.
 
-The audit table has database triggers that reject updates and deletes.
+## Security rules
 
-## Security notes
-
-- No bearer tokens in browser storage. Sessions use Better Auth cookies.
-- Administrative authorization is enforced server-side through `src/lib/policy/permissions.ts`.
+- No bearer tokens in browser storage; Better Auth cookies are HttpOnly and secure in production.
+- Administrative authorization is server-side through `src/lib/policy/permissions.ts`.
 - Chapter-scoped roles cannot access other chapters.
-- Administrative mutations that require MFA are denied when MFA is not verified.
-- Applicant phone numbers are encrypted with AES-GCM.
+- Administrative mutations require MFA and fail closed without it.
+- Applicant and member phone numbers are encrypted with AES-GCM.
 - No card data is stored.
-- Contact and application forms use honeypot spam protection. Turnstile is pending.
-- The CSP is a baseline; nonce-based hardening is pending.
-- Production deployment, DNS changes, live payments, bulk email, and real donations are not authorized from this milestone.
-
-## Documentation
-
-- `docs/architecture.md`
-- `docs/security.md`
-- `docs/deployment.md`
+- Audit events are append-only and redact secrets/PII.
+- Forms use honeypots, Turnstile (when configured), and D1-backed rate limiting.
+- Development email outbox is disabled when `APP_ENV=production`.
+- Production deployment, DNS changes, live payments, bulk email, and donations are not authorized.
 
 ## Repository rules
 
