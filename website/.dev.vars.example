@@ -1,0 +1,5 @@
+# Local Worker secrets for `npm run preview` / `wrangler dev`.
+# Copy to .dev.vars and generate local-only values. Never commit .dev.vars.
+BETTER_AUTH_SECRET=replace-with-a-32-byte-random-development-secret
+AUDIT_HASH_SALT=replace-with-a-32-byte-random-development-salt
+APP_URL=http://localhost:3000
