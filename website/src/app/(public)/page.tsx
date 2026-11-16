@@ -120,7 +120,7 @@ export default function HomePage() {
             </div>
 
             <aside className="rounded-[var(--radius-panel)] border border-white/15 bg-white/[0.06] p-6 backdrop-blur-sm">
-              <p className="text-[11px] font-bold uppercase tracking-[0.2em] text-red-500">
+              <p className="text-[11px] font-bold uppercase tracking-[0.2em] text-[#f0a0aa]">
                 Current status
               </p>
               <dl className="mt-5 grid gap-5">
@@ -292,7 +292,7 @@ export default function HomePage() {
 
             <Card className="border-navy-800/10 bg-navy-900 text-white">
               <CardHeader>
-                <Eyebrow className="text-red-500">Founding participation</Eyebrow>
+                <Eyebrow className="text-[#f0a0aa]">Founding participation</Eyebrow>
                 <CardTitle className="text-white">
                   Help shape the first chapter.
                 </CardTitle>
@@ -368,7 +368,7 @@ export default function HomePage() {
 
       <section className="bg-navy-900 py-20 text-white sm:py-24">
         <Container className="text-center">
-          <Eyebrow className="text-red-500">Apply for membership</Eyebrow>
+          <Eyebrow className="text-[#f0a0aa]">Apply for membership</Eyebrow>
           <h2 className="mx-auto mt-4 max-w-3xl text-balance text-3xl font-semibold leading-tight text-white sm:text-4xl">
             If this mission fits you, we invite you to apply.
           </h2>

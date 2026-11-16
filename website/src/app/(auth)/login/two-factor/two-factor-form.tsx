@@ -43,7 +43,7 @@ export function TwoFactorForm() {
   }
 
   return (
-    <form className="grid gap-5" onSubmit={submit}>
+    <form className="grid gap-5" method="post" onSubmit={submit}>
       {error ? (
         <Alert tone="error" role="alert">
           {error}
@@ -65,7 +65,7 @@ export function TwoFactorForm() {
         />
       </div>
       <Button type="submit" size="lg" disabled={pending || code.length !== 6}>
-        {pending ? "Verifying…" : "Verify and continue"}
+        {pending ? "Verifyingâ€¦" : "Verify and continue"}
       </Button>
     </form>
   );

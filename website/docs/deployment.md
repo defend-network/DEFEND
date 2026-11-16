@@ -14,6 +14,8 @@ Production deployment is **not authorized** from this milestone. Do not change p
 
 Staging URL: `https://defend-website-staging.owner-e75.workers.dev`
 
+Current staging version: `084f2433-565e-4ea5-9326-7c8951cb05be` (migrations `0007`-`0009` applied). Staging uses Cloudflare Turnstile test keys; production requires real keys.
+
 Staging uses the Cloudflare `workers.dev` hostname because the currently available Cloudflare account does not contain the `defend-network.org` zone. No production DNS was changed.
 
 ## Provisioning checklist
@@ -26,7 +28,7 @@ Staging uses the Cloudflare `workers.dev` hostname because the currently availab
    - `AUDIT_HASH_SALT`
    - `PII_ENCRYPTION_KEY`
    - `CARD_TOKEN_SECRET`
-   - `TURNSTILE_SECRET_KEY` and `NEXT_PUBLIC_TURNSTILE_SITE_KEY`
+   - `TURNSTILE_SECRET_KEY`; set `NEXT_PUBLIC_TURNSTILE_SITE_KEY` as a build-time variable (not a secret)
    - `RESEND_API_KEY`, `EMAIL_FROM`
    - `STRIPE_SECRET_KEY`, `STRIPE_PRICE_ID`, `STRIPE_WEBHOOK_SECRET`
 5. Set `APP_ENV`, `APP_URL`, `EMAIL_TRANSPORT`, `PAYMENTS_MODE`, and feature flags.
@@ -54,7 +56,7 @@ npm run e2e:smoke
 npm run e2e:membership
 ```
 
-The full membership test requires a locally bootstrapped `owner.e2e@example.com` account. It covers application, request-information, approval, activation, member sign-in, profile, directory, card, event/volunteer registration, check-in, member status management, password reset, MFA challenge, and billing not-configured behavior.
+The full membership test requires a locally bootstrapped `owner.e2e@example.com` account without active MFA, because it enrolls MFA during the run. It covers application, request-information, approval, activation, member sign-in, profile, directory, card, event/volunteer registration, check-in, member status management, administrative modules, password reset, MFA challenge, and billing not-configured behavior.
 
 ## Staging deployment
 

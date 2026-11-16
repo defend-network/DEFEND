@@ -3,20 +3,22 @@ import { initOpenNextCloudflareForDev } from "@opennextjs/cloudflare";
 
 void initOpenNextCloudflareForDev();
 
-const csp = [
+const contentSecurityPolicy = [
   "default-src 'self'",
   "base-uri 'self'",
   "form-action 'self'",
   "frame-ancestors 'none'",
   "object-src 'none'",
-  "script-src 'self' 'unsafe-inline'",
+  "script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com https://static.cloudflareinsights.com",
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob: https:",
   "font-src 'self' data:",
-  "connect-src 'self' https://api.stripe.com",
-];
+  "frame-src https://challenges.cloudflare.com",
+  "connect-src 'self' https://api.stripe.com https://challenges.cloudflare.com",
+].join("; ");
 
 const securityHeaders = [
+  { key: "Content-Security-Policy", value: contentSecurityPolicy },
   { key: "X-Content-Type-Options", value: "nosniff" },
   { key: "X-Frame-Options", value: "DENY" },
   { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
@@ -24,7 +26,6 @@ const securityHeaders = [
     key: "Permissions-Policy",
     value: "camera=(self), microphone=(), geolocation=(), payment=()",
   },
-  { key: "Content-Security-Policy", value: csp.join("; ") },
 ];
 
 const nextConfig: NextConfig = {

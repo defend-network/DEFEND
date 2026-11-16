@@ -2,7 +2,6 @@ import Image from "next/image";
 import Link from "next/link";
 
 import { cn } from "@/lib/utils";
-import { siteConfig } from "@/lib/config/site";
 
 export function Logo({
   href = "/",
@@ -57,7 +56,7 @@ export function Logo({
 
   if (!href) return content;
   return (
-    <Link href={href} aria-label={`${siteConfig.name} home`} className="inline-flex">
+    <Link href={href} title="Home" className="inline-flex">
       {content}
     </Link>
   );

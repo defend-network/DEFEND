@@ -68,7 +68,7 @@ export function LoginForm() {
   }
 
   return (
-    <form className="grid gap-5" onSubmit={submit}>
+    <form className="grid gap-5" method="post" onSubmit={submit}>
       {error ? (
         <Alert tone="error" role="alert">
           {error}

@@ -61,6 +61,7 @@
         "APP_ENV": "staging",
         "APP_URL": "https://defend-website-staging.owner-e75.workers.dev",
         "EMAIL_TRANSPORT": "outbox",
+        "NEXT_PUBLIC_TURNSTILE_SITE_KEY": "1x00000000000000000000AA",
         "PAYMENTS_MODE": "test",
         "PAYMENTS_LIVE_APPROVED": "false",
         "DONATIONS_ENABLED": "false"

@@ -1,4 +1,4 @@
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq, ne } from "drizzle-orm";
 
 import { getDb } from "@/lib/db/client";
 import { recordAuditEvent } from "@/lib/audit/audit";
@@ -57,4 +57,29 @@ export async function createProgram(input: {
     metadata: { status: input.status, familyFriendly: Boolean(input.familyFriendly) },
   });
   return { ok: true as const, id };
+}
+
+export async function listPublicPrograms() {
+  const db = await getDb();
+  return db
+    .select()
+    .from(programs)
+    .where(
+      and(
+        ne(programs.status, "draft"),
+        ne(programs.status, "archived"),
+      ),
+    )
+    .orderBy(programs.title)
+    .limit(100);
+}
+
+export async function getPublicProgram(slug: string) {
+  const db = await getDb();
+  const rows = await db
+    .select()
+    .from(programs)
+    .where(and(eq(programs.slug, slug), ne(programs.status, "draft")))
+    .limit(1);
+  return rows[0] ?? null;
 }

@@ -30,7 +30,7 @@ export function SiteFooter() {
                   <li key={link.href}>
                     <Link
                       href={link.href}
-                      className="text-sm text-slate-200 underline-offset-4 hover:text-white hover:underline"
+                      className="inline-flex min-h-6 items-center text-sm text-slate-200 underline-offset-4 hover:text-white hover:underline"
                     >
                       {link.label}
                     </Link>
@@ -43,7 +43,7 @@ export function SiteFooter() {
 
         <div className="mt-12 flex flex-col gap-4 border-t border-white/10 pt-6 text-xs text-slate-400 sm:flex-row sm:items-center sm:justify-between">
           <p>
-            © {new Date().getFullYear()} DEFEND. All rights reserved.
+            Â© {new Date().getFullYear()} DEFEND. All rights reserved.
           </p>
           <p>
             Contact:{" "}

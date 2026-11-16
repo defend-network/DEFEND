@@ -172,11 +172,11 @@ export function ApplicationUpdateForm() {
   }
 
   if (!application) {
-    return <p className="text-sm text-slate-500">Checking your update link…</p>;
+    return <p className="text-sm text-slate-500">Checking your update linkâ€¦</p>;
   }
 
   return (
-    <form onSubmit={submit} className="grid gap-6">
+    <form method="post" onSubmit={submit} className="grid gap-6">
       {error ? <Alert tone="error">{error}</Alert> : null}
       <Alert tone="info">
         <strong>Application {application.applicationNumber}</strong>
@@ -214,7 +214,7 @@ export function ApplicationUpdateForm() {
       <CheckboxGroup legend="Volunteer interests" name="volunteerInterests" options={volunteerOptions} selected={[]} />
       <CheckboxGroup legend="Program interests" name="programInterests" options={programOptions} selected={[]} />
       <Button type="submit" disabled={pending}>
-        {pending ? "Updating…" : "Submit updated application"}
+        {pending ? "Updatingâ€¦" : "Submit updated application"}
       </Button>
     </form>
   );

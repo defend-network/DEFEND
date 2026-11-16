@@ -1,4 +1,4 @@
-﻿export const siteConfig = {
+export const siteConfig = {
   name: "DEFEND",
   expandedName:
     "Descendants of Europeans Fraternal Economic Network for Development",
@@ -52,6 +52,7 @@ export const footerNavigation = [
       { href: "/volunteer", label: "Volunteer" },
       { href: "/events", label: "Events" },
       { href: "/news", label: "News" },
+      { href: "/newsletter", label: "Newsletter" },
     ],
   },
 ] as const;
@@ -64,4 +65,3 @@ export const statusLabels: Record<ContentStatus, string> = {
   proposed: "Proposed",
   planned: "Planned",
 };
-

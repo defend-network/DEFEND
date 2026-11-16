@@ -135,7 +135,7 @@ export function ActivationForm() {
   }
 
   if (status === "loading") {
-    return <p className="text-sm text-slate-500">Checking your invitation…</p>;
+    return <p className="text-sm text-slate-500">Checking your invitationâ€¦</p>;
   }
 
   if (status === "success") {
@@ -153,7 +153,7 @@ export function ActivationForm() {
 
   if (status === "valid") {
     return (
-      <form className="grid gap-5" onSubmit={submit}>
+      <form className="grid gap-5" method="post" onSubmit={submit}>
         {error ? (
           <Alert tone="error" role="alert">
             {error}
@@ -208,7 +208,7 @@ export function ActivationForm() {
         </div>
 
         <Button type="submit" size="lg" disabled={pending}>
-          {pending ? "Activating…" : "Activate account"}
+          {pending ? "Activatingâ€¦" : "Activate account"}
         </Button>
       </form>
     );

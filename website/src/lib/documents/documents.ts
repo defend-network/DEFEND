@@ -144,3 +144,152 @@ export async function getDocumentForDownload(documentId: string) {
     .limit(1);
   return rows[0] ?? null;
 }
+
+export async function getDocumentDetail(documentId: string) {
+  const db = await getDb();
+  const rows = await db
+    .select()
+    .from(documents)
+    .where(eq(documents.id, documentId))
+    .limit(1);
+  const document = rows[0];
+  if (!document) return null;
+  const versions = await db
+    .select()
+    .from(documentVersions)
+    .where(eq(documentVersions.documentId, documentId))
+    .orderBy(desc(documentVersions.version))
+    .limit(50);
+  return { document, versions };
+}
+
+export async function addDocumentVersion(input: {
+  actor: ActorContext;
+  documentId: string;
+  file: File;
+  requestId?: string | null;
+  ipHash?: string | null;
+  userAgent?: string | null;
+}) {
+  if (input.file.size <= 0) return { ok: false as const, error: "Select a file." };
+  if (input.file.size > MAX_BYTES) return { ok: false as const, error: "File exceeds the 10 MB limit." };
+  if (!allowedTypes.has(input.file.type)) return { ok: false as const, error: "This file type is not allowed." };
+  const db = await getDb();
+  const rows = await db.select().from(documents).where(eq(documents.id, input.documentId)).limit(1);
+  const document = rows[0];
+  if (!document) return { ok: false as const, error: "Document not found." };
+  const nextVersion = document.version + 1;
+  const filename = safeFilename(input.file.name);
+  const key = `documents/${document.id}/v${nextVersion}-${filename}`;
+  const env = await getEnv();
+  await env.DOCUMENTS.put(key, await input.file.arrayBuffer(), {
+    httpMetadata: { contentType: input.file.type, contentDisposition: `attachment; filename="${filename}"` },
+  });
+  await db.insert(documentVersions).values({
+    id: `docver_${crypto.randomUUID()}`,
+    documentId: document.id,
+    version: nextVersion,
+    r2Key: key,
+    filename,
+    sizeBytes: input.file.size,
+    uploadedBy: input.actor.userId,
+    createdAt: new Date(),
+  });
+  await db.update(documents).set({
+    r2Key: key,
+    filename,
+    mimeType: input.file.type,
+    sizeBytes: input.file.size,
+    version: nextVersion,
+    updatedAt: new Date(),
+  }).where(eq(documents.id, document.id));
+  await recordAuditEvent({
+    actorUserId: input.actor.userId,
+    action: "document.version.add",
+    targetType: "document",
+    targetId: document.id,
+    outcome: "success",
+    requestId: input.requestId,
+    ipHash: input.ipHash,
+    userAgent: input.userAgent,
+    metadata: { version: nextVersion },
+  });
+  return { ok: true as const, version: nextVersion };
+}
+
+export async function restoreDocumentVersion(input: {
+  actor: ActorContext;
+  documentId: string;
+  version: number;
+  requestId?: string | null;
+  ipHash?: string | null;
+  userAgent?: string | null;
+}) {
+  const db = await getDb();
+  const rows = await db.select().from(documents).where(eq(documents.id, input.documentId)).limit(1);
+  const document = rows[0];
+  if (!document) return { ok: false as const, error: "Document not found." };
+  const versionRows = await db
+    .select()
+    .from(documentVersions)
+    .where(and(eq(documentVersions.documentId, input.documentId), eq(documentVersions.version, input.version)))
+    .limit(1);
+  const version = versionRows[0];
+  if (!version) return { ok: false as const, error: "Version not found." };
+  const nextVersion = document.version + 1;
+  await db.insert(documentVersions).values({
+    id: `docver_${crypto.randomUUID()}`,
+    documentId: document.id,
+    version: nextVersion,
+    r2Key: version.r2Key,
+    filename: version.filename,
+    sizeBytes: version.sizeBytes,
+    uploadedBy: input.actor.userId,
+    createdAt: new Date(),
+  });
+  await db.update(documents).set({
+    r2Key: version.r2Key,
+    filename: version.filename,
+    sizeBytes: version.sizeBytes,
+    version: nextVersion,
+    updatedAt: new Date(),
+  }).where(eq(documents.id, document.id));
+  await recordAuditEvent({
+    actorUserId: input.actor.userId,
+    action: "document.version.restore",
+    targetType: "document",
+    targetId: document.id,
+    outcome: "success",
+    requestId: input.requestId,
+    ipHash: input.ipHash,
+    userAgent: input.userAgent,
+    metadata: { restoredVersion: input.version, newVersion: nextVersion },
+  });
+  return { ok: true as const, version: nextVersion };
+}
+
+export async function archiveDocument(input: {
+  actor: ActorContext;
+  documentId: string;
+  requestId?: string | null;
+  ipHash?: string | null;
+  userAgent?: string | null;
+}) {
+  const db = await getDb();
+  const rows = await db.select().from(documents).where(eq(documents.id, input.documentId)).limit(1);
+  const document = rows[0];
+  if (!document) return { ok: false as const, error: "Document not found." };
+  await db.update(documents).set({ status: "archived", deletedAt: new Date(), updatedAt: new Date() }).where(eq(documents.id, document.id));
+  await recordAuditEvent({
+    actorUserId: input.actor.userId,
+    action: "document.archive",
+    targetType: "document",
+    targetId: document.id,
+    outcome: "success",
+    requestId: input.requestId,
+    ipHash: input.ipHash,
+    userAgent: input.userAgent,
+    metadata: {},
+  });
+  return { ok: true as const };
+}

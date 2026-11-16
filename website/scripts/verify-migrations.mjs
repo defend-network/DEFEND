@@ -1,4 +1,4 @@
-﻿import { execFileSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import path from "node:path";
 
 const wranglerBin = path.resolve("node_modules/wrangler/bin/wrangler.js");
@@ -81,6 +81,7 @@ const expectedTables = [
   "event_checkins",
   "volunteer_opportunities",
   "volunteer_registrations",
+  "newsletter_subscribers",
 ];
 
 const tables = new Set(
@@ -117,4 +118,3 @@ if (chapter.length !== 1 || chapter[0].status !== "in_development") {
 console.log(
   `Migration verification passed: ${expectedTables.length} tables, 2 audit triggers, Pasco chapter seeded.`,
 );
-

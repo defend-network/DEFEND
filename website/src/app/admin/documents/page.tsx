@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import { format } from "date-fns";
 
 import { Badge } from "@/components/ui/badge";
@@ -75,7 +76,7 @@ export default async function DocumentsPage({
                     <tbody>
                       {docs.map((doc) => (
                         <tr key={doc.id} className="border-b border-slate-100 last:border-0">
-                          <td className="px-3 py-3"><p className="font-semibold text-navy-900">{doc.title}</p><p className="text-xs text-slate-500">{doc.filename} · {(doc.sizeBytes / 1024).toFixed(0)} KB</p></td>
+                          <td className="px-3 py-3"><p className="font-semibold text-navy-900"><Link href={`/admin/documents/${doc.id}`} className="underline-offset-4 hover:underline">{doc.title}</Link></p><p className="text-xs text-slate-500">{doc.filename} · {(doc.sizeBytes / 1024).toFixed(0)} KB</p></td>
                           <td className="px-3 py-3 text-slate-600">{doc.category}</td>
                           <td className="px-3 py-3"><Badge variant="outline">{doc.visibility}</Badge></td>
                           <td className="px-3 py-3 text-slate-600">{format(doc.createdAt, "MMM d, yyyy")}</td>

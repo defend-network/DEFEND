@@ -1,4 +1,4 @@
-﻿import { chromium } from "playwright-core";
+import { chromium } from "playwright-core";
 import * as OTPAuth from "otpauth";
 
 const baseURL = process.env.E2E_BASE_URL ?? "http://localhost:8787";
@@ -35,7 +35,7 @@ let totp;
 
 try {
   // 1. Public application submission
-  await applicant.goto(`${baseURL}/apply`, { waitUntil: "networkidle" });
+  await applicant.goto(`${baseURL}/apply`, { waitUntil: "domcontentloaded" });
   await applicant.locator("#legalName").fill("E2E Membership Applicant");
   await applicant.locator("#preferredName").fill("E2E Member");
   await applicant.locator("#email").fill(applicantEmail);
@@ -55,7 +55,8 @@ try {
   pass(`application submitted ${applicationNumber}`);
 
   // 2. Owner sign-in and MFA enrollment
-  await owner.goto(`${baseURL}/login`, { waitUntil: "networkidle" });
+  await owner.goto(`${baseURL}/login`, { waitUntil: "load" });
+  await owner.waitForTimeout(1000);
   await owner.locator("#email").fill(ownerEmail);
   await owner.locator("#password").fill(ownerPassword);
   await owner.getByRole("button", { name: "Sign in" }).click();
@@ -90,14 +91,14 @@ try {
   const updateUrl = (await owner.locator("code").first().textContent())?.trim();
   if (!updateUrl) throw new Error("Application update URL was not displayed");
 
-  await applicant.goto(updateUrl, { waitUntil: "networkidle" });
+  await applicant.goto(updateUrl, { waitUntil: "domcontentloaded" });
   await applicant.locator("#city").fill("Port Richey");
   await applicant.locator("#skills").fill("Carpentry, framing, small business operations");
   await applicant.getByRole("button", { name: "Submit updated application" }).click();
   await applicant.getByText("Your application has been updated", { exact: false }).waitFor({ timeout: 30000 });
   pass("request-information and applicant update");
 
-  await owner.reload({ waitUntil: "networkidle" });
+  await owner.reload({ waitUntil: "domcontentloaded" });
   await owner.locator("#approve-notes").fill("E2E verified application");
   await owner.getByRole("button", { name: "Approve and create invitation" }).click();
   await owner.getByText("Application approved", { exact: false }).waitFor({ timeout: 30000 });
@@ -108,7 +109,7 @@ try {
   // 4. Activation and member sign-in
   const memberContext = await browser.newContext();
   const member = await memberContext.newPage();
-  await member.goto(activationUrl, { waitUntil: "networkidle" });
+  await member.goto(activationUrl, { waitUntil: "domcontentloaded" });
   await member.locator("#name").fill("E2E Member");
   await member.locator("#password").fill(applicantPassword);
   await member.locator("#confirmation").fill(applicantPassword);
@@ -125,7 +126,7 @@ try {
   pass("member sign-in and dashboard");
 
   // 5. Profile and directory settings
-  await member.goto(`${baseURL}/members/account`, { waitUntil: "networkidle" });
+  await member.goto(`${baseURL}/members/account`, { waitUntil: "domcontentloaded" });
   await member.locator("#phone").fill("555-0177");
   await member.locator("#profession").fill("Carpenter");
   await member.locator("#skills").fill("Framing, finish carpentry");
@@ -137,12 +138,12 @@ try {
   await member.getByText("Profile and preferences updated", { exact: false }).waitFor({ timeout: 30000 });
   pass("member profile and directory preferences");
 
-  await member.goto(`${baseURL}/members/directory`, { waitUntil: "networkidle" });
+  await member.goto(`${baseURL}/members/directory`, { waitUntil: "domcontentloaded" });
   await member.getByText("E2E Member", { exact: false }).first().waitFor();
   pass("opt-in directory entry visible");
 
   // 6. Digital card and token
-  await member.goto(`${baseURL}/members/card`, { waitUntil: "networkidle" });
+  await member.goto(`${baseURL}/members/card`, { waitUntil: "domcontentloaded" });
   await member.getByText("Secure check-in code", { exact: false }).waitFor();
   const card = await member.evaluate(async () => {
     const response = await fetch("/api/members/card-token");
@@ -172,19 +173,24 @@ try {
   await owner.getByText("Volunteer opportunity created.", { exact: false }).waitFor({ timeout: 30000 });
   pass("admin volunteer opportunity creation");
 
-  await member.goto(`${baseURL}/events`, { waitUntil: "networkidle" });
-  await member.getByRole("link", { name: "Event details" }).first().click();
+  await member.goto(`${baseURL}/events`, { waitUntil: "domcontentloaded" });
+  await member
+    .getByText(eventTitle)
+    .locator("xpath=ancestor::div[contains(@class,'flex h-full flex-col')][1]")
+    .getByRole("link", { name: "Event details" })
+    .click();
   await member.getByRole("button", { name: "Register for this event" }).click();
   await member.getByText("Your event registration is confirmed", { exact: false }).waitFor({ timeout: 30000 });
   pass("member event registration");
 
-  await member.goto(`${baseURL}/members/volunteers`, { waitUntil: "networkidle" });
+  await member.goto(`${baseURL}/members/volunteers`, { waitUntil: "domcontentloaded" });
   await member.getByRole("button", { name: "Register to volunteer" }).first().click();
   await member.getByText("Volunteer registration recorded", { exact: false }).waitFor({ timeout: 30000 });
   pass("member volunteer registration");
 
   // 8. Admin check-in with member card token and event
   await owner.goto(`${baseURL}/admin/check-in`, { waitUntil: "networkidle" });
+  await owner.waitForTimeout(1000);
   await owner.locator("#eventId").selectOption({ label: eventTitle });
   await owner.locator("#token").fill(card.body.token);
   await owner.getByRole("button", { name: "Verify and check in" }).click();
@@ -289,7 +295,7 @@ try {
 
   await owner.goto(`${baseURL}/admin/system`, { waitUntil: "networkidle" });
   const memberOption = await owner
-    .locator("#role-user option", { hasText: "E2E Member" })
+    .locator("#role-user option", { hasText: applicantEmail })
     .getAttribute("value");
   if (!memberOption) throw new Error("Member option not found in system role form");
   await owner.locator("#role-user").selectOption(memberOption);
@@ -304,7 +310,7 @@ try {
   pass("communications delivery history");
 
   // 10. Password reset through development outbox
-  await member.goto(`${baseURL}/forgot-password`, { waitUntil: "networkidle" });
+  await member.goto(`${baseURL}/forgot-password`, { waitUntil: "domcontentloaded" });
   await member.locator("#email").fill(applicantEmail);
   await member.getByRole("button", { name: "Request password reset" }).click();
   await member.getByText("If an account exists", { exact: false }).waitFor({ timeout: 30000 });
@@ -315,7 +321,7 @@ try {
   const resetMatch = resetText.match(/https?:\/\/[^\s]+\/api\/auth\/reset-password\/[^\s]+/);
   if (!resetMatch) throw new Error("Reset URL was not present in the email");
   const resetUrl = resetMatch[0];
-  await member.goto(resetUrl, { waitUntil: "networkidle" });
+  await member.goto(resetUrl, { waitUntil: "domcontentloaded" });
   await member.locator("#password").fill(newMemberPassword);
   await member.locator("#confirmation").fill(newMemberPassword);
   await member.getByRole("button", { name: "Reset password" }).click();
@@ -323,7 +329,7 @@ try {
   pass("password reset email and reset flow");
 
   // 11. Verify reset password works
-  await member.goto(`${baseURL}/login`, { waitUntil: "networkidle" });
+  await member.goto(`${baseURL}/login`, { waitUntil: "domcontentloaded" });
   await member.locator("#email").fill(applicantEmail);
   await member.locator("#password").fill(newMemberPassword);
   await member.getByRole("button", { name: "Sign in" }).click();
@@ -334,7 +340,8 @@ try {
   await owner.goto(`${baseURL}/admin`, { waitUntil: "networkidle" });
   await owner.getByRole("button", { name: "Sign out" }).click();
   await owner.waitForURL(baseURL + "/", { timeout: 30000 });
-  await owner.goto(`${baseURL}/login`, { waitUntil: "networkidle" });
+  await owner.goto(`${baseURL}/login`, { waitUntil: "load" });
+  await owner.waitForTimeout(1000);
   await owner.locator("#email").fill(ownerEmail);
   await owner.locator("#password").fill(ownerPassword);
   await owner.getByRole("button", { name: "Sign in" }).click();
@@ -345,7 +352,7 @@ try {
   pass("owner MFA challenge on subsequent sign-in");
 
   // 13. Billing is honestly not configured
-  await member.goto(`${baseURL}/members/billing`, { waitUntil: "networkidle" });
+  await member.goto(`${baseURL}/members/billing`, { waitUntil: "domcontentloaded" });
   await member.getByText("Dues and payments", { exact: false }).waitFor();
   await member.getByText("Stripe test-mode credentials are not configured", { exact: false }).waitFor();
   pass("billing shows not configured, no fake success");

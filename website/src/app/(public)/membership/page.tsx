@@ -105,7 +105,7 @@ export default function MembershipPage() {
           <aside className="space-y-4">
             <Card className="border-navy-800/10 bg-navy-900 text-white">
               <CardHeader>
-                <Eyebrow className="text-red-500">Standard dues</Eyebrow>
+                <Eyebrow className="text-[#f0a0aa]">Standard dues</Eyebrow>
                 <p className="text-4xl font-semibold text-white">
                   $7<span className="text-base font-normal text-slate-300"> / month</span>
                 </p>

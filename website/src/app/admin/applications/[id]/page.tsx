@@ -105,6 +105,8 @@ export default async function ApplicationDetailPage({
               <p><strong className="text-navy-900">Submitted:</strong> {format(application.submittedAt, "MMM d, yyyy h:mm a")}</p>
               <p><strong className="text-navy-900">Reviewed:</strong> {application.reviewedAt ? format(application.reviewedAt, "MMM d, yyyy h:mm a") : "—"}</p>
               <p><strong className="text-navy-900">Notification:</strong> {application.notificationStatus}</p>
+              <p><strong className="text-navy-900">Referral source:</strong> {application.referralSource || "—"}</p>
+              <p><strong className="text-navy-900">UTM source / campaign:</strong> {[application.utmSource, application.utmCampaign].filter(Boolean).join(" / ") || "—"}</p>
             </CardContent>
           </Card>
 

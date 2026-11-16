@@ -3,32 +3,23 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { Alert } from "@/components/ui/alert";
-import { Badge, StatusBadge } from "@/components/ui/badge";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Container, Eyebrow } from "@/components/ui/section";
-import { getProgram, programs } from "@/lib/content/programs";
+import { getPublicProgram } from "@/lib/programs/programs";
 
 type PageProps = { params: Promise<{ slug: string }> };
 
-export function generateStaticParams() {
-  return programs.map((program) => ({ slug: program.slug }));
-}
-
-export async function generateMetadata({
-  params,
-}: PageProps): Promise<Metadata> {
+export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
   const { slug } = await params;
-  const program = getProgram(slug);
+  const program = await getPublicProgram(slug);
   if (!program) return { title: "Program not found" };
-  return {
-    title: program.title,
-    description: program.summary,
-  };
+  return { title: program.title, description: program.summary };
 }
 
 export default async function ProgramPage({ params }: PageProps) {
   const { slug } = await params;
-  const program = getProgram(slug);
+  const program = await getPublicProgram(slug);
   if (!program) notFound();
 
   return (
@@ -38,7 +29,10 @@ export default async function ProgramPage({ params }: PageProps) {
           <div className="max-w-3xl">
             <div className="flex flex-wrap items-center gap-2">
               <Eyebrow>Program</Eyebrow>
-              <StatusBadge status={program.status} />
+              <Badge variant={program.status === "operating" ? "green" : program.status === "in_development" ? "amber" : "outline"}>
+                {program.status.replaceAll("_", " ")}
+              </Badge>
+              {program.familyFriendly ? <Badge variant="outline">Family-friendly</Badge> : null}
             </div>
             <h1 className="mt-5 text-balance text-4xl font-semibold leading-tight sm:text-5xl">
               {program.title}
@@ -56,48 +50,24 @@ export default async function ProgramPage({ params }: PageProps) {
             <p className="text-pretty text-base leading-8 text-slate-700">
               {program.description}
             </p>
-            <div className="mt-8 flex flex-wrap gap-2">
-              {program.focus.map((focus) => (
-                <Badge key={focus} variant="outline">
-                  {focus}
-                </Badge>
-              ))}
-            </div>
             <Alert tone="info" className="mt-8">
               This program is labeled <strong>{program.status.replaceAll("_", " ")}</strong>.
-              DEFEND will publish a schedule, location, and participant process
-              only when they are confirmed.
+              DEFEND will publish a schedule, location, and participant process only
+              when they are confirmed.
             </Alert>
             <div className="mt-8 flex flex-wrap gap-3">
-              <Button asChild>
-                <Link href="/apply">Apply for membership</Link>
-              </Button>
-              <Button asChild variant="secondary">
-                <Link href="/programs">All programs</Link>
-              </Button>
+              <Button asChild><Link href="/apply">Apply for membership</Link></Button>
+              <Button asChild variant="secondary"><Link href="/programs">All programs</Link></Button>
             </div>
           </div>
           <aside className="rounded-[var(--radius-panel)] border border-slate-200 bg-white p-6">
             <h2 className="text-lg font-semibold">Program status</h2>
             <dl className="mt-5 grid gap-4 text-sm">
-              <div>
-                <dt className="font-semibold text-navy-900">Current label</dt>
-                <dd className="mt-1 text-slate-600">
-                  {program.status.replaceAll("_", " ")}
-                </dd>
-              </div>
-              <div>
-                <dt className="font-semibold text-navy-900">Chapter</dt>
-                <dd className="mt-1 text-slate-600">
-                  Pasco County founding chapter (in development)
-                </dd>
-              </div>
-              <div>
-                <dt className="font-semibold text-navy-900">Participation</dt>
-                <dd className="mt-1 text-slate-600">
-                  Not yet open unless explicitly stated.
-                </dd>
-              </div>
+              <div><dt className="font-semibold text-navy-900">Current label</dt><dd className="mt-1 text-slate-600">{program.status.replaceAll("_", " ")}</dd></div>
+              <div><dt className="font-semibold text-navy-900">Chapter</dt><dd className="mt-1 text-slate-600">Pasco County founding chapter (in development)</dd></div>
+              <div><dt className="font-semibold text-navy-900">Capacity</dt><dd className="mt-1 text-slate-600">{program.capacity ?? "To be announced"}</dd></div>
+              <div><dt className="font-semibold text-navy-900">Fee</dt><dd className="mt-1 text-slate-600">{program.feeCents ? `$${(program.feeCents / 100).toFixed(2)}` : "No program fee configured"}</dd></div>
+              <div><dt className="font-semibold text-navy-900">Eligibility</dt><dd className="mt-1 text-slate-600">{program.eligibility || "To be published."}</dd></div>
             </dl>
           </aside>
         </Container>

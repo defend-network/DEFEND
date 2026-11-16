@@ -1,4 +1,4 @@
-﻿"use server";
+"use server";
 
 import { eq } from "drizzle-orm";
 
@@ -129,6 +129,11 @@ export async function submitApplication(
       postalCode: parsed.data.postalCode ?? null,
       desiredChapterId: parsed.data.desiredChapterId,
       recommendedChapterId: recommendation.chapterId,
+      referralSource: String(formData.get("referralSource") ?? "").slice(0, 200) || null,
+      referrerUrl: String(formData.get("referrerUrl") ?? "").slice(0, 500) || null,
+      utmSource: String(formData.get("utmSource") ?? "").slice(0, 120) || null,
+      utmMedium: String(formData.get("utmMedium") ?? "").slice(0, 120) || null,
+      utmCampaign: String(formData.get("utmCampaign") ?? "").slice(0, 120) || null,
       interestsJson: JSON.stringify(parsed.data.interests),
       skillsJson: JSON.stringify(
         parsed.data.skills ? [parsed.data.skills] : [],

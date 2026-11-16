@@ -72,7 +72,7 @@ export function ResetPasswordForm() {
   }
 
   return (
-    <form className="grid gap-5" onSubmit={submit}>
+    <form className="grid gap-5" method="post" onSubmit={submit}>
       {error ? <Alert tone="error" role="alert">{error}</Alert> : null}
       <div className="grid gap-2">
         <Label htmlFor="password">New password</Label>
@@ -101,7 +101,7 @@ export function ResetPasswordForm() {
         />
       </div>
       <Button type="submit" disabled={pending}>
-        {pending ? "Resetting…" : "Reset password"}
+        {pending ? "Resettingâ€¦" : "Reset password"}
       </Button>
     </form>
   );

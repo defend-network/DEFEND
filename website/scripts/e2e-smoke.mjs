@@ -1,4 +1,4 @@
-﻿import { chromium } from "playwright-core";
+import { chromium } from "playwright-core";
 
 const baseURL = process.env.E2E_BASE_URL ?? "http://localhost:8787";
 const edgePath =
@@ -21,7 +21,7 @@ page.on("console", (message) => {
 page.on("pageerror", (error) => consoleErrors.push(error.message));
 
 try {
-  await page.goto(`${baseURL}/`, { waitUntil: "networkidle" });
+  await page.goto(`${baseURL}/`, { waitUntil: "domcontentloaded" });
   await page
     .getByRole("heading", {
       name: "A fraternal network built for the next generation.",
@@ -29,7 +29,7 @@ try {
     .waitFor();
   console.log("home: pass");
 
-  await page.goto(`${baseURL}/apply`, { waitUntil: "networkidle" });
+  await page.goto(`${baseURL}/apply`, { waitUntil: "domcontentloaded" });
   await page.locator("#legalName").fill("E2E Applicant");
   await page.locator("#preferredName").fill("E2E");
   await page.locator("#email").fill(applicantEmail);
@@ -61,7 +61,7 @@ try {
     (await page.locator("p.font-mono").first().textContent())?.trim() ?? "";
   console.log(`apply: pass ${applicationNumber}`);
 
-  await page.goto(`${baseURL}/contact`, { waitUntil: "networkidle" });
+  await page.goto(`${baseURL}/contact`, { waitUntil: "domcontentloaded" });
   await page.locator("#name").fill("E2E Contact");
   await page.locator("#email").fill(contactEmail);
   await page.locator("#subject").fill("E2E verification message");

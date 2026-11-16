@@ -1,4 +1,4 @@
-﻿# Security
+# Security
 
 ## Implemented controls
 
@@ -23,13 +23,13 @@
 
 ## Known gaps
 
-- Turnstile site/secret keys are not configured in this environment. The widget is inactive locally; production requires configuration.
+- Staging uses Cloudflare Turnstile test keys (public test site key plus test secret). Local development runs without Turnstile. Production requires real Turnstile site/secret keys.
 - The development email outbox is enabled only outside production. Real Resend delivery has not been externally verified.
 - Stripe Checkout and Customer Portal have not been executed against an external Stripe test account because no test credentials are present. Webhook signature/idempotency logic was locally tested.
-- CSP uses `'unsafe-inline'` for Next.js bootstrap scripts. Nonce-based hardening is pending.
+- CSP is a static header with `'unsafe-inline'` for Next.js bootstrap scripts. A nonce-based policy was tested but removed after cached HTML/nonce mismatches broke hydration; nonce hardening remains pending and requires cache-safe delivery.
 - MFA recovery is implemented but not exercised end-to-end with two independent administrators.
 - Email verification is implemented but invitation activation marks invited addresses verified; the resend verification path was not exercised end-to-end.
-- Document uploads are admin-only with MIME/size validation, private R2 storage, authorized downloads, and download audit. Full preview and version restoration UI remain incomplete.
+- Document uploads are admin-only with MIME/size validation, private R2 storage, authorized downloads, inline authorized preview, version history/restoration, and download audit. Archive is implemented without deleting the original R2 object.
 - No production secret management has been performed.
 - No penetration test has been performed.
 
@@ -50,4 +50,3 @@ Before production:
 - Add backup/restore and rollback drills.
 - Complete legal review of privacy, terms, membership criteria, and organizational status copy.
 - Do not enable live payments or donations until legal, financial, processor, and owner readiness are confirmed.
-

@@ -50,6 +50,27 @@
       "when": 1794810214336,
       "tag": "0006_lively_wong",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1794840650994,
+      "tag": "0007_seed_programs",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1794841468569,
+      "tag": "0008_salty_jigsaw",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1794841591382,
+      "tag": "0009_hard_wind_dancer",
+      "breakpoints": true
     }
   ]
 }

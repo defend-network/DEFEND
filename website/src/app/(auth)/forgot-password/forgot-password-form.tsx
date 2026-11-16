@@ -39,7 +39,7 @@ export function ForgotPasswordForm() {
   }
 
   return (
-    <form className="grid gap-5" onSubmit={submit}>
+    <form className="grid gap-5" method="post" onSubmit={submit}>
       {message ? <Alert tone="success" role="status">{message}</Alert> : null}
       {error ? <Alert tone="error" role="alert">{error}</Alert> : null}
       <div className="grid gap-2">
@@ -54,7 +54,7 @@ export function ForgotPasswordForm() {
         />
       </div>
       <Button type="submit" disabled={pending}>
-        {pending ? "Requesting…" : "Request password reset"}
+        {pending ? "Requestingâ€¦" : "Request password reset"}
       </Button>
     </form>
   );

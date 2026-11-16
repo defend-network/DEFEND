@@ -5,6 +5,8 @@ import { Suspense } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { LoginForm } from "./login-form";
 
+export const dynamic = "force-dynamic";
+
 export const metadata: Metadata = {
   title: "Member Login",
   description: "Sign in to the DEFEND member portal.",
@@ -22,7 +24,7 @@ export default function LoginPage() {
         </p>
       </CardHeader>
       <CardContent>
-        <Suspense fallback={<p className="text-sm text-slate-500">Loading…</p>}>
+        <Suspense fallback={<p className="text-sm text-slate-500">Loadingâ€¦</p>}>
           <LoginForm />
         </Suspense>
         <p className="mt-6 border-t border-slate-100 pt-4 text-xs leading-5 text-slate-500">

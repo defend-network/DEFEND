@@ -1,4 +1,4 @@
-﻿import type { MetadataRoute } from "next";
+import type { MetadataRoute } from "next";
 
 import { siteConfig } from "@/lib/config/site";
 import { programs } from "@/lib/content/programs";
@@ -17,6 +17,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
     "/contact",
     "/support",
     "/volunteer",
+    "/newsletter",
   ];
 
   return [
@@ -34,4 +35,3 @@ export default function sitemap(): MetadataRoute.Sitemap {
     })),
   ];
 }
-

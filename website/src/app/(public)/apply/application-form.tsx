@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState } from "react";
+import { useActionState, useEffect, useState } from "react";
 
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -85,6 +85,25 @@ export function ApplicationForm() {
     submitApplication,
     initialApplicationState,
   );
+  const [attribution, setAttribution] = useState({
+    referralSource: "",
+    referrerUrl: "",
+    utmSource: "",
+    utmMedium: "",
+    utmCampaign: "",
+  });
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- initialize attribution from external URL state
+    setAttribution({
+      referralSource: params.get("ref") ?? params.get("source") ?? "",
+      referrerUrl: document.referrer ?? "",
+      utmSource: params.get("utm_source") ?? "",
+      utmMedium: params.get("utm_medium") ?? "",
+      utmCampaign: params.get("utm_campaign") ?? "",
+    });
+  }, []);
 
   if (state.status === "success") {
     return (
@@ -121,6 +140,11 @@ export function ApplicationForm() {
         className="hidden"
         aria-hidden="true"
       />
+      <input type="hidden" name="referralSource" value={attribution.referralSource} />
+      <input type="hidden" name="referrerUrl" value={attribution.referrerUrl} />
+      <input type="hidden" name="utmSource" value={attribution.utmSource} />
+      <input type="hidden" name="utmMedium" value={attribution.utmMedium} />
+      <input type="hidden" name="utmCampaign" value={attribution.utmCampaign} />
 
       {state.status === "error" ? (
         <Alert tone="error" role="alert">
@@ -213,7 +237,7 @@ export function ApplicationForm() {
             className="h-11 rounded-[var(--radius-control)] border border-slate-300 bg-white px-3 text-[15px] text-navy-900 shadow-sm outline-none focus:border-navy-700 focus:ring-2 focus:ring-navy-800/15"
           >
             <option value="chapter_pasco">
-              Pasco County — founding chapter (in development)
+              Pasco County â€” founding chapter (in development)
             </option>
           </select>
           <p className="text-xs leading-5 text-slate-500">
@@ -292,7 +316,7 @@ export function ApplicationForm() {
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
         <Button type="submit" size="lg" disabled={pending}>
-          {pending ? "Submitting…" : "Submit application"}
+          {pending ? "Submittingâ€¦" : "Submit application"}
         </Button>
         <p className="text-xs leading-5 text-slate-500">
           Applications are reviewed manually. Submitting does not create an

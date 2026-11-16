@@ -1,10 +1,10 @@
-﻿# DEFEND Website
+# DEFEND Website
 
 Isolated organizational website, member portal, and administrative workstation for DEFEND.
 
 **Branch:** `rebuild/website-platform-v1`
 
-**Status:** Milestone 3 development. Milestone 2 membership operations are implemented and locally verified. Staging is deployed. This is not a production release.
+**Status:** Milestone 4 development. Administrative modules, document preview/versioning, database-backed programs, accessibility hardening, and newsletter subscription are implemented and verified locally and on staging. This is not a production release.
 
 **Staging:** https://defend-website-staging.owner-e75.workers.dev
 
@@ -27,7 +27,7 @@ npm run bootstrap:owner -- --remote --env staging
 ## Implemented and verified
 
 - Next.js 16.4.6 App Router, TypeScript, Tailwind CSS, Cloudflare Workers via OpenNext.
-- D1 schema and 55 migrations-backed tables for identity, chapters, applications, memberships, invitations, roles, audit, directory, events, volunteers, CRM, facilities, documents, CMS, communications, finance, programs, and payment events.
+- D1 schema and 56 migrations-backed tables for identity, chapters, applications, memberships, invitations, roles, audit, directory, events, volunteers, CRM, facilities, documents, CMS, communications, finance, programs, and payment events.
 - Better Auth identity with invitation-only activation, password recovery, email verification scaffold, and TOTP MFA.
 - Central server-side policy with global/chapter/self scope and MFA-required administrative actions.
 - Application queue, detail, approve/deny/request-information, applicant update links, and single-use invitations.
@@ -49,7 +49,7 @@ npm run bootstrap:owner -- --remote --env staging
 - Real Stripe test-mode external execution. No Stripe test credentials are present; checkout is disabled.
 - Real Resend delivery. Development uses an outbox; production requires `EMAIL_TRANSPORT=resend` and provider secrets.
 - Turnstile widget/secret configuration. In production, forms fail closed when spam protection is not configured.
-- Full document version/preview UI, newsletter subscription, campaign attribution, funnel reporting, and complete CMS block editor.
+- Funnel reporting/analytics and complete CMS block editor. Referral/UTM attribution is captured and shown on applications.
 - External Google/Bing/Cloudflare analytics verification tokens.
 - Production backups, monitoring, accessibility audit, and penetration testing.
 - Live payments, donations, production deployment, and DNS changes.
@@ -91,6 +91,7 @@ npm run preview
 | `npm run bootstrap:owner` | Create the initial owner |
 | `npm run e2e:smoke` | Public form smoke test |
 | `npm run e2e:membership` | Full membership lifecycle browser test |
+| `node scripts/accessibility-audit.mjs` | Axe WCAG 2.2 AA audit (Worker on port 8787) |
 | `npm run audit:prod` | Production dependency audit |
 
 ## Environment
@@ -103,7 +104,7 @@ Required deployed secrets:
 - `AUDIT_HASH_SALT`
 - `PII_ENCRYPTION_KEY`
 - `CARD_TOKEN_SECRET` (or auth secret fallback)
-- `TURNSTILE_SECRET_KEY` / `NEXT_PUBLIC_TURNSTILE_SITE_KEY`
+- `TURNSTILE_SECRET_KEY` (secret) and `NEXT_PUBLIC_TURNSTILE_SITE_KEY` (build-time public site key)
 - `EMAIL_TRANSPORT`, `RESEND_API_KEY`, `EMAIL_FROM`
 - `STRIPE_SECRET_KEY`, `STRIPE_PRICE_ID`, `STRIPE_WEBHOOK_SECRET`
 
@@ -153,4 +154,3 @@ The membership test covers application, request-information, approval, invitatio
 - Do not modify DEFEND AI, Markets, Coder, Sports, SCS, or unrelated applications.
 - Do not commit `.dev.vars`, `.wrangler/`, `.open-next/`, runtime databases, or secrets.
 - Do not push or deploy without explicit owner authorization.
-

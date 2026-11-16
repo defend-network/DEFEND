@@ -1,4 +1,4 @@
-﻿import { sql } from "drizzle-orm";
+import { sql } from "drizzle-orm";
 import {
   index,
   integer,
@@ -82,6 +82,11 @@ export const membershipApplications = sqliteTable(
     recommendedChapterId: text("recommended_chapter_id").references(
       () => chapters.id,
     ),
+    referralSource: text("referral_source"),
+    referrerUrl: text("referrer_url"),
+    utmSource: text("utm_source"),
+    utmMedium: text("utm_medium"),
+    utmCampaign: text("utm_campaign"),
     interestsJson: text("interests_json").notNull().default("[]"),
     skillsJson: text("skills_json").notNull().default("[]"),
     volunteerInterestsJson: text("volunteer_interests_json")
@@ -1110,4 +1115,16 @@ export const settings = sqliteTable("settings", {
     .default(timestampDefault)
     .$onUpdate(() => new Date())
     .notNull(),
+});
+
+export const newsletterSubscribers = sqliteTable("newsletter_subscribers", {
+  id: text("id").primaryKey(),
+  email: text("email").notNull().unique(),
+  status: text("status").notNull().default("subscribed"),
+  source: text("source"),
+  consentAt: integer("consent_at", { mode: "timestamp_ms" }),
+  createdAt: integer("created_at", { mode: "timestamp_ms" })
+    .default(timestampDefault)
+    .notNull(),
+  unsubscribedAt: integer("unsubscribed_at", { mode: "timestamp_ms" }),
 });
