@@ -1,4 +1,4 @@
-"use server";
+﻿"use server";
 
 import { revalidatePath } from "next/cache";
 
@@ -48,6 +48,7 @@ export async function updateAccountAction(
       state: String(formData.get("state") ?? ""),
       postalCode: String(formData.get("postalCode") ?? ""),
       directoryVisible: flag(formData, "directoryVisible"),
+      familyParticipation: flag(formData, "familyParticipation"),
       profession: String(formData.get("profession") ?? ""),
       businessName: String(formData.get("businessName") ?? ""),
       skills: String(formData.get("skills") ?? ""),
@@ -68,3 +69,4 @@ export async function updateAccountAction(
     };
   }
 }
+

@@ -1,4 +1,4 @@
-# Security
+﻿# Security
 
 ## Implemented controls
 
@@ -29,10 +29,13 @@
 - CSP uses `'unsafe-inline'` for Next.js bootstrap scripts. Nonce-based hardening is pending.
 - MFA recovery is implemented but not exercised end-to-end with two independent administrators.
 - Email verification is implemented but invitation activation marks invited addresses verified; the resend verification path was not exercised end-to-end.
-- File upload/document authorization is schema-ready but not implemented.
-- CMS/CRM/facilities/finance modules are not implemented.
+- Document uploads are admin-only with MIME/size validation, private R2 storage, authorized downloads, and download audit. Full preview and version restoration UI remain incomplete.
 - No production secret management has been performed.
 - No penetration test has been performed.
+
+## Staging
+
+Staging uses separate Worker, D1, and R2 resources at `https://defend-website-staging.owner-e75.workers.dev`. Staging uses the development email outbox and test-mode/disabled payments. No production DNS was changed. Automated staging deployment is prepared but requires a Cloudflare API token in GitHub Actions.
 
 ## Production requirements
 
@@ -47,3 +50,4 @@ Before production:
 - Add backup/restore and rollback drills.
 - Complete legal review of privacy, terms, membership criteria, and organizational status copy.
 - Do not enable live payments or donations until legal, financial, processor, and owner readiness are confirmed.
+

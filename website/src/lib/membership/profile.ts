@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+﻿import { eq } from "drizzle-orm";
 
 import { getDb } from "@/lib/db/client";
 import { recordAuditEvent } from "@/lib/audit/audit";
@@ -105,6 +105,7 @@ export async function updateMemberAccount(input: {
   state?: string | null;
   postalCode?: string | null;
   directoryVisible: boolean;
+  familyParticipation: boolean;
   profession?: string | null;
   businessName?: string | null;
   skills?: string | null;
@@ -141,6 +142,7 @@ export async function updateMemberAccount(input: {
       state: input.state?.trim().toUpperCase() || null,
       postalCode: input.postalCode?.trim() || null,
       notificationPreferencesJson: JSON.stringify(input.notificationPreferences),
+      familyParticipation: input.familyParticipation,
       updatedAt: new Date(),
     })
     .where(eq(memberProfiles.userId, input.userId));
@@ -192,3 +194,4 @@ export async function updateMemberAccount(input: {
 
   return { ok: true };
 }
+

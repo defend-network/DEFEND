@@ -200,6 +200,109 @@ try {
   await owner.getByText("Membership status updated", { exact: false }).waitFor({ timeout: 30000 });
   pass("admin member status update");
 
+  // 9b. Administrative modules
+  await owner.goto(`${baseURL}/admin/crm`, { waitUntil: "networkidle" });
+  await owner.locator("#org-name").fill(`E2E Sponsor Org ${run}`);
+  await owner.locator("#org-type").selectOption("sponsor");
+  await owner.locator("#org-email").fill(`sponsor.${run}@example.com`);
+  await owner.getByRole("button", { name: "Create organization" }).click();
+  await owner.getByText("Organization created.", { exact: false }).waitFor({ timeout: 30000 });
+  await owner.locator("#contact-first").fill("E2E");
+  await owner.locator("#contact-last").fill("Contact");
+  await owner.locator("#contact-email").fill(`contact.${run}@example.com`);
+  await owner.getByRole("button", { name: "Create contact" }).click();
+  await owner.getByText("Contact created.", { exact: false }).waitFor({ timeout: 30000 });
+  await owner.locator("#lead-title").fill(`E2E Sponsorship Lead ${run}`);
+  await owner.locator("#lead-type").selectOption("sponsor");
+  await owner.getByRole("button", { name: "Create lead" }).click();
+  await owner.getByText("Lead created.", { exact: false }).waitFor({ timeout: 30000 });
+  pass("CRM organization, contact, and lead");
+
+  await owner.goto(`${baseURL}/admin/facilities`, { waitUntil: "networkidle" });
+  await owner.locator("#property-address").fill(`123 E2E Property ${run}`);
+  await owner.locator("#property-city").fill("New Port Richey");
+  await owner.locator("#property-state").fill("FL");
+  await owner.getByRole("button", { name: "Create property lead" }).click();
+  await owner.getByText("Property lead created.", { exact: false }).waitFor({ timeout: 30000 });
+  await owner.locator("#project-name").fill(`E2E Facility Project ${run}`);
+  await owner.getByRole("button", { name: "Create project" }).click();
+  await owner.getByText("Facility project created.", { exact: false }).waitFor({ timeout: 30000 });
+  await owner.locator("#proposal-title").fill(`E2E Property Proposal ${run}`);
+  await owner.getByRole("button", { name: "Create proposal" }).click();
+  await owner.getByText("Partnership proposal created.", { exact: false }).waitFor({ timeout: 30000 });
+  pass("facilities property, project, and proposal");
+
+  await owner.goto(`${baseURL}/admin/documents`, { waitUntil: "networkidle" });
+  await owner.locator("#doc-file").setInputFiles({
+    name: "e2e-document.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.from("DEFEND E2E document verification."),
+  });
+  await owner.locator("#doc-title").fill(`E2E Document ${run}`);
+  await owner.locator("#doc-category").selectOption("governance");
+  await owner.locator("#doc-visibility").selectOption("admin");
+  await owner.getByRole("button", { name: "Upload document" }).click();
+  await owner.getByText("Document uploaded.", { exact: false }).waitFor({ timeout: 30000 });
+  await owner.getByText(`E2E Document ${run}`, { exact: false }).waitFor();
+  pass("private document upload and listing");
+
+  await owner.goto(`${baseURL}/admin/website`, { waitUntil: "networkidle" });
+  await owner.locator("#page-title").fill(`E2E CMS Page ${run}`);
+  await owner.locator("#page-text").fill("This page verifies CMS page creation.");
+  await owner.getByRole("button", { name: "Create page" }).click();
+  await owner.getByText("Page created", { exact: false }).waitFor({ timeout: 30000 });
+  await owner.locator("#article-title").fill(`E2E News Update ${run}`);
+  await owner.locator("#article-text").fill("This article verifies the public news workflow.");
+  await owner.locator('input[type="checkbox"][name="publish"]').last().check();
+  await owner.getByRole("button", { name: "Create article" }).click();
+  await owner.getByText("Article created", { exact: false }).waitFor({ timeout: 30000 });
+  await owner.goto(`${baseURL}/news`, { waitUntil: "networkidle" });
+  await owner.getByText(`E2E News Update ${run}`, { exact: false }).waitFor();
+  pass("CMS page, published article, and public news");
+
+  await owner.goto(`${baseURL}/admin/programs`, { waitUntil: "networkidle" });
+  await owner.locator("#program-title").fill(`E2E Family Workshop ${run}`);
+  await owner.locator("#program-summary").fill("E2E family program verification.");
+  await owner.locator("#program-capacity").fill("20");
+  await owner.locator("#program-fee").fill("5");
+  await owner.locator('input[name="familyFriendly"]').check();
+  await owner.getByRole("button", { name: "Create program" }).click();
+  await owner.getByText("Program created.", { exact: false }).waitFor({ timeout: 30000 });
+  pass("program capacity, fee, and family configuration");
+
+  await owner.goto(`${baseURL}/admin/chapters`, { waitUntil: "networkidle" });
+  await owner.locator("#chapter-name").fill(`E2E Test County ${run}`);
+  await owner.locator("#chapter-county").fill("Test");
+  await owner.locator("#chapter-state").fill("FL");
+  await owner.locator("#chapter-status").selectOption("proposed");
+  await owner.getByRole("button", { name: "Create chapter" }).click();
+  await owner.getByText("Chapter created.", { exact: false }).waitFor({ timeout: 30000 });
+  pass("chapter creation as proposed, not operating");
+
+  await owner.goto(`${baseURL}/admin/finance`, { waitUntil: "networkidle" });
+  await owner.locator("#expense-vendor").fill(`E2E Vendor ${run}`);
+  await owner.locator("#expense-amount").fill("12.34");
+  await owner.locator("#expense-date").fill("2026-12-01T12:00");
+  await owner.getByRole("button", { name: "Record expense" }).click();
+  await owner.getByText("Expense recorded.", { exact: false }).waitFor({ timeout: 30000 });
+  pass("finance expense recording");
+
+  await owner.goto(`${baseURL}/admin/system`, { waitUntil: "networkidle" });
+  const memberOption = await owner
+    .locator("#role-user option", { hasText: "E2E Member" })
+    .getAttribute("value");
+  if (!memberOption) throw new Error("Member option not found in system role form");
+  await owner.locator("#role-user").selectOption(memberOption);
+  await owner.locator("#role-key").selectOption("volunteer_coordinator");
+  await owner.locator("#role-scope").selectOption("global");
+  await owner.getByRole("button", { name: "Assign role" }).click();
+  await owner.getByText("Role assigned.", { exact: false }).waitFor({ timeout: 30000 });
+  pass("owner role assignment through system administration");
+
+  await owner.goto(`${baseURL}/admin/communications`, { waitUntil: "networkidle" });
+  await owner.getByRole("heading", { name: "Delivery history" }).waitFor();
+  pass("communications delivery history");
+
   // 10. Password reset through development outbox
   await member.goto(`${baseURL}/forgot-password`, { waitUntil: "networkidle" });
   await member.locator("#email").fill(applicantEmail);

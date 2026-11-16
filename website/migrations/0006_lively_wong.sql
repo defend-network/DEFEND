@@ -1,0 +1,1 @@
+ALTER TABLE `events` ADD `program_id` text;

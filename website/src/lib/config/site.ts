@@ -1,4 +1,4 @@
-export const siteConfig = {
+﻿export const siteConfig = {
   name: "DEFEND",
   expandedName:
     "Descendants of Europeans Fraternal Economic Network for Development",
@@ -22,6 +22,7 @@ export const publicNavigation = [
   { href: "/programs", label: "Programs" },
   { href: "/chapters", label: "Chapters" },
   { href: "/events", label: "Events" },
+  { href: "/news", label: "News" },
   { href: "/membership", label: "Membership" },
   { href: "/contact", label: "Contact" },
 ] as const;
@@ -44,6 +45,15 @@ export const footerNavigation = [
       { href: "/contact", label: "Contact" },
     ],
   },
+  {
+    heading: "Get involved",
+    links: [
+      { href: "/support", label: "Support DEFEND" },
+      { href: "/volunteer", label: "Volunteer" },
+      { href: "/events", label: "Events" },
+      { href: "/news", label: "News" },
+    ],
+  },
 ] as const;
 
 export type ContentStatus = "operating" | "in_development" | "proposed" | "planned";
@@ -54,3 +64,4 @@ export const statusLabels: Record<ContentStatus, string> = {
   proposed: "Proposed",
   planned: "Planned",
 };
+

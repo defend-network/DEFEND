@@ -62,6 +62,7 @@ export function AccountForm({
     postalCode: string | null;
     legalFirstName: string;
     legalLastName: string;
+    familyParticipation: boolean;
   };
   phone: string | null;
   directory: {
@@ -168,6 +169,16 @@ export function AccountForm({
             ))}
           </div>
         </fieldset>
+        <Checkbox
+          name="familyParticipation"
+          label="My household is interested in family participation and family-friendly community events."
+          defaultChecked={profile.familyParticipation}
+        />
+        <p className="text-xs leading-5 text-slate-500">
+          Family participation does not change the standard $7 membership tier.
+          Program fees, capacity, and eligibility are configured separately for
+          each program or event.
+        </p>
       </fieldset>
 
       <fieldset className="grid gap-4 rounded-[var(--radius-card)] border border-slate-200 bg-paper p-5">

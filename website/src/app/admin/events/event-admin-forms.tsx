@@ -66,6 +66,14 @@ export function EventAdminForms() {
           <Input id="capacity" name="capacity" type="number" min={1} />
         </div>
         <div className="grid gap-2">
+          <Label htmlFor="feeDollars">Program fee ($, optional)</Label>
+          <Input id="feeDollars" name="feeDollars" type="number" min={0} step="0.01" />
+        </div>
+        <label className="flex items-center gap-2 text-sm text-slate-700">
+          <input type="checkbox" name="familyFriendly" className="size-4 accent-red-600" />
+          Family-friendly event
+        </label>
+        <div className="grid gap-2">
           <Label htmlFor="status">Publication</Label>
           <select id="status" name="status" className="h-11 rounded-[var(--radius-control)] border border-slate-300 bg-white px-3 text-sm">
             <option value="draft">Draft</option>
@@ -92,6 +100,18 @@ export function EventAdminForms() {
           <Label htmlFor="slots">Slots (optional)</Label>
           <Input id="slots" name="slots" type="number" min={1} />
         </div>
+        <div className="grid gap-2">
+          <Label htmlFor="vol-skills">Skills needed (comma separated)</Label>
+          <Input id="vol-skills" name="skills" />
+        </div>
+        <div className="grid gap-2">
+          <Label htmlFor="vol-availability">Availability</Label>
+          <Input id="vol-availability" name="availability" placeholder="Weekends, evenings…" />
+        </div>
+        <label className="flex items-center gap-2 text-sm text-slate-700">
+          <input type="checkbox" name="isInstructorRole" className="size-4 accent-red-600" />
+          Instructor / program-leader role
+        </label>
         <Button type="submit" variant="secondary" disabled={volunteerPending}>
           {volunteerPending ? "Creating…" : "Create opportunity"}
         </Button>

@@ -42,6 +42,12 @@ export const metadata: Metadata = {
     description:
       "A fraternal, cultural, and economic network being organized in Pasco County, Florida.",
   },
+  verification: {
+    google: process.env.GOOGLE_SITE_VERIFICATION || undefined,
+    other: process.env.BING_SITE_VERIFICATION
+      ? { "msvalidate.01": process.env.BING_SITE_VERIFICATION }
+      : undefined,
+  },
 };
 
 export default function RootLayout({

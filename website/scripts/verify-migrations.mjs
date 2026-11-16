@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+﻿import { execFileSync } from "node:child_process";
 import path from "node:path";
 
 const wranglerBin = path.resolve("node_modules/wrangler/bin/wrangler.js");
@@ -46,7 +46,33 @@ const expectedTables = [
   "admin_audit_events",
   "directory_profiles",
   "contact_messages",
-  "application_update_tokens",
+  "organizations",
+  "contacts",
+  "crm_leads",
+  "crm_activities",
+  "crm_tasks",
+  "crm_attachments",
+  "property_leads",
+  "facility_projects",
+  "partnership_proposals",
+  "programs",
+  "documents",
+  "document_versions",
+  "document_permissions",
+  "media_assets",
+  "cms_pages",
+  "cms_page_blocks",
+  "cms_articles",
+  "cms_revisions",
+  "announcements",
+  "donations",
+  "pledges",
+  "expenses",
+  "chapter_allocations",
+  "sponsor_contributions",
+  "integration_status",
+  "system_jobs",
+  "settings",  "application_update_tokens",
   "email_outbox",
   "email_delivery_events",
   "request_rate_limits",
@@ -91,3 +117,4 @@ if (chapter.length !== 1 || chapter[0].status !== "in_development") {
 console.log(
   `Migration verification passed: ${expectedTables.length} tables, 2 audit triggers, Pasco chapter seeded.`,
 );
+

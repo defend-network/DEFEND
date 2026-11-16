@@ -48,6 +48,17 @@ export default async function VolunteerPage() {
                 <p className="text-sm leading-6 text-slate-600">
                   {opportunity.description}
                 </p>
+                {opportunity.skillsJson && opportunity.skillsJson !== "[]" ? (
+                  <p className="text-xs text-slate-500">
+                    Skills: {JSON.parse(opportunity.skillsJson).join(", ")}
+                  </p>
+                ) : null}
+                {opportunity.availability ? (
+                  <p className="text-xs text-slate-500">Availability: {opportunity.availability}</p>
+                ) : null}
+                {opportunity.isInstructorRole ? (
+                  <p className="text-xs font-semibold text-red-700">Instructor / program-leader role</p>
+                ) : null}
                 <VolunteerRegisterForm opportunityId={opportunity.id} />
               </CardContent>
             </Card>

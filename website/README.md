@@ -1,4 +1,4 @@
-# DEFEND Website
+﻿# DEFEND Website
 
 Isolated organizational website, member portal, and administrative workstation for DEFEND.
 
@@ -27,7 +27,7 @@ npm run bootstrap:owner -- --remote --env staging
 ## Implemented and verified
 
 - Next.js 16.4.6 App Router, TypeScript, Tailwind CSS, Cloudflare Workers via OpenNext.
-- D1 schema and migrations for identity, chapters, applications, application updates, memberships, status history, invitations, roles, audit, directory, events, volunteers, email, rate limits, and payment events.
+- D1 schema and 55 migrations-backed tables for identity, chapters, applications, memberships, invitations, roles, audit, directory, events, volunteers, CRM, facilities, documents, CMS, communications, finance, programs, and payment events.
 - Better Auth identity with invitation-only activation, password recovery, email verification scaffold, and TOTP MFA.
 - Central server-side policy with global/chapter/self scope and MFA-required administrative actions.
 - Application queue, detail, approve/deny/request-information, applicant update links, and single-use invitations.
@@ -40,15 +40,18 @@ npm run bootstrap:owner -- --remote --env staging
 - Password reset through Better Auth and the development email outbox.
 - Turnstile server verification (requires configured site/secret keys), D1-backed form rate limiting.
 - Stripe Checkout/Customer Portal/webhook code with live charging gated off.
-- Unit, migration, Worker runtime, browser smoke, and full membership lifecycle E2E tests.
+- Admin CRM (organizations, contacts, leads, activities, tasks), facilities/property, chapter administration, private R2 documents, CMS pages/articles/news, communications history, finance expenses/allocations, program configuration, system roles, and audit visibility.
+- Public news, support/partnership, volunteer, and expanded program pages.
+- Unit, migration, Worker runtime, browser smoke, and 29-check end-to-end membership/admin workflow tests.
 
 ## Not implemented yet
 
 - Real Stripe test-mode external execution. No Stripe test credentials are present; checkout is disabled.
 - Real Resend delivery. Development uses an outbox; production requires `EMAIL_TRANSPORT=resend` and provider secrets.
 - Turnstile widget/secret configuration. In production, forms fail closed when spam protection is not configured.
-- CMS, CRM, facilities, documents, communications center, finance reporting, and system administration modules.
-- Member role-assignment UI beyond the owner bootstrap; admin identity management remains a later milestone.
+- Full document version/preview UI, newsletter subscription, campaign attribution, funnel reporting, and complete CMS block editor.
+- External Google/Bing/Cloudflare analytics verification tokens.
+- Production backups, monitoring, accessibility audit, and penetration testing.
 - Live payments, donations, production deployment, and DNS changes.
 
 ## Local requirements
@@ -150,3 +153,4 @@ The membership test covers application, request-information, approval, invitatio
 - Do not modify DEFEND AI, Markets, Coder, Sports, SCS, or unrelated applications.
 - Do not commit `.dev.vars`, `.wrangler/`, `.open-next/`, runtime databases, or secrets.
 - Do not push or deploy without explicit owner authorization.
+

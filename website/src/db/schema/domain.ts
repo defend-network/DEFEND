@@ -1,4 +1,4 @@
-import { sql } from "drizzle-orm";
+﻿import { sql } from "drizzle-orm";
 import {
   index,
   integer,
@@ -49,6 +49,9 @@ export const memberProfiles = sqliteTable(
     notificationPreferencesJson: text("notification_preferences_json")
       .notNull()
       .default("{}"),
+    familyParticipation: integer("family_participation", { mode: "boolean" })
+      .default(false)
+      .notNull(),
     createdAt: integer("created_at", { mode: "timestamp_ms" })
       .default(timestampDefault)
       .notNull(),
@@ -453,12 +456,22 @@ export const events = sqliteTable(
     title: text("title").notNull(),
     summary: text("summary").notNull().default(""),
     description: text("description").notNull().default(""),
+    programId: text("program_id"),
     chapterId: text("chapter_id").references(() => chapters.id),
     startsAt: integer("starts_at", { mode: "timestamp_ms" }).notNull(),
     endsAt: integer("ends_at", { mode: "timestamp_ms" }),
     locationName: text("location_name"),
     address: text("address"),
     capacity: integer("capacity"),
+    feeCents: integer("fee_cents").default(0).notNull(),
+    familyFriendly: integer("family_friendly", { mode: "boolean" })
+      .default(false)
+      .notNull(),
+    youthSafeguardingRequired: integer("youth_safeguarding_required", {
+      mode: "boolean",
+    })
+      .default(false)
+      .notNull(),
     status: text("status").notNull().default("draft"),
     registrationOpensAt: integer("registration_opens_at", {
       mode: "timestamp_ms",
@@ -545,6 +558,11 @@ export const volunteerOpportunities = sqliteTable(
     title: text("title").notNull(),
     description: text("description").notNull().default(""),
     slots: integer("slots"),
+    skillsJson: text("skills_json").notNull().default("[]"),
+    availability: text("availability"),
+    isInstructorRole: integer("is_instructor_role", { mode: "boolean" })
+      .default(false)
+      .notNull(),
     status: text("status").notNull().default("draft"),
     createdAt: integer("created_at", { mode: "timestamp_ms" })
       .default(timestampDefault)
@@ -584,3 +602,512 @@ export const volunteerRegistrations = sqliteTable(
     ),
   ],
 );
+
+export const organizations = sqliteTable(
+  "organizations",
+  {
+    id: text("id").primaryKey(),
+    name: text("name").notNull(),
+    type: text("type").notNull().default("other"),
+    website: text("website"),
+    email: text("email"),
+    phoneEncrypted: text("phone_encrypted"),
+    address: text("address"),
+    city: text("city"),
+    state: text("state"),
+    postalCode: text("postal_code"),
+    status: text("status").notNull().default("active"),
+    notesEncrypted: text("notes_encrypted"),
+    createdBy: text("created_by").references(() => user.id),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .default(timestampDefault)
+      .notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .default(timestampDefault)
+      .$onUpdate(() => new Date())
+      .notNull(),
+  },
+  (table) => [
+    index("organizations_name_idx").on(table.name),
+    index("organizations_type_status_idx").on(table.type, table.status),
+  ],
+);
+
+export const contacts = sqliteTable(
+  "contacts",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id").references(() => organizations.id),
+    firstName: text("first_name").notNull(),
+    lastName: text("last_name").notNull(),
+    title: text("title"),
+    email: text("email"),
+    phoneEncrypted: text("phone_encrypted"),
+    tagsJson: text("tags_json").notNull().default("[]"),
+    notesEncrypted: text("notes_encrypted"),
+    status: text("status").notNull().default("active"),
+    ownerUserId: text("owner_user_id").references(() => user.id),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .default(timestampDefault)
+      .notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .default(timestampDefault)
+      .$onUpdate(() => new Date())
+      .notNull(),
+  },
+  (table) => [
+    index("contacts_organization_idx").on(table.organizationId),
+    index("contacts_name_idx").on(table.lastName, table.firstName),
+  ],
+);
+
+export const crmLeads = sqliteTable(
+  "crm_leads",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id").references(() => organizations.id),
+    contactId: text("contact_id").references(() => contacts.id),
+    type: text("type").notNull().default("other"),
+    title: text("title").notNull(),
+    source: text("source"),
+    stage: text("stage").notNull().default("new"),
+    priority: text("priority").notNull().default("normal"),
+    assignedTo: text("assigned_to").references(() => user.id),
+    nextFollowUpAt: integer("next_follow_up_at", { mode: "timestamp_ms" }),
+    notesEncrypted: text("notes_encrypted"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .default(timestampDefault)
+      .notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .default(timestampDefault)
+      .$onUpdate(() => new Date())
+      .notNull(),
+  },
+  (table) => [
+    index("crm_leads_stage_idx").on(table.stage, table.nextFollowUpAt),
+    index("crm_leads_type_idx").on(table.type),
+  ],
+);
+
+export const crmActivities = sqliteTable(
+  "crm_activities",
+  {
+    id: text("id").primaryKey(),
+    leadId: text("lead_id").references(() => crmLeads.id, {
+      onDelete: "cascade",
+    }),
+    contactId: text("contact_id").references(() => contacts.id, {
+      onDelete: "cascade",
+    }),
+    type: text("type").notNull().default("note"),
+    summary: text("summary").notNull(),
+    occurredAt: integer("occurred_at", { mode: "timestamp_ms" })
+      .default(timestampDefault)
+      .notNull(),
+    createdBy: text("created_by").references(() => user.id),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .default(timestampDefault)
+      .notNull(),
+  },
+  (table) => [
+    index("crm_activities_lead_idx").on(table.leadId, table.occurredAt),
+  ],
+);
+
+export const crmTasks = sqliteTable(
+  "crm_tasks",
+  {
+    id: text("id").primaryKey(),
+    leadId: text("lead_id").references(() => crmLeads.id, {
+      onDelete: "cascade",
+    }),
+    title: text("title").notNull(),
+    dueAt: integer("due_at", { mode: "timestamp_ms" }),
+    assignedTo: text("assigned_to").references(() => user.id),
+    status: text("status").notNull().default("open"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .default(timestampDefault)
+      .notNull(),
+    completedAt: integer("completed_at", { mode: "timestamp_ms" }),
+  },
+  (table) => [index("crm_tasks_status_due_idx").on(table.status, table.dueAt)],
+);
+
+export const crmAttachments = sqliteTable("crm_attachments", {
+  id: text("id").primaryKey(),
+  leadId: text("lead_id").references(() => crmLeads.id, { onDelete: "cascade" }),
+  documentId: text("document_id"),
+  createdAt: integer("created_at", { mode: "timestamp_ms" })
+    .default(timestampDefault)
+    .notNull(),
+});
+
+export const propertyLeads = sqliteTable(
+  "property_leads",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id").references(() => organizations.id),
+    contactId: text("contact_id").references(() => contacts.id),
+    address: text("address").notNull(),
+    city: text("city"),
+    state: text("state"),
+    postalCode: text("postal_code"),
+    buildingSqft: integer("building_sqft"),
+    acreage: text("acreage"),
+    ownerName: text("owner_name"),
+    listingUrl: text("listing_url"),
+    leaseOrDonation: text("lease_or_donation").notNull().default("unknown"),
+    status: text("status").notNull().default("new"),
+    estimatedCostCents: integer("estimated_cost_cents"),
+    notesEncrypted: text("notes_encrypted"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .default(timestampDefault)
+      .notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .default(timestampDefault)
+      .$onUpdate(() => new Date())
+      .notNull(),
+  },
+  (table) => [index("property_leads_status_idx").on(table.status)],
+);
+
+export const facilityProjects = sqliteTable(
+  "facility_projects",
+  {
+    id: text("id").primaryKey(),
+    propertyLeadId: text("property_lead_id").references(() => propertyLeads.id),
+    name: text("name").notNull(),
+    stage: text("stage").notNull().default("concept"),
+    budgetCents: integer("budget_cents"),
+    targetDate: integer("target_date", { mode: "timestamp_ms" }),
+    status: text("status").notNull().default("active"),
+    notesEncrypted: text("notes_encrypted"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .default(timestampDefault)
+      .notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .default(timestampDefault)
+      .$onUpdate(() => new Date())
+      .notNull(),
+  },
+  (table) => [index("facility_projects_status_idx").on(table.status)],
+);
+
+export const partnershipProposals = sqliteTable("partnership_proposals", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id").references(() => organizations.id),
+  contactId: text("contact_id").references(() => contacts.id),
+  type: text("type").notNull().default("other"),
+  title: text("title").notNull(),
+  description: text("description").notNull().default(""),
+  amountCents: integer("amount_cents"),
+  status: text("status").notNull().default("draft"),
+  createdAt: integer("created_at", { mode: "timestamp_ms" })
+    .default(timestampDefault)
+    .notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+    .default(timestampDefault)
+    .$onUpdate(() => new Date())
+    .notNull(),
+});
+
+export const programs = sqliteTable("programs", {
+  id: text("id").primaryKey(),
+  slug: text("slug").notNull().unique(),
+  title: text("title").notNull(),
+  summary: text("summary").notNull().default(""),
+  description: text("description").notNull().default(""),
+  chapterId: text("chapter_id").references(() => chapters.id),
+  status: text("status").notNull().default("planned"),
+  capacity: integer("capacity"),
+  feeCents: integer("fee_cents").default(0).notNull(),
+  eligibility: text("eligibility"),
+  familyFriendly: integer("family_friendly", { mode: "boolean" })
+    .default(false)
+    .notNull(),
+  youthSafeguardingRequired: integer("youth_safeguarding_required", {
+    mode: "boolean",
+  })
+    .default(false)
+    .notNull(),
+  createdAt: integer("created_at", { mode: "timestamp_ms" })
+    .default(timestampDefault)
+    .notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+    .default(timestampDefault)
+    .$onUpdate(() => new Date())
+    .notNull(),
+});
+
+export const documents = sqliteTable(
+  "documents",
+  {
+    id: text("id").primaryKey(),
+    title: text("title").notNull(),
+    description: text("description").notNull().default(""),
+    category: text("category").notNull().default("general"),
+    r2Key: text("r2_key").notNull(),
+    filename: text("filename").notNull(),
+    mimeType: text("mime_type").notNull(),
+    sizeBytes: integer("size_bytes").notNull(),
+    version: integer("version").notNull().default(1),
+    visibility: text("visibility").notNull().default("admin"),
+    chapterId: text("chapter_id").references(() => chapters.id),
+    ownerUserId: text("owner_user_id").references(() => user.id),
+    status: text("status").notNull().default("draft"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .default(timestampDefault)
+      .notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .default(timestampDefault)
+      .$onUpdate(() => new Date())
+      .notNull(),
+    deletedAt: integer("deleted_at", { mode: "timestamp_ms" }),
+  },
+  (table) => [
+    index("documents_visibility_status_idx").on(table.visibility, table.status),
+    index("documents_category_idx").on(table.category),
+  ],
+);
+
+export const documentVersions = sqliteTable("document_versions", {
+  id: text("id").primaryKey(),
+  documentId: text("document_id")
+    .notNull()
+    .references(() => documents.id, { onDelete: "cascade" }),
+  version: integer("version").notNull(),
+  r2Key: text("r2_key").notNull(),
+  filename: text("filename").notNull(),
+  sizeBytes: integer("size_bytes").notNull(),
+  uploadedBy: text("uploaded_by").references(() => user.id),
+  createdAt: integer("created_at", { mode: "timestamp_ms" })
+    .default(timestampDefault)
+    .notNull(),
+});
+
+export const documentPermissions = sqliteTable("document_permissions", {
+  id: text("id").primaryKey(),
+  documentId: text("document_id")
+    .notNull()
+    .references(() => documents.id, { onDelete: "cascade" }),
+  roleKey: text("role_key").notNull(),
+  scopeType: text("scope_type").notNull().default("global"),
+  scopeId: text("scope_id"),
+  permission: text("permission").notNull().default("view"),
+  createdAt: integer("created_at", { mode: "timestamp_ms" })
+    .default(timestampDefault)
+    .notNull(),
+});
+
+export const mediaAssets = sqliteTable("media_assets", {
+  id: text("id").primaryKey(),
+  r2Key: text("r2_key").notNull(),
+  filename: text("filename").notNull(),
+  mimeType: text("mime_type").notNull(),
+  sizeBytes: integer("size_bytes").notNull(),
+  width: integer("width"),
+  height: integer("height"),
+  altText: text("alt_text"),
+  credit: text("credit"),
+  license: text("license"),
+  sourceUrl: text("source_url"),
+  visibility: text("visibility").notNull().default("public"),
+  uploadedBy: text("uploaded_by").references(() => user.id),
+  createdAt: integer("created_at", { mode: "timestamp_ms" })
+    .default(timestampDefault)
+    .notNull(),
+});
+
+export const cmsPages = sqliteTable("cms_pages", {
+  id: text("id").primaryKey(),
+  slug: text("slug").notNull().unique(),
+  title: text("title").notNull(),
+  seoTitle: text("seo_title"),
+  seoDescription: text("seo_description"),
+  status: text("status").notNull().default("draft"),
+  publishedAt: integer("published_at", { mode: "timestamp_ms" }),
+  updatedBy: text("updated_by").references(() => user.id),
+  createdAt: integer("created_at", { mode: "timestamp_ms" })
+    .default(timestampDefault)
+    .notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+    .default(timestampDefault)
+    .$onUpdate(() => new Date())
+    .notNull(),
+});
+
+export const cmsPageBlocks = sqliteTable(
+  "cms_page_blocks",
+  {
+    id: text("id").primaryKey(),
+    pageId: text("page_id")
+      .notNull()
+      .references(() => cmsPages.id, { onDelete: "cascade" }),
+    blockType: text("block_type").notNull(),
+    sortOrder: integer("sort_order").notNull().default(0),
+    contentJson: text("content_json").notNull().default("{}"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .default(timestampDefault)
+      .notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .default(timestampDefault)
+      .$onUpdate(() => new Date())
+      .notNull(),
+  },
+  (table) => [index("cms_page_blocks_page_idx").on(table.pageId, table.sortOrder)],
+);
+
+export const cmsArticles = sqliteTable("cms_articles", {
+  id: text("id").primaryKey(),
+  slug: text("slug").notNull().unique(),
+  title: text("title").notNull(),
+  excerpt: text("excerpt").notNull().default(""),
+  contentJson: text("content_json").notNull().default("{}"),
+  category: text("category").notNull().default("news"),
+  status: text("status").notNull().default("draft"),
+  seoTitle: text("seo_title"),
+  seoDescription: text("seo_description"),
+  publishedAt: integer("published_at", { mode: "timestamp_ms" }),
+  authorId: text("author_id").references(() => user.id),
+  createdAt: integer("created_at", { mode: "timestamp_ms" })
+    .default(timestampDefault)
+    .notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+    .default(timestampDefault)
+    .$onUpdate(() => new Date())
+    .notNull(),
+});
+
+export const cmsRevisions = sqliteTable("cms_revisions", {
+  id: text("id").primaryKey(),
+  entityType: text("entity_type").notNull(),
+  entityId: text("entity_id").notNull(),
+  snapshotJson: text("snapshot_json").notNull(),
+  createdBy: text("created_by").references(() => user.id),
+  createdAt: integer("created_at", { mode: "timestamp_ms" })
+    .default(timestampDefault)
+    .notNull(),
+});
+
+export const announcements = sqliteTable("announcements", {
+  id: text("id").primaryKey(),
+  title: text("title").notNull(),
+  body: text("body").notNull(),
+  visibility: text("visibility").notNull().default("members"),
+  startsAt: integer("starts_at", { mode: "timestamp_ms" }),
+  endsAt: integer("ends_at", { mode: "timestamp_ms" }),
+  publishedAt: integer("published_at", { mode: "timestamp_ms" }),
+  createdBy: text("created_by").references(() => user.id),
+  createdAt: integer("created_at", { mode: "timestamp_ms" })
+    .default(timestampDefault)
+    .notNull(),
+});
+
+export const donations = sqliteTable("donations", {
+  id: text("id").primaryKey(),
+  donorContactId: text("donor_contact_id").references(() => contacts.id),
+  membershipId: text("membership_id").references(() => memberships.id),
+  amountCents: integer("amount_cents").notNull(),
+  currency: text("currency").notNull().default("usd"),
+  method: text("method").notNull().default("manual"),
+  stripePaymentId: text("stripe_payment_id"),
+  status: text("status").notNull().default("recorded"),
+  receivedAt: integer("received_at", { mode: "timestamp_ms" }),
+  receiptStatus: text("receipt_status").notNull().default("not_issued"),
+  notesEncrypted: text("notes_encrypted"),
+  createdAt: integer("created_at", { mode: "timestamp_ms" })
+    .default(timestampDefault)
+    .notNull(),
+});
+
+export const pledges = sqliteTable("pledges", {
+  id: text("id").primaryKey(),
+  donorContactId: text("donor_contact_id").references(() => contacts.id),
+  amountCents: integer("amount_cents").notNull(),
+  frequency: text("frequency").notNull().default("one_time"),
+  status: text("status").notNull().default("open"),
+  dueAt: integer("due_at", { mode: "timestamp_ms" }),
+  fulfilledAmountCents: integer("fulfilled_amount_cents").default(0).notNull(),
+  createdAt: integer("created_at", { mode: "timestamp_ms" })
+    .default(timestampDefault)
+    .notNull(),
+});
+
+export const expenses = sqliteTable("expenses", {
+  id: text("id").primaryKey(),
+  chapterId: text("chapter_id").references(() => chapters.id),
+  category: text("category").notNull(),
+  vendor: text("vendor").notNull(),
+  amountCents: integer("amount_cents").notNull(),
+  incurredAt: integer("incurred_at", { mode: "timestamp_ms" }).notNull(),
+  paidBy: text("paid_by"),
+  receiptDocumentId: text("receipt_document_id").references(() => documents.id),
+  status: text("status").notNull().default("recorded"),
+  notesEncrypted: text("notes_encrypted"),
+  createdAt: integer("created_at", { mode: "timestamp_ms" })
+    .default(timestampDefault)
+    .notNull(),
+});
+
+export const chapterAllocations = sqliteTable("chapter_allocations", {
+  id: text("id").primaryKey(),
+  chapterId: text("chapter_id")
+    .notNull()
+    .references(() => chapters.id),
+  sourceType: text("source_type").notNull(),
+  sourceId: text("source_id"),
+  amountCents: integer("amount_cents").notNull(),
+  period: text("period"),
+  notes: text("notes"),
+  createdAt: integer("created_at", { mode: "timestamp_ms" })
+    .default(timestampDefault)
+    .notNull(),
+});
+
+export const sponsorContributions = sqliteTable("sponsor_contributions", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id").references(() => organizations.id),
+  proposalId: text("proposal_id").references(() => partnershipProposals.id),
+  amountCents: integer("amount_cents").notNull(),
+  receivedAt: integer("received_at", { mode: "timestamp_ms" }),
+  status: text("status").notNull().default("recorded"),
+  notesEncrypted: text("notes_encrypted"),
+  createdAt: integer("created_at", { mode: "timestamp_ms" })
+    .default(timestampDefault)
+    .notNull(),
+});
+
+export const integrationStatus = sqliteTable("integration_status", {
+  id: text("id").primaryKey(),
+  key: text("key").notNull().unique(),
+  status: text("status").notNull().default("not_configured"),
+  lastCheckedAt: integer("last_checked_at", { mode: "timestamp_ms" }),
+  lastErrorCode: text("last_error_code"),
+  metadataJson: text("metadata_json").notNull().default("{}"),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+    .default(timestampDefault)
+    .$onUpdate(() => new Date())
+    .notNull(),
+});
+
+export const systemJobs = sqliteTable("system_jobs", {
+  id: text("id").primaryKey(),
+  jobKey: text("job_key").notNull(),
+  status: text("status").notNull().default("pending"),
+  startedAt: integer("started_at", { mode: "timestamp_ms" }),
+  finishedAt: integer("finished_at", { mode: "timestamp_ms" }),
+  errorSummary: text("error_summary"),
+  createdAt: integer("created_at", { mode: "timestamp_ms" })
+    .default(timestampDefault)
+    .notNull(),
+});
+
+export const settings = sqliteTable("settings", {
+  key: text("key").primaryKey(),
+  valueJson: text("value_json").notNull().default("{}"),
+  updatedBy: text("updated_by").references(() => user.id),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+    .default(timestampDefault)
+    .$onUpdate(() => new Date())
+    .notNull(),
+});

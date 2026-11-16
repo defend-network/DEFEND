@@ -20,6 +20,11 @@ const faqs = [
       "Yes. Applications are being accepted for the Pasco County founding chapter. Every application is reviewed manually.",
   },
   {
+    question: "Who can apply?",
+    answer:
+      "General membership is open to adults who support DEFEND's lawful mission, regardless of sex. Family participation and specific programs are optional and may have their own lawful eligibility, capacity, and fee rules. Youth-related features remain disabled until safeguarding requirements are approved.",
+  },
+  {
     question: "What does membership cost?",
     answer:
       "The proposed standard dues are $7 per month. There is one standard membership tier. Online billing is not active yet.",

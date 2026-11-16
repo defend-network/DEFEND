@@ -1,4 +1,4 @@
-import Link from "next/link";
+﻿import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { SignOutButton } from "@/components/auth/sign-out-button";
@@ -68,39 +68,27 @@ export default async function AdminLayout({
             >
               Members
             </Link>
-            <span className="rounded-[var(--radius-control)] px-3 py-2.5 text-sm text-slate-400">
-              Chapters
-            </span>
-            <span className="rounded-[var(--radius-control)] px-3 py-2.5 text-sm text-slate-400">
-              CRM
-            </span>
+            <Link href="/admin/chapters" className="rounded-[var(--radius-control)] px-3 py-2.5 text-sm text-slate-600 hover:bg-slate-100 hover:text-navy-900">Chapters</Link>
+            <Link href="/admin/crm" className="rounded-[var(--radius-control)] px-3 py-2.5 text-sm text-slate-600 hover:bg-slate-100 hover:text-navy-900">CRM</Link>
+            <Link href="/admin/facilities" className="rounded-[var(--radius-control)] px-3 py-2.5 text-sm text-slate-600 hover:bg-slate-100 hover:text-navy-900">Facilities</Link>
             <Link
               href="/admin/events"
               className="rounded-[var(--radius-control)] px-3 py-2.5 text-sm text-slate-600 hover:bg-slate-100 hover:text-navy-900"
             >
               Events
             </Link>
+            <Link href="/admin/programs" className="rounded-[var(--radius-control)] px-3 py-2.5 text-sm text-slate-600 hover:bg-slate-100 hover:text-navy-900">Programs</Link>
             <Link
               href="/admin/check-in"
               className="rounded-[var(--radius-control)] px-3 py-2.5 text-sm text-slate-600 hover:bg-slate-100 hover:text-navy-900"
             >
               Check-in
             </Link>
-            <span className="rounded-[var(--radius-control)] px-3 py-2.5 text-sm text-slate-400">
-              Documents
-            </span>
-            <span className="rounded-[var(--radius-control)] px-3 py-2.5 text-sm text-slate-400">
-              Website
-            </span>
-            <span className="rounded-[var(--radius-control)] px-3 py-2.5 text-sm text-slate-400">
-              Communications
-            </span>
-            <span className="rounded-[var(--radius-control)] px-3 py-2.5 text-sm text-slate-400">
-              Finance
-            </span>
-            <span className="rounded-[var(--radius-control)] px-3 py-2.5 text-sm text-slate-400">
-              System
-            </span>
+            <Link href="/admin/documents" className="rounded-[var(--radius-control)] px-3 py-2.5 text-sm text-slate-600 hover:bg-slate-100 hover:text-navy-900">Documents</Link>
+            <Link href="/admin/website" className="rounded-[var(--radius-control)] px-3 py-2.5 text-sm text-slate-600 hover:bg-slate-100 hover:text-navy-900">Website</Link>
+            <Link href="/admin/communications" className="rounded-[var(--radius-control)] px-3 py-2.5 text-sm text-slate-600 hover:bg-slate-100 hover:text-navy-900">Communications</Link>
+            <Link href="/admin/finance" className="rounded-[var(--radius-control)] px-3 py-2.5 text-sm text-slate-600 hover:bg-slate-100 hover:text-navy-900">Finance</Link>
+            <Link href="/admin/system" className="rounded-[var(--radius-control)] px-3 py-2.5 text-sm text-slate-600 hover:bg-slate-100 hover:text-navy-900">System</Link>
             <Link
               href="/admin/security"
               className="rounded-[var(--radius-control)] px-3 py-2.5 text-sm text-slate-600 hover:bg-slate-100 hover:text-navy-900"
@@ -142,3 +130,12 @@ export default async function AdminLayout({
     </div>
   );
 }
+
+
+
+
+
+
+
+
+

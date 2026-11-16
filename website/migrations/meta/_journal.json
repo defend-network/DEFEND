@@ -36,6 +36,20 @@
       "when": 1794808488104,
       "tag": "0004_furry_supernaut",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1794810173465,
+      "tag": "0005_fast_maria_hill",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1794810214336,
+      "tag": "0006_lively_wong",
+      "breakpoints": true
     }
   ]
 }

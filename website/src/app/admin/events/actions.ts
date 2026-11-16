@@ -27,6 +27,7 @@ export async function createEventAction(
       return { status: "error", message: "Enter a title and a valid start time." };
     }
     const capacity = Number(formData.get("capacity") ?? "");
+    const fee = Number(formData.get("feeDollars") ?? "");
     const context = await requestAuditContext();
     const result = await createEvent({
       actor,
@@ -37,6 +38,8 @@ export async function createEventAction(
       locationName: String(formData.get("locationName") ?? ""),
       address: String(formData.get("address") ?? ""),
       capacity: Number.isFinite(capacity) && capacity > 0 ? capacity : null,
+      feeCents: Number.isFinite(fee) && fee > 0 ? Math.round(fee * 100) : 0,
+      familyFriendly: formData.get("familyFriendly") === "on",
       status: formData.get("status") === "published" ? "published" : "draft",
       ...context,
     });
@@ -70,6 +73,9 @@ export async function createVolunteerAction(
       title,
       description: String(formData.get("description") ?? ""),
       slots: Number.isFinite(slots) && slots > 0 ? slots : null,
+      skills: String(formData.get("skills") ?? ""),
+      availability: String(formData.get("availability") ?? ""),
+      isInstructorRole: formData.get("isInstructorRole") === "on",
       ...context,
     });
     revalidatePath("/admin/events");

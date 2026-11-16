@@ -1,4 +1,4 @@
-import { and, count, desc, eq, gte, inArray } from "drizzle-orm";
+﻿import { and, count, desc, eq, gte, inArray } from "drizzle-orm";
 
 import { getDb } from "@/lib/db/client";
 import { recordAuditEvent } from "@/lib/audit/audit";
@@ -53,6 +53,8 @@ export async function createEvent(input: {
   locationName?: string | null;
   address?: string | null;
   capacity?: number | null;
+  feeCents?: number | null;
+  familyFriendly?: boolean;
   status: "draft" | "published";
   requestId?: string | null;
   ipHash?: string | null;
@@ -80,6 +82,8 @@ export async function createEvent(input: {
     locationName: input.locationName?.trim() || null,
     address: input.address?.trim() || null,
     capacity: input.capacity && input.capacity > 0 ? input.capacity : null,
+    feeCents: input.feeCents && input.feeCents > 0 ? input.feeCents : 0,
+    familyFriendly: Boolean(input.familyFriendly),
     status: input.status,
     createdBy: input.actor.userId,
     createdAt: new Date(),
@@ -112,6 +116,8 @@ export async function listPublishedEvents(limit = 50) {
       startsAt: events.startsAt,
       locationName: events.locationName,
       capacity: events.capacity,
+      feeCents: events.feeCents,
+      familyFriendly: events.familyFriendly,
       status: events.status,
       chapterName: chapters.name,
     })
@@ -136,6 +142,8 @@ export async function getEventBySlug(slug: string) {
       locationName: events.locationName,
       address: events.address,
       capacity: events.capacity,
+      feeCents: events.feeCents,
+      familyFriendly: events.familyFriendly,
       status: events.status,
       chapterName: chapters.name,
     })
@@ -286,6 +294,9 @@ export async function listVolunteerOpportunities() {
       title: volunteerOpportunities.title,
       description: volunteerOpportunities.description,
       slots: volunteerOpportunities.slots,
+      skillsJson: volunteerOpportunities.skillsJson,
+      availability: volunteerOpportunities.availability,
+      isInstructorRole: volunteerOpportunities.isInstructorRole,
       status: volunteerOpportunities.status,
       chapterId: volunteerOpportunities.chapterId,
     })
@@ -300,6 +311,9 @@ export async function createVolunteerOpportunity(input: {
   title: string;
   description: string;
   slots?: number | null;
+  skills?: string;
+  availability?: string;
+  isInstructorRole?: boolean;
   requestId?: string | null;
   ipHash?: string | null;
   userAgent?: string | null;
@@ -312,6 +326,11 @@ export async function createVolunteerOpportunity(input: {
     title: input.title.trim(),
     description: input.description.trim(),
     slots: input.slots && input.slots > 0 ? input.slots : null,
+    skillsJson: JSON.stringify(
+      input.skills ? input.skills.split(",").map((skill) => skill.trim()).filter(Boolean) : [],
+    ),
+    availability: input.availability?.trim() || null,
+    isInstructorRole: Boolean(input.isInstructorRole),
     status: "published",
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -403,3 +422,4 @@ export async function registerForVolunteer(input: {
 
   return { ok: true as const, alreadyRegistered: false };
 }
+

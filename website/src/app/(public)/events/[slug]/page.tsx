@@ -34,6 +34,31 @@ export default async function EventDetailPage({ params }: PageProps) {
 
   return (
     <section className="py-16 sm:py-20">
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{
+          __html: JSON.stringify({
+            "@context": "https://schema.org",
+            "@type": "Event",
+            name: event.title,
+            description: event.summary || event.description,
+            startDate: event.startsAt.toISOString(),
+            endDate: event.endsAt?.toISOString(),
+            eventStatus: "https://schema.org/EventScheduled",
+            eventAttendanceMode: "https://schema.org/OfflineEventAttendanceMode",
+            location: {
+              "@type": "Place",
+              name: event.locationName || "Location to be announced",
+              address: event.address || undefined,
+            },
+            organizer: {
+              "@type": "Organization",
+              name: "DEFEND",
+              url: "https://defend-network.org",
+            },
+          }).replace(/</g, "\\u003c"),
+        }}
+      />
       <Container className="grid gap-10 lg:grid-cols-[1.2fr_0.8fr]">
         <div>
           <Badge variant="outline">{event.chapterName ?? "Pasco County"}</Badge>
@@ -50,6 +75,8 @@ export default async function EventDetailPage({ params }: PageProps) {
             <p><strong className="text-navy-900">Location:</strong> {event.locationName || "To be announced"}</p>
             {event.address ? <p><strong className="text-navy-900">Address:</strong> {event.address}</p> : null}
             {event.capacity ? <p><strong className="text-navy-900">Capacity:</strong> {event.capacity}</p> : null}
+            {event.feeCents ? <p><strong className="text-navy-900">Program fee:</strong> ${(event.feeCents / 100).toFixed(2)}</p> : null}
+            {event.familyFriendly ? <p><strong className="text-navy-900">Audience:</strong> Family-friendly</p> : null}
           </div>
         </div>
         <Card>

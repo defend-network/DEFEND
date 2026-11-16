@@ -18,7 +18,27 @@ export const programs: Program[] = [
     description:
       "DEFEND is developing a member network for trades education, professional development, referrals, and entrepreneurship. The network is intended to help members build useful relationships and share practical knowledge.",
     status: "in_development",
-    focus: ["Skilled trades", "Small business", "Mentoring", "Referrals"],
+    focus: ["Skilled trades", "Automotive workshops", "Small business", "Mentoring", "Referrals"],
+  },
+  {
+    slug: "mens-mentorship-and-fitness",
+    title: "Men's Mentorship & Fitness",
+    summary:
+      "Lawful mentorship, fitness, and personal-development programming for men.",
+    description:
+      "DEFEND is developing men's mentorship and fitness activities focused on responsibility, discipline, trades, and professional development. Participation is voluntary and subject to program rules and lawful eligibility requirements.",
+    status: "planned",
+    focus: ["Mentorship", "Fitness", "Personal responsibility", "Trades"],
+  },
+  {
+    slug: "womens-and-family-workshops",
+    title: "Women's & Family Workshops",
+    summary:
+      "Workshops and community programming for women, families, and household participation.",
+    description:
+      "DEFEND is developing women's and family workshops covering practical skills, cultural education, entrepreneurship, and community participation. Family participation is optional and does not change the standard membership tier.",
+    status: "planned",
+    focus: ["Family workshops", "Practical skills", "Entrepreneurship", "Cultural education"],
   },
   {
     slug: "mentorship",

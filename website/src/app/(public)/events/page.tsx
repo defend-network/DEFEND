@@ -58,6 +58,14 @@ export default async function EventsPage() {
                       {event.capacity ? (
                         <Badge variant="amber">Capacity {event.capacity}</Badge>
                       ) : null}
+                      {event.familyFriendly ? (
+                        <Badge variant="green">Family-friendly</Badge>
+                      ) : null}
+                      {event.feeCents ? (
+                        <Badge variant="outline">
+                          ${(event.feeCents / 100).toFixed(2)} program fee
+                        </Badge>
+                      ) : null}
                     </div>
                     <CardTitle>{event.title}</CardTitle>
                     <p className="text-sm font-medium text-slate-500">
