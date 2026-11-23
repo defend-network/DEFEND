@@ -10,6 +10,58 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { authClient } from "@/lib/auth/client";
 
+function downloadCodes(codes: string[]) {
+  const blob = new Blob([`DEFEND recovery codes\n\n${codes.join("\n")}\n`], {
+    type: "text/plain",
+  });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = "defend-recovery-codes.txt";
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
+function RecoveryCodesOnce({
+  codes,
+  onDone,
+}: {
+  codes: string[];
+  onDone: () => void;
+}) {
+  const [copied, setCopied] = useState(false);
+
+  async function copy() {
+    await navigator.clipboard.writeText(codes.join("\n"));
+    setCopied(true);
+  }
+
+  return (
+    <div className="rounded-[var(--radius-control)] border border-warning-700/25 bg-warning-100 p-4">
+      <p className="text-sm font-semibold text-warning-700">
+        Recovery codes — save these now
+      </p>
+      <p className="mt-1 text-xs leading-5 text-warning-700">
+        These codes are shown once. Each code is single-use. Do not share them.
+      </p>
+      <pre className="mt-3 whitespace-pre-wrap font-mono text-xs text-warning-700">
+        {codes.join("\n")}
+      </pre>
+      <div className="mt-3 flex flex-wrap gap-2">
+        <Button type="button" size="sm" variant="secondary" onClick={() => downloadCodes(codes)}>
+          Download codes
+        </Button>
+        <Button type="button" size="sm" variant="secondary" onClick={copy}>
+          {copied ? "Copied" : "Copy codes"}
+        </Button>
+        <Button type="button" size="sm" onClick={onDone}>
+          I have saved these codes
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export function MfaSettings({ enabled }: { enabled: boolean }) {
   const router = useRouter();
   const [password, setPassword] = useState("");
@@ -19,6 +71,8 @@ export function MfaSettings({ enabled }: { enabled: boolean }) {
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [pending, setPending] = useState(false);
+  const [verified, setVerified] = useState(false);
+  const [generatedCodes, setGeneratedCodes] = useState<string[]>([]);
 
   async function enable(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -28,21 +82,22 @@ export function MfaSettings({ enabled }: { enabled: boolean }) {
     try {
       const result = await authClient.twoFactor.enable({ password });
       if (result.error) {
-        setError(result.error.message || "Unable to start MFA enrollment.");
+        setError(result.error.message || "Unable to start authenticator setup.");
         return;
       }
       const data = result.data as
         | { totpURI?: string; backupCodes?: string[] }
         | undefined;
       if (!data?.totpURI) {
-        setError("The authentication service did not return a TOTP enrollment URI.");
+        setError("The authentication service did not return an enrollment URI.");
         return;
       }
       setTotpURI(data.totpURI);
       setBackupCodes(data.backupCodes ?? []);
       setPassword("");
+      setVerified(false);
       setMessage(
-        "Scan the QR code with an authenticator app, then enter the six-digit code to finish enrollment.",
+        "Scan the QR code and enter the current six-digit code to finish enrollment. Recovery codes will be shown only after verification.",
       );
     } finally {
       setPending(false);
@@ -61,10 +116,38 @@ export function MfaSettings({ enabled }: { enabled: boolean }) {
         return;
       }
       setCode("");
+      setVerified(true);
       setMessage(
-        "Multi-factor authentication is enabled. Store the backup codes in a safe place.",
+        "Authenticator app enabled. Save the recovery codes below before leaving this page.",
       );
-      router.refresh();
+    } finally {
+      setPending(false);
+    }
+  }
+
+  async function finishEnrollment() {
+    setBackupCodes([]);
+    setVerified(false);
+    setTotpURI("");
+    setMessage("");
+    router.refresh();
+  }
+
+  async function generateCodes(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError("");
+    setMessage("");
+    setPending(true);
+    try {
+      const result = await authClient.twoFactor.generateBackupCodes({ password });
+      if (result.error) {
+        setError(result.error.message || "Unable to generate new recovery codes.");
+        return;
+      }
+      const data = result.data as { backupCodes?: string[] } | undefined;
+      setGeneratedCodes(data?.backupCodes ?? []);
+      setPassword("");
+      setMessage("New recovery codes generated. Previous recovery codes are invalid.");
     } finally {
       setPending(false);
     }
@@ -78,11 +161,11 @@ export function MfaSettings({ enabled }: { enabled: boolean }) {
     try {
       const result = await authClient.twoFactor.disable({ password });
       if (result.error) {
-        setError(result.error.message || "Unable to disable MFA.");
+        setError(result.error.message || "Unable to disable the authenticator app.");
         return;
       }
       setPassword("");
-      setMessage("Multi-factor authentication is disabled.");
+      setMessage("Authenticator app disabled.");
       router.refresh();
     } finally {
       setPending(false);
@@ -93,16 +176,53 @@ export function MfaSettings({ enabled }: { enabled: boolean }) {
     return (
       <div className="grid gap-5">
         <Alert tone="success">
-          Multi-factor authentication is enabled for this account. Sign-in
-          requires an authenticator code or a backup code.
+          Authenticator app is enabled. Sign-in can use a current authenticator
+          code or a single-use recovery code.
         </Alert>
+
+        <form onSubmit={generateCodes} className="grid gap-4 rounded-[var(--radius-card)] border border-slate-200 p-5">
+          <div>
+            <h3 className="text-lg font-semibold">Generate new recovery codes</h3>
+            <p className="mt-1 text-sm leading-6 text-slate-600">
+              Generating new codes invalidates all previous recovery codes. The
+              new codes are shown once.
+            </p>
+          </div>
+          <div className="grid gap-2">
+            <Label htmlFor="generate-codes-password">Password</Label>
+            <Input
+              id="generate-codes-password"
+              type="password"
+              autoComplete="current-password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              required
+            />
+          </div>
+          {error ? <Alert tone="error">{error}</Alert> : null}
+          {message ? <Alert tone="info">{message}</Alert> : null}
+          <Button type="submit" variant="secondary" disabled={pending}>
+            {pending ? "Generating…" : "Generate new recovery codes"}
+          </Button>
+        </form>
+
+        {generatedCodes.length ? (
+          <RecoveryCodesOnce
+            codes={generatedCodes}
+            onDone={() => {
+              setGeneratedCodes([]);
+              setMessage("");
+            }}
+          />
+        ) : null}
+
         <form onSubmit={disable} className="grid gap-4 rounded-[var(--radius-card)] border border-slate-200 p-5">
           <div>
-            <h3 className="text-lg font-semibold">Disable MFA</h3>
+            <h3 className="text-lg font-semibold">Disable authenticator app</h3>
             <p className="mt-1 text-sm leading-6 text-slate-600">
-              Disabling MFA reduces account security and will be recorded in the
-              audit log. Administrative mutations will fail closed until MFA is
-              re-enabled.
+              Disabling the authenticator app reduces account security and is
+              recorded in the audit log. Sensitive administrative actions will
+              fail closed until a strong method is enabled again.
             </p>
           </div>
           <div className="grid gap-2">
@@ -116,12 +236,24 @@ export function MfaSettings({ enabled }: { enabled: boolean }) {
               required
             />
           </div>
-          {error ? <Alert tone="error">{error}</Alert> : null}
-          {message ? <Alert tone="success">{message}</Alert> : null}
           <Button type="submit" variant="danger" disabled={pending}>
-            {pending ? "Disabling…" : "Disable MFA"}
+            {pending ? "Disabling…" : "Disable authenticator app"}
           </Button>
         </form>
+      </div>
+    );
+  }
+
+  if (verified) {
+    return (
+      <div className="grid gap-5">
+        <Alert tone="success">
+          Authenticator app enabled. Save the recovery codes now; they will not
+          be shown again.
+        </Alert>
+        {backupCodes.length ? (
+          <RecoveryCodesOnce codes={backupCodes} onDone={finishEnrollment} />
+        ) : null}
       </div>
     );
   }
@@ -129,9 +261,8 @@ export function MfaSettings({ enabled }: { enabled: boolean }) {
   return (
     <div className="grid gap-5">
       <Alert tone="info">
-        Enroll an authenticator app before performing administrative review or
-        member-management actions. TOTP codes are six digits and rotate every 30
-        seconds.
+        Email is the default verification method. An authenticator app is
+        optional but recommended for administrators and for sensitive actions.
       </Alert>
 
       {!totpURI ? (
@@ -150,7 +281,7 @@ export function MfaSettings({ enabled }: { enabled: boolean }) {
           {error ? <Alert tone="error">{error}</Alert> : null}
           {message ? <Alert tone="info">{message}</Alert> : null}
           <Button type="submit" disabled={pending}>
-            {pending ? "Starting…" : "Start MFA enrollment"}
+            {pending ? "Starting…" : "Set up authenticator app"}
           </Button>
         </form>
       ) : (
@@ -163,7 +294,11 @@ export function MfaSettings({ enabled }: { enabled: boolean }) {
               <h3 className="text-lg font-semibold">Scan and verify</h3>
               <p className="mt-2 text-sm leading-6 text-slate-600">
                 Open your authenticator app, scan this code, and enter the
-                current six-digit code below. Do not share this QR code.
+                current six-digit code. Do not share this QR code.
+              </p>
+              <p className="mt-2 text-xs leading-5 text-warning-700">
+                Recovery codes are not active until verification succeeds. They
+                are shown once after verification.
               </p>
             </div>
           </div>
@@ -186,23 +321,9 @@ export function MfaSettings({ enabled }: { enabled: boolean }) {
             {error ? <Alert tone="error">{error}</Alert> : null}
             {message ? <Alert tone="info">{message}</Alert> : null}
             <Button type="submit" disabled={pending || code.length !== 6}>
-              {pending ? "Verifying…" : "Verify and enable MFA"}
+              {pending ? "Verifying…" : "Verify and enable authenticator"}
             </Button>
           </form>
-          {backupCodes.length ? (
-            <div className="rounded-[var(--radius-control)] border border-warning-700/25 bg-warning-100 p-4">
-              <p className="text-sm font-semibold text-warning-700">
-                Backup codes — store these now
-              </p>
-              <pre className="mt-2 whitespace-pre-wrap font-mono text-xs text-warning-700">
-                {backupCodes.join("\n")}
-              </pre>
-              <p className="mt-2 text-xs leading-5 text-warning-700">
-                These codes are shown once. Each code can be used once if you
-                lose access to your authenticator.
-              </p>
-            </div>
-          ) : null}
         </div>
       )}
     </div>

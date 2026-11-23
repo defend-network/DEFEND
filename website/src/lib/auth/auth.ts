@@ -2,12 +2,14 @@ import { eq } from "drizzle-orm";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { nextCookies } from "better-auth/next-js";
-import { twoFactor } from "better-auth/plugins";
+import { emailOTP, twoFactor } from "better-auth/plugins";
+import { createAuthMiddleware } from "better-auth/api";
 
 import { getDb } from "@/lib/db/client";
 import { resolveSecret, secureCookiesRequired } from "@/lib/config/env";
 import { sendEmail } from "@/lib/email/send";
 import {
+  emailOtpEmail,
   emailVerificationEmail,
   passwordResetEmail,
 } from "@/lib/email/templates";
@@ -33,6 +35,30 @@ function authSecret(): string {
 
 function createAuth(db: Awaited<ReturnType<typeof getDb>>) {
   const baseURL = process.env.APP_URL?.trim() || "http://localhost:3000";
+  const mfaSessionMarker = {
+    id: "mfa-session-marker",
+    hooks: {
+      after: [
+        {
+          matcher: (context: { path?: string }) =>
+            Boolean(context.path?.startsWith("/two-factor/verify-")),
+          handler: createAuthMiddleware(async (ctx) => {
+            const context = ctx.context as {
+              newSession?: { session?: { id?: string } };
+              session?: { session?: { id?: string } };
+            };
+            const sessionId =
+              context.newSession?.session?.id ?? context.session?.session?.id;
+            if (!sessionId) return;
+            await db
+              .update(session)
+              .set({ mfaVerifiedAt: new Date() })
+              .where(eq(session.id, sessionId));
+          }),
+        },
+      ],
+    },
+  };
 
   return betterAuth({
     appName: "DEFEND",
@@ -142,9 +168,39 @@ function createAuth(db: Awaited<ReturnType<typeof getDb>>) {
       },
     },
     plugins: [
+      emailOTP({
+        otpLength: 6,
+        expiresIn: 300,
+        allowedAttempts: 5,
+        storeOTP: "hashed",
+        disableSignUp: true,
+        rateLimit: {
+          window: 60,
+          max: 3,
+        },
+        sendVerificationOTP: async ({ email, otp, type }) => {
+          const normalizedEmail = email.trim().toLowerCase();
+          const rows = await db
+            .select({ id: user.id, name: user.name })
+            .from(user)
+            .where(eq(user.email, normalizedEmail))
+            .limit(1);
+          const recipient = rows[0];
+          if (!recipient) return;
+          await sendEmail(
+            emailOtpEmail({
+              to: normalizedEmail,
+              name: recipient.name,
+              code: otp,
+              purpose: type,
+            }),
+          );
+        },
+      }),
       twoFactor({
         issuer: "DEFEND",
       }),
+      mfaSessionMarker,
       nextCookies(),
     ],
   });

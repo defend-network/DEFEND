@@ -33,6 +33,11 @@
 - CSP is a static header with `'unsafe-inline'` for Next.js bootstrap scripts. A nonce-based policy was tested but removed after cached HTML/nonce mismatches broke hydration. This remains a documented production security decision: either accept the residual XSS surface or implement cache-safe nonce/hash delivery before launch.
 - MFA recovery is implemented but not exercised end-to-end with two independent administrators.
 - Email verification is implemented but invitation activation marks invited addresses verified; the resend verification path was not exercised end-to-end.
+- Email OTP sign-in is implemented with a hashed, short-lived, attempt-limited code and the development outbox. Real Resend delivery has not been externally verified.
+- Session-level MFA is tracked with `session.mfa_verified_at`. Email-only sessions are not treated as MFA-verified for sensitive administrative actions.
+- Authenticator recovery codes are displayed only after successful enrollment verification. An exposed pending TOTP enrollment and its recovery codes were invalidated on the dedicated DEFEND staging owner account on 2026-11-23; the owner must re-enroll a fresh authenticator.
+- SMS verification is not configured. No SMS provider is active and no SMS messages are sent.
+- Passkeys are not available in this build; no passkey plugin is installed.
 - Document uploads are admin-only with MIME/size validation, private R2 storage, authorized downloads, inline authorized preview, version history/restoration, and download audit. Archive is implemented without deleting the original R2 object.
 - Scheduled offsite backups remain disabled until owner secrets and the enable variable are configured.
 - No production secret management has been performed.

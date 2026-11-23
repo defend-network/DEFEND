@@ -47,6 +47,7 @@ export const session = sqliteTable(
       .notNull(),
     ipAddress: text("ip_address"),
     userAgent: text("user_agent"),
+    mfaVerifiedAt: integer("mfa_verified_at", { mode: "timestamp_ms" }),
     userId: text("user_id")
       .notNull()
       .references(() => user.id, { onDelete: "cascade" }),

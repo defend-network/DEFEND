@@ -1,6 +1,7 @@
 import { chromium } from "playwright-core";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
+import * as OTPAuth from "otpauth";
 
 const baseURL = process.env.E2E_BASE_URL ?? "http://localhost:8787";
 const edgePath =
@@ -54,7 +55,7 @@ try {
 
   const escaped = email.replaceAll("'", "''");
   const rows = query(
-    `SELECT u.email, u.email_verified, m.status, m.member_number, t.key AS tier_key
+    `SELECT u.id AS user_id, u.email, u.email_verified, m.status, m.member_number, t.key AS tier_key
      FROM user u
      JOIN memberships m ON m.user_id = u.id
      LEFT JOIN membership_tiers t ON t.id = m.tier_id
@@ -114,6 +115,82 @@ try {
     }
   }
   console.log("PASS free account paid-feature gates");
+
+  await page.context().clearCookies();
+  await page.goto(`${baseURL}/login/email-code`, { waitUntil: "load" });
+  await page.locator("#email-code-email").fill(email);
+  await page.getByRole("button", { name: "Send sign-in code" }).click();
+  await page.locator("#email-code").waitFor({ timeout: 30_000 });
+  const otpRows = query(
+    `SELECT text_body FROM email_outbox WHERE recipient='${escaped}' AND subject='DEFEND verification code' ORDER BY created_at DESC LIMIT 1;`,
+  );
+  const otpMatch = (otpRows[0]?.text_body ?? "").match(/\b(\d{6})\b/);
+  if (!otpMatch) throw new Error("Email sign-in code was not found in the outbox.");
+  await page.locator("#email-code").fill(otpMatch[1]);
+  await page.getByRole("button", { name: "Verify and continue" }).click();
+  await page.waitForURL(/\/members/, { timeout: 30_000 });
+  console.log("PASS email OTP sign-in");
+
+  await page.goto(`${baseURL}/members/account/security`, {
+    waitUntil: "domcontentloaded",
+  });
+  await page.locator("#enable-password").fill(password);
+  const enableResponsePromise = page.waitForResponse(
+    (response) =>
+      response.url().includes("/api/auth/two-factor/enable") &&
+      response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Set up authenticator app" }).click();
+  const enableResponse = await enableResponsePromise;
+  const enablePayload = await enableResponse.json();
+  const totpURI = enablePayload.totpURI ?? enablePayload.data?.totpURI;
+  if (!totpURI) {
+    console.error("ENABLE_STATUS", enableResponse.status());
+    console.error("ENABLE_KEYS", Object.keys(enablePayload));
+    throw new Error("Authenticator enrollment did not return a TOTP URI.");
+  }
+  if ((await page.locator("pre").count()) > 0) {
+    throw new Error("Recovery codes were displayed before authenticator verification.");
+  }
+  const totp = OTPAuth.URI.parse(totpURI);
+  await page.locator("#totp-code").fill(totp.generate());
+  await page.getByRole("button", { name: "Verify and enable authenticator" }).click();
+  await page
+    .getByText("Recovery codes — save these now", { exact: false })
+    .waitFor({ timeout: 30_000 });
+  const codeText = await page.locator("pre").last().innerText();
+  const backupCodes = codeText
+    .split("\n")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (backupCodes.length === 0) {
+    throw new Error("No recovery codes were displayed after verification.");
+  }
+  const markerRows = query(
+    `SELECT COUNT(*) AS verified FROM session WHERE user_id='${row.user_id}' AND mfa_verified_at IS NOT NULL;`,
+  );
+  if (!markerRows[0]?.verified) {
+    throw new Error("The session was not marked as MFA-verified.");
+  }
+  console.log("PASS authenticator enrollment and session MFA marker");
+  await page.getByRole("button", { name: "I have saved these codes" }).click();
+  await page.context().clearCookies();
+  await page.goto(`${baseURL}/login`, { waitUntil: "load" });
+  await page.locator("#email").fill(email);
+  await page.locator("#password").fill(password);
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await page.waitForURL(/\/login\/two-factor/, { timeout: 30_000 });
+  await page.getByRole("button", { name: "Use a backup code instead" }).click();
+  await page.locator("#code").fill(backupCodes[0]);
+  await page.getByRole("button", { name: "Verify and continue" }).click();
+  await page.waitForURL(/\/members/, { timeout: 30_000 });
+  const backupMarkerRows = query(
+    `SELECT COUNT(*) AS verified FROM session WHERE user_id='${row.user_id}' AND mfa_verified_at IS NOT NULL;`,
+  );
+  if (!backupMarkerRows[0]?.verified) {
+    throw new Error("The backup-code session was not marked as MFA-verified.");
+  }
+  console.log("PASS backup-code sign-in and MFA marker");
 } finally {
   await browser.close();
 }

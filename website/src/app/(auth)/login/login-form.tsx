@@ -115,9 +115,18 @@ export function LoginForm() {
         {pending ? "Signing in…" : "Sign in"}
       </Button>
 
+      <div className="text-center">
+        <Link
+          href="/login/email-code"
+          className="text-sm font-semibold text-red-700 underline-offset-4 hover:underline"
+        >
+          Email me a sign-in code
+        </Link>
+      </div>
+
       <p className="text-xs leading-5 text-slate-500">
-        Member accounts are invitation-based. If you were approved for
-        membership, use the activation link sent to your email address.
+        Paid member accounts are invitation-based after approval. Free accounts
+        can be created from the membership page.
       </p>
     </form>
   );

@@ -154,6 +154,13 @@ if (!applicationColumns.has("adult_confirmed_at")) {
   throw new Error("Missing application adult confirmation column");
 }
 
+const sessionColumns = new Set(
+  query("PRAGMA table_info(session)").map((row) => row.name),
+);
+if (!sessionColumns.has("mfa_verified_at")) {
+  throw new Error("Missing session-level MFA verification column");
+}
+
 console.log(
   `Migration verification passed: ${expectedTables.length} tables, 2 audit triggers, Pasco chapter seeded, 4 tiers and release registry seeded.`,
 );

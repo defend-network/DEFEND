@@ -280,6 +280,41 @@ You can view your member dashboard at ${appUrl("/members")}.`;
   };
 }
 
+export function emailOtpEmail(input: {
+  to: string;
+  name: string;
+  code: string;
+  purpose: string;
+}): EmailMessage {
+  const labels: Record<string, string> = {
+    "sign-in": "sign-in",
+    "email-verification": "email verification",
+    "forget-password": "password recovery",
+    "change-email": "email change",
+  };
+  const purpose = labels[input.purpose] ?? "verification";
+  const text = `Hello ${input.name},
+
+Your DEFEND ${purpose} code is ${input.code}.
+
+It expires in 5 minutes. Never share this code. If you did not request it, ignore this message.`;
+
+  return {
+    to: input.to,
+    subject: "DEFEND verification code",
+    text,
+    html: wrap(
+      "Verify it's you",
+      paragraph(`Hello ${input.name},`) +
+        paragraph(`Use this code to continue your DEFEND ${purpose}:`) +
+        `<p style="margin:0 0 14px;font-family:Consolas,monospace;font-size:28px;letter-spacing:.18em;font-weight:700;color:#101f38">${escapeHtml(input.code)}</p>` +
+        paragraph("This code expires in 5 minutes. Never share it with anyone.") +
+        paragraph("If you did not request this code, you can ignore this message."),
+    ),
+    templateKey: "email_otp",
+  };
+}
+
 export function volunteerRegistrationEmail(input: {
   to: string;
   name: string;

@@ -47,7 +47,10 @@ npm run bootstrap:owner -- --remote --env=staging --expected-d1-id=39ff28d5-dc0b
 - Four-tier membership catalog (Free, Standard, Supporter, Patron) with effective-dated monthly/annual prices and tier entitlements.
 - Free self-service registration with adult attestation, email verification, and a no-payment account path; paid features are gated to Standard or higher.
 - Paid application tier selection and chapter selection from database-backed options.
-- Session-level MFA enforcement for MFA-required actions, with pre-enrollment sessions treated as unverified.
+- Session-level MFA enforcement for MFA-required actions using a per-session verification marker; email-only or password-only sessions remain unverified for sensitive operations.
+- Email-first sign-in with six-digit email verification codes, branded transactional email, resend cooldown, and short-lived single-use codes.
+- Authenticator recovery codes are hidden until enrollment verification succeeds, are shown once, and support single-use backup-code sign-in.
+- Member and admin security centers list email, authenticator, SMS and passkey status honestly. SMS requires provider approval; passkeys are not available in this build.
 - Member dashboard, profile/account settings, encrypted phone storage, notification preferences.
 - Digital membership card with short-lived signed QR tokens and event check-in.
 - Opt-in directory with field-level privacy controls.
@@ -66,6 +69,9 @@ npm run bootstrap:owner -- --remote --env=staging --expected-d1-id=39ff28d5-dc0b
 ## Not implemented yet
 
 - Free-to-paid upgrade billing activation and tier-aware Stripe checkout. Free accounts are created without payment; paid upgrade execution is still being completed.
+- SMS delivery and phone-number verification. No SMS provider is configured; staging shows SMS as not configured.
+- Passkey registration and authentication. No passkey plugin is installed in this build.
+- Email/SMS step-up as an alternative to authenticator-backed sessions for MFA-gated administrative actions.
 - Real Stripe test-mode external execution. No Stripe test credentials are present; checkout is disabled.
 - Real Resend delivery. Development uses an outbox; production requires `EMAIL_TRANSPORT=resend` and provider secrets.
 - Turnstile widget/secret configuration. In production, forms fail closed when spam protection is not configured.

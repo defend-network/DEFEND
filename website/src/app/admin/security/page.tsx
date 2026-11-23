@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 
 import { MfaSettings } from "@/components/auth/mfa-settings";
+import { SessionControls } from "@/components/auth/session-controls";
 import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -24,6 +25,9 @@ export default async function AdminSecurityPage() {
   const enabled = Boolean(
     (session.user as { twoFactorEnabled?: boolean }).twoFactorEnabled,
   );
+  const emailVerified = Boolean(
+    (session.user as { emailVerified?: boolean }).emailVerified,
+  );
   const canRecover = actor ? can(actor, "system.users") : false;
   const adminUsers = canRecover ? await listAdminMfaUsers() : [];
 
@@ -33,23 +37,74 @@ export default async function AdminSecurityPage() {
         <p className="text-xs font-bold uppercase tracking-[0.2em] text-red-700">
           Administrative security
         </p>
-        <h1 className="mt-3 text-3xl font-semibold">MFA and recovery</h1>
-        <p className="mt-2 text-sm leading-6 text-slate-600">
-          Review and member-management actions require MFA. Enrollment is
-          required before those actions are permitted.
+        <h1 className="mt-3 text-3xl font-semibold">Authentication and recovery</h1>
+        <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
+          Email is the default member method. Administrators should enable an
+          authenticator app before performing sensitive actions. Email-only
+          administrator sessions remain unverified for MFA-gated operations.
         </p>
       </div>
+
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <Card>
+          <CardHeader className="flex flex-row items-start justify-between gap-2">
+            <CardTitle className="text-lg">Email</CardTitle>
+            <Badge variant={emailVerified ? "green" : "amber"}>
+              {emailVerified ? "Verified" : "Not verified"}
+            </Badge>
+          </CardHeader>
+        </Card>
+        <Card>
+          <CardHeader className="flex flex-row items-start justify-between gap-2">
+            <CardTitle className="text-lg">Phone / SMS</CardTitle>
+            <Badge variant="outline">Not configured</Badge>
+          </CardHeader>
+        </Card>
+        <Card>
+          <CardHeader className="flex flex-row items-start justify-between gap-2">
+            <CardTitle className="text-lg">Authenticator</CardTitle>
+            <Badge variant={enabled ? "green" : "amber"}>
+              {enabled ? "Enabled" : "Not configured"}
+            </Badge>
+          </CardHeader>
+        </Card>
+        <Card>
+          <CardHeader className="flex flex-row items-start justify-between gap-2">
+            <CardTitle className="text-lg">Passkey</CardTitle>
+            <Badge variant="outline">Not available</Badge>
+          </CardHeader>
+        </Card>
+      </div>
+
+      {!enabled ? (
+        <Alert tone="warning">
+          Enable an authenticator app before performing sensitive administrative
+          actions. Email-only sessions can sign in, but MFA-gated operations fail
+          closed until a strong factor is verified.
+        </Alert>
+      ) : null}
+
       <Alert tone="warning">
-        Store backup codes securely. Owner-assisted reset is available only to an
-        MFA-verified owner and is recorded in the audit log. Reset revokes the
+        Store recovery codes securely. Owner-assisted reset is available only to
+        an authorized owner and is recorded in the audit log. Reset revokes the
         target user&apos;s sessions.
       </Alert>
+
       <Card>
         <CardHeader>
-          <CardTitle>Your authenticator</CardTitle>
+          <CardTitle>Authenticator app and recovery codes</CardTitle>
         </CardHeader>
         <CardContent>
           <MfaSettings enabled={enabled} />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Active sessions</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <SessionControls />
         </CardContent>
       </Card>
 
