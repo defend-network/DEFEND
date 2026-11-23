@@ -9,7 +9,7 @@ Production deployment is **not authorized** from this milestone. Do not change p
 | Environment | Worker | D1 | R2 | Payments |
 |---|---|---|---|---|
 | Local | Wrangler dev | local `.wrangler` | local | test/off |
-| Staging | `defend-website-staging` | `f1f53b17-39e5-43ad-8b92-6f4c891da9fc` | staging buckets | test/off |
+| Staging | `defend-website-staging` | `39ff28d5-dc0b-4927-a6bc-81ddbae6ca6b` | staging buckets | test/off |
 | Production | `defend-website` | separate | separate | off until approved |
 
 Staging URL: `https://defend-website-staging.owner-e75.workers.dev`

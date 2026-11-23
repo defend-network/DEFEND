@@ -43,7 +43,7 @@
         {
           "binding": "DB",
           "database_name": "defend-website-staging",
-          "database_id": "f1f53b17-39e5-43ad-8b92-6f4c891da9fc",
+          "database_id": "39ff28d5-dc0b-4927-a6bc-81ddbae6ca6b",
           "migrations_dir": "migrations"
         }
       ],

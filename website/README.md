@@ -6,13 +6,15 @@ Isolated organizational website, member portal, and administrative workstation f
 
 **Status:** Production closeout. Milestone 4 is accepted as the staging baseline. Administrative modules, document versioning, newsletter unsubscribe, encrypted backups, and authenticated accessibility audits are implemented. This is not a production release.
 
-**Staging:** https://defend-website-staging.owner-e75.workers.dev
+**Staging (previous/recovery):** https://defend-website-staging.owner-e75.workers.dev
+
+**Staging (dedicated DEFEND account):** pending first deployment
 
 ## Cloud infrastructure
 
 - GitHub branch: `rebuild/website-platform-v1`
 - Staging Worker: `defend-website-staging`
-- Staging D1: `defend-website-staging` (`f1f53b17-39e5-43ad-8b92-6f4c891da9fc`)
+- Staging D1: `defend-website-staging` (`39ff28d5-dc0b-4927-a6bc-81ddbae6ca6b`, dedicated DEFEND account)
 - Staging R2: `defend-private-documents-staging`, `defend-public-media-staging`
 - Staging Worker version: `1fd44e74-1a06-4abe-b063-c0bf4b577aba`
 - Staging email transport: development outbox
