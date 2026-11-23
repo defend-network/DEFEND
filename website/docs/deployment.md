@@ -14,7 +14,7 @@ Production deployment is **not authorized** from this milestone. Do not change p
 
 Staging URL: `https://defend-website-staging.chairman-80b.workers.dev`
 
-Current dedicated staging baseline: migration `0000`-`0013` applied, with the preserved staging seed/operational rows imported from the previous staging database. Staging uses Cloudflare Turnstile test keys; production requires real keys. The previous staging URL remains live as a recovery source until final verification.
+Current dedicated staging baseline: migration `0000`-`0014` applied, with the preserved staging seed/operational rows imported from the previous staging database. Staging uses Cloudflare Turnstile test keys; production requires real keys. The previous staging URL remains live as a recovery source until final verification.
 
 Staging uses the Cloudflare `workers.dev` hostname because the currently available Cloudflare account does not contain the `defend-network.org` zone. No production DNS was changed.
 

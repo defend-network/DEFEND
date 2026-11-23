@@ -14,9 +14,9 @@ Production deployment is **not authorized**. The live `defend-network.org` site 
 |---|---|
 | Staging URL | `https://defend-website-staging.chairman-80b.workers.dev` |
 | Staging Cloudflare account | `80be8ac2fd2e276114c056a283c6dc5c` |
-| Staging Worker version | `06944db0-ba17-4473-ac60-c29e01f82d1b` |
+| Staging Worker version | `e3deaaeb-ecf4-4671-b8da-e34fbdb9187c` |
 | Staging D1 | Dedicated DEFEND account, database `39ff28d5-dc0b-4927-a6bc-81ddbae6ca6b` |
-| Staging D1 migrations | `0000`-`0013` applied; preserved staging rows imported |
+| Staging D1 migrations | `0000`-`0014` applied; preserved staging rows imported |
 | Staging programs | 7 seeded / database-backed |
 | Staging newsletter | Verified signup writes to D1 |
 | Staging Turnstile | Cloudflare test keys |

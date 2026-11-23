@@ -1,5 +1,6 @@
 import { chromium } from "playwright-core";
 import { execFileSync } from "node:child_process";
+import fs from "node:fs";
 import path from "node:path";
 import * as OTPAuth from "otpauth";
 
@@ -13,6 +14,12 @@ const email = `free.e2e.${suffix}@example.com`;
 const password = `FreeE2E-${suffix}-Password-2026!`;
 
 const remote = process.env.E2E_D1_MODE === "remote";
+const screenshotDir = path.join(
+  process.env.TEMP ?? process.env.TMP ?? ".",
+  "opencode",
+  "defend-auth-screens",
+);
+fs.mkdirSync(screenshotDir, { recursive: true });
 
 function query(sql) {
   const wrangler = path.resolve("node_modules/wrangler/bin/wrangler.js");
@@ -120,7 +127,16 @@ try {
   await page.goto(`${baseURL}/login/email-code`, { waitUntil: "load" });
   await page.locator("#email-code-email").fill(email);
   await page.getByRole("button", { name: "Send sign-in code" }).click();
-  await page.locator("#email-code").waitFor({ timeout: 30_000 });
+  try {
+    await page.locator("#email-code").waitFor({ timeout: 30_000 });
+  } catch (error) {
+    console.error("OTP_ALERTS", JSON.stringify(await page.locator('[role="alert"]').allInnerTexts()));
+    throw error;
+  }
+  await page.screenshot({
+    path: path.join(screenshotDir, "email-otp-challenge.png"),
+    fullPage: true,
+  });
   const otpRows = query(
     `SELECT text_body FROM email_outbox WHERE recipient='${escaped}' AND subject='DEFEND verification code' ORDER BY created_at DESC LIMIT 1;`,
   );
@@ -128,11 +144,17 @@ try {
   if (!otpMatch) throw new Error("Email sign-in code was not found in the outbox.");
   await page.locator("#email-code").fill(otpMatch[1]);
   await page.getByRole("button", { name: "Verify and continue" }).click();
-  await page.waitForURL(/\/members/, { timeout: 30_000 });
+  await page.waitForURL((url) => url.pathname.startsWith("/members"), {
+    timeout: 30_000,
+  });
   console.log("PASS email OTP sign-in");
 
   await page.goto(`${baseURL}/members/account/security`, {
     waitUntil: "domcontentloaded",
+  });
+  await page.screenshot({
+    path: path.join(screenshotDir, "member-security-methods.png"),
+    fullPage: true,
   });
   await page.locator("#enable-password").fill(password);
   const enableResponsePromise = page.waitForResponse(
@@ -146,7 +168,8 @@ try {
   const totpURI = enablePayload.totpURI ?? enablePayload.data?.totpURI;
   if (!totpURI) {
     console.error("ENABLE_STATUS", enableResponse.status());
-    console.error("ENABLE_KEYS", Object.keys(enablePayload));
+    console.error("ENABLE_CODE", enablePayload.code ?? "unknown");
+    console.error("ENABLE_MESSAGE", enablePayload.message ?? "unknown");
     throw new Error("Authenticator enrollment did not return a TOTP URI.");
   }
   if ((await page.locator("pre").count()) > 0) {
@@ -174,6 +197,13 @@ try {
   }
   console.log("PASS authenticator enrollment and session MFA marker");
   await page.getByRole("button", { name: "I have saved these codes" }).click();
+  await page
+    .getByText("Authenticator app is enabled", { exact: false })
+    .waitFor({ timeout: 30_000 });
+  await page.screenshot({
+    path: path.join(screenshotDir, "member-security-enabled.png"),
+    fullPage: true,
+  });
   await page.context().clearCookies();
   await page.goto(`${baseURL}/login`, { waitUntil: "load" });
   await page.locator("#email").fill(email);
@@ -191,6 +221,27 @@ try {
     throw new Error("The backup-code session was not marked as MFA-verified.");
   }
   console.log("PASS backup-code sign-in and MFA marker");
+
+  await page.context().clearCookies();
+  await page.goto(`${baseURL}/login`, { waitUntil: "load" });
+  await page.locator("#email").fill(email);
+  await page.locator("#password").fill(password);
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await page.waitForURL(/\/login\/two-factor/, { timeout: 30_000 });
+  await page.getByRole("button", { name: "Use a backup code instead" }).click();
+  await page.locator("#code").fill(backupCodes[0]);
+  const reuseResponsePromise = page.waitForResponse(
+    (response) =>
+      response.url().includes("/api/auth/two-factor/verify-backup-code") &&
+      response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Verify and continue" }).click();
+  const reuseResponse = await reuseResponsePromise;
+  if (reuseResponse.ok()) {
+    console.error("REUSE_STATUS", reuseResponse.status());
+    throw new Error("A used recovery code was not rejected.");
+  }
+  console.log("PASS recovery code is single-use");
 } finally {
   await browser.close();
 }

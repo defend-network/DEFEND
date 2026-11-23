@@ -6,7 +6,7 @@
 
 | Gate | Status | Evidence / remaining action |
 |---|---|---|
-| Staging baseline accepted | PASS | Dedicated DEFEND staging Worker `06944db0-ba17-4473-ac60-c29e01f82d1b`; previous `1fd44e74` retained as recovery source |
+| Staging baseline accepted | PASS | Dedicated DEFEND staging Worker `e3deaaeb-ecf4-4671-b8da-e34fbdb9187c`; previous `1fd44e74` retained as recovery source |
 | Source control | PASS | Branch `rebuild/website-platform-v1`, draft PR #27 |
 | CI verification | PASS | Typecheck, lint, unit tests, migrations, builds, production dependency scan |
 | D1 migrations | PASS | Local verification: 63 tables, 2 audit triggers, Pasco seed, 4 tiers and release registry seeded |

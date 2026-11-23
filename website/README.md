@@ -17,10 +17,10 @@ Isolated organizational website, member portal, and administrative workstation f
 - Staging Worker: `defend-website-staging`
 - Staging D1: `defend-website-staging` (`39ff28d5-dc0b-4927-a6bc-81ddbae6ca6b`, dedicated DEFEND account)
 - Staging R2: `defend-private-documents-staging`, `defend-public-media-staging`
-- Staging Worker version: `06944db0-ba17-4473-ac60-c29e01f82d1b`
+- Staging Worker version: `e3deaaeb-ecf4-4671-b8da-e34fbdb9187c`
 - Staging email transport: development outbox
 - Staging payments: test mode, live charging disabled
-- Staging migrations: `0000`-`0013` applied; preserved staging seed/operational rows imported
+- Staging migrations: `0000`-`0014` applied; preserved staging seed/operational rows imported
 - Production DNS and apex domain: unchanged
 
 Staging owner bootstrap is intentionally left to the owner because it requires a staging password decision:

@@ -4,7 +4,7 @@ import path from "node:path";
 const baseURL = process.env.A11Y_BASE_URL ?? "http://localhost:8787";
 const edgePath = process.env.E2E_BROWSER_PATH ?? "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe";
 const axePath = path.resolve("node_modules/axe-core/axe.min.js");
-const paths = ["/", "/about", "/programs", "/membership", "/apply", "/contact", "/support", "/volunteer", "/news", "/newsletter", "/newsletter/unsubscribe", "/events"];
+const paths = ["/", "/about", "/programs", "/membership", "/apply", "/contact", "/support", "/volunteer", "/news", "/newsletter", "/newsletter/unsubscribe", "/events", "/login/email-code"];
 const browser = await chromium.launch({ executablePath: edgePath, headless: true });
 const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
 await page.addInitScript({ path: axePath });
