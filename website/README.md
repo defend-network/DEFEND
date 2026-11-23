@@ -6,9 +6,9 @@ Isolated organizational website, member portal, and administrative workstation f
 
 **Status:** Production closeout. Milestone 4 is accepted as the staging baseline. Administrative modules, document versioning, newsletter unsubscribe, encrypted backups, and authenticated accessibility audits are implemented. This is not a production release.
 
-**Staging (previous/recovery):** https://defend-website-staging.owner-e75.workers.dev
+**Staging (dedicated DEFEND account):** https://defend-website-staging.chairman-80b.workers.dev
 
-**Staging (dedicated DEFEND account):** pending first deployment
+**Previous staging (recovery source):** https://defend-website-staging.owner-e75.workers.dev
 
 ## Cloud infrastructure
 
