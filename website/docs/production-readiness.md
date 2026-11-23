@@ -40,7 +40,7 @@ The currently available Cloudflare account owns the staging Worker and `sparklin
 ## Blocking owner actions
 
 1. Create a scoped Cloudflare API token for the staging account (Workers Scripts:Edit, D1:Edit, R2:Edit), store it as the GitHub `CLOUDFLARE_API_TOKEN` secret, then set `ENABLE_STAGING_DEPLOY=true`.
-2. Bootstrap the staging owner: `npm run bootstrap:owner -- --remote --env staging`. The password must be entered interactively and never committed.
+2. Bootstrap the staging owner: `npm run bootstrap:owner -- --remote --env=staging --expected-d1-id=39ff28d5-dc0b-4927-a6bc-81ddbae6ca6b`. The password must be entered interactively and never committed.
 3. Provide Resend production credentials, verified sending domain, and SPF/DKIM/DMARC records.
 4. Provide real Turnstile site/secret keys for production. Staging test keys do not prove spam resistance.
 5. Provide Stripe test keys, price ID, and webhook secret; complete test-mode checkout, renewal, failure, cancellation, refund, and duplicate-webhook exercises before live approval.

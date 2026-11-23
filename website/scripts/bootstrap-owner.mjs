@@ -9,8 +9,14 @@ const wranglerBin = path.resolve("node_modules/wrangler/bin/wrangler.js");
 
 function argument(name) {
   const prefix = `--${name}=`;
-  const found = process.argv.find((value) => value.startsWith(prefix));
-  return found ? found.slice(prefix.length) : undefined;
+  const equals = process.argv.find((value) => value.startsWith(prefix));
+  if (equals) return equals.slice(prefix.length);
+  const index = process.argv.indexOf(`--${name}`);
+  if (index !== -1) {
+    const next = process.argv[index + 1];
+    if (next && !next.startsWith("--")) return next;
+  }
+  return undefined;
 }
 
 function hasFlag(name) {
@@ -90,6 +96,25 @@ async function promptHidden(label) {
 
 const remote = hasFlag("remote");
 const envName = argument("env");
+const expectedD1Id = argument("expected-d1-id");
+if (remote && !envName) {
+  throw new Error(
+    "Remote bootstrap requires --env=staging (or --env staging). Refusing to target the default environment.",
+  );
+}
+if (remote && envName !== "staging" && envName !== "production") {
+  throw new Error(`Unsupported remote environment: ${envName}`);
+}
+if (remote) {
+  const info = wrangler(["d1", "info", "DB", "--env", envName]);
+  console.log(info);
+  if (expectedD1Id && !info.includes(expectedD1Id)) {
+    throw new Error(
+      "The target D1 database does not match --expected-d1-id. Bootstrap aborted.",
+    );
+  }
+}
+
 const email = argument("email") ?? (await ask("Owner email: "));
 const name = argument("name") ?? (await ask("Owner display name: "));
 const passwordEnv = argument("password-env");

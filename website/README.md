@@ -26,7 +26,7 @@ Isolated organizational website, member portal, and administrative workstation f
 Staging owner bootstrap is intentionally left to the owner because it requires a staging password decision:
 
 ```powershell
-npm run bootstrap:owner -- --remote --env staging
+npm run bootstrap:owner -- --remote --env=staging --expected-d1-id=39ff28d5-dc0b-4927-a6bc-81ddbae6ca6b
 ```
 
 ## Closeout documents
@@ -93,7 +93,7 @@ npm run build:worker
 npm run preview
 ```
 
-`npm run bootstrap:owner` creates the single initial owner and global owner role. It prompts for email, name, and a hidden password, and refuses to run if an active owner exists. Add `--remote --env staging` only after the corresponding D1 database is provisioned and authorized.
+`npm run bootstrap:owner` creates the single initial owner and global owner role. It prompts for email, name, and a hidden password, and refuses to run if an active owner exists. Remote bootstrap requires an explicit environment; use `--remote --env=staging --expected-d1-id=<staging-d1-id>` after the corresponding D1 database is provisioned and authorized.
 
 ## Commands
 

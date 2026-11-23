@@ -33,7 +33,7 @@ Staging uses the Cloudflare `workers.dev` hostname because the currently availab
    - `STRIPE_SECRET_KEY`, `STRIPE_PRICE_ID`, `STRIPE_WEBHOOK_SECRET`
 5. Set `APP_ENV`, `APP_URL`, `EMAIL_TRANSPORT`, `PAYMENTS_MODE`, and feature flags.
 6. Apply migrations with `wrangler d1 migrations apply DB --remote --env <environment>`.
-7. Bootstrap the single owner with `npm run bootstrap:owner -- --remote --env <environment>`.
+7. Bootstrap the single owner with `npm run bootstrap:owner -- --remote --env=<environment>` and, for remote environments, `--expected-d1-id=<database-id>`.
 8. Build with `npm run build:worker`.
 9. Deploy only with explicit authorization.
 

@@ -46,7 +46,7 @@ Staging baseline: `https://defend-website-staging.owner-e75.workers.dev`
 From the repository `website` directory:
 
 ```powershell
-npm run bootstrap:owner -- --remote --env staging
+npm run bootstrap:owner -- --remote --env=staging --expected-d1-id=39ff28d5-dc0b-4927-a6bc-81ddbae6ca6b
 ```
 
 Enter the owner email, display name, and a unique password of at least 12 characters at the hidden prompts. Store the password in your password manager, not in chat or Git.
