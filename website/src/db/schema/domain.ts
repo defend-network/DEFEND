@@ -80,6 +80,7 @@ export const membershipApplications = sqliteTable(
     state: text("state"),
     postalCode: text("postal_code"),
     desiredChapterId: text("desired_chapter_id").references(() => chapters.id),
+    requestedTierKey: text("requested_tier_key"),
     recommendedChapterId: text("recommended_chapter_id").references(
       () => chapters.id,
     ),

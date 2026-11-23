@@ -76,7 +76,21 @@
       "idx": 10,
       "version": "6",
       "when": 1795459163532,
-      "tag": "0010_flaky_leper_queen",
+      "tag": "0010_membership_tiers_and_release_registry",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1795464587576,
+      "tag": "0011_session_mfa_verification",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1795465510706,
+      "tag": "0012_application_tier_selection",
       "breakpoints": true
     }
   ]

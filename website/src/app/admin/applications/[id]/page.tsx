@@ -112,6 +112,7 @@ export default async function ApplicationDetailPage({
               <p><strong className="text-navy-900">City:</strong> {application.city || "—"}</p>
               <p><strong className="text-navy-900">State / ZIP:</strong> {[application.state, application.postalCode].filter(Boolean).join(" ") || "—"}</p>
               <p><strong className="text-navy-900">Desired chapter:</strong> {application.desiredChapterId ? chapterNames.get(application.desiredChapterId) ?? application.desiredChapterId : "—"}</p>
+              <p><strong className="text-navy-900">Requested tier:</strong> {application.requestedTierKey ? application.requestedTierKey.replaceAll("_", " ") : "Not recorded"}</p>
               <p><strong className="text-navy-900">Recommended chapter:</strong> {application.recommendedChapterId ? chapterNames.get(application.recommendedChapterId) ?? application.recommendedChapterId : "—"}</p>
               <p><strong className="text-navy-900">Submitted:</strong> {format(application.submittedAt, "MMM d, yyyy h:mm a")}</p>
               <p><strong className="text-navy-900">Reviewed:</strong> {application.reviewedAt ? format(application.reviewedAt, "MMM d, yyyy h:mm a") : "—"}</p>

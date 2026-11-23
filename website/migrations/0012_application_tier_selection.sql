@@ -1,0 +1,1 @@
+ALTER TABLE `membership_applications` ADD `requested_tier_key` text;

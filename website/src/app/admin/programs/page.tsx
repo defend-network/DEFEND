@@ -28,8 +28,8 @@ export default async function ProgramsAdminPage() {
         <h1 className="mt-3 text-3xl font-semibold">Programs</h1>
         <p className="mt-2 text-sm leading-6 text-slate-600">
           Capacity, fees, eligibility, family participation, and delivery status.
-          The standard $7 membership does not automatically include free program
-          or facility access.
+          A paid membership tier does not automatically include free program or
+          facility access.
         </p>
       </div>
 

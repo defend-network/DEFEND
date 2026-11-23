@@ -1,17 +1,50 @@
 import type { Metadata } from "next";
+import { inArray } from "drizzle-orm";
 
 import { Alert } from "@/components/ui/alert";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Container, Eyebrow } from "@/components/ui/section";
+import { getDb } from "@/lib/db/client";
+import { listTierCatalog } from "@/lib/membership/tiers";
+import { chapters } from "@/db/schema";
 import { ApplicationForm } from "./application-form";
 
 export const metadata: Metadata = {
   title: "Apply for Membership",
   description:
-    "Apply for DEFEND membership. Applications are reviewed manually. Standard dues are $7 per month and online billing is not active.",
+    "Apply for DEFEND paid membership. Applications are reviewed manually. Online billing is not active.",
 };
 
-export default function ApplyPage() {
+export const dynamic = "force-dynamic";
+
+export default async function ApplyPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ tier?: string }>;
+}) {
+  const params = await searchParams;
+  const [catalog, chapterRows] = await Promise.all([
+    listTierCatalog().catch(() => []),
+    (async () => {
+      const db = await getDb();
+      return db
+        .select({
+          id: chapters.id,
+          name: chapters.name,
+          county: chapters.county,
+          state: chapters.state,
+          status: chapters.status,
+        })
+        .from(chapters)
+        .where(inArray(chapters.status, ["operating", "in_development"]))
+        .orderBy(chapters.name);
+    })(),
+  ]);
+  const paidTiers = catalog.filter((tier) => tier.key !== "free");
+  const initialTier = paidTiers.some((tier) => tier.key === params.tier)
+    ? params.tier!
+    : "standard";
+
   return (
     <>
       <section className="border-b border-slate-200 bg-white py-16 sm:py-20">
@@ -42,7 +75,11 @@ export default function ApplyPage() {
               </p>
             </CardHeader>
             <CardContent>
-              <ApplicationForm />
+              <ApplicationForm
+                tiers={paidTiers}
+                chapters={chapterRows}
+                initialTier={initialTier}
+              />
             </CardContent>
           </Card>
 

@@ -2,22 +2,29 @@ import type { Metadata } from "next";
 import Link from "next/link";
 
 import { Alert } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Container, Eyebrow, SectionHeading } from "@/components/ui/section";
 import { siteConfig } from "@/lib/config/site";
+import {
+  listTierCatalog,
+  type TierCatalogEntry,
+} from "@/lib/membership/tiers";
 
 export const metadata: Metadata = {
   title: "Membership",
   description:
-    "DEFEND membership information: $7 per month, one standard tier, application review, and member portal access.",
+    "DEFEND membership tiers: Free, Standard, Supporter, and Patron. Application review, member portal access, and program eligibility.",
 };
+
+export const dynamic = "force-dynamic";
 
 const faqs = [
   {
     question: "Is membership open now?",
     answer:
-      "Yes. Applications are being accepted for the Pasco County founding chapter. Every application is reviewed manually.",
+      "Yes. Applications are being accepted for the Pasco County founding chapter. Every paid membership application is reviewed manually.",
   },
   {
     question: "Who can apply?",
@@ -27,12 +34,22 @@ const faqs = [
   {
     question: "What does membership cost?",
     answer:
-      "The proposed standard dues are $7 per month. There is one standard membership tier. Online billing is not active yet.",
+      "Membership has Free, Standard, Supporter, and Patron tiers. Current monthly and annual amounts are shown in the membership tiers section. Online billing is not active yet.",
   },
   {
     question: "Can I join before paying?",
     answer:
-      "Approved applicants can activate an account and access the member portal before live billing is enabled. Membership standing and payment status are tracked separately.",
+      "Free accounts activate after email verification. Approved paid applicants can activate an account and access eligible member features before live billing is enabled. Membership standing and payment status are tracked separately.",
+  },
+  {
+    question: "Can I upgrade a Free account?",
+    answer:
+      "Free members can apply for a paid tier. The platform will not create a second account for the same email address. Upgrade payment activation is still being completed, so contact DEFEND if you need assistance in the meantime.",
+  },
+  {
+    question: "What can Free members access?",
+    answer:
+      "Free accounts can view announcements and register for eligible public events. Workshops, gym access, volunteering, and the business directory require Standard membership or higher, subject to policy and capacity.",
   },
   {
     question: "Is DEFEND a 501(c)(3) or 501(c)(7)?",
@@ -46,7 +63,48 @@ const faqs = [
   },
 ];
 
-export default function MembershipPage() {
+function money(cents: number | null): string {
+  if (cents == null) return "Unavailable";
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 0,
+  }).format(cents / 100);
+}
+
+function monthlyLabel(tier: TierCatalogEntry): string {
+  if (tier.allowsCustomAmount) {
+    return `From ${money(tier.minimumMonthlyCents)}`;
+  }
+  return money(tier.monthlyCents);
+}
+
+function annualLabel(tier: TierCatalogEntry): string {
+  return `${tier.allowsCustomAmount ? "From " : ""}${money(tier.annualCents)}`;
+}
+
+function tierAccess(tier: TierCatalogEntry): string {
+  if (tier.key === "free") {
+    return "Announcements and eligible public events.";
+  }
+  if (tier.key === "standard") {
+    return "Workshops, gym eligibility, volunteering, and the member directory.";
+  }
+  if (tier.key === "supporter") {
+    return "Standard access plus configurable Supporter benefits.";
+  }
+  return "Standard and Supporter access plus configurable Patron benefits.";
+}
+
+export default async function MembershipPage() {
+  let tiers: TierCatalogEntry[] = [];
+  let catalogError = false;
+  try {
+    tiers = await listTierCatalog();
+  } catch {
+    catalogError = true;
+  }
+
   return (
     <>
       <section className="border-b border-slate-200 bg-white py-16 sm:py-20">
@@ -54,24 +112,107 @@ export default function MembershipPage() {
           <div className="max-w-3xl">
             <Eyebrow>Membership</Eyebrow>
             <h1 className="mt-5 text-balance text-4xl font-semibold leading-tight sm:text-5xl">
-              One standard membership. $7 per month.
+              Membership tiers built around participation, support, and community.
             </h1>
             <p className="mt-6 text-pretty text-lg leading-8 text-slate-600">
-              DEFEND membership is intended for people who support the
-              organization&apos;s lawful mission and want to participate in a
-              local chapter. Applications are reviewed by a person.
+              Start with a Free account or apply for paid membership. Paid
+              applications are reviewed by a person, and no subscription begins
+              without explicit authorization.
             </p>
           </div>
         </Container>
       </section>
 
       <section className="py-16 sm:py-20">
+        <Container>
+          <SectionHeading
+            eyebrow="Membership tiers"
+            title="Choose the level that fits your participation."
+            description="Current amounts come from the effective-dated membership catalog. Online billing is not active yet."
+          />
+
+          {catalogError ? (
+            <Alert tone="warning" className="mt-8">
+              The membership catalog is temporarily unavailable. Contact DEFEND
+              for current pricing before applying.
+            </Alert>
+          ) : tiers.length === 0 ? (
+            <Alert tone="warning" className="mt-8">
+              Membership pricing is being configured. Contact DEFEND for current
+              details.
+            </Alert>
+          ) : (
+            <div className="mt-8 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+              {tiers.map((tier) => (
+                <Card
+                  key={tier.key}
+                  className={
+                    tier.key === "standard"
+                      ? "border-navy-800/30 shadow-[0_18px_50px_-30px_rgba(16,31,56,0.55)]"
+                      : ""
+                  }
+                >
+                  <CardHeader>
+                    <div className="flex items-center justify-between gap-2">
+                      <Eyebrow>{tier.name}</Eyebrow>
+                      {tier.key === "standard" ? (
+                        <Badge variant="green">Core</Badge>
+                      ) : null}
+                    </div>
+                    <p className="mt-2 text-3xl font-semibold text-navy-900">
+                      {monthlyLabel(tier)}
+                      <span className="text-sm font-normal text-slate-500">
+                        {" "}
+                        / month
+                      </span>
+                    </p>
+                    <p className="text-sm text-slate-500">
+                      {annualLabel(tier)} / year
+                    </p>
+                    <p className="text-sm leading-6 text-slate-600">
+                      {tier.description}
+                    </p>
+                  </CardHeader>
+                  <CardContent className="grid gap-4">
+                    <p className="text-sm leading-6 text-slate-700">
+                      {tierAccess(tier)}
+                    </p>
+                    {tier.key === "free" ? (
+                      <Button asChild variant="secondary" className="w-full">
+                        <Link href="/register">Create free account</Link>
+                      </Button>
+                    ) : (
+                      <Button
+                        asChild
+                        variant={tier.key === "standard" ? "primary" : "secondary"}
+                        className="w-full"
+                      >
+                        <Link href={`/apply?tier=${tier.key}`}>
+                          Apply for {tier.name}
+                        </Link>
+                      </Button>
+                    )}
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          )}
+
+          <p className="mt-6 text-sm leading-6 text-slate-500">
+            Patron members choose a recurring amount at or above the published
+            minimum. The selected amount is confirmed before any subscription is
+            created or changed. Annual amounts reflect the approved 10% discount.
+          </p>
+        </Container>
+      </section>
+
+      <section className="border-y border-slate-200 bg-white py-16 sm:py-20">
         <Container className="grid gap-12 lg:grid-cols-[1.1fr_0.9fr]">
           <div>
             <SectionHeading
-              eyebrow="Standard membership"
-              title="What the standard membership includes."
-              description="The following is being developed. Items that are not yet operating are labeled accordingly."
+              eyebrow="What membership includes"
+              title="Access is tied to the approved tier, not to assumptions."
+              description="Items that are not yet operating remain labeled accordingly."
             />
             <ul className="mt-8 grid gap-4 text-sm leading-6 text-slate-700">
               <li className="flex gap-3">
@@ -80,11 +221,18 @@ export default function MembershipPage() {
               </li>
               <li className="flex gap-3">
                 <span className="mt-2 size-1.5 shrink-0 rounded-full bg-red-600" />
-                Access to the member portal, profile, and chapter information.
+                Access to the member portal, profile, and chapter information for
+                approved paid members.
               </li>
               <li className="flex gap-3">
                 <span className="mt-2 size-1.5 shrink-0 rounded-full bg-red-600" />
-                Eligibility for programs and volunteer opportunities as they open.
+                Eligibility for workshops and volunteer opportunities at Standard
+                membership or higher.
+              </li>
+              <li className="flex gap-3">
+                <span className="mt-2 size-1.5 shrink-0 rounded-full bg-red-600" />
+                Gym eligibility at Standard membership or higher, subject to
+                facility readiness, safety onboarding, and waivers.
               </li>
               <li className="flex gap-3">
                 <span className="mt-2 size-1.5 shrink-0 rounded-full bg-red-600" />
@@ -96,8 +244,8 @@ export default function MembershipPage() {
               </li>
             </ul>
             <Alert tone="info" className="mt-8">
-              No premium tiers, exclusive patron listings, or invented benefits
-              are being offered. If DEFEND adds a benefit later, it will be
+              Tier benefits are configurable. No exclusive patron listing or
+              invented benefit is being offered. Any new benefit will be
               published with its actual availability.
             </Alert>
           </div>
@@ -105,31 +253,21 @@ export default function MembershipPage() {
           <aside className="space-y-4">
             <Card className="border-navy-800/10 bg-navy-900 text-white">
               <CardHeader>
-                <Eyebrow className="text-[#f0a0aa]">Standard dues</Eyebrow>
-                <p className="text-4xl font-semibold text-white">
-                  $7<span className="text-base font-normal text-slate-300"> / month</span>
-                </p>
+                <Eyebrow className="text-[#f0a0aa]">Membership vs. payment</Eyebrow>
+                <CardTitle className="text-white">
+                  Standing and payment are separate.
+                </CardTitle>
                 <p className="text-sm leading-6 text-slate-300">
-                  One standard tier. Live billing is not active.
+                  Membership standing is recorded separately from payment status.
+                  Approved members may access eligible portal features before live
+                  billing is activated. No real charge is collected until legal,
+                  financial, processor, and owner readiness are confirmed.
                 </p>
               </CardHeader>
               <CardContent>
                 <Button asChild className="w-full">
-                  <Link href="/apply">Apply for Membership</Link>
+                  <Link href="/apply">Apply for paid membership</Link>
                 </Button>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardHeader>
-                <CardTitle>Membership vs. payment</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p className="text-sm leading-6 text-slate-600">
-                  Membership standing is recorded separately from payment
-                  status. Approved founding members may access the portal before
-                  live billing is activated. No real charge is collected until
-                  legal, financial, processor, and owner readiness are confirmed.
-                </p>
               </CardContent>
             </Card>
             <Card>
@@ -146,19 +284,35 @@ export default function MembershipPage() {
         </Container>
       </section>
 
-      <section className="border-y border-slate-200 bg-white py-16 sm:py-20">
+      <section className="py-16 sm:py-20">
         <Container>
           <SectionHeading
             eyebrow="How it works"
-            title="Application, review, activation, dues."
-            description="DEFEND does not create unrestricted instant accounts. Membership begins with an application and a manual review."
+            title="Register, apply, review, activate."
+            description="Free accounts are self-service. Paid memberships begin with an application and manual review."
           />
           <div className="mt-8 grid gap-4 md:grid-cols-4">
             {[
-              ["01", "Apply", "Submit the application form with your details, interests, and chapter preference."],
-              ["02", "Review", "An administrator reviews the application and records a decision."],
-              ["03", "Activate", "Approved applicants receive an invitation to create an account."],
-              ["04", "Dues", "When live billing is approved, members authorize the $7 monthly subscription."],
+              [
+                "01",
+                "Register",
+                "Create a Free account with email verification, or apply for a paid tier.",
+              ],
+              [
+                "02",
+                "Review",
+                "An administrator reviews each paid application and records a decision.",
+              ],
+              [
+                "03",
+                "Activate",
+                "Approved applicants receive an invitation to activate their account.",
+              ],
+              [
+                "04",
+                "Authorize",
+                "When live billing is approved, members explicitly authorize the selected subscription.",
+              ],
             ].map(([number, title, body]) => (
               <Card key={title}>
                 <CardHeader>
@@ -176,7 +330,7 @@ export default function MembershipPage() {
         </Container>
       </section>
 
-      <section className="py-16 sm:py-20">
+      <section className="border-t border-slate-200 bg-white py-16 sm:py-20">
         <Container className="grid gap-12 lg:grid-cols-[0.8fr_1.2fr]">
           <SectionHeading
             eyebrow="FAQ"

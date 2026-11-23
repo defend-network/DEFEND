@@ -107,6 +107,18 @@ export default async function MembersPage() {
         </Alert>
       ) : null}
 
+      {membership?.status === "free_access" ? (
+        <Alert tone="info">
+          You are signed in with a Free account.{" "}
+          <Link href="/membership" className="font-semibold underline">
+            Compare paid tiers
+          </Link>{" "}
+          to unlock workshops, gym eligibility, volunteering, and the member
+          directory. Existing free accounts will not create a second account;
+          upgrade payment activation is still being completed.
+        </Alert>
+      ) : null}
+
       <div className="grid gap-5 md:grid-cols-3">
         <Card>
           <CardHeader>
@@ -178,19 +190,37 @@ export default async function MembersPage() {
 
         <Card>
           <CardHeader>
-            <CardTitle>Available next</CardTitle>
+            <CardTitle>
+              {membership?.status === "free_access"
+                ? "Free account access"
+                : "Member tools"}
+            </CardTitle>
           </CardHeader>
           <CardContent>
             <ul className="grid gap-2 text-sm leading-6 text-slate-600">
-              <li>Profile and notification preferences</li>
-              <li>Digital membership card with secure check-in</li>
-              <li>Opt-in member directory</li>
-              <li>Event and volunteer registration</li>
-              <li>Billing management when live payments are approved</li>
+              {membership?.status === "free_access" ? (
+                <>
+                  <li>Organizational announcements</li>
+                  <li>Eligible public events</li>
+                  <li>Paid features require Standard membership or higher</li>
+                </>
+              ) : (
+                <>
+                  <li>Profile and notification preferences</li>
+                  <li>Digital membership card with secure check-in</li>
+                  <li>Opt-in member directory</li>
+                  <li>Event and volunteer registration</li>
+                  <li>Billing management when live payments are approved</li>
+                </>
+              )}
             </ul>
             <div className="mt-5">
               <Button asChild variant="secondary" size="sm">
-                <Link href="/contact">Contact DEFEND</Link>
+                <Link href={membership?.status === "free_access" ? "/membership" : "/contact"}>
+                  {membership?.status === "free_access"
+                    ? "Compare membership tiers"
+                    : "Contact DEFEND"}
+                </Link>
               </Button>
             </div>
           </CardContent>

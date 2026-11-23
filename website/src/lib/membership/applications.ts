@@ -30,6 +30,7 @@ import {
   chapters,
   invitations,
   membershipApplications,
+  user,
 } from "@/db/schema";
 
 export type ApplicationStatus =
@@ -240,6 +241,30 @@ export async function approveApplication(input: {
   }
   if (application.status === "denied") {
     return { ok: false, error: "A denied application cannot be approved." };
+  }
+
+  const existingUser = await db
+    .select({ id: user.id })
+    .from(user)
+    .where(eq(user.email, application.email))
+    .limit(1);
+  if (existingUser[0]) {
+    await recordAuditEvent({
+      actorUserId: input.actor.userId,
+      action: "application.approve",
+      targetType: "membership_application",
+      targetId: application.id,
+      outcome: "failure",
+      requestId: input.requestId,
+      ipHash: input.ipHash,
+      userAgent: input.userAgent,
+      metadata: { reason: "existing_account_upgrade_required" },
+    });
+    return {
+      ok: false,
+      error:
+        "An account already exists for this email. Complete the free-to-paid upgrade flow before approving this application.",
+    };
   }
 
   const notes = input.notes?.trim() || null;

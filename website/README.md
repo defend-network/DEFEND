@@ -41,6 +41,10 @@ npm run bootstrap:owner -- --remote --env staging
 - Central server-side policy with global/chapter/self scope and MFA-required administrative actions.
 - Application queue, detail, approve/deny/request-information, applicant update links, and single-use invitations.
 - Membership creation, chapter assignment, status history, dues status separate from membership standing.
+- Four-tier membership catalog (Free, Standard, Supporter, Patron) with effective-dated monthly/annual prices and tier entitlements.
+- Free self-service registration with adult attestation, email verification, and a no-payment account path; paid features are gated to Standard or higher.
+- Paid application tier selection and chapter selection from database-backed options.
+- Session-level MFA enforcement for MFA-required actions, with pre-enrollment sessions treated as unverified.
 - Member dashboard, profile/account settings, encrypted phone storage, notification preferences.
 - Digital membership card with short-lived signed QR tokens and event check-in.
 - Opt-in directory with field-level privacy controls.
@@ -58,6 +62,7 @@ npm run bootstrap:owner -- --remote --env staging
 
 ## Not implemented yet
 
+- Free-to-paid upgrade billing activation and tier-aware Stripe checkout. Free accounts are created without payment; paid upgrade execution is still being completed.
 - Real Stripe test-mode external execution. No Stripe test credentials are present; checkout is disabled.
 - Real Resend delivery. Development uses an outbox; production requires `EMAIL_TRANSPORT=resend` and provider secrets.
 - Turnstile widget/secret configuration. In production, forms fail closed when spam protection is not configured.

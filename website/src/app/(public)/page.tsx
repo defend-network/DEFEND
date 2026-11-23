@@ -71,7 +71,7 @@ const membershipSteps = [
   {
     title: "Dues",
     description:
-      "Standard dues are $7 per month. Online billing will be enabled only after legal and financial readiness is confirmed.",
+      "Paid membership follows the approved tier catalog. Online billing will be enabled only after legal and financial readiness is confirmed.",
   },
 ];
 
@@ -147,8 +147,9 @@ export default function HomePage() {
                     Membership
                   </dt>
                   <dd className="mt-1 text-sm leading-6 text-slate-200">
-                    Applications are open. Standard dues are $7 per month.
-                    Online billing is not active.
+                    Applications are open. Membership tiers and current pricing
+                    are listed on the membership page. Online billing is not
+                    active.
                   </dd>
                 </div>
               </dl>
@@ -331,8 +332,8 @@ export default function HomePage() {
           <div className="grid gap-12 lg:grid-cols-[0.8fr_1.2fr]">
             <SectionHeading
               eyebrow="Membership"
-              title="One standard. $7 per month."
-              description="DEFEND is not offering premium tiers or invented benefits. The standard membership is being designed around participation, fellowship, and practical support."
+              title="Membership tiers for participation and support."
+              description="Four tiers are defined: Free, Standard, Supporter, and Patron. Current prices and benefits are published from the approved catalog."
             />
             <div className="grid gap-4 sm:grid-cols-2">
               {membershipSteps.map((step, index) => (

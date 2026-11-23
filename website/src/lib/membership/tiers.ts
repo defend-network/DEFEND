@@ -59,3 +59,36 @@ export async function getActivePrice(
     .limit(1);
   return rows[0] ?? null;
 }
+
+export type TierCatalogEntry = {
+  key: string;
+  name: string;
+  description: string;
+  rank: number;
+  minimumMonthlyCents: number;
+  allowsCustomAmount: boolean;
+  monthlyCents: number | null;
+  annualCents: number | null;
+};
+
+export async function listTierCatalog(): Promise<TierCatalogEntry[]> {
+  const tiers = await listActiveTiers();
+  return Promise.all(
+    tiers.map(async (tier) => {
+      const [monthly, annual] = await Promise.all([
+        getActivePrice(tier.id, "month"),
+        getActivePrice(tier.id, "year"),
+      ]);
+      return {
+        key: tier.key,
+        name: tier.name,
+        description: tier.description,
+        rank: tier.rank,
+        minimumMonthlyCents: tier.minimumMonthlyCents,
+        allowsCustomAmount: tier.allowsCustomAmount,
+        monthlyCents: monthly?.amountCents ?? null,
+        annualCents: annual?.amountCents ?? null,
+      };
+    }),
+  );
+}

@@ -137,6 +137,20 @@ if (!releaseCount) {
   throw new Error("Feature release registry seed is missing");
 }
 
+const userColumns = new Set(
+  query("PRAGMA table_info(user)").map((row) => row.name),
+);
+if (!userColumns.has("two_factor_enabled_at")) {
+  throw new Error("Missing session-level MFA timestamp column");
+}
+
+const applicationColumns = new Set(
+  query("PRAGMA table_info(membership_applications)").map((row) => row.name),
+);
+if (!applicationColumns.has("requested_tier_key")) {
+  throw new Error("Missing application tier selection column");
+}
+
 console.log(
   `Migration verification passed: ${expectedTables.length} tables, 2 audit triggers, Pasco chapter seeded, 4 tiers and release registry seeded.`,
 );

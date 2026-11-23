@@ -115,9 +115,11 @@ export default function AboutPage() {
               </CardHeader>
               <CardContent>
                 <p className="text-sm leading-6 text-slate-600">
-                  Standard membership dues are $7 per month. Online dues are not
-                  active. DEFEND is not currently soliciting charitable
-                  donations or claiming that contributions are tax-deductible.
+                  Membership is offered through the approved Free, Standard,
+                  Supporter, and Patron tiers. Current pricing is listed on the
+                  membership page. Online dues are not active. DEFEND is not
+                  currently soliciting charitable donations or claiming that
+                  contributions are tax-deductible.
                 </p>
               </CardContent>
             </Card>

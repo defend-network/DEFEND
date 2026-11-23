@@ -4,6 +4,7 @@ import { getDb } from "@/lib/db/client";
 import { recordAuditEvent } from "@/lib/audit/audit";
 import { sendEmail } from "@/lib/email/send";
 import { eventRegistrationEmail, volunteerRegistrationEmail } from "@/lib/email/templates";
+import { canRegisterForEvent } from "@/lib/membership/access";
 import { can, type ActorContext } from "@/lib/policy/permissions";
 import {
   chapters,
@@ -204,16 +205,6 @@ export async function registerForEvent(input: {
   userAgent?: string | null;
 }) {
   const db = await getDb();
-  const membershipRows = await db
-    .select({ status: memberships.status })
-    .from(memberships)
-    .where(eq(memberships.userId, input.userId))
-    .limit(1);
-  const membership = membershipRows[0];
-  if (!membership || !eligibleStatuses.includes(membership.status)) {
-    return { ok: false as const, error: "Your membership is not currently eligible to register." };
-  }
-
   const eventRows = await db
     .select()
     .from(events)
@@ -223,6 +214,28 @@ export async function registerForEvent(input: {
   if (!event) return { ok: false as const, error: "Event not found." };
   if (event.startsAt.getTime() < Date.now()) {
     return { ok: false as const, error: "Registration is closed for this event." };
+  }
+
+  const membershipRows = await db
+    .select({ status: memberships.status })
+    .from(memberships)
+    .where(eq(memberships.userId, input.userId))
+    .limit(1);
+  const membership = membershipRows[0];
+  if (
+    !membership ||
+    !canRegisterForEvent({
+      membershipStatus: membership.status,
+      feeCents: event.feeCents,
+    })
+  ) {
+    return {
+      ok: false as const,
+      error:
+        membership?.status === "free_access"
+          ? "Free accounts can register for eligible free public events. Paid events require Standard membership or higher."
+          : "Your membership is not currently eligible to register.",
+    };
   }
 
   const existing = await db

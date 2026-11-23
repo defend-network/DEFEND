@@ -7,6 +7,10 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { getActor } from "@/lib/auth/session";
 import { getDirectory } from "@/lib/membership/directory";
+import {
+  getMemberStanding,
+  isPaidMembershipStatus,
+} from "@/lib/membership/access";
 
 export const metadata: Metadata = {
   title: "Member Directory",
@@ -22,6 +26,31 @@ export default async function DirectoryPage({
 }) {
   const actor = await getActor();
   if (!actor) redirect("/login?next=/members/directory");
+  const standing = await getMemberStanding(actor.userId);
+  if (!standing || !isPaidMembershipStatus(standing.status)) {
+    return (
+      <div className="grid gap-6">
+        <div>
+          <p className="text-xs font-bold uppercase tracking-[0.2em] text-red-700">
+            Member directory
+          </p>
+          <h1 className="mt-3 text-3xl font-semibold">Standard membership required</h1>
+        </div>
+        <Card>
+          <CardContent className="grid gap-4 p-6">
+            <p className="text-sm leading-6 text-slate-600">
+              The business networking directory is available to Standard,
+              Supporter, and Patron members. Free accounts can view announcements
+              and eligible public events.
+            </p>
+            <Button asChild>
+              <Link href="/membership">Compare membership tiers</Link>
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
   const params = await searchParams;
   const query = params.q?.slice(0, 120) ?? "";
   const entries = await getDirectory({ actor, query });

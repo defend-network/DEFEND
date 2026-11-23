@@ -1,6 +1,14 @@
 import type { Metadata } from "next";
+import Link from "next/link";
+
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { getActor } from "@/lib/auth/session";
 import { listVolunteerOpportunities } from "@/lib/events/events";
+import {
+  getMemberStanding,
+  isPaidMembershipStatus,
+} from "@/lib/membership/access";
 import { VolunteerRegisterForm } from "./register-form";
 
 export const metadata: Metadata = {
@@ -11,6 +19,32 @@ export const metadata: Metadata = {
 export const dynamic = "force-dynamic";
 
 export default async function VolunteerPage() {
+  const actor = await getActor();
+  const standing = actor ? await getMemberStanding(actor.userId) : null;
+  if (!standing || !isPaidMembershipStatus(standing.status)) {
+    return (
+      <div className="grid gap-6">
+        <div>
+          <p className="text-xs font-bold uppercase tracking-[0.2em] text-red-700">
+            Volunteer
+          </p>
+          <h1 className="mt-3 text-3xl font-semibold">Standard membership required</h1>
+        </div>
+        <Card>
+          <CardContent className="grid gap-4 p-6">
+            <p className="text-sm leading-6 text-slate-600">
+              Volunteer roles require Standard membership or higher. Free
+              accounts can view announcements and eligible public events.
+            </p>
+            <Button asChild>
+              <Link href="/membership">Compare membership tiers</Link>
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
   const opportunities = await listVolunteerOpportunities();
 
   return (

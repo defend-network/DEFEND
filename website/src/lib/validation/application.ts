@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-const chapterIds = new Set(["chapter_pasco"]);
+export const PAID_TIER_KEYS = ["standard", "supporter", "patron"] as const;
 
 export const applicationSchema = z.object({
   legalName: z.string().trim().min(2, "Enter your legal name.").max(160),
@@ -12,7 +12,10 @@ export const applicationSchema = z.object({
   postalCode: z.string().trim().max(20).optional(),
   desiredChapterId: z
     .string()
-    .refine((value) => chapterIds.has(value), "Select an operating chapter."),
+    .trim()
+    .min(1, "Select an operating chapter.")
+    .max(100),
+  requestedTier: z.enum(PAID_TIER_KEYS),
   interests: z.array(z.string().trim().max(80)).max(20),
   skills: z.string().trim().max(1000).optional(),
   volunteerInterests: z.array(z.string().trim().max(80)).max(20),

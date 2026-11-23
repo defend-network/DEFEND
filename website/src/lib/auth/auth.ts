@@ -1,3 +1,4 @@
+import { eq } from "drizzle-orm";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { nextCookies } from "better-auth/next-js";
@@ -106,6 +107,38 @@ function createAuth(db: Awaited<ReturnType<typeof getDb>>) {
       useSecureCookies: secureCookiesRequired(),
       ipAddress: {
         ipAddressHeaders: ["cf-connecting-ip"],
+      },
+    },
+    databaseHooks: {
+      user: {
+        update: {
+          after: async (updatedUser) => {
+            const rows = await db
+              .select({
+                twoFactorEnabled: user.twoFactorEnabled,
+                twoFactorEnabledAt: user.twoFactorEnabledAt,
+              })
+              .from(user)
+              .where(eq(user.id, updatedUser.id))
+              .limit(1);
+            const current = rows[0];
+            if (!current) return;
+            if (current.twoFactorEnabled && !current.twoFactorEnabledAt) {
+              await db
+                .update(user)
+                .set({ twoFactorEnabledAt: new Date() })
+                .where(eq(user.id, updatedUser.id));
+            } else if (
+              !current.twoFactorEnabled &&
+              current.twoFactorEnabledAt
+            ) {
+              await db
+                .update(user)
+                .set({ twoFactorEnabledAt: null })
+                .where(eq(user.id, updatedUser.id));
+            }
+          },
+        },
       },
     },
     plugins: [

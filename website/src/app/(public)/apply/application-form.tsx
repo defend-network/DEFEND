@@ -80,7 +80,41 @@ function CheckboxGroup({
   );
 }
 
-export function ApplicationForm() {
+export type ApplicationTierOption = {
+  key: string;
+  name: string;
+  monthlyCents: number | null;
+  annualCents: number | null;
+  allowsCustomAmount: boolean;
+  minimumMonthlyCents: number;
+};
+
+export type ApplicationChapterOption = {
+  id: string;
+  name: string;
+  county: string;
+  state: string;
+  status: string;
+};
+
+function money(cents: number | null): string {
+  if (cents == null) return "pricing unavailable";
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 0,
+  }).format(cents / 100);
+}
+
+export function ApplicationForm({
+  tiers,
+  chapters,
+  initialTier,
+}: {
+  tiers: ApplicationTierOption[];
+  chapters: ApplicationChapterOption[];
+  initialTier: string;
+}) {
   const [state, action, pending] = useActionState(
     submitApplication,
     initialApplicationState,
@@ -229,20 +263,60 @@ export function ApplicationForm() {
         </div>
 
         <div className="grid gap-2">
+          <Label htmlFor="requestedTier">Membership tier</Label>
+          <select
+            id="requestedTier"
+            name="requestedTier"
+            defaultValue={initialTier}
+            className="h-11 rounded-[var(--radius-control)] border border-slate-300 bg-white px-3 text-[15px] text-navy-900 shadow-sm outline-none focus:border-navy-700 focus:ring-2 focus:ring-navy-800/15"
+          >
+            {tiers.length ? (
+              tiers.map((tier) => (
+                <option key={tier.key} value={tier.key}>
+                  {tier.name} —{" "}
+                  {tier.allowsCustomAmount
+                    ? `from ${money(tier.minimumMonthlyCents)}`
+                    : money(tier.monthlyCents)}
+                  /month
+                </option>
+              ))
+            ) : (
+              <>
+                <option value="standard">Standard</option>
+                <option value="supporter">Supporter</option>
+                <option value="patron">Patron</option>
+              </>
+            )}
+          </select>
+          <p className="text-xs leading-5 text-slate-500">
+            Supporter and Patron benefits are configurable. Patron members choose
+            their recurring amount after approval. No payment is collected with
+            this application.
+          </p>
+          <FieldError>{errorFor(state, "requestedTier")}</FieldError>
+        </div>
+
+        <div className="grid gap-2">
           <Label htmlFor="desiredChapterId">Chapter</Label>
           <select
             id="desiredChapterId"
             name="desiredChapterId"
-            defaultValue="chapter_pasco"
+            defaultValue={chapters[0]?.id ?? "chapter_pasco"}
             className="h-11 rounded-[var(--radius-control)] border border-slate-300 bg-white px-3 text-[15px] text-navy-900 shadow-sm outline-none focus:border-navy-700 focus:ring-2 focus:ring-navy-800/15"
           >
-            <option value="chapter_pasco">
-              Pasco County â€” founding chapter (in development)
-            </option>
+            {chapters.length ? (
+              chapters.map((chapter) => (
+                <option key={chapter.id} value={chapter.id}>
+                  {chapter.name} — {chapter.status.replaceAll("_", " ")}
+                </option>
+              ))
+            ) : (
+              <option value="chapter_pasco">Pasco County — in development</option>
+            )}
           </select>
           <p className="text-xs leading-5 text-slate-500">
-            Only Pasco County is accepting membership applications. Planned
-            chapters are not available for assignment.
+            Only chapters accepting applications are listed. Planned chapters are
+            not available for assignment.
           </p>
           <FieldError>{errorFor(state, "desiredChapterId")}</FieldError>
         </div>

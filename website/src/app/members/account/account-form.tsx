@@ -175,7 +175,7 @@ export function AccountForm({
           defaultChecked={profile.familyParticipation}
         />
         <p className="text-xs leading-5 text-slate-500">
-          Family participation does not change the standard $7 membership tier.
+          Family participation does not change your membership tier.
           Program fees, capacity, and eligibility are configured separately for
           each program or event.
         </p>

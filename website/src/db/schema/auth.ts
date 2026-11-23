@@ -27,6 +27,9 @@ export const user = sqliteTable("user", {
   twoFactorEnabled: integer("two_factor_enabled", { mode: "boolean" }).default(
     false,
   ),
+  twoFactorEnabledAt: integer("two_factor_enabled_at", {
+    mode: "timestamp_ms",
+  }),
 });
 
 export const session = sqliteTable(

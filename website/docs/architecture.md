@@ -98,17 +98,25 @@ Pasco County is seeded as `in_development`. Planned chapters are content-only an
 ## Membership lifecycle
 
 ```text
-Application submitted
-  â†’ admin review
-  â†’ approve / deny / request information
-  â†’ applicant update link (request-information path)
-  â†’ approval creates single-use invitation
-  â†’ activation creates Better Auth user, member profile, membership, and status history
-  â†’ founding_access while live billing is disabled
-  â†’ Stripe test/live billing later when authorized
+Free account registration
+  → adult attestation + email verification
+  → free_access membership and tier entitlement record
+  → announcements and eligible free public events only
+
+Paid application submitted
+  → requested tier and chapter recorded
+  → admin review
+  → approve / deny / request information
+  → applicant update link (request-information path)
+  → approval creates single-use invitation for a new account
+  → activation creates Better Auth user, member profile, membership, and status history
+  → founding_access while live billing is disabled
+  → Stripe test/live billing later when authorized
 ```
 
 `founding_access` is not the same as paid. `dues_status` is tracked separately from membership standing. A member is not marked paid unless a verified payment event or an authorized owner action records it.
+
+Free accounts do not create a second account when the same email later applies for a paid tier. Until the free-to-paid upgrade billing flow is completed, approval of a paid application for an existing email is blocked with an explicit upgrade-required message.
 
 ## MFA and recovery
 

@@ -1,6 +1,6 @@
 "use server";
 
-import { eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 
 import { getDb } from "@/lib/db/client";
 import { encryptPii } from "@/lib/security/pii";
@@ -15,7 +15,7 @@ import {
   applicationSchema,
   validationFieldErrors,
 } from "@/lib/validation/application";
-import { membershipApplications } from "@/db/schema";
+import { chapters as chapterTable, membershipApplications } from "@/db/schema";
 import type { ApplicationFormState } from "./form-state";
 
 function applicationNumber(): string {
@@ -46,6 +46,7 @@ export async function submitApplication(
     state: formData.get("state"),
     postalCode: formData.get("postalCode") || undefined,
     desiredChapterId: formData.get("desiredChapterId"),
+    requestedTier: formData.get("requestedTier") ?? "standard",
     interests: formData.getAll("interests").map(String),
     skills: formData.get("skills") || undefined,
     volunteerInterests: formData.getAll("volunteerInterests").map(String),
@@ -93,6 +94,26 @@ export async function submitApplication(
 
   try {
     const db = await getDb();
+    const chapterRows = await db
+      .select({ id: chapterTable.id })
+      .from(chapterTable)
+      .where(
+        and(
+          eq(chapterTable.id, parsed.data.desiredChapterId),
+          inArray(chapterTable.status, ["operating", "in_development"]),
+        ),
+      )
+      .limit(1);
+    if (!chapterRows[0]) {
+      return {
+        status: "error",
+        message: "Select a chapter that is accepting applications.",
+        fieldErrors: {
+          desiredChapterId: "Select a chapter that is accepting applications.",
+        },
+      };
+    }
+
     const existing = await db
       .select({ id: membershipApplications.id })
       .from(membershipApplications)
@@ -128,6 +149,7 @@ export async function submitApplication(
       state: parsed.data.state.toUpperCase(),
       postalCode: parsed.data.postalCode ?? null,
       desiredChapterId: parsed.data.desiredChapterId,
+      requestedTierKey: parsed.data.requestedTier,
       recommendedChapterId: recommendation.chapterId,
       referralSource: String(formData.get("referralSource") ?? "").slice(0, 200) || null,
       referrerUrl: String(formData.get("referrerUrl") ?? "").slice(0, 500) || null,

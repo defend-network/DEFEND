@@ -11,6 +11,7 @@ import {
   createCmsPage,
   publishCmsEntity,
 } from "@/lib/cms/cms";
+import { cmsWritePermission } from "@/lib/cms/permissions";
 import type { CmsActionState } from "./action-state";
 
 async function cmsActor(permission: "cms.edit" | "cms.publish" = "cms.edit") {
@@ -34,7 +35,8 @@ export async function createPageAction(
   formData: FormData,
 ): Promise<CmsActionState> {
   try {
-    const actor = await cmsActor();
+    const publish = formData.get("publish") === "on";
+    const actor = await cmsActor(cmsWritePermission({ publish }));
     const title = value(formData, "title");
     if (!title) return { status: "error", message: "Enter a title." };
     const context = await requestAuditContext();
@@ -45,7 +47,7 @@ export async function createPageAction(
       text: value(formData, "text"),
       seoTitle: value(formData, "seoTitle"),
       seoDescription: value(formData, "seoDescription"),
-      publish: formData.get("publish") === "on",
+      publish,
       ...context,
     });
     if (!result.ok) return { status: "error", message: result.error };
@@ -61,7 +63,8 @@ export async function createArticleAction(
   formData: FormData,
 ): Promise<CmsActionState> {
   try {
-    const actor = await cmsActor();
+    const publish = formData.get("publish") === "on";
+    const actor = await cmsActor(cmsWritePermission({ publish }));
     const title = value(formData, "title");
     if (!title) return { status: "error", message: "Enter a title." };
     const context = await requestAuditContext();
@@ -74,7 +77,7 @@ export async function createArticleAction(
       category: value(formData, "category") || "news",
       seoTitle: value(formData, "seoTitle"),
       seoDescription: value(formData, "seoDescription"),
-      publish: formData.get("publish") === "on",
+      publish,
       ...context,
     });
     if (!result.ok) return { status: "error", message: result.error };
@@ -91,7 +94,8 @@ export async function createAnnouncementAction(
   formData: FormData,
 ): Promise<CmsActionState> {
   try {
-    const actor = await cmsActor();
+    const visibility = value(formData, "visibility") || "members";
+    const actor = await cmsActor(cmsWritePermission({ visibility }));
     const title = value(formData, "title");
     const body = value(formData, "body");
     if (!title || !body) return { status: "error", message: "Enter a title and body." };
@@ -100,7 +104,7 @@ export async function createAnnouncementAction(
       actor,
       title,
       body,
-      visibility: value(formData, "visibility") || "members",
+      visibility,
       ...context,
     });
     revalidatePath("/admin/website");

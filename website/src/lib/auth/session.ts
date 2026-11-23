@@ -2,8 +2,9 @@ import { and, eq, isNull } from "drizzle-orm";
 import { headers } from "next/headers";
 
 import { getAuth } from "@/lib/auth/auth";
+import { isMfaSessionVerified } from "@/lib/auth/mfa";
 import { getDb } from "@/lib/db/client";
-import { roleAssignments } from "@/db/schema";
+import { roleAssignments, user } from "@/db/schema";
 import {
   type ActorContext,
   type Permission,
@@ -53,16 +54,28 @@ export async function getActor(): Promise<ActorContext | null> {
     roles.push({ roleKey: "member", scopeType: "self", scopeId: null });
   }
 
+  const userRows = await db
+    .select({
+      twoFactorEnabled: user.twoFactorEnabled,
+      twoFactorEnabledAt: user.twoFactorEnabledAt,
+    })
+    .from(user)
+    .where(eq(user.id, session.user.id))
+    .limit(1);
+  const mfaState = userRows[0];
+
   const actor: ActorContext = {
     userId: session.user.id,
     displayName: session.user.name,
     email: session.user.email,
     roles,
-    // A session only exists after the Better Auth 2FA challenge when the user
-    // has TOTP enabled. Administrators without MFA fail closed.
-    mfaVerified: Boolean(
-      (session.user as { twoFactorEnabled?: boolean }).twoFactorEnabled,
-    ),
+    // Better Auth creates a new session after a successful TOTP challenge.
+    // Sessions created before MFA was enabled are not treated as verified.
+    mfaVerified: isMfaSessionVerified({
+      twoFactorEnabled: Boolean(mfaState?.twoFactorEnabled),
+      twoFactorEnabledAt: mfaState?.twoFactorEnabledAt ?? null,
+      sessionCreatedAt: new Date(session.session.createdAt),
+    }),
   };
 
   return actor;

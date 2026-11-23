@@ -45,7 +45,7 @@ export function BillingActions({
           disabled={!configured || pending}
           onClick={() => void start("/api/stripe/checkout")}
         >
-          {pending ? "Opening…" : "Start $7/month test subscription"}
+          {pending ? "Opening…" : "Start test-mode subscription"}
         </Button>
         <Button
           type="button"
