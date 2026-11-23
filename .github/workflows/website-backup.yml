@@ -1,0 +1,57 @@
+﻿name: DEFEND Staging Backup
+
+on:
+  schedule:
+    - cron: "15 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: website
+
+jobs:
+  backup:
+    name: Encrypted D1 backup
+    if: vars.ENABLE_STAGING_BACKUPS == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Export and encrypt D1
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          BACKUP_PASSPHRASE: ${{ secrets.BACKUP_PASSPHRASE }}
+        run: node scripts/backup-d1.mjs --env=staging --out-dir=backups
+
+      - name: Verify encrypted backup
+        env:
+          BACKUP_PASSPHRASE: ${{ secrets.BACKUP_PASSPHRASE }}
+        run: |
+          file="$(ls -1 backups/*.enc | head -n 1)"
+          node scripts/verify-backup.mjs --file="$file" --out="$RUNNER_TEMP/restored.sql"
+          test "$(grep -c 'CREATE TABLE' "$RUNNER_TEMP/restored.sql")" -gt 50
+
+      - name: Upload encrypted backup artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: defend-staging-d1-${{ github.run_id }}
+          path: |
+            website/backups/*.enc
+            website/backups/*.enc.json
+          retention-days: 90
+          if-no-files-found: error

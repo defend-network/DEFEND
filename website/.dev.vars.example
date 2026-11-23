@@ -1,0 +1,20 @@
+# Local Worker secrets for `npm run preview` / `wrangler dev`.
+# Copy to .dev.vars and generate local-only values. Never commit .dev.vars.
+APP_ENV=development
+APP_URL=http://localhost:3000
+BETTER_AUTH_SECRET=replace-with-a-32-byte-random-development-secret
+AUDIT_HASH_SALT=replace-with-a-32-byte-random-development-salt
+PII_ENCRYPTION_KEY=replace-with-a-32-byte-random-development-key
+CARD_TOKEN_SECRET=replace-with-a-32-byte-random-development-secret
+NEWSLETTER_UNSUBSCRIBE_SECRET=replace-with-a-32-byte-random-development-secret
+EMAIL_TRANSPORT=outbox
+EMAIL_FROM=
+TURNSTILE_SECRET_KEY=
+NEXT_PUBLIC_TURNSTILE_SITE_KEY=
+RESEND_API_KEY=
+STRIPE_SECRET_KEY=
+STRIPE_PRICE_ID=
+STRIPE_WEBHOOK_SECRET=
+PAYMENTS_MODE=test
+PAYMENTS_LIVE_APPROVED=false
+DONATIONS_ENABLED=false

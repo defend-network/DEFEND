@@ -1,0 +1,111 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1794786999325,
+      "tag": "0000_powerful_spencer_smythe",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1794787013861,
+      "tag": "0001_seed_pasco_and_audit_guards",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1794788451103,
+      "tag": "0002_rate_limit_id",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1794805183001,
+      "tag": "0003_redundant_slapstick",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1794808488104,
+      "tag": "0004_furry_supernaut",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1794810173465,
+      "tag": "0005_fast_maria_hill",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1794810214336,
+      "tag": "0006_lively_wong",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1794840650994,
+      "tag": "0007_seed_programs",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1794841468569,
+      "tag": "0008_salty_jigsaw",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1794841591382,
+      "tag": "0009_hard_wind_dancer",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1795459163532,
+      "tag": "0010_membership_tiers_and_release_registry",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1795464587576,
+      "tag": "0011_session_mfa_verification",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1795465510706,
+      "tag": "0012_application_tier_selection",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "6",
+      "when": 1795466695948,
+      "tag": "0013_application_adult_confirmation",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "6",
+      "when": 1795473059172,
+      "tag": "0014_session_mfa_marker",
+      "breakpoints": true
+    }
+  ]
+}
