@@ -32,6 +32,12 @@ export const applicationSchema = z.object({
       (value) => value === "on",
       "You must acknowledge the privacy notice.",
     ),
+  adultConfirmed: z
+    .string()
+    .refine(
+      (value) => value === "on",
+      "You must confirm that you are 18 or older.",
+    ),
 });
 
 export type ApplicationInput = z.infer<typeof applicationSchema>;

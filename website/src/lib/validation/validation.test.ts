@@ -22,6 +22,7 @@ const validApplication = {
   programInterests: ["Mentorship"],
   policiesAccepted: "on",
   privacyAcknowledged: "on",
+  adultConfirmed: "on",
 };
 
 describe("application validation", () => {
@@ -34,12 +35,14 @@ describe("application validation", () => {
       ...validApplication,
       policiesAccepted: "",
       privacyAcknowledged: "",
+      adultConfirmed: "",
     });
     expect(result.success).toBe(false);
     if (!result.success) {
       const errors = validationFieldErrors(result.error);
       expect(errors.policiesAccepted).toMatch(/membership policies/i);
       expect(errors.privacyAcknowledged).toMatch(/privacy notice/i);
+      expect(errors.adultConfirmed).toMatch(/18 or older/i);
     }
   });
 

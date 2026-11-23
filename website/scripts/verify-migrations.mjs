@@ -150,6 +150,9 @@ const applicationColumns = new Set(
 if (!applicationColumns.has("requested_tier_key")) {
   throw new Error("Missing application tier selection column");
 }
+if (!applicationColumns.has("adult_confirmed_at")) {
+  throw new Error("Missing application adult confirmation column");
+}
 
 console.log(
   `Migration verification passed: ${expectedTables.length} tables, 2 audit triggers, Pasco chapter seeded, 4 tiers and release registry seeded.`,

@@ -53,6 +53,7 @@ export async function submitApplication(
     programInterests: formData.getAll("programInterests").map(String),
     policiesAccepted: formData.get("policiesAccepted"),
     privacyAcknowledged: formData.get("privacyAcknowledged"),
+    adultConfirmed: formData.get("adultConfirmed"),
   });
 
   if (!parsed.success) {
@@ -166,6 +167,7 @@ export async function submitApplication(
       programInterestsJson: JSON.stringify(parsed.data.programInterests),
       policiesAcceptedAt: new Date(),
       privacyAcknowledgedAt: new Date(),
+      adultConfirmedAt: new Date(),
       status: "submitted",
       submittedAt: new Date(),
       notificationStatus: "not_configured",

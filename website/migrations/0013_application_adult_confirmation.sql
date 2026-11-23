@@ -1,0 +1,1 @@
+ALTER TABLE `membership_applications` ADD `adult_confirmed_at` integer;

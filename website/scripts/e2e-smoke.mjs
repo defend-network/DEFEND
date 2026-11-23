@@ -53,6 +53,9 @@ try {
   await page
     .getByRole("checkbox", { name: /I acknowledge that DEFEND will use/i })
     .check();
+  await page
+    .getByRole("checkbox", { name: /I confirm that I am 18/i })
+    .check();
   await page.getByRole("button", { name: "Submit application" }).click();
   await page
     .getByText("Your application has been received", { exact: false })

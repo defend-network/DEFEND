@@ -49,6 +49,7 @@ try {
   await applicant.locator("#skills").fill("Carpentry, small business operations");
   await applicant.getByRole("checkbox", { name: /I have read the membership information/i }).check();
   await applicant.getByRole("checkbox", { name: /I acknowledge that DEFEND will use/i }).check();
+  await applicant.getByRole("checkbox", { name: /I confirm that I am 18/i }).check();
   await applicant.getByRole("button", { name: "Submit application" }).click();
   await applicant.getByText("Your application has been received", { exact: false }).waitFor({ timeout: 30000 });
   const applicationNumber = (await applicant.locator("p.font-mono").first().textContent())?.trim();

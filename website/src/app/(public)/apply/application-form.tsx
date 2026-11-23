@@ -384,6 +384,20 @@ export function ApplicationForm({
           </span>
         </label>
         <FieldError>{errorFor(state, "privacyAcknowledged")}</FieldError>
+        <label className="flex items-start gap-3 text-sm leading-6 text-slate-700">
+          <input
+            type="checkbox"
+            name="adultConfirmed"
+            required
+            className="mt-1 size-4 rounded border-slate-300 accent-red-600"
+          />
+          <span>
+            I confirm that I am 18 years of age or older. Adult participation is
+            required at launch; youth programs and youth registration remain
+            disabled.
+          </span>
+        </label>
+        <FieldError>{errorFor(state, "adultConfirmed")}</FieldError>
       </fieldset>
 
       <TurnstileWidget />

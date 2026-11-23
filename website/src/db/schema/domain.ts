@@ -103,6 +103,7 @@ export const membershipApplications = sqliteTable(
     privacyAcknowledgedAt: integer("privacy_acknowledged_at", {
       mode: "timestamp_ms",
     }),
+    adultConfirmedAt: integer("adult_confirmed_at", { mode: "timestamp_ms" }),
     status: text("status").notNull().default("submitted"),
     submittedAt: integer("submitted_at", { mode: "timestamp_ms" })
       .default(timestampDefault)
