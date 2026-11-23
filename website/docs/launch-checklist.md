@@ -6,7 +6,7 @@
 
 | Gate | Status | Evidence / remaining action |
 |---|---|---|
-| Staging baseline accepted | PASS | Worker version `084f2433` accepted as the Milestone 4 baseline; closeout version `1fd44e74` |
+| Staging baseline accepted | PASS | Dedicated DEFEND staging Worker `90da8cc4`; previous `1fd44e74` retained as recovery source |
 | Source control | PASS | Branch `rebuild/website-platform-v1`, draft PR #27 |
 | CI verification | PASS | Typecheck, lint, unit tests, migrations, builds, production dependency scan |
 | D1 migrations | PASS | Local verification: 63 tables, 2 audit triggers, Pasco seed, 4 tiers and release registry seeded |

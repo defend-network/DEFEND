@@ -8,6 +8,18 @@ const unique = Date.now().toString(36);
 const applicantEmail = `e2e.applicant.${unique}@example.com`;
 const contactEmail = `e2e.contact.${unique}@example.com`;
 
+async function waitForTurnstile(page) {
+  await page.waitForFunction(
+    () => {
+      const input = document.querySelector(
+        'input[name="cf-turnstile-response"]',
+      );
+      return Boolean(input && input.value.length > 0);
+    },
+    { timeout: 30_000 },
+  );
+}
+
 const browser = await chromium.launch({
   executablePath: edgePath,
   headless: true,
@@ -56,6 +68,7 @@ try {
   await page
     .getByRole("checkbox", { name: /I confirm that I am 18/i })
     .check();
+  await waitForTurnstile(page);
   await page.getByRole("button", { name: "Submit application" }).click();
   await page
     .getByText("Your application has been received", { exact: false })
@@ -71,6 +84,7 @@ try {
   await page
     .locator("#message")
     .fill("This is an automated end-to-end verification message.");
+  await waitForTurnstile(page);
   await page.getByRole("button", { name: "Send message" }).click();
   await page
     .getByText("Thank you. Your message has been received", { exact: false })

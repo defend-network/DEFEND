@@ -11,13 +11,15 @@ const suffix = Date.now().toString(36);
 const email = `free.e2e.${suffix}@example.com`;
 const password = `FreeE2E-${suffix}-Password-2026!`;
 
+const remote = process.env.E2E_D1_MODE === "remote";
+
 function query(sql) {
   const wrangler = path.resolve("node_modules/wrangler/bin/wrangler.js");
-  const output = execFileSync(
-    process.execPath,
-    [wrangler, "d1", "execute", "DB", "--local", "--json", "--command", sql],
-    { encoding: "utf8" },
-  );
+  const args = [wrangler, "d1", "execute", "DB"];
+  if (remote) args.push("--remote", "--env", "staging");
+  else args.push("--local");
+  args.push("--json", "--command", sql);
+  const output = execFileSync(process.execPath, args, { encoding: "utf8" });
   return JSON.parse(output)[0]?.results ?? [];
 }
 
@@ -29,10 +31,25 @@ try {
   await page.locator("#register-email").fill(email);
   await page.locator("#register-password").fill(password);
   await page.locator('input[name="adultConfirmed"]').check();
+  await page.waitForFunction(
+    () => {
+      const input = document.querySelector(
+        'input[name="cf-turnstile-response"]',
+      );
+      return Boolean(input && input.value.length > 0);
+    },
+    { timeout: 30_000 },
+  );
   await page.getByRole("button", { name: "Create free account" }).click();
-  await page
-    .getByText("Registration received", { exact: false })
-    .waitFor({ timeout: 30_000 });
+  try {
+    await page
+      .getByText("Registration received", { exact: false })
+      .waitFor({ timeout: 30_000 });
+  } catch (error) {
+    const alerts = await page.locator('[role="alert"]').allInnerTexts();
+    console.error("FORM_ALERTS:", JSON.stringify(alerts));
+    throw error;
+  }
   console.log("PASS free registration form");
 
   const escaped = email.replaceAll("'", "''");

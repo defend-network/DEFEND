@@ -21,6 +21,18 @@ const browser = await chromium.launch({
   headless: true,
 });
 
+async function waitForTurnstile(page) {
+  await page.waitForFunction(
+    () => {
+      const input = document.querySelector(
+        'input[name="cf-turnstile-response"]',
+      );
+      return Boolean(input && input.value.length > 0);
+    },
+    { timeout: 30_000 },
+  );
+}
+
 const results = [];
 function pass(label) {
   results.push(label);
@@ -50,6 +62,7 @@ try {
   await applicant.getByRole("checkbox", { name: /I have read the membership information/i }).check();
   await applicant.getByRole("checkbox", { name: /I acknowledge that DEFEND will use/i }).check();
   await applicant.getByRole("checkbox", { name: /I confirm that I am 18/i }).check();
+  await waitForTurnstile(applicant);
   await applicant.getByRole("button", { name: "Submit application" }).click();
   await applicant.getByText("Your application has been received", { exact: false }).waitFor({ timeout: 30000 });
   const applicationNumber = (await applicant.locator("p.font-mono").first().textContent())?.trim();
