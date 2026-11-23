@@ -3,6 +3,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { format } from "date-fns";
 
+import { AdminAccessDenied } from "@/components/admin/access-denied";
 import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -32,9 +33,17 @@ export default async function MemberDetailPage({
   if (!detail) notFound();
 
   const actor = await getActor();
-  const canManage = actor ? can(actor, "members.manage") : false;
-  const profile = detail.profile;
   const membership = detail.membership;
+  const allowed = actor
+    ? can(actor, "members.view", { chapterId: membership.chapterId })
+    : false;
+  if (!actor || !allowed) {
+    return <AdminAccessDenied module="members" />;
+  }
+  const canManage = can(actor, "members.manage", {
+    chapterId: membership.chapterId,
+  });
+  const profile = detail.profile;
 
   return (
     <div className="grid gap-6">

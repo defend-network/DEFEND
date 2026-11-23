@@ -2,10 +2,13 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { format } from "date-fns";
 
+import { AdminAccessDenied } from "@/components/admin/access-denied";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { adminPageActor } from "@/lib/auth/admin";
 import { listMembers } from "@/lib/membership/members";
+import { chapterIdsForPermission } from "@/lib/policy/permissions";
 
 export const metadata: Metadata = {
   title: "Members",
@@ -30,6 +33,8 @@ export default async function MembersAdminPage({
 }: {
   searchParams: Promise<{ q?: string; status?: string; page?: string }>;
 }) {
+  const { actor, allowed } = await adminPageActor("members.view");
+  if (!allowed) return <AdminAccessDenied module="members" />;
   const params = await searchParams;
   const query = params.q?.slice(0, 120) ?? "";
   const status = statuses.includes(params.status ?? "") ? params.status! : "all";
@@ -38,6 +43,7 @@ export default async function MembersAdminPage({
   const data = await listMembers({
     query,
     status,
+    chapterIds: chapterIdsForPermission(actor, "members.view"),
     limit,
     offset: (page - 1) * limit,
   });

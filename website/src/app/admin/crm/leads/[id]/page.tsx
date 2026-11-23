@@ -3,7 +3,9 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { format } from "date-fns";
 
+import { AdminAccessDenied } from "@/components/admin/access-denied";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { adminPageActor } from "@/lib/auth/admin";
 import { getLeadDetail } from "@/lib/crm/crm";
 import {
   LeadActivityForm,
@@ -23,6 +25,8 @@ export default async function LeadDetailPage({
 }: {
   params: Promise<{ id: string }>;
 }) {
+  const { allowed } = await adminPageActor("crm.view");
+  if (!allowed) return <AdminAccessDenied module="CRM" />;
   const { id } = await params;
   const detail = await getLeadDetail(id);
   if (!detail) notFound();

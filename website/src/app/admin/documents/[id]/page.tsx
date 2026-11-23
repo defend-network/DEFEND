@@ -3,11 +3,17 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { format } from "date-fns";
 
+import { AdminAccessDenied } from "@/components/admin/access-denied";
 import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { getDocumentDetail } from "@/lib/documents/documents";
+import { getActor } from "@/lib/auth/session";
+import {
+  canManageDocument,
+  canReadDocument,
+  getDocumentDetail,
+} from "@/lib/documents/documents";
 import {
   AddVersionForm,
   ArchiveDocumentForm,
@@ -34,6 +40,11 @@ export default async function DocumentDetailPage({
   const detail = await getDocumentDetail(id);
   if (!detail) notFound();
   const { document, versions } = detail;
+  const actor = await getActor();
+  if (!actor || !canReadDocument(actor, document)) {
+    return <AdminAccessDenied module="documents" />;
+  }
+  const canManage = canManageDocument(actor, document);
 
   return (
     <div className="grid gap-6">
@@ -99,17 +110,21 @@ export default async function DocumentDetailPage({
             </CardContent>
           </Card>
 
-          <Card>
-            <CardHeader><CardTitle>Upload new version</CardTitle></CardHeader>
-            <CardContent><AddVersionForm documentId={document.id} /></CardContent>
-          </Card>
+          {canManage ? (
+            <>
+              <Card>
+                <CardHeader><CardTitle>Upload new version</CardTitle></CardHeader>
+                <CardContent><AddVersionForm documentId={document.id} /></CardContent>
+              </Card>
 
-          <Card>
-            <CardHeader><CardTitle>Archive</CardTitle></CardHeader>
-            <CardContent>
-              <ArchiveDocumentForm documentId={document.id} />
-            </CardContent>
-          </Card>
+              <Card>
+                <CardHeader><CardTitle>Archive</CardTitle></CardHeader>
+                <CardContent>
+                  <ArchiveDocumentForm documentId={document.id} />
+                </CardContent>
+              </Card>
+            </>
+          ) : null}
         </div>
       </div>
 
@@ -123,7 +138,9 @@ export default async function DocumentDetailPage({
                   <p className="font-semibold text-navy-900">Version {version.version}</p>
                   <p className="text-xs text-slate-500">{version.filename} · {(version.sizeBytes / 1024).toFixed(0)} KB · {format(version.createdAt, "MMM d, yyyy h:mm a")}</p>
                 </div>
-                <RestoreVersionForm documentId={document.id} version={version.version} />
+                {canManage ? (
+                  <RestoreVersionForm documentId={document.id} version={version.version} />
+                ) : null}
               </li>
             ))}
           </ul>

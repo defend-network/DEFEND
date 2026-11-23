@@ -17,7 +17,7 @@ Isolated organizational website, member portal, and administrative workstation f
 - Staging Worker version: `1fd44e74-1a06-4abe-b063-c0bf4b577aba`
 - Staging email transport: development outbox
 - Staging payments: test mode, live charging disabled
-- Staging migrations: `0000`-`0009`
+- Repository migrations: `0000`-`0010`; staging currently `0000`-`0009` until the next authorized deployment
 - Production DNS and apex domain: unchanged
 
 Staging owner bootstrap is intentionally left to the owner because it requires a staging password decision:
@@ -36,7 +36,7 @@ npm run bootstrap:owner -- --remote --env staging
 ## Implemented and verified
 
 - Next.js 16.4.6 App Router, TypeScript, Tailwind CSS, Cloudflare Workers via OpenNext.
-- D1 schema and 56 migrations-backed tables for identity, chapters, applications, memberships, invitations, roles, audit, directory, events, volunteers, CRM, facilities, documents, CMS, communications, finance, programs, and payment events.
+- D1 schema and 63 migrations-backed tables for identity, chapters, applications, memberships, invitations, roles, audit, directory, events, volunteers, CRM, facilities, documents, CMS, communications, finance, programs, payment events, membership tiers/prices/entitlements, households, and feature release tracking.
 - Better Auth identity with invitation-only activation, password recovery, email verification scaffold, and TOTP MFA.
 - Central server-side policy with global/chapter/self scope and MFA-required administrative actions.
 - Application queue, detail, approve/deny/request-information, applicant update links, and single-use invitations.
@@ -52,6 +52,7 @@ npm run bootstrap:owner -- --remote --env staging
 - Admin CRM (organizations, contacts, leads, activities, tasks), facilities/property, chapter administration, private R2 documents, CMS pages/articles/news, communications history, finance expenses/allocations, program configuration, system roles, and audit visibility.
 - Public news, support/partnership, volunteer, and expanded program pages.
 - Newsletter subscription with signed unsubscribe confirmation and D1 persistence.
+- Foundation F1: fail-closed deployed-environment configuration, admin module page gates, chapter-scoped list/detail authorization, document visibility/chapter access, payment webhook retry/livemode/amount capture, duplicate-checkout guard, and membership tier/price/entitlement plus feature-release contracts.
 - Encrypted AES-256-GCM D1 backup/decrypt drill and prepared scheduled offsite backup workflow.
 - Unit, migration, Worker runtime, browser smoke, 33-check end-to-end membership/admin workflow, newsletter, public/admin/member accessibility, and mobile navigation tests.
 

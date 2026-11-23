@@ -7,7 +7,7 @@ import { requestAuditContext } from "@/lib/audit/request-context";
 import { recordAuditEvent } from "@/lib/audit/audit";
 import { getDb } from "@/lib/db/client";
 import { verifyCardToken } from "@/lib/membership/card";
-import { can } from "@/lib/policy/permissions";
+import { can, canAccessModule } from "@/lib/policy/permissions";
 import {
   chapters,
   eventCheckins,
@@ -31,9 +31,9 @@ export async function POST(request: Request) {
   if (!actor) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
-  if (!can(actor, "events.checkin")) {
+  if (!canAccessModule(actor, "events.checkin")) {
     return NextResponse.json(
-      { error: "MFA-verified check-in access is required." },
+      { error: "Check-in access is required." },
       { status: 403 },
     );
   }
@@ -61,6 +61,7 @@ export async function POST(request: Request) {
       status: memberships.status,
       memberNumber: memberships.memberNumber,
       userId: memberships.userId,
+      memberChapterId: memberships.chapterId,
       memberName: user.name,
       chapterName: chapters.name,
     })
@@ -88,13 +89,26 @@ export async function POST(request: Request) {
   let eventTitle: string | undefined;
   if (parsed.data.eventId) {
     const eventRows = await db
-      .select({ id: events.id, title: events.title })
+      .select({ id: events.id, title: events.title, chapterId: events.chapterId })
       .from(events)
       .where(eq(events.id, parsed.data.eventId))
       .limit(1);
     const event = eventRows[0];
     if (!event) {
       return NextResponse.json({ error: "Event not found." }, { status: 404 });
+    }
+    if (!can(actor, "events.checkin", { chapterId: event.chapterId })) {
+      return NextResponse.json({ error: "Event not found." }, { status: 404 });
+    }
+    if (
+      !can(actor, "events.checkin", {
+        chapterId: membership.memberChapterId,
+      })
+    ) {
+      return NextResponse.json(
+        { error: "Member belongs to another chapter." },
+        { status: 403 },
+      );
     }
     eventTitle = event.title;
 
@@ -121,6 +135,15 @@ export async function POST(request: Request) {
         { status: 403 },
       );
     }
+  } else if (
+    !can(actor, "events.checkin", {
+      chapterId: membership.memberChapterId,
+    })
+  ) {
+    return NextResponse.json(
+      { error: "Member belongs to another chapter." },
+      { status: 403 },
+    );
   }
 
   if (parsed.data.eventId) {

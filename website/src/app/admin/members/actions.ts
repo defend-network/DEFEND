@@ -4,7 +4,6 @@ import { revalidatePath } from "next/cache";
 
 import { getActor } from "@/lib/auth/session";
 import { requestAuditContext } from "@/lib/audit/request-context";
-import { can } from "@/lib/policy/permissions";
 import {
   assignMemberChapter,
   updateMembershipStatus,
@@ -14,9 +13,6 @@ import type { MemberActionState } from "./action-state";
 async function memberActor() {
   const actor = await getActor();
   if (!actor) throw new Error("Sign in to continue.");
-  if (!can(actor, "members.manage")) {
-    throw new Error("MFA-verified member-management access is required.");
-  }
   return actor;
 }
 

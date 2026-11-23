@@ -1,9 +1,11 @@
 import type { Metadata } from "next";
 import { format } from "date-fns";
 
+import { AdminAccessDenied } from "@/components/admin/access-denied";
 import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { adminPageActor } from "@/lib/auth/admin";
 import { listChaptersBasic, listFinanceOverview } from "@/lib/finance/finance";
 import { AllocationForm, ExpenseForm } from "./finance-forms";
 
@@ -19,6 +21,8 @@ function money(cents: number | null | undefined): string {
 }
 
 export default async function FinancePage() {
+  const { allowed } = await adminPageActor("finance.view");
+  if (!allowed) return <AdminAccessDenied module="finance" />;
   const [overview, chapters] = await Promise.all([
     listFinanceOverview(),
     listChaptersBasic(),

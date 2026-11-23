@@ -14,7 +14,7 @@ Production deployment is **not authorized** from this milestone. Do not change p
 
 Staging URL: `https://defend-website-staging.owner-e75.workers.dev`
 
-Current staging version: `1fd44e74-1a06-4abe-b063-c0bf4b577aba` (migrations `0000`-`0009` applied). Staging uses Cloudflare Turnstile test keys; production requires real keys.
+Current staging version: `1fd44e74-1a06-4abe-b063-c0bf4b577aba` (migrations `0000`-`0009` applied). The repository now includes migration `0010`; staging receives it on the next authorized deployment through the migration gate. Staging uses Cloudflare Turnstile test keys; production requires real keys.
 
 Staging uses the Cloudflare `workers.dev` hostname because the currently available Cloudflare account does not contain the `defend-network.org` zone. No production DNS was changed.
 

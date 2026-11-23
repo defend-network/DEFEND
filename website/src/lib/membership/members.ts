@@ -3,6 +3,7 @@ import {
   count,
   desc,
   eq,
+  inArray,
   like,
   or,
   type SQL,
@@ -11,7 +12,7 @@ import {
 import { getDb } from "@/lib/db/client";
 import { recordAuditEvent } from "@/lib/audit/audit";
 import { decryptPii } from "@/lib/security/pii";
-import type { ActorContext } from "@/lib/policy/permissions";
+import { can, type ActorContext } from "@/lib/policy/permissions";
 import {
   chapters,
   memberProfiles,
@@ -25,6 +26,7 @@ export type MemberListFilter = {
   query?: string;
   status?: string;
   chapterId?: string;
+  chapterIds?: "all" | string[];
   limit?: number;
   offset?: number;
 };
@@ -51,6 +53,12 @@ export async function listMembers(filter: MemberListFilter = {}) {
   }
   if (filter.chapterId && filter.chapterId !== "all") {
     conditions.push(eq(memberships.chapterId, filter.chapterId));
+  }
+  if (filter.chapterIds && filter.chapterIds !== "all") {
+    if (filter.chapterIds.length === 0) {
+      return { items: [], total: 0, limit, offset };
+    }
+    conditions.push(inArray(memberships.chapterId, filter.chapterIds));
   }
 
   const where = conditions.length ? and(...conditions) : undefined;
@@ -183,7 +191,14 @@ export async function updateMembershipStatus(input: {
     .where(eq(memberships.userId, input.userId))
     .limit(1);
   const membership = rows[0];
-  if (!membership) return { ok: false, error: "Membership not found." };
+  if (
+    !membership ||
+    !can(input.actor, "members.manage", {
+      chapterId: membership.chapterId,
+    })
+  ) {
+    return { ok: false, error: "Membership not found." };
+  }
 
   await db
     .update(memberships)
@@ -241,7 +256,15 @@ export async function assignMemberChapter(input: {
     .where(eq(memberships.userId, input.userId))
     .limit(1);
   const membership = rows[0];
-  if (!membership) return { ok: false, error: "Membership not found." };
+  if (
+    !membership ||
+    !can(input.actor, "members.manage", {
+      chapterId: membership.chapterId,
+    }) ||
+    !can(input.actor, "members.manage", { chapterId: input.chapterId })
+  ) {
+    return { ok: false, error: "Membership not found." };
+  }
 
   await db
     .update(memberships)

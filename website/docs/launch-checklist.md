@@ -9,7 +9,7 @@
 | Staging baseline accepted | PASS | Worker version `084f2433` accepted as the Milestone 4 baseline; closeout version `1fd44e74` |
 | Source control | PASS | Branch `rebuild/website-platform-v1`, draft PR #27 |
 | CI verification | PASS | Typecheck, lint, unit tests, migrations, builds, production dependency scan |
-| D1 migrations | PASS | Local verification: 56 tables, 2 audit triggers, Pasco seed |
+| D1 migrations | PASS | Local verification: 63 tables, 2 audit triggers, Pasco seed, 4 tiers and release registry seeded |
 | Membership/admin E2E | PASS | 33 checks after document/version/archive coverage is added |
 | Newsletter subscribe/unsubscribe | PASS | Local encrypted-token flow and staging signup verified |
 | Public accessibility | PASS | Axe WCAG 2.2 AA: 0 violations on 12 public routes |

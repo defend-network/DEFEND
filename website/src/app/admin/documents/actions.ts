@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 
 import { getActor } from "@/lib/auth/session";
 import { requestAuditContext } from "@/lib/audit/request-context";
-import { can } from "@/lib/policy/permissions";
+import { chapterIdsForPermission } from "@/lib/policy/permissions";
 import {
   addDocumentVersion,
   archiveDocument,
@@ -19,8 +19,10 @@ export async function uploadDocumentAction(
 ): Promise<DocumentActionState> {
   try {
     const actor = await getActor();
-    if (!actor || !can(actor, "documents.manage")) {
-      throw new Error("MFA-verified document-management access is required.");
+    if (!actor) throw new Error("Sign in to continue.");
+    const scope = chapterIdsForPermission(actor, "documents.manage");
+    if (scope !== "all" && scope.length === 0) {
+      throw new Error("Document-management access is required.");
     }
     const file = formData.get("file");
     if (!(file instanceof File)) {
@@ -53,7 +55,7 @@ export async function addVersionAction(
 ): Promise<DocumentActionState> {
   try {
     const actor = await getActor();
-    if (!actor || !can(actor, "documents.manage")) throw new Error("MFA-verified document-management access is required.");
+    if (!actor) throw new Error("Sign in to continue.");
     const file = formData.get("file");
     if (!(file instanceof File)) return { status: "error", message: "Select a file." };
     const context = await requestAuditContext();
@@ -77,7 +79,7 @@ export async function restoreVersionAction(
 ): Promise<DocumentActionState> {
   try {
     const actor = await getActor();
-    if (!actor || !can(actor, "documents.manage")) throw new Error("MFA-verified document-management access is required.");
+    if (!actor) throw new Error("Sign in to continue.");
     const context = await requestAuditContext();
     const result = await restoreDocumentVersion({
       actor,
@@ -99,7 +101,7 @@ export async function archiveDocumentAction(
 ): Promise<DocumentActionState> {
   try {
     const actor = await getActor();
-    if (!actor || !can(actor, "documents.manage")) throw new Error("MFA-verified document-management access is required.");
+    if (!actor) throw new Error("Sign in to continue.");
     const context = await requestAuditContext();
     const result = await archiveDocument({
       actor,

@@ -4,6 +4,7 @@ import {
   type ActorContext,
   can,
   canAccessChapter,
+  canAccessModule,
   scopedChapterIds,
 } from "@/lib/policy/permissions";
 
@@ -71,7 +72,7 @@ describe("central authorization policy", () => {
     expect(scopedChapterIds(chapterAdmin)).toEqual(["chapter_pasco"]);
   });
 
-  it("does not let chapter administrators manage system settings", () => {
+  it("does not let chapter administrators manage system settings or global modules", () => {
     const chapterAdmin = actor({
       roles: [
         {
@@ -84,6 +85,10 @@ describe("central authorization policy", () => {
     });
     expect(can(chapterAdmin, "system.settings")).toBe(false);
     expect(can(chapterAdmin, "members.roles")).toBe(false);
+    expect(canAccessModule(chapterAdmin, "crm.view")).toBe(false);
+    expect(canAccessModule(chapterAdmin, "finance.view")).toBe(false);
+    expect(canAccessModule(chapterAdmin, "cms.edit")).toBe(false);
+    expect(canAccessModule(chapterAdmin, "communications.view")).toBe(false);
   });
 
   it("grants national administrators global operational access but not owner-only settings", () => {

@@ -2,8 +2,10 @@ import { NextResponse } from "next/server";
 
 import { getActor } from "@/lib/auth/session";
 import { getEnv } from "@/lib/db/client";
-import { getDocumentForDownload } from "@/lib/documents/documents";
-import { can } from "@/lib/policy/permissions";
+import {
+  canReadDocument,
+  getDocumentForDownload,
+} from "@/lib/documents/documents";
 
 export const dynamic = "force-dynamic";
 
@@ -18,11 +20,12 @@ export async function GET(
   const { id } = await params;
   const document = await getDocumentForDownload(id);
   if (!document) return NextResponse.json({ error: "Document not found." }, { status: 404 });
+  if (!canReadDocument(actor, document)) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
   if (!inlineTypes.has(document.mimeType)) {
     return NextResponse.json({ error: "Preview is not available for this file type." }, { status: 415 });
   }
-  const permission = document.visibility === "admin" ? "documents.download_sensitive" : "documents.view";
-  if (!can(actor, permission)) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   const env = await getEnv();
   const object = await env.DOCUMENTS.get(document.r2Key);
   if (!object) return NextResponse.json({ error: "Document file not found." }, { status: 404 });

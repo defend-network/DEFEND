@@ -1,8 +1,10 @@
 import type { Metadata } from "next";
 import { format } from "date-fns";
 
+import { AdminAccessDenied } from "@/components/admin/access-denied";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { adminPageActor } from "@/lib/auth/admin";
 import { listContacts, listOrganizations } from "@/lib/crm/crm";
 import {
   listFacilityProjects,
@@ -23,6 +25,8 @@ function money(cents: number | null): string {
 }
 
 export default async function FacilitiesPage() {
+  const { allowed } = await adminPageActor("facilities.view");
+  if (!allowed) return <AdminAccessDenied module="facilities" />;
   const [organizations, contacts, properties, projects, proposals] =
     await Promise.all([
       listOrganizations(),

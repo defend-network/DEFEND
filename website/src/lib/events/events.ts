@@ -4,7 +4,7 @@ import { getDb } from "@/lib/db/client";
 import { recordAuditEvent } from "@/lib/audit/audit";
 import { sendEmail } from "@/lib/email/send";
 import { eventRegistrationEmail, volunteerRegistrationEmail } from "@/lib/email/templates";
-import type { ActorContext } from "@/lib/policy/permissions";
+import { can, type ActorContext } from "@/lib/policy/permissions";
 import {
   chapters,
   eventRegistrations,
@@ -26,8 +26,15 @@ function slugify(value: string): string {
     .slice(0, 80);
 }
 
-export async function listAdminEvents() {
+export async function listAdminEvents(
+  filter: { chapterIds?: "all" | string[] } = {},
+) {
   const db = await getDb();
+  const conditions = [];
+  if (filter.chapterIds && filter.chapterIds !== "all") {
+    if (filter.chapterIds.length === 0) return [];
+    conditions.push(inArray(events.chapterId, filter.chapterIds));
+  }
   return db
     .select({
       id: events.id,
@@ -40,6 +47,7 @@ export async function listAdminEvents() {
       chapterId: events.chapterId,
     })
     .from(events)
+    .where(conditions.length ? and(...conditions) : undefined)
     .orderBy(desc(events.startsAt))
     .limit(100);
 }
@@ -56,11 +64,21 @@ export async function createEvent(input: {
   feeCents?: number | null;
   familyFriendly?: boolean;
   status: "draft" | "published";
+  chapterId?: string | null;
   requestId?: string | null;
   ipHash?: string | null;
   userAgent?: string | null;
 }) {
   const db = await getDb();
+  const chapterId =
+    input.chapterId?.trim() ||
+    input.actor.roles.find(
+      (role) => role.scopeType === "chapter" && role.scopeId,
+    )?.scopeId ||
+    "chapter_pasco";
+  if (!can(input.actor, "events.manage", { chapterId })) {
+    return { ok: false as const, error: "Event-management access is required." };
+  }
   const slugBase = slugify(input.title);
   if (!slugBase) return { ok: false as const, error: "Enter a valid event title." };
   const existing = await db
@@ -77,7 +95,7 @@ export async function createEvent(input: {
     title: input.title.trim(),
     summary: input.summary.trim(),
     description: input.description.trim(),
-    chapterId: "chapter_pasco",
+    chapterId,
     startsAt: input.startsAt,
     locationName: input.locationName?.trim() || null,
     address: input.address?.trim() || null,
@@ -314,15 +332,25 @@ export async function createVolunteerOpportunity(input: {
   skills?: string;
   availability?: string;
   isInstructorRole?: boolean;
+  chapterId?: string | null;
   requestId?: string | null;
   ipHash?: string | null;
   userAgent?: string | null;
 }) {
   const db = await getDb();
+  const chapterId =
+    input.chapterId?.trim() ||
+    input.actor.roles.find(
+      (role) => role.scopeType === "chapter" && role.scopeId,
+    )?.scopeId ||
+    "chapter_pasco";
+  if (!can(input.actor, "volunteers.manage", { chapterId })) {
+    return { ok: false as const, error: "Volunteer-management access is required." };
+  }
   const id = `vol_${crypto.randomUUID()}`;
   await db.insert(volunteerOpportunities).values({
     id,
-    chapterId: "chapter_pasco",
+    chapterId,
     title: input.title.trim(),
     description: input.description.trim(),
     slots: input.slots && input.slots > 0 ? input.slots : null,
@@ -369,6 +397,21 @@ export async function registerForVolunteer(input: {
     .limit(1);
   const opportunity = opportunityRows[0];
   if (!opportunity) return { ok: false as const, error: "Opportunity not found." };
+
+  const membershipRows = await db
+    .select({ status: memberships.status })
+    .from(memberships)
+    .where(eq(memberships.userId, input.userId))
+    .limit(1);
+  if (
+    !membershipRows[0] ||
+    !eligibleStatuses.includes(membershipRows[0].status)
+  ) {
+    return {
+      ok: false as const,
+      error: "Your membership is not currently eligible to volunteer.",
+    };
+  }
 
   const existing = await db
     .select({ id: volunteerRegistrations.id })

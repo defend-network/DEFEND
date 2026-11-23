@@ -1,8 +1,11 @@
 import type { Metadata } from "next";
 
+import { AdminAccessDenied } from "@/components/admin/access-denied";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { adminPageActor } from "@/lib/auth/admin";
 import { listChaptersWithCounts } from "@/lib/chapters/admin";
+import { can } from "@/lib/policy/permissions";
 import { ChapterForm, ChapterStatusForm } from "./chapter-forms";
 
 export const metadata: Metadata = {
@@ -13,6 +16,9 @@ export const metadata: Metadata = {
 export const dynamic = "force-dynamic";
 
 export default async function ChaptersAdminPage() {
+  const { actor, allowed } = await adminPageActor("chapters.view");
+  if (!allowed) return <AdminAccessDenied module="chapters" />;
+  const canManage = can(actor, "chapters.manage");
   const chapters = await listChaptersWithCounts();
 
   return (
@@ -29,7 +35,7 @@ export default async function ChaptersAdminPage() {
       </div>
 
       <div className="grid gap-6 lg:grid-cols-[0.8fr_1.2fr]">
-        <ChapterForm />
+        {canManage ? <ChapterForm /> : null}
         <div className="grid gap-4">
           {chapters.map((chapter) => (
             <Card key={chapter.id}>
@@ -53,7 +59,9 @@ export default async function ChaptersAdminPage() {
                 ) : (
                   <p className="text-xs text-slate-500">No chapter-scoped leadership roles assigned.</p>
                 )}
-                <ChapterStatusForm chapterId={chapter.id} status={chapter.status} />
+                {canManage ? (
+                  <ChapterStatusForm chapterId={chapter.id} status={chapter.status} />
+                ) : null}
               </CardContent>
             </Card>
           ))}

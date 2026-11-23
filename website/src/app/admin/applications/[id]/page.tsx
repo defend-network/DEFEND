@@ -3,6 +3,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { format } from "date-fns";
 
+import { AdminAccessDenied } from "@/components/admin/access-denied";
 import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -45,8 +46,18 @@ export default async function ApplicationDetailPage({
   if (!detail) notFound();
 
   const actor = await getActor();
-  const canReview = actor ? can(actor, "applications.review") : false;
   const application = detail.application;
+  const allowed = actor
+    ? can(actor, "applications.view", {
+        chapterId: application.desiredChapterId,
+      })
+    : false;
+  if (!actor || !allowed) {
+    return <AdminAccessDenied module="applications" />;
+  }
+  const canReview = can(actor, "applications.review", {
+    chapterId: application.desiredChapterId,
+  });
   const chapterNames = new Map(detail.chapters.map((chapter) => [chapter.id, chapter.name]));
   const interests = parseList(application.interestsJson);
   const skills = parseList(application.skillsJson);

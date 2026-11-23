@@ -2,9 +2,11 @@ import type { Metadata } from "next";
 import { count, desc, eq } from "drizzle-orm";
 import { format } from "date-fns";
 
+import { AdminAccessDenied } from "@/components/admin/access-denied";
 import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { adminPageActor } from "@/lib/auth/admin";
 import { getDb } from "@/lib/db/client";
 import { emailDeliveryEvents, emailOutbox, newsletterSubscribers } from "@/db/schema";
 
@@ -16,6 +18,8 @@ export const metadata: Metadata = {
 export const dynamic = "force-dynamic";
 
 export default async function CommunicationsPage() {
+  const { allowed } = await adminPageActor("communications.view");
+  if (!allowed) return <AdminAccessDenied module="communications" />;
   const db = await getDb();
   const [events, outbox, outboxCount, newsletterCount] = await Promise.all([
     db

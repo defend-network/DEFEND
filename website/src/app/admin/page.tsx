@@ -1,14 +1,17 @@
 ﻿import type { Metadata } from "next";
-import { count, desc, eq, inArray } from "drizzle-orm";
+import { and, count, desc, eq, inArray } from "drizzle-orm";
 import { format } from "date-fns";
 
 import Link from "next/link";
 
+import { AdminAccessDenied } from "@/components/admin/access-denied";
 import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { adminPageAnyPermission } from "@/lib/auth/admin";
 import { getDb } from "@/lib/db/client";
+import { can, chapterIdsForPermission } from "@/lib/policy/permissions";
 import {
   chapters,
   contactMessages,
@@ -28,6 +31,12 @@ function dateLabel(value: Date | null): string {
 }
 
 export default async function AdminPage() {
+  const { actor, allowed } = await adminPageAnyPermission();
+  if (!allowed) return <AdminAccessDenied module="admin overview" />;
+  const canViewMessages = can(actor, "communications.view");
+  const applicationScope = chapterIdsForPermission(actor, "applications.view");
+  const memberScope = chapterIdsForPermission(actor, "members.view");
+  const chapterScope = chapterIdsForPermission(actor, "chapters.view");
   let data:
     | {
         counts: {
@@ -58,24 +67,52 @@ export default async function AdminPage() {
 
   try {
     const db = await getDb();
+    const applicationConditions = [
+      inArray(membershipApplications.status, [
+        "submitted",
+        "under_review",
+        "needs_info",
+      ]),
+    ];
+    if (applicationScope !== "all") {
+      applicationConditions.push(
+        applicationScope.length
+          ? inArray(membershipApplications.desiredChapterId, applicationScope)
+          : eq(membershipApplications.id, "__none__"),
+      );
+    }
+    const memberConditions = [eq(memberships.status, "active")];
+    if (memberScope !== "all") {
+      memberConditions.push(
+        memberScope.length
+          ? inArray(memberships.chapterId, memberScope)
+          : eq(memberships.id, "__none__"),
+      );
+    }
+    const chapterCondition =
+      chapterScope === "all"
+        ? undefined
+        : chapterScope.length
+          ? inArray(chapters.id, chapterScope)
+          : eq(chapters.id, "__none__");
+
     const [applicationCount, memberCount, messageCount, chapterCount] =
       await Promise.all([
         db
           .select({ value: count() })
           .from(membershipApplications)
-          .where(
-            inArray(membershipApplications.status, [
-              "submitted",
-              "under_review",
-              "needs_info",
-            ]),
-          ),
+          .where(and(...applicationConditions)),
         db
           .select({ value: count() })
           .from(memberships)
-          .where(eq(memberships.status, "active")),
-        db.select({ value: count() }).from(contactMessages),
-        db.select({ value: count() }).from(chapters),
+          .where(and(...memberConditions)),
+        canViewMessages
+          ? db.select({ value: count() }).from(contactMessages)
+          : Promise.resolve([{ value: 0 }]),
+        db
+          .select({ value: count() })
+          .from(chapters)
+          .where(chapterCondition),
       ]);
 
     const applications = await db
@@ -88,25 +125,32 @@ export default async function AdminPage() {
         submittedAt: membershipApplications.submittedAt,
       })
       .from(membershipApplications)
+      .where(and(...applicationConditions))
       .orderBy(desc(membershipApplications.submittedAt))
       .limit(8);
 
-    const messages = await db
-      .select({
-        id: contactMessages.id,
-        name: contactMessages.name,
-        email: contactMessages.email,
-        subject: contactMessages.subject,
-        createdAt: contactMessages.createdAt,
-      })
-      .from(contactMessages)
-      .orderBy(desc(contactMessages.createdAt))
-      .limit(5);
+    const messages = canViewMessages
+      ? await db
+          .select({
+            id: contactMessages.id,
+            name: contactMessages.name,
+            email: contactMessages.email,
+            subject: contactMessages.subject,
+            createdAt: contactMessages.createdAt,
+          })
+          .from(contactMessages)
+          .orderBy(desc(contactMessages.createdAt))
+          .limit(5)
+      : [];
 
     const chapter = await db
       .select({ name: chapters.name })
       .from(chapters)
-      .where(eq(chapters.id, "chapter_pasco"))
+      .where(
+        chapterScope !== "all" && chapterScope.length
+          ? inArray(chapters.id, chapterScope)
+          : eq(chapters.id, "chapter_pasco"),
+      )
       .limit(1);
 
     data = {
@@ -179,8 +223,7 @@ export default async function AdminPage() {
           <div>
             <CardTitle>Recent applications</CardTitle>
             <p className="mt-1 text-sm text-slate-500">
-              Read-only foundation view. Review and decision actions are the next
-              milestone.
+              Review and decision actions are available to authorized reviewers.
             </p>
           </div>
           <Badge variant="amber">Manual review required</Badge>
@@ -235,34 +278,36 @@ export default async function AdminPage() {
         </CardContent>
       </Card>
 
-      <div className="grid gap-5 lg:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <CardTitle>Recent contact messages</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {data.messages.length === 0 ? (
-              <p className="text-sm text-slate-500">No messages yet.</p>
-            ) : (
-              <ul className="grid gap-3">
-                {data.messages.map((message) => (
-                  <li
-                    key={message.id}
-                    className="rounded-[var(--radius-control)] border border-slate-200 p-3"
-                  >
-                    <p className="text-sm font-semibold text-navy-900">
-                      {message.subject}
-                    </p>
-                    <p className="mt-1 text-xs text-slate-500">
-                      {message.name} Â· {message.email} Â·{" "}
-                      {dateLabel(message.createdAt)}
-                    </p>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </CardContent>
-        </Card>
+      <div className={`grid gap-5 ${canViewMessages ? "lg:grid-cols-2" : ""}`}>
+        {canViewMessages ? (
+          <Card>
+            <CardHeader>
+              <CardTitle>Recent contact messages</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {data.messages.length === 0 ? (
+                <p className="text-sm text-slate-500">No messages yet.</p>
+              ) : (
+                <ul className="grid gap-3">
+                  {data.messages.map((message) => (
+                    <li
+                      key={message.id}
+                      className="rounded-[var(--radius-control)] border border-slate-200 p-3"
+                    >
+                      <p className="text-sm font-semibold text-navy-900">
+                        {message.subject}
+                      </p>
+                      <p className="mt-1 text-xs text-slate-500">
+                        {message.name} Â· {message.email} Â·{" "}
+                        {dateLabel(message.createdAt)}
+                      </p>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </CardContent>
+          </Card>
+        ) : null}
 
         <Card>
           <CardHeader>

@@ -20,7 +20,9 @@ export const PERMISSIONS = [
   "documents.download_sensitive",
   "cms.edit",
   "cms.publish",
+  "communications.view",
   "communications.send",
+  "programs.view",
   "finance.view",
   "finance.manage",
   "system.users",
@@ -87,7 +89,9 @@ const ADMIN_PERMISSIONS: Permission[] = [
   "documents.download_sensitive",
   "cms.edit",
   "cms.publish",
+  "communications.view",
   "communications.send",
+  "programs.view",
   "finance.view",
   "finance.manage",
   "system.users",
@@ -110,9 +114,6 @@ export const ROLE_PERMISSIONS: Record<RoleKey, ReadonlySet<Permission>> = {
     "members.view",
     "members.manage",
     "chapters.view",
-    "crm.view",
-    "crm.manage",
-    "facilities.view",
     "events.view",
     "events.manage",
     "events.checkin",
@@ -120,9 +121,6 @@ export const ROLE_PERMISSIONS: Record<RoleKey, ReadonlySet<Permission>> = {
     "volunteers.manage",
     "documents.view",
     "documents.manage",
-    "cms.edit",
-    "finance.view",
-    "exports.run",
   ]),
   staff: new Set<Permission>([
     "members.view",
@@ -136,6 +134,8 @@ export const ROLE_PERMISSIONS: Record<RoleKey, ReadonlySet<Permission>> = {
     "volunteers.manage",
     "documents.view",
     "documents.manage",
+    "communications.view",
+    "programs.view",
   ]),
   volunteer_coordinator: new Set<Permission>([
     "members.view",
@@ -199,6 +199,39 @@ export function hasGlobalRole(actor: ActorContext): boolean {
       assignment.scopeType === "global" &&
       GLOBAL_ROLES.includes(assignment.roleKey),
   );
+}
+
+export function hasAnyAdminPermission(actor: ActorContext): boolean {
+  return actor.roles.some((assignment) => {
+    if (assignment.scopeType === "self") return false;
+    const permissions = ROLE_PERMISSIONS[assignment.roleKey];
+    if (!permissions) return false;
+    return ADMIN_PERMISSIONS.some((permission) => permissions.has(permission));
+  });
+}
+
+export function chapterIdsForPermission(
+  actor: ActorContext,
+  permission: Permission,
+): "all" | string[] {
+  const chapterIds = new Set<string>();
+  for (const assignment of actor.roles) {
+    if (!ROLE_PERMISSIONS[assignment.roleKey]?.has(permission)) continue;
+    if (assignment.scopeType === "global") return "all";
+    if (assignment.scopeType === "chapter" && assignment.scopeId) {
+      chapterIds.add(assignment.scopeId);
+    }
+  }
+  return [...chapterIds];
+}
+
+export function canAccessModule(
+  actor: ActorContext,
+  permission: Permission,
+): boolean {
+  if (can(actor, permission)) return true;
+  const chapterIds = chapterIdsForPermission(actor, permission);
+  return chapterIds === "all" || chapterIds.length > 0;
 }
 
 export function scopedChapterIds(actor: ActorContext): "all" | string[] {

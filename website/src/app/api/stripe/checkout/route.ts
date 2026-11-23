@@ -8,6 +8,7 @@ import {
   canStartCheckout,
   getStripe,
 } from "@/lib/payments/stripe";
+import { isActiveSubscriptionStatus } from "@/lib/payments/events";
 import { memberships, membershipSubscriptions } from "@/db/schema";
 
 export const dynamic = "force-dynamic";
@@ -57,8 +58,20 @@ export async function POST() {
   const subscriptionRows = await db
     .select()
     .from(membershipSubscriptions)
-    .where(eq(membershipSubscriptions.membershipId, membership.id))
-    .limit(1);
+    .where(eq(membershipSubscriptions.membershipId, membership.id));
+  const activeSubscription = subscriptionRows.find((row) =>
+    isActiveSubscriptionStatus(row.status),
+  );
+  if (activeSubscription) {
+    return NextResponse.json(
+      {
+        error:
+          "An existing subscription is already active. Use the billing portal to manage it.",
+        portal: true,
+      },
+      { status: 409 },
+    );
+  }
   let subscription = subscriptionRows[0];
 
   let customerId = subscription?.stripeCustomerId ?? null;
@@ -93,6 +106,8 @@ export async function POST() {
         stripeCustomerId: customerId,
         stripeSubscriptionId: null,
         priceId: null,
+        tierId: null,
+        billingInterval: null,
         status: "pending_checkout",
         currentPeriodStart: null,
         currentPeriodEnd: null,

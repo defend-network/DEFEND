@@ -1,8 +1,10 @@
 import type { Metadata } from "next";
 import { format } from "date-fns";
 
+import { AdminAccessDenied } from "@/components/admin/access-denied";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { adminPageActor } from "@/lib/auth/admin";
 import {
   listAnnouncements,
   listCmsArticles,
@@ -23,6 +25,8 @@ export const metadata: Metadata = {
 export const dynamic = "force-dynamic";
 
 export default async function WebsiteCmsPage() {
+  const { allowed } = await adminPageActor("cms.edit");
+  if (!allowed) return <AdminAccessDenied module="website CMS" />;
   const [pages, articles, announcements] = await Promise.all([
     listCmsPages(),
     listCmsArticles(),

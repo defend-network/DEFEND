@@ -10,12 +10,12 @@ function fromBase64Url(value: string): Uint8Array {
   return Uint8Array.from(binary, (character) => character.charCodeAt(0));
 }
 
+import { isLocalEnvironment } from "@/lib/config/env";
+
 async function piiKey(): Promise<CryptoKey> {
   const configured =
     process.env.PII_ENCRYPTION_KEY?.trim() ||
-    (process.env.NODE_ENV === "production"
-      ? undefined
-      : process.env.BETTER_AUTH_SECRET?.trim());
+    (isLocalEnvironment() ? process.env.BETTER_AUTH_SECRET?.trim() : undefined);
   if (!configured) {
     throw new Error("PII encryption is not configured.");
   }

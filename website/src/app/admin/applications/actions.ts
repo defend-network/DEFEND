@@ -4,7 +4,6 @@ import { revalidatePath } from "next/cache";
 
 import { getActor } from "@/lib/auth/session";
 import { requestAuditContext } from "@/lib/audit/request-context";
-import { can } from "@/lib/policy/permissions";
 import {
   approveApplication,
   denyApplication,
@@ -15,9 +14,6 @@ import type { ApplicationActionState } from "./action-state";
 async function reviewActor() {
   const actor = await getActor();
   if (!actor) throw new Error("Sign in to continue.");
-  if (!can(actor, "applications.review")) {
-    throw new Error("MFA-verified administrative access is required.");
-  }
   return actor;
 }
 

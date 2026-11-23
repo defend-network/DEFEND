@@ -1,16 +1,14 @@
+import { resolveSecret } from "@/lib/config/env";
+
 const DEVELOPMENT_SECRET =
   "defend-development-newsletter-unsubscribe-token-not-for-production";
 
 function secret(): string {
   const configured =
     process.env.NEWSLETTER_UNSUBSCRIBE_SECRET?.trim() ||
-    process.env.CARD_TOKEN_SECRET?.trim() ||
-    process.env.BETTER_AUTH_SECRET?.trim();
+    process.env.CARD_TOKEN_SECRET?.trim();
   if (configured) return configured;
-  if (process.env.APP_ENV === "production") {
-    throw new Error("Newsletter unsubscribe secret is not configured.");
-  }
-  return DEVELOPMENT_SECRET;
+  return resolveSecret("BETTER_AUTH_SECRET", DEVELOPMENT_SECRET);
 }
 
 function base64UrlEncode(bytes: Uint8Array): string {

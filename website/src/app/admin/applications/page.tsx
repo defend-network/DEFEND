@@ -2,10 +2,13 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { format } from "date-fns";
 
+import { AdminAccessDenied } from "@/components/admin/access-denied";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { adminPageActor } from "@/lib/auth/admin";
 import { listApplications } from "@/lib/membership/applications";
+import { chapterIdsForPermission } from "@/lib/policy/permissions";
 
 export const metadata: Metadata = {
   title: "Applications",
@@ -36,6 +39,8 @@ export default async function ApplicationsPage({
 }: {
   searchParams: Promise<{ status?: string; q?: string; page?: string }>;
 }) {
+  const { actor, allowed } = await adminPageActor("applications.view");
+  if (!allowed) return <AdminAccessDenied module="applications" />;
   const params = await searchParams;
   const status = statuses.some(([value]) => value === params.status)
     ? (params.status as (typeof statuses)[number][0])
@@ -46,6 +51,7 @@ export default async function ApplicationsPage({
   const data = await listApplications({
     status,
     query,
+    chapterIds: chapterIdsForPermission(actor, "applications.view"),
     limit,
     offset: (page - 1) * limit,
   });

@@ -3,6 +3,7 @@ import {
   count,
   desc,
   eq,
+  inArray,
   like,
   or,
   type SQL,
@@ -22,7 +23,7 @@ import {
   applicationDeniedEmail,
   applicationNeedsInfoEmail,
 } from "@/lib/email/templates";
-import type { ActorContext } from "@/lib/policy/permissions";
+import { can, type ActorContext } from "@/lib/policy/permissions";
 import {
   applicationReviews,
   applicationUpdateTokens,
@@ -44,6 +45,7 @@ export type ApplicationStatus =
 export type ApplicationListFilter = {
   status?: ApplicationStatus | "all";
   query?: string;
+  chapterIds?: "all" | string[];
   limit?: number;
   offset?: number;
 };
@@ -74,6 +76,14 @@ export async function listApplications(filter: ApplicationListFilter = {}) {
 
   if (filter.status && filter.status !== "all") {
     conditions.push(eq(membershipApplications.status, filter.status));
+  }
+  if (filter.chapterIds && filter.chapterIds !== "all") {
+    if (filter.chapterIds.length === 0) {
+      return { items: [], total: 0, limit, offset };
+    }
+    conditions.push(
+      inArray(membershipApplications.desiredChapterId, filter.chapterIds),
+    );
   }
 
   const query = filter.query?.trim();
@@ -217,7 +227,14 @@ export async function approveApplication(input: {
     .where(eq(membershipApplications.id, input.applicationId))
     .limit(1);
   const application = rows[0];
-  if (!application) return { ok: false, error: "Application not found." };
+  if (
+    !application ||
+    !can(input.actor, "applications.review", {
+      chapterId: application.desiredChapterId,
+    })
+  ) {
+    return { ok: false, error: "Application not found." };
+  }
   if (application.status === "approved" || application.status === "activated") {
     return { ok: false, error: "Application is already approved." };
   }
@@ -313,7 +330,14 @@ export async function denyApplication(input: {
     .where(eq(membershipApplications.id, input.applicationId))
     .limit(1);
   const application = rows[0];
-  if (!application) return { ok: false, error: "Application not found." };
+  if (
+    !application ||
+    !can(input.actor, "applications.review", {
+      chapterId: application.desiredChapterId,
+    })
+  ) {
+    return { ok: false, error: "Application not found." };
+  }
   if (application.status === "approved" || application.status === "activated") {
     return { ok: false, error: "An approved application cannot be denied." };
   }
@@ -389,7 +413,14 @@ export async function requestApplicationInfo(input: {
     .where(eq(membershipApplications.id, input.applicationId))
     .limit(1);
   const application = rows[0];
-  if (!application) return { ok: false, error: "Application not found." };
+  if (
+    !application ||
+    !can(input.actor, "applications.review", {
+      chapterId: application.desiredChapterId,
+    })
+  ) {
+    return { ok: false, error: "Application not found." };
+  }
   if (application.status === "approved" || application.status === "activated") {
     return { ok: false, error: "An approved application cannot be reopened." };
   }

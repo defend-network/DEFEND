@@ -44,6 +44,7 @@ export const memberProfiles = sqliteTable(
     state: text("state"),
     postalCode: text("postal_code"),
     chapterId: text("chapter_id").references(() => chapters.id),
+    householdId: text("household_id").references(() => households.id),
     joinedAt: integer("joined_at", { mode: "timestamp_ms" }),
     status: text("status").notNull().default("pending"),
     notificationPreferencesJson: text("notification_preferences_json")
@@ -164,6 +165,7 @@ export const memberships = sqliteTable(
       .unique()
       .references(() => membershipApplications.id),
     chapterId: text("chapter_id").references(() => chapters.id),
+    tierId: text("tier_id").references(() => membershipTiers.id),
     memberNumber: text("member_number").notNull().unique(),
     status: text("status").notNull().default("pending_activation"),
     duesStatus: text("dues_status").notNull().default("not_started"),
@@ -217,6 +219,8 @@ export const membershipSubscriptions = sqliteTable(
     stripeCustomerId: text("stripe_customer_id"),
     stripeSubscriptionId: text("stripe_subscription_id").unique(),
     priceId: text("price_id"),
+    tierId: text("tier_id").references(() => membershipTiers.id),
+    billingInterval: text("billing_interval"),
     status: text("status").notNull().default("not_configured"),
     currentPeriodStart: integer("current_period_start", {
       mode: "timestamp_ms",
@@ -1128,3 +1132,156 @@ export const newsletterSubscribers = sqliteTable("newsletter_subscribers", {
     .notNull(),
   unsubscribedAt: integer("unsubscribed_at", { mode: "timestamp_ms" }),
 });
+
+export const membershipTiers = sqliteTable("membership_tiers", {
+  id: text("id").primaryKey(),
+  key: text("key").notNull().unique(),
+  name: text("name").notNull(),
+  description: text("description").notNull().default(""),
+  rank: integer("rank").notNull().default(0),
+  minimumMonthlyCents: integer("minimum_monthly_cents").notNull().default(0),
+  allowsCustomAmount: integer("allows_custom_amount", { mode: "boolean" })
+    .default(false)
+    .notNull(),
+  active: integer("active", { mode: "boolean" }).default(true).notNull(),
+  createdAt: integer("created_at", { mode: "timestamp_ms" })
+    .default(timestampDefault)
+    .notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+    .default(timestampDefault)
+    .$onUpdate(() => new Date())
+    .notNull(),
+});
+
+export const membershipTierPrices = sqliteTable(
+  "membership_tier_prices",
+  {
+    id: text("id").primaryKey(),
+    tierId: text("tier_id")
+      .notNull()
+      .references(() => membershipTiers.id, { onDelete: "cascade" }),
+    interval: text("interval").notNull(),
+    amountCents: integer("amount_cents").notNull(),
+    stripePriceId: text("stripe_price_id"),
+    effectiveFrom: integer("effective_from", { mode: "timestamp_ms" }).notNull(),
+    effectiveTo: integer("effective_to", { mode: "timestamp_ms" }),
+    active: integer("active", { mode: "boolean" }).default(true).notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .default(timestampDefault)
+      .notNull(),
+  },
+  (table) => [
+    index("membership_tier_prices_tier_interval_idx").on(
+      table.tierId,
+      table.interval,
+      table.active,
+    ),
+    index("membership_tier_prices_effective_idx").on(table.effectiveFrom),
+  ],
+);
+
+export const tierEntitlements = sqliteTable(
+  "tier_entitlements",
+  {
+    id: text("id").primaryKey(),
+    tierId: text("tier_id")
+      .notNull()
+      .references(() => membershipTiers.id, { onDelete: "cascade" }),
+    entitlementKey: text("entitlement_key").notNull(),
+    enabled: integer("enabled", { mode: "boolean" }).default(true).notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .default(timestampDefault)
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex("tier_entitlements_tier_key_unique").on(
+      table.tierId,
+      table.entitlementKey,
+    ),
+  ],
+);
+
+export const memberEntitlementOverrides = sqliteTable(
+  "member_entitlement_overrides",
+  {
+    id: text("id").primaryKey(),
+    membershipId: text("membership_id")
+      .notNull()
+      .references(() => memberships.id, { onDelete: "cascade" }),
+    entitlementKey: text("entitlement_key").notNull(),
+    enabled: integer("enabled", { mode: "boolean" }).default(true).notNull(),
+    reason: text("reason"),
+    createdBy: text("created_by").references(() => user.id),
+    expiresAt: integer("expires_at", { mode: "timestamp_ms" }),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .default(timestampDefault)
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex("member_entitlement_overrides_member_key_unique").on(
+      table.membershipId,
+      table.entitlementKey,
+    ),
+  ],
+);
+
+export const households = sqliteTable("households", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  primaryContactUserId: text("primary_contact_user_id").references(() => user.id),
+  chapterId: text("chapter_id").references(() => chapters.id),
+  createdAt: integer("created_at", { mode: "timestamp_ms" })
+    .default(timestampDefault)
+    .notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+    .default(timestampDefault)
+    .$onUpdate(() => new Date())
+    .notNull(),
+});
+
+export const householdMembers = sqliteTable(
+  "household_members",
+  {
+    id: text("id").primaryKey(),
+    householdId: text("household_id")
+      .notNull()
+      .references(() => households.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    relationship: text("relationship").notNull().default("member"),
+    isPrimary: integer("is_primary", { mode: "boolean" })
+      .default(false)
+      .notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .default(timestampDefault)
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex("household_members_household_user_unique").on(
+      table.householdId,
+      table.userId,
+    ),
+    index("household_members_user_idx").on(table.userId),
+  ],
+);
+
+export const featureReleases = sqliteTable(
+  "feature_releases",
+  {
+    id: text("id").primaryKey(),
+    moduleKey: text("module_key").notNull().unique(),
+    name: text("name").notNull(),
+    state: text("state").notNull().default("implemented"),
+    notes: text("notes").notNull().default(""),
+    updatedBy: text("updated_by").references(() => user.id),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .default(timestampDefault)
+      .notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .default(timestampDefault)
+      .$onUpdate(() => new Date())
+      .notNull(),
+  },
+  (table) => [index("feature_releases_state_idx").on(table.state)],
+);

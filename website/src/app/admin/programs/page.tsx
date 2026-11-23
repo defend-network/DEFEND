@@ -1,7 +1,9 @@
 import type { Metadata } from "next";
 
+import { AdminAccessDenied } from "@/components/admin/access-denied";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { adminPageActor } from "@/lib/auth/admin";
 import { listPrograms } from "@/lib/programs/programs";
 import { ProgramForm } from "./program-form";
 
@@ -13,6 +15,8 @@ export const metadata: Metadata = {
 export const dynamic = "force-dynamic";
 
 export default async function ProgramsAdminPage() {
+  const { allowed } = await adminPageActor("programs.view");
+  if (!allowed) return <AdminAccessDenied module="programs" />;
   const programs = await listPrograms();
 
   return (

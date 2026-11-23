@@ -1,10 +1,12 @@
+import { isLocalEnvironment } from "@/lib/config/env";
+
 export async function verifyTurnstile(
   token: string,
   remoteIp?: string | null,
 ): Promise<{ ok: boolean; configured: boolean; error?: string }> {
   const secret = process.env.TURNSTILE_SECRET_KEY?.trim();
   if (!secret) {
-    if (process.env.APP_ENV === "production") {
+    if (!isLocalEnvironment()) {
       return {
         ok: false,
         configured: false,

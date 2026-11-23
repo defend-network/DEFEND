@@ -4,6 +4,7 @@ import { nextCookies } from "better-auth/next-js";
 import { twoFactor } from "better-auth/plugins";
 
 import { getDb } from "@/lib/db/client";
+import { resolveSecret, secureCookiesRequired } from "@/lib/config/env";
 import { sendEmail } from "@/lib/email/send";
 import {
   emailVerificationEmail,
@@ -23,12 +24,10 @@ type AuthInstance = ReturnType<typeof createAuth>;
 let authInstance: AuthInstance | null = null;
 
 function authSecret(): string {
-  const secret = process.env.BETTER_AUTH_SECRET?.trim();
-  if (secret) return secret;
-  if (process.env.APP_ENV === "production") {
-    throw new Error("BETTER_AUTH_SECRET is required in production.");
-  }
-  return "defend-local-development-secret-change-before-deploying";
+  return resolveSecret(
+    "BETTER_AUTH_SECRET",
+    "defend-local-development-secret-change-before-deploying",
+  );
 }
 
 function createAuth(db: Awaited<ReturnType<typeof getDb>>) {
@@ -56,6 +55,7 @@ function createAuth(db: Awaited<ReturnType<typeof getDb>>) {
       minPasswordLength: 12,
       maxPasswordLength: 512,
       requireEmailVerification: true,
+      revokeSessionsOnPasswordReset: true,
       sendResetPassword: async ({
         user,
         url,
@@ -103,7 +103,7 @@ function createAuth(db: Awaited<ReturnType<typeof getDb>>) {
     },
     advanced: {
       cookiePrefix: "defend",
-      useSecureCookies: process.env.APP_ENV === "production",
+      useSecureCookies: secureCookiesRequired(),
       ipAddress: {
         ipAddressHeaders: ["cf-connecting-ip"],
       },

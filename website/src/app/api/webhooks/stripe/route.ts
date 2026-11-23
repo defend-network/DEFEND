@@ -6,6 +6,11 @@ import { getDb } from "@/lib/db/client";
 import { recordAuditEvent } from "@/lib/audit/audit";
 import { getStripe } from "@/lib/payments/stripe";
 import {
+  shouldReprocessPaymentEvent,
+  stripeLivemodeMatches,
+  summarizePaymentEvent,
+} from "@/lib/payments/events";
+import {
   memberships,
   membershipStatusHistory,
   membershipSubscriptions,
@@ -162,7 +167,22 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Invalid signature." }, { status: 400 });
   }
 
+  if (!stripeLivemodeMatches(event.livemode)) {
+    return NextResponse.json(
+      { error: "Stripe event mode does not match the configured payment mode." },
+      { status: 400 },
+    );
+  }
+
   const db = await getDb();
+  const eventSummary = summarizePaymentEvent(event);
+  const summaryValues = {
+    stripeCustomerId: eventSummary.customerId,
+    stripeSubscriptionId: eventSummary.subscriptionId,
+    amountCents: eventSummary.amountCents,
+    currency: eventSummary.currency,
+    payloadSummaryJson: JSON.stringify(eventSummary.summary),
+  };
   const inserted = await db
     .insert(paymentEvents)
     .values({
@@ -171,13 +191,29 @@ export async function POST(request: Request) {
       type: event.type,
       status: "received",
       occurredAt: new Date(event.created * 1000),
-      payloadSummaryJson: JSON.stringify({ type: event.type }),
+      ...summaryValues,
     })
     .onConflictDoNothing({ target: paymentEvents.stripeEventId })
     .returning({ id: paymentEvents.id });
 
   if (inserted.length === 0) {
-    return NextResponse.json({ received: true, duplicate: true });
+    const existingRows = await db
+      .select({ status: paymentEvents.status })
+      .from(paymentEvents)
+      .where(eq(paymentEvents.stripeEventId, event.id))
+      .limit(1);
+    const existing = existingRows[0];
+    if (!existing || !shouldReprocessPaymentEvent(existing.status)) {
+      return NextResponse.json({ received: true, duplicate: true });
+    }
+    await db
+      .update(paymentEvents)
+      .set({
+        status: "received",
+        processedAt: null,
+        ...summaryValues,
+      })
+      .where(eq(paymentEvents.stripeEventId, event.id));
   }
 
   try {
@@ -215,14 +251,22 @@ export async function POST(request: Request) {
 
     await db
       .update(paymentEvents)
-      .set({ status: "processed", processedAt: new Date() })
+      .set({
+        status: "processed",
+        processedAt: new Date(),
+        ...summaryValues,
+      })
       .where(eq(paymentEvents.stripeEventId, event.id));
 
     return NextResponse.json({ received: true });
   } catch {
     await db
       .update(paymentEvents)
-      .set({ status: "failed", processedAt: new Date() })
+      .set({
+        status: "failed",
+        processedAt: new Date(),
+        ...summaryValues,
+      })
       .where(eq(paymentEvents.stripeEventId, event.id));
     return NextResponse.json(
       { error: "Webhook processing failed." },

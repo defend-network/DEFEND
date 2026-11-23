@@ -2,9 +2,12 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { format } from "date-fns";
 
+import { AdminAccessDenied } from "@/components/admin/access-denied";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { adminPageActor } from "@/lib/auth/admin";
 import { listAdminEvents } from "@/lib/events/events";
+import { chapterIdsForPermission } from "@/lib/policy/permissions";
 import { EventAdminForms } from "./event-admin-forms";
 
 export const metadata: Metadata = {
@@ -15,7 +18,11 @@ export const metadata: Metadata = {
 export const dynamic = "force-dynamic";
 
 export default async function AdminEventsPage() {
-  const eventRows = await listAdminEvents();
+  const { actor, allowed } = await adminPageActor("events.view");
+  if (!allowed) return <AdminAccessDenied module="events" />;
+  const eventRows = await listAdminEvents({
+    chapterIds: chapterIdsForPermission(actor, "events.view"),
+  });
 
   return (
     <div className="grid gap-6">

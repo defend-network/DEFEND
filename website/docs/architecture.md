@@ -82,6 +82,7 @@ Core tables:
 - Organization: `chapters`, `member_profiles`, `memberships`, `membership_status_history`.
 - Applications: `membership_applications`, `application_reviews`, `application_update_tokens`.
 - Payments: `membership_subscriptions`, `payment_events`.
+- Membership commercial: `membership_tiers`, `membership_tier_prices`, `tier_entitlements`, `member_entitlement_overrides`, `households`, `household_members`.
 - Access: `invitations`, `role_assignments`.
 - Audit: `admin_audit_events`.
 - Directory: `directory_profiles`.
@@ -90,6 +91,7 @@ Core tables:
 - Events: `events`, `event_registrations`, `event_checkins`.
 - Volunteer: `volunteer_opportunities`, `volunteer_registrations`.
 - Abuse controls: `request_rate_limits`.
+- Release governance: `feature_releases` with the seven-state activation model.
 
 Pasco County is seeded as `in_development`. Planned chapters are content-only and cannot be selected for membership assignment.
 

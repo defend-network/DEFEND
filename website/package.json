@@ -22,7 +22,8 @@
     "e2e:membership": "node scripts/e2e-membership.mjs",
     "e2e:newsletter": "node scripts/e2e-newsletter.mjs",
     "backup:staging": "node scripts/backup-d1.mjs --env=staging",
-    "backup:verify": "node scripts/verify-backup.mjs"
+    "backup:verify": "node scripts/verify-backup.mjs",
+    "verify:identity": "node scripts/verify-project-identity.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^7.0.6",

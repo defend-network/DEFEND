@@ -1,8 +1,8 @@
-import { and, desc, eq, like, or, type SQL } from "drizzle-orm";
+import { and, desc, eq, inArray, like, not, or, type SQL } from "drizzle-orm";
 
 import { getDb, getEnv } from "@/lib/db/client";
 import { recordAuditEvent } from "@/lib/audit/audit";
-import type { ActorContext } from "@/lib/policy/permissions";
+import { can, type ActorContext } from "@/lib/policy/permissions";
 import {
   documentPermissions,
   documentVersions,
@@ -29,7 +29,52 @@ function safeFilename(value: string): string {
     .slice(0, 120) || "document";
 }
 
-export async function listDocuments(input: { query?: string; category?: string } = {}) {
+export type DocumentAccessRecord = {
+  status: string;
+  visibility: string;
+  chapterId: string | null;
+};
+
+export function canReadDocument(
+  actor: ActorContext,
+  document: DocumentAccessRecord,
+): boolean {
+  if (document.status !== "published") return false;
+  if (document.visibility === "admin") {
+    return can(actor, "documents.download_sensitive", {
+      chapterId: document.chapterId,
+    });
+  }
+  if (document.visibility === "chapter") {
+    return can(actor, "documents.view", { chapterId: document.chapterId });
+  }
+  return can(actor, "documents.view", { chapterId: document.chapterId });
+}
+
+export function canManageDocument(
+  actor: ActorContext,
+  document: DocumentAccessRecord,
+): boolean {
+  if (document.visibility === "admin") {
+    if (
+      !can(actor, "documents.download_sensitive", {
+        chapterId: document.chapterId,
+      })
+    ) {
+      return false;
+    }
+  }
+  return can(actor, "documents.manage", { chapterId: document.chapterId });
+}
+
+export async function listDocuments(
+  input: {
+    query?: string;
+    category?: string;
+    chapterIds?: "all" | string[];
+    excludeSensitive?: boolean;
+  } = {},
+) {
   const db = await getDb();
   const conditions: SQL[] = [];
   if (input.query?.trim()) {
@@ -44,6 +89,13 @@ export async function listDocuments(input: { query?: string; category?: string }
   }
   if (input.category && input.category !== "all") {
     conditions.push(eq(documents.category, input.category));
+  }
+  if (input.chapterIds && input.chapterIds !== "all") {
+    if (input.chapterIds.length === 0) return [];
+    conditions.push(inArray(documents.chapterId, input.chapterIds));
+  }
+  if (input.excludeSensitive) {
+    conditions.push(not(eq(documents.visibility, "admin")));
   }
   const where = conditions.length ? and(...conditions) : undefined;
   return db
@@ -61,6 +113,7 @@ export async function uploadDocument(input: {
   description?: string;
   category: string;
   visibility: string;
+  chapterId?: string | null;
   requestId?: string | null;
   ipHash?: string | null;
   userAgent?: string | null;
@@ -75,6 +128,18 @@ export async function uploadDocument(input: {
   const visibility = ["admin", "chapter", "members", "public"].includes(input.visibility)
     ? input.visibility
     : "admin";
+  const requestedChapterId = input.chapterId?.trim() || null;
+  const actorChapterId =
+    input.actor.roles.find(
+      (role) => role.scopeType === "chapter" && role.scopeId,
+    )?.scopeId ?? null;
+  const chapterId = requestedChapterId ?? actorChapterId;
+  if (!can(input.actor, "documents.manage", { chapterId })) {
+    return {
+      ok: false as const,
+      error: "You cannot upload documents for that chapter.",
+    };
+  }
   const id = `doc_${crypto.randomUUID()}`;
   const filename = safeFilename(input.file.name);
   const key = `documents/${id}/${filename}`;
@@ -97,6 +162,7 @@ export async function uploadDocument(input: {
     sizeBytes: input.file.size,
     version: 1,
     visibility,
+    chapterId,
     ownerUserId: input.actor.userId,
     status: "published",
     createdAt: new Date(),
@@ -130,7 +196,12 @@ export async function uploadDocument(input: {
     requestId: input.requestId,
     ipHash: input.ipHash,
     userAgent: input.userAgent,
-    metadata: { category: input.category, visibility, sizeBytes: input.file.size },
+    metadata: {
+      category: input.category,
+      visibility,
+      chapterId,
+      sizeBytes: input.file.size,
+    },
   });
   return { ok: true as const, id };
 }
@@ -177,7 +248,9 @@ export async function addDocumentVersion(input: {
   const db = await getDb();
   const rows = await db.select().from(documents).where(eq(documents.id, input.documentId)).limit(1);
   const document = rows[0];
-  if (!document) return { ok: false as const, error: "Document not found." };
+  if (!document || !canManageDocument(input.actor, document)) {
+    return { ok: false as const, error: "Document not found." };
+  }
   const nextVersion = document.version + 1;
   const filename = safeFilename(input.file.name);
   const key = `documents/${document.id}/v${nextVersion}-${filename}`;
@@ -228,7 +301,9 @@ export async function restoreDocumentVersion(input: {
   const db = await getDb();
   const rows = await db.select().from(documents).where(eq(documents.id, input.documentId)).limit(1);
   const document = rows[0];
-  if (!document) return { ok: false as const, error: "Document not found." };
+  if (!document || !canManageDocument(input.actor, document)) {
+    return { ok: false as const, error: "Document not found." };
+  }
   const versionRows = await db
     .select()
     .from(documentVersions)
@@ -278,7 +353,9 @@ export async function archiveDocument(input: {
   const db = await getDb();
   const rows = await db.select().from(documents).where(eq(documents.id, input.documentId)).limit(1);
   const document = rows[0];
-  if (!document) return { ok: false as const, error: "Document not found." };
+  if (!document || !canManageDocument(input.actor, document)) {
+    return { ok: false as const, error: "Document not found." };
+  }
   await db.update(documents).set({ status: "archived", deletedAt: new Date(), updatedAt: new Date() }).where(eq(documents.id, document.id));
   await recordAuditEvent({
     actorUserId: input.actor.userId,

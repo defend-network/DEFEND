@@ -4,8 +4,10 @@ import { getActor } from "@/lib/auth/session";
 import { requestAuditContext } from "@/lib/audit/request-context";
 import { recordAuditEvent } from "@/lib/audit/audit";
 import { getEnv } from "@/lib/db/client";
-import { getDocumentForDownload } from "@/lib/documents/documents";
-import { can } from "@/lib/policy/permissions";
+import {
+  canReadDocument,
+  getDocumentForDownload,
+} from "@/lib/documents/documents";
 
 export const dynamic = "force-dynamic";
 
@@ -22,11 +24,7 @@ export async function GET(
   if (!document) {
     return NextResponse.json({ error: "Document not found." }, { status: 404 });
   }
-  const permission =
-    document.visibility === "admin"
-      ? "documents.download_sensitive"
-      : "documents.view";
-  if (!can(actor, permission)) {
+  if (!canReadDocument(actor, document)) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 

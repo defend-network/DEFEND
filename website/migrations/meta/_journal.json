@@ -71,6 +71,13 @@
       "when": 1794841591382,
       "tag": "0009_hard_wind_dancer",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1795459163532,
+      "tag": "0010_flaky_leper_queen",
+      "breakpoints": true
     }
   ]
 }

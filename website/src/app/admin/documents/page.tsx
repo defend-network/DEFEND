@@ -2,10 +2,13 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { format } from "date-fns";
 
+import { AdminAccessDenied } from "@/components/admin/access-denied";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { adminPageActor } from "@/lib/auth/admin";
 import { listDocuments } from "@/lib/documents/documents";
+import { can, chapterIdsForPermission } from "@/lib/policy/permissions";
 import { DocumentUploadForm } from "./upload-form";
 
 export const metadata: Metadata = {
@@ -20,10 +23,17 @@ export default async function DocumentsPage({
 }: {
   searchParams: Promise<{ q?: string; category?: string }>;
 }) {
+  const { actor, allowed } = await adminPageActor("documents.view");
+  if (!allowed) return <AdminAccessDenied module="documents" />;
   const params = await searchParams;
   const query = params.q?.slice(0, 120) ?? "";
   const category = params.category ?? "all";
-  const docs = await listDocuments({ query, category });
+  const docs = await listDocuments({
+    query,
+    category,
+    chapterIds: chapterIdsForPermission(actor, "documents.view"),
+    excludeSensitive: !can(actor, "documents.download_sensitive"),
+  });
 
   return (
     <div className="grid gap-6">

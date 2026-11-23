@@ -2,13 +2,17 @@
 import { desc } from "drizzle-orm";
 import { format } from "date-fns";
 
+import { AdminAccessDenied } from "@/components/admin/access-denied";
 import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { adminPageActor } from "@/lib/auth/admin";
 import { getDb } from "@/lib/db/client";
 import { listRecentAuditEvents } from "@/lib/audit/audit";
 import { listUsersAndRoles } from "@/lib/auth/roles";
+import { listFeatureReleases } from "@/lib/platform/releases";
 import { stripeConfigured } from "@/lib/payments/stripe";
+import { can } from "@/lib/policy/permissions";
 import { chapters } from "@/db/schema";
 import { RoleAssignmentForm, RevokeRoleForm } from "./system-forms";
 
@@ -20,11 +24,17 @@ export const metadata: Metadata = {
 export const dynamic = "force-dynamic";
 
 export default async function SystemPage() {
+  const { actor, allowed } = await adminPageActor("system.audit");
+  if (!allowed) return <AdminAccessDenied module="system" />;
+  const canManageUsers = can(actor, "system.users");
   const db = await getDb();
-  const [roleData, auditEvents, chapterRows] = await Promise.all([
-    listUsersAndRoles(),
+  const [roleData, auditEvents, chapterRows, releases] = await Promise.all([
+    canManageUsers
+      ? listUsersAndRoles()
+      : Promise.resolve({ users: [], assignments: [] }),
     listRecentAuditEvents(25),
     db.select({ id: chapters.id, name: chapters.name }).from(chapters).orderBy(desc(chapters.createdAt)).limit(50),
+    listFeatureReleases(),
   ]);
 
   const integrations = [
@@ -83,42 +93,86 @@ export default async function SystemPage() {
         ))}
       </div>
 
-      <div className="grid gap-5 xl:grid-cols-2">
-        <RoleAssignmentForm users={roleData.users} chapters={chapterRows} />
-        <Card>
-          <CardHeader><CardTitle>Active role assignments</CardTitle></CardHeader>
-          <CardContent>
-            {roleData.assignments.length === 0 ? <p className="text-sm text-slate-500">No role assignments.</p> : (
-              <ul className="grid gap-2 text-sm">
-                {roleData.assignments.map((assignment) => {
-                  const account = roleData.users.find((candidate) => candidate.id === assignment.userId);
-                  return (
-                    <li key={assignment.id} className="grid gap-2 rounded-[var(--radius-control)] border border-slate-200 p-3">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div>
-                          <p className="font-semibold text-navy-900">{account?.name ?? assignment.userId}</p>
-                          <p className="text-xs text-slate-500">{account?.email ?? ""} Â· {assignment.roleKey} Â· {assignment.scopeType}{assignment.scopeId ? ` (${assignment.scopeId})` : ""}</p>
-                        </div>
-                        {assignment.roleKey !== "owner" ? <RevokeRoleForm assignmentId={assignment.id} /> : <Badge variant="green">owner</Badge>}
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </CardContent>
-        </Card>
-      </div>
+      {canManageUsers ? (
+        <>
+          <div className="grid gap-5 xl:grid-cols-2">
+            <RoleAssignmentForm users={roleData.users} chapters={chapterRows} />
+            <Card>
+              <CardHeader><CardTitle>Active role assignments</CardTitle></CardHeader>
+              <CardContent>
+                {roleData.assignments.length === 0 ? <p className="text-sm text-slate-500">No role assignments.</p> : (
+                  <ul className="grid gap-2 text-sm">
+                    {roleData.assignments.map((assignment) => {
+                      const account = roleData.users.find((candidate) => candidate.id === assignment.userId);
+                      return (
+                        <li key={assignment.id} className="grid gap-2 rounded-[var(--radius-control)] border border-slate-200 p-3">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div>
+                              <p className="font-semibold text-navy-900">{account?.name ?? assignment.userId}</p>
+                              <p className="text-xs text-slate-500">{account?.email ?? ""} Â· {assignment.roleKey} Â· {assignment.scopeType}{assignment.scopeId ? ` (${assignment.scopeId})` : ""}</p>
+                            </div>
+                            {assignment.roleKey !== "owner" ? <RevokeRoleForm assignmentId={assignment.id} /> : <Badge variant="green">owner</Badge>}
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+
+          <Card>
+            <CardHeader><CardTitle>Users</CardTitle></CardHeader>
+            <CardContent>
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[700px] text-left text-sm">
+                  <thead className="border-b border-slate-200 text-xs uppercase tracking-[0.12em] text-slate-500"><tr><th className="px-3 py-3">User</th><th className="px-3 py-3">MFA</th><th className="px-3 py-3">Email</th></tr></thead>
+                  <tbody>{roleData.users.map((account) => <tr key={account.id} className="border-b border-slate-100 last:border-0"><td className="px-3 py-3"><p className="font-semibold text-navy-900">{account.name}</p><p className="text-xs text-slate-500">{account.id}</p></td><td className="px-3 py-3"><Badge variant={account.twoFactorEnabled ? "green" : "amber"}>{account.twoFactorEnabled ? "enabled" : "not enabled"}</Badge></td><td className="px-3 py-3 text-slate-600">{account.email}</td></tr>)}</tbody>
+                </table>
+              </div>
+            </CardContent>
+          </Card>
+        </>
+      ) : (
+        <Alert tone="info">
+          User and role administration requires the owner-only system.users permission.
+        </Alert>
+      )}
 
       <Card>
-        <CardHeader><CardTitle>Users</CardTitle></CardHeader>
+        <CardHeader><CardTitle>Feature release status</CardTitle></CardHeader>
         <CardContent>
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[700px] text-left text-sm">
-              <thead className="border-b border-slate-200 text-xs uppercase tracking-[0.12em] text-slate-500"><tr><th className="px-3 py-3">User</th><th className="px-3 py-3">MFA</th><th className="px-3 py-3">Email</th></tr></thead>
-              <tbody>{roleData.users.map((account) => <tr key={account.id} className="border-b border-slate-100 last:border-0"><td className="px-3 py-3"><p className="font-semibold text-navy-900">{account.name}</p><p className="text-xs text-slate-500">{account.id}</p></td><td className="px-3 py-3"><Badge variant={account.twoFactorEnabled ? "green" : "amber"}>{account.twoFactorEnabled ? "enabled" : "not enabled"}</Badge></td><td className="px-3 py-3 text-slate-600">{account.email}</td></tr>)}</tbody>
-            </table>
-          </div>
+          {releases.length === 0 ? (
+            <p className="text-sm text-slate-500">No release records.</p>
+          ) : (
+            <ul className="grid gap-2 text-sm">
+              {releases.map((release) => (
+                <li
+                  key={release.id}
+                  className="flex flex-wrap items-center justify-between gap-2 rounded-[var(--radius-control)] border border-slate-200 p-3"
+                >
+                  <span>
+                    <strong className="text-navy-900">{release.name}</strong>
+                    <span className="ml-2 text-xs text-slate-500">
+                      {release.moduleKey}
+                    </span>
+                  </span>
+                  <Badge
+                    variant={
+                      release.state === "publicly_activated"
+                        ? "green"
+                        : release.state === "implemented"
+                          ? "outline"
+                          : "amber"
+                    }
+                  >
+                    {release.state.replaceAll("_", " ")}
+                  </Badge>
+                </li>
+              ))}
+            </ul>
+          )}
         </CardContent>
       </Card>
 

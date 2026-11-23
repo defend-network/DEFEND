@@ -82,6 +82,13 @@ const expectedTables = [
   "volunteer_opportunities",
   "volunteer_registrations",
   "newsletter_subscribers",
+  "membership_tiers",
+  "membership_tier_prices",
+  "tier_entitlements",
+  "member_entitlement_overrides",
+  "households",
+  "household_members",
+  "feature_releases",
 ];
 
 const tables = new Set(
@@ -115,6 +122,21 @@ if (chapter.length !== 1 || chapter[0].status !== "in_development") {
   throw new Error("Pasco chapter seed is missing or has the wrong status");
 }
 
+const tierKeys = new Set(
+  query("SELECT key FROM membership_tiers").map((row) => row.key),
+);
+for (const tier of ["free", "standard", "supporter", "patron"]) {
+  if (!tierKeys.has(tier)) {
+    throw new Error(`Missing membership tier: ${tier}`);
+  }
+}
+
+const releaseCount = query("SELECT count(*) AS value FROM feature_releases")[0]
+  ?.value;
+if (!releaseCount) {
+  throw new Error("Feature release registry seed is missing");
+}
+
 console.log(
-  `Migration verification passed: ${expectedTables.length} tables, 2 audit triggers, Pasco chapter seeded.`,
+  `Migration verification passed: ${expectedTables.length} tables, 2 audit triggers, Pasco chapter seeded, 4 tiers and release registry seeded.`,
 );

@@ -1,4 +1,5 @@
 import { getDb } from "@/lib/db/client";
+import { isLocalEnvironment, runtimeEnvironment } from "@/lib/config/env";
 import { emailDeliveryEvents, emailOutbox } from "@/db/schema";
 
 export type EmailMessage = {
@@ -18,8 +19,10 @@ export type EmailResult = {
 function transport(): "resend" | "outbox" | "not_configured" {
   const configured = process.env.EMAIL_TRANSPORT?.trim().toLowerCase();
   if (configured === "resend") return "resend";
-  if (configured === "outbox") return "outbox";
-  if (!configured && process.env.APP_ENV !== "production") return "outbox";
+  if (configured === "outbox") {
+    return runtimeEnvironment() === "production" ? "not_configured" : "outbox";
+  }
+  if (!configured && isLocalEnvironment()) return "outbox";
   return "not_configured";
 }
 
@@ -58,7 +61,7 @@ export async function sendEmail(message: EmailMessage): Promise<EmailResult> {
   }
 
   if (mode === "outbox") {
-    if (process.env.APP_ENV === "production") {
+    if (runtimeEnvironment() === "production") {
       return {
         status: "not_configured",
         error: "Development outbox is disabled in production.",

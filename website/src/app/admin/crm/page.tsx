@@ -2,8 +2,10 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { format } from "date-fns";
 
+import { AdminAccessDenied } from "@/components/admin/access-denied";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { adminPageActor } from "@/lib/auth/admin";
 import {
   leadCounts,
   listContacts,
@@ -20,6 +22,8 @@ export const metadata: Metadata = {
 export const dynamic = "force-dynamic";
 
 export default async function CrmPage() {
+  const { allowed } = await adminPageActor("crm.view");
+  if (!allowed) return <AdminAccessDenied module="CRM" />;
   const [organizations, contacts, leads, counts] = await Promise.all([
     listOrganizations(),
     listContacts(),
