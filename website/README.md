@@ -17,7 +17,7 @@ Isolated organizational website, member portal, and administrative workstation f
 - Staging Worker: `defend-website-staging`
 - Staging D1: `defend-website-staging` (`39ff28d5-dc0b-4927-a6bc-81ddbae6ca6b`, dedicated DEFEND account)
 - Staging R2: `defend-private-documents-staging`, `defend-public-media-staging`
-- Staging Worker version: `90da8cc4-2ee3-493d-9ecb-0015cb407505`
+- Staging Worker version: `06944db0-ba17-4473-ac60-c29e01f82d1b`
 - Staging email transport: development outbox
 - Staging payments: test mode, live charging disabled
 - Staging migrations: `0000`-`0013` applied; preserved staging seed/operational rows imported
